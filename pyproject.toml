@@ -3,7 +3,9 @@ name = "bibi"
 version = "0.1.0"
 description = "bibi — deploybare Engine (bibi-ctrl + Skills/Agents) für Markdown-geführte Team-Repos"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "pyyaml>=6.0",
+]
 
 [project.scripts]
 bibi-ctrl = "bibi.ctrl:main"
