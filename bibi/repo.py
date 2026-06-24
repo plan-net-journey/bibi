@@ -20,20 +20,29 @@ from pathlib import Path
 DEFAULT_CASE_DIR = "case"
 
 
-@lru_cache(maxsize=1)
-def root(start: Path | None = None) -> Path:
-    """git-Toplevel des cwd. Beendet mit Code 2, wenn kein git-Repo."""
+@lru_cache(maxsize=None)
+def _root_of(cwd: str) -> Path:
+    """git-Toplevel von ``cwd``. Beendet mit Code 2, wenn kein git-Repo.
+
+    Nach ``cwd`` gecached (nicht nach Argument-Default), damit ein cwd-Wechsel
+    — im Prozess wie in Tests — ein neues Ergebnis liefert.
+    """
     proc = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
-        cwd=start or Path.cwd(),
+        cwd=cwd,
         capture_output=True,
         text=True,
         check=False,
     )
     if proc.returncode != 0:
-        print(f"bibi: {start or Path.cwd()} liegt in keinem git-Repo.", file=sys.stderr)
+        print(f"bibi: {cwd} liegt in keinem git-Repo.", file=sys.stderr)
         sys.exit(2)
     return Path(proc.stdout.strip())
+
+
+def root() -> Path:
+    """git-Toplevel des aktuellen Arbeitsverzeichnisses."""
+    return _root_of(str(Path.cwd().resolve()))
 
 
 def vault() -> Path:
