@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import init_cmd, open_cmd, save_cmd, status_cmd
+from . import init_cmd, lifecycle_cmd, open_cmd, save_cmd, status_cmd
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -20,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     status_cmd.register(sub)
     open_cmd.register(sub)
     save_cmd.register(sub)
+    lifecycle_cmd.register(sub)
 
     args = parser.parse_args(argv)
     if not getattr(args, "cmd", None):
