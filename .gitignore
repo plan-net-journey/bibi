@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+
+# bibi runtime / lokaler State (vgl. DESIGN §3.2)
+.claude/.state.md
+data/
