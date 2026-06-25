@@ -1,12 +1,12 @@
 ---
-name: status
+name: state
 description: Show the current bibi state — active case, auto_sync, sync_conflict, and protocol mode. Read-only; never mutates state.
 argument-hint:
 allowed-tools:
   - Bash
 ---
 
-# /status — show current state
+# /state — show current state
 
 ```bash
 bibi-ctrl status
