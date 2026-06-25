@@ -78,7 +78,10 @@ CREATE TABLE IF NOT EXISTS journal (
     worker        TEXT,
     output_ref    TEXT,                        -- referenziert, enthält nicht (§1.4)
     snapshot      TEXT NOT NULL DEFAULT '{}',
-    archived_at   REAL NOT NULL
+    archived_at   REAL NOT NULL,
+    -- Ausführungs-Domäne (§1.4): 'scheduled' (disponiert, über den Scheduler) vs.
+    -- 'local' (/run, umgeht den Scheduler — kein jobs-Eintrag). Föderierte A13-Sicht.
+    domain        TEXT NOT NULL DEFAULT 'scheduled'
 );
 
 CREATE INDEX IF NOT EXISTS journal_slug_idx

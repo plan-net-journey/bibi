@@ -25,14 +25,28 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
-#: Additive Migrationen für *bestehende* DBs: ``from_version -> [DDL, …]``.
-#: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte
-#: heben ältere DBs Stück für Stück an (PLAN-3 §3.1: Migrationen von Anfang an).
-_MIGRATIONS: dict[int, list[str]] = {
-    1: ["CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);"],
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(r["name"] == column for r in conn.execute(f"PRAGMA table_info({table})"))
+
+
+def _mig_meta(conn: sqlite3.Connection) -> None:  # v1 → v2
+    conn.executescript("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);")
+
+
+def _mig_journal_domain(conn: sqlite3.Connection) -> None:  # v2 → v3
+    if not _has_column(conn, "journal", "domain"):
+        conn.execute("ALTER TABLE journal ADD COLUMN domain TEXT NOT NULL DEFAULT 'scheduled'")
+
+
+#: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
+#: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
+#: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
+_MIGRATIONS: dict[int, list] = {
+    1: [_mig_meta],
+    2: [_mig_journal_domain],
 }
 
 
@@ -65,8 +79,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         return
     while version < SCHEMA_VERSION:  # bestehende DB: schrittweise migrieren
-        for ddl in _MIGRATIONS.get(version, []):
-            conn.executescript(ddl)
+        for migrate in _MIGRATIONS.get(version, []):
+            migrate(conn)
         version += 1
     conn.execute(f"PRAGMA user_version = {version}")
 
@@ -402,11 +416,13 @@ def journal_view(row: sqlite3.Row) -> dict:
         "started_at": row["started_at"], "finished_at": row["finished_at"],
         "exit_code": row["exit_code"], "exec_runtime": row["exec_runtime"],
         "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
+        "domain": row["domain"],
     }
 
 
 def list_journal(
-    conn: sqlite3.Connection, slug: str | None = None, host: str | None = None
+    conn: sqlite3.Connection, slug: str | None = None,
+    host: str | None = None, domain: str | None = None,
 ) -> list[dict]:
     sql = "SELECT * FROM journal"
     clauses, params = [], []
@@ -414,7 +430,35 @@ def list_journal(
         clauses.append("slug=?"); params.append(slug)
     if host:
         clauses.append("host=?"); params.append(host)
+    if domain:
+        clauses.append("domain=?"); params.append(domain)
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY archived_at DESC"
     return [journal_view(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def write_local_journal(
+    conn: sqlite3.Connection, *, run_id: str, slug: str, kind: str, status: str,
+    exit_code: int | None, output_ref: str | None, host: str | None,
+    worker: str | None, started_at: float, finished_at: float,
+    reason: str | None = None,
+) -> None:
+    """Journal-Zeile der **lokalen** Domäne (§1.4) — von ``/run``. Bewusst **ohne**
+    ``jobs``-Eintrag: die zentrale Queue sieht den Lauf nie. ``domain='local'``."""
+    conn.execute(
+        "INSERT INTO journal (run_id, slug, kind, status, reason, started_at, "
+        "finished_at, exit_code, exec_runtime, host, worker, output_ref, snapshot, "
+        "archived_at, domain) VALUES (:run_id,:slug,:kind,:status,:reason,:started_at,"
+        ":finished_at,:exit_code,:exec_runtime,:host,:worker,:output_ref,:snapshot,"
+        ":archived_at,'local')",
+        {
+            "run_id": run_id, "slug": slug, "kind": kind, "status": status,
+            "reason": reason, "started_at": started_at, "finished_at": finished_at,
+            "exit_code": exit_code, "exec_runtime": finished_at - started_at,
+            "host": host, "worker": worker, "output_ref": output_ref,
+            "snapshot": json.dumps({"slug": slug, "kind": kind, "status": status,
+                                    "exit_code": exit_code}, ensure_ascii=False),
+            "archived_at": finished_at,
+        },
+    )

@@ -111,6 +111,16 @@ class JournalEntryView(BaseModel):
     host: str | None = None
     worker: str | None = None
     output_ref: str | None = None
+    domain: str = "scheduled"  # 'scheduled' (disponiert) | 'local' (/run), §1.4
+
+
+class RunRequest(BaseModel):
+    """``POST /-/run`` — lokale On-Demand-Ausführung (§3.3b). Entweder ``slug``
+    (eine erfasste Schedule-MD) **oder** ``cmd`` (ad-hoc, rein lokal)."""
+
+    slug: str | None = None
+    cmd: str | None = None
+    kind: str = "job"
 
 
 class WorkerView(BaseModel):

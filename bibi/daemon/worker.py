@@ -16,13 +16,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import signal
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from bibi import repo
 from bibi.daemon import job_db, worktree
+from bibi.schedule import discovery
 from bibi.schedule.lifecycle import TERMINAL
 from bibi.schedule.models import Status
 
@@ -33,36 +37,31 @@ def _output_path(repo_root: Path, job_id: str) -> Path:
     return repo_root / "data" / "job" / job_id / "output.jsonl"
 
 
-def _build_env(reservation: dict, *, out_path: Path, worktree_path: Path) -> dict[str, str]:
-    env = os.environ.copy()
-    env["BIBI_JOB_TYPE"] = reservation["kind"]
-    env["BIBI_JOB_ID"] = reservation["id"]
-    env["BIBI_OUTPUT_PATH"] = str(out_path)
-    env["BIBI_WORKTREE"] = str(worktree_path)
-    if reservation["kind"] == "job":
-        env["BIBI_JOB_CMD"] = reservation["payload"]
-    elif reservation["kind"] == "claude":
-        env["BIBI_JOB_PROMPT"] = reservation["payload"]
-        if reservation.get("model"):
-            env["BIBI_JOB_MODEL"] = reservation["model"]
-    return env
+def _run_wrapper(
+    *, job_id: str, slug: str, kind: str, payload: str, model: str | None,
+    repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
+) -> tuple[int, str, Path]:
+    """Der gemeinsame Ausführungs-Kern beider Pfade: Worktree → Wrapper-Subprozess
+    → Commit. Gibt ``(exit_code, commit_sha, output_path)``.
 
-
-def execute_reservation(
-    reservation: dict, *, repo_root: Path, work_dir: Path,
-    db_path: Path | None = None, worker_name: str | None = None,
-    register=None,
-) -> dict:
-    """Einen reservierten Job ausführen (synchron). Gibt Run-Eckdaten zurück.
-
-    ``register(id, proc|None)`` (optional) trägt den Wrapper-Prozess für ``kill``
-    ein/aus. Ist der Job beim Abschluss bereits terminal (z. B. ``killed``),
-    überschreibt der Worker den Zustand **nicht**."""
-    jid, slug, kind = reservation["id"], reservation["slug"], reservation["kind"]
+    ``ephemeral=True`` (für ``/run``) entfernt den Worktree nach dem Lauf wieder.
+    Der Wrapper ist die einzige Ausführungs-Einheit; nur der Aufrufweg
+    unterscheidet disponiert (execute_reservation) von lokal (run_local), §3.3b."""
     wt_path = worktree.prepare(repo_root=repo_root, work_dir=work_dir, slug=slug)
-    out_path = _output_path(repo_root, jid)
+    out_path = _output_path(repo_root, job_id)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    env = _build_env(reservation, out_path=out_path, worktree_path=wt_path)
+
+    env = os.environ.copy()
+    env["BIBI_JOB_TYPE"] = kind
+    env["BIBI_JOB_ID"] = job_id
+    env["BIBI_OUTPUT_PATH"] = str(out_path)
+    env["BIBI_WORKTREE"] = str(wt_path)
+    if kind == "job":
+        env["BIBI_JOB_CMD"] = payload
+    elif kind == "claude":
+        env["BIBI_JOB_PROMPT"] = payload
+        if model:
+            env["BIBI_JOB_MODEL"] = model
 
     # eigene Session ⇒ kill kann die ganze Prozessgruppe (Wrapper + Child) treffen.
     proc = subprocess.Popen(
@@ -70,13 +69,32 @@ def execute_reservation(
         env=env, cwd=str(repo_root), start_new_session=True,
     )
     if register is not None:
-        register(jid, proc)
+        register(job_id, proc)
     code = proc.wait()
     if register is not None:
-        register(jid, None)
+        register(job_id, None)
 
-    commit_sha = worktree.commit(worktree=wt_path, message=f"{slug}: run {jid}", slug=slug)
+    commit_sha = worktree.commit(worktree=wt_path, message=f"{slug}: run {job_id}", slug=slug)
+    if ephemeral:
+        worktree.remove(repo_root=repo_root, worktree=wt_path)
+    return code, commit_sha, out_path
 
+
+def execute_reservation(
+    reservation: dict, *, repo_root: Path, work_dir: Path,
+    db_path: Path | None = None, worker_name: str | None = None,
+    register=None,
+) -> dict:
+    """Einen **disponierten** (reservierten) Job ausführen + dem Scheduler melden.
+
+    Ist der Job beim Abschluss bereits terminal (z. B. ``killed``), überschreibt
+    der Worker den Zustand **nicht**."""
+    jid = reservation["id"]
+    code, commit_sha, out_path = _run_wrapper(
+        job_id=jid, slug=reservation["slug"], kind=reservation["kind"],
+        payload=reservation["payload"], model=reservation.get("model"),
+        repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
+    )
     reported: str | None = None
     conn = job_db.connect(db_path)
     try:
@@ -91,6 +109,60 @@ def execute_reservation(
     finally:
         conn.close()
     return {"id": jid, "exit_code": code, "commit": commit_sha, "status": reported}
+
+
+def _resolve_spec(repo_root: Path, slug: str):
+    """Eine erfasste Schedule-MD per Slug finden (für ``/run <slug>``)."""
+    res = discovery.discover(repo_root / "vault")
+    return res.found.get(slug)
+
+
+def run_local(
+    *, slug: str | None = None, cmd: str | None = None, kind: str = "job",
+    model: str | None = None, repo_root: Path | None = None,
+    work_dir: Path | None = None, db_path: Path | None = None,
+    worker_name: str = "local", register=None,
+) -> dict:
+    """**Lokale** On-Demand-Ausführung (§3.3b). Umgeht den Scheduler vollständig:
+    **kein** ``jobs``-Eintrag, **kein** ``/-/scheduler/status`` — nur die lokale
+    Journal-Zeile (``domain='local'``) + ``output.jsonl`` bleiben am Knoten.
+
+    Entweder ``slug`` (erfasste MD) **oder** ``cmd`` (ad-hoc, rein lokal)."""
+    repo_root = repo_root or repo.root()
+    work_dir = work_dir or (repo_root / "data" / "worktrees")
+    if cmd is not None:
+        eff_slug, payload, eff_kind, eff_model = slug or "adhoc", cmd, kind, model
+    else:
+        if not slug:
+            raise ValueError("run_local braucht entweder slug oder cmd")
+        pr = _resolve_spec(repo_root, slug)
+        if pr is None or pr.spec is None:
+            raise LookupError(f"kein Schedule mit Slug {slug!r}")
+        s = pr.spec
+        eff_slug, payload, eff_kind, eff_model = s.slug, s.payload, s.kind.value, s.model
+
+    jid = secrets.token_hex(4)
+    started = time.time()
+    code, commit_sha, out_path = _run_wrapper(
+        job_id=jid, slug=eff_slug, kind=eff_kind, payload=payload, model=eff_model,
+        repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=True,
+    )
+    finished = time.time()
+    status = "complete" if code == 0 else "failed"
+    rel = out_path.relative_to(repo_root).as_posix()
+
+    conn = job_db.connect(db_path)
+    try:
+        job_db.write_local_journal(
+            conn, run_id=f"{eff_slug}:{jid}", slug=eff_slug, kind=eff_kind,
+            status=status, exit_code=code, output_ref=rel,
+            host=socket.gethostname(), worker=worker_name,
+            started_at=started, finished_at=finished,
+        )
+    finally:
+        conn.close()
+    return {"id": jid, "slug": eff_slug, "kind": eff_kind, "status": status,
+            "exit_code": code, "output_ref": rel, "commit": commit_sha}
 
 
 class Worker:

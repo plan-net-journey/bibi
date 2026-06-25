@@ -21,9 +21,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from bibi import state
 from bibi.daemon import job_db, openapi
-from bibi.daemon.openapi import JobReservation, JobView, KillRequest, NextRequest, StatusReport
+from bibi.daemon.openapi import (
+    JobReservation, JobView, KillRequest, NextRequest, RunRequest, StatusReport,
+)
 from bibi.daemon.roles import Roles
-from bibi.daemon.worker import Worker
+from bibi.daemon.worker import Worker, run_local
 from bibi.schedule.lifecycle import TERMINAL
 from bibi.schedule.models import Status
 from bibi.wrapper import output
@@ -184,6 +186,20 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
         if outcome == "invalid":
             return JSONResponse(status_code=409, content={"error": "job not running", "id": id})
         return {"id": id, "status": "killed", "signaled": signaled}
+
+    # ── /run: lokale On-Demand-Ausführung (PLAN-3 §3.3b) ──────────────────────
+    @app.post("/-/run", tags=["job"])
+    def run(req: RunRequest):
+        if not req.slug and not req.cmd:
+            return JSONResponse(status_code=400, content={"error": "slug oder cmd nötig"})
+        try:
+            return run_local(
+                slug=req.slug, cmd=req.cmd, kind=req.kind,
+                repo_root=worker.repo_root, work_dir=worker.work_dir,
+                db_path=worker.db_path, register=worker._register,
+            )
+        except LookupError as exc:
+            return JSONResponse(status_code=404, content={"error": str(exc)})
 
 
 def create_app(roles: Roles, synchronizer=None, worker: Worker | None = None) -> FastAPI:

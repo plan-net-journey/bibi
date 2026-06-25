@@ -39,17 +39,35 @@ def test_migration_adds_meta_to_old_db(tmp_path: Path):
     c.execute("DROP TABLE meta")
     c.execute("PRAGMA user_version = 1")
     c.close()
-    c2 = job_db.connect(p)  # Migration läuft
-    assert c2.execute("PRAGMA user_version").fetchone()[0] == 2
+    c2 = job_db.connect(p)  # Migration läuft (idempotent bis SCHEMA_VERSION)
+    assert c2.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
     tables = {r["name"] for r in c2.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "meta" in tables
     c2.close()
 
 
-def test_fresh_db_is_v2_with_meta(conn):
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+def test_fresh_db_is_current_with_meta(conn):
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "meta" in tables
+
+
+def test_migration_v2_to_v3_adds_journal_domain(tmp_path: Path):
+    import sqlite3
+    p = tmp_path / "j.sqlite"
+    c = sqlite3.connect(p)
+    # Eine "alte" v2-DB ohne journal.domain simulieren.
+    c.executescript(
+        "CREATE TABLE journal (id INTEGER PRIMARY KEY, run_id TEXT);"
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+        "PRAGMA user_version = 2;"
+    )
+    c.commit(); c.close()
+    c2 = job_db.connect(p)
+    cols = {r["name"] for r in c2.execute("PRAGMA table_info(journal)")}
+    assert "domain" in cols
+    assert c2.execute("PRAGMA user_version").fetchone()[0] == 3
+    c2.close()
 
 
 # ── reserve_next ─────────────────────────────────────────────────────────────
