@@ -1,0 +1,121 @@
+"""Integrationstests für `bibi-ctrl init` und `bibi-ctrl status`."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from bibi import case_store, config, frontmatter, state
+from bibi.ctrl import main
+
+
+@pytest.fixture
+def cfg_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    return tmp_path
+
+
+def _feed_input(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> None:
+    it = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda *_: next(it))
+
+
+def test_status_without_config(cfg_home: Path, capsys):
+    rc = main(["status"])
+    assert rc == 0
+    assert "init" in capsys.readouterr().out
+
+
+def test_init_writes_env(cfg_home: Path, monkeypatch, capsys):
+    _feed_input(monkeypatch, ["http://sarasate:8769", "worker,synchronizer", "git@x/r.git"])
+    rc = main(["init"])
+    assert rc == 0
+    env = config.read_env()
+    assert env["BIBI_SCHEDULER_URL"] == "http://sarasate:8769"
+    assert env["BIBI_ROLE"] == "worker,synchronizer"
+    assert env["BIBI_REMOTE"] == "git@x/r.git"
+
+
+def test_init_empty_input_uses_defaults(cfg_home: Path, monkeypatch):
+    _feed_input(monkeypatch, ["", "", ""])
+    main(["init"])
+    env = config.read_env()
+    assert env["BIBI_SCHEDULER_URL"] == config.KEYS["BIBI_SCHEDULER_URL"]
+    assert env["BIBI_ROLE"] == config.KEYS["BIBI_ROLE"]
+
+
+def test_init_idempotent_decline_keeps_existing(cfg_home: Path, monkeypatch):
+    config.write_env({"BIBI_ROLE": "synchronizer", "BIBI_SCHEDULER_URL": "http://old"})
+    _feed_input(monkeypatch, ["N"])  # Überschreiben? → Nein
+    rc = main(["init"])
+    assert rc == 0
+    assert config.read_env()["BIBI_SCHEDULER_URL"] == "http://old"
+
+
+def test_init_force_skips_confirmation(cfg_home: Path, monkeypatch):
+    config.write_env({"BIBI_ROLE": "synchronizer"})
+    _feed_input(monkeypatch, ["http://new", "worker", ""])  # keine j/N-Frage
+    rc = main(["init", "--force"])
+    assert rc == 0
+    assert config.read_env()["BIBI_SCHEDULER_URL"] == "http://new"
+
+
+def test_status_shows_values(cfg_home: Path, capsys):
+    config.write_env({
+        "BIBI_SCHEDULER_URL": "http://sarasate:8769",
+        "BIBI_ROLE": "worker",
+        "BIBI_REMOTE": "git@x/r.git",
+    })
+    main(["status"])
+    out = capsys.readouterr().out
+    assert "http://sarasate:8769" in out
+    assert "worker" in out
+
+
+# --- Repo-State-Tests (brauchen ein echtes Team-Repo via team_repo-Fixture) ---
+
+def test_status_shows_path_none(team_repo: Path, capsys):
+    main(["status"])
+    assert "path: (none)" in capsys.readouterr().out
+
+
+def test_status_shows_auto_sync_on(team_repo: Path, capsys):
+    state.set_auto_sync(True)
+    main(["status"])
+    assert "auto_sync: on" in capsys.readouterr().out
+
+
+def test_status_shows_auto_sync_off_by_default(team_repo: Path, capsys):
+    main(["status"])
+    assert "auto_sync: off" in capsys.readouterr().out
+
+
+def test_status_shows_sync_conflict(team_repo: Path, capsys):
+    state.set_sync_conflict(True)
+    main(["status"])
+    assert "sync_conflict: true" in capsys.readouterr().out
+
+
+def test_status_no_sync_conflict_line_when_false(team_repo: Path, capsys):
+    main(["status"])
+    assert "sync_conflict" not in capsys.readouterr().out
+
+
+def test_status_shows_protocol_when_case_active(
+    team_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    from bibi import repo
+    folder = case_store.create_case("Testfall")
+    frontmatter.patch(folder / "README.md", protocol="./protocol.json")
+    monkeypatch.chdir(folder)
+    repo._root_of.cache_clear()
+    main(["status"])
+    out = capsys.readouterr().out
+    assert "protocol: ./protocol.json" in out
+    repo._root_of.cache_clear()
+
+
+def test_status_no_protocol_line_when_no_case(team_repo: Path, capsys):
+    main(["status"])
+    assert "protocol:" not in capsys.readouterr().out

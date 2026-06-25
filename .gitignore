@@ -1,3 +1,6 @@
+# macOS
+.DS_Store
+
 # Python
 __pycache__/
 *.py[cod]
@@ -9,3 +12,4 @@ build/
 # bibi runtime / lokaler State (vgl. DESIGN §3.2)
 .claude/.state.md
 data/
+uv.lock
