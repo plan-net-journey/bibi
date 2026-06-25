@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bibi import config
+from bibi import case_store, config, frontmatter, state
 from bibi.ctrl import main
 
 
@@ -71,3 +71,51 @@ def test_status_shows_values(cfg_home: Path, capsys):
     out = capsys.readouterr().out
     assert "http://sarasate:8769" in out
     assert "worker" in out
+
+
+# --- Repo-State-Tests (brauchen ein echtes Team-Repo via team_repo-Fixture) ---
+
+def test_status_shows_path_none(team_repo: Path, capsys):
+    main(["status"])
+    assert "path: (none)" in capsys.readouterr().out
+
+
+def test_status_shows_auto_sync_on(team_repo: Path, capsys):
+    state.set_auto_sync(True)
+    main(["status"])
+    assert "auto_sync: on" in capsys.readouterr().out
+
+
+def test_status_shows_auto_sync_off_by_default(team_repo: Path, capsys):
+    main(["status"])
+    assert "auto_sync: off" in capsys.readouterr().out
+
+
+def test_status_shows_sync_conflict(team_repo: Path, capsys):
+    state.set_sync_conflict(True)
+    main(["status"])
+    assert "sync_conflict: true" in capsys.readouterr().out
+
+
+def test_status_no_sync_conflict_line_when_false(team_repo: Path, capsys):
+    main(["status"])
+    assert "sync_conflict" not in capsys.readouterr().out
+
+
+def test_status_shows_protocol_when_case_active(
+    team_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    from bibi import repo
+    folder = case_store.create_case("Testfall")
+    frontmatter.patch(folder / "README.md", protocol="./protocol.json")
+    monkeypatch.chdir(folder)
+    repo._root_of.cache_clear()
+    main(["status"])
+    out = capsys.readouterr().out
+    assert "protocol: ./protocol.json" in out
+    repo._root_of.cache_clear()
+
+
+def test_status_no_protocol_line_when_no_case(team_repo: Path, capsys):
+    main(["status"])
+    assert "protocol:" not in capsys.readouterr().out
