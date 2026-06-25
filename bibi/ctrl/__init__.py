@@ -16,6 +16,7 @@ from . import (
     protocol_cmd,
     save_cmd,
     status_cmd,
+    statusline_cmd,
     sync_cmd,
 )
 
@@ -26,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
 
     init_cmd.register(sub)
     status_cmd.register(sub)
+    statusline_cmd.register(sub)
     open_cmd.register(sub)
     save_cmd.register(sub)
     lifecycle_cmd.register(sub)
