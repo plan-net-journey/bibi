@@ -5,6 +5,10 @@ description = "bibi — deploybare Engine (bibi-ctrl + Skills/Agents) für Markd
 requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0",
+    # Scheduling-Kerndomäne (Trigger-Syntax §5.2): cron-Parsing + ISO-8601.
+    # Pure-Python, leichtgewichtig — gehört zum Kern, nicht ins daemon-Extra.
+    "croniter>=2.0",
+    "python-dateutil>=2.8",
 ]
 
 # Der Daemon ist optional (DESIGN §4.1) — nur wer ihn fährt, braucht diese Deps:

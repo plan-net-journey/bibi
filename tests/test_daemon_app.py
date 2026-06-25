@@ -70,27 +70,12 @@ def test_maintenance_toggle(sync_app):
     assert state.get_maintenance() is False
 
 
-def test_rescan_is_stub(sync_app):
-    client, _ = sync_app
-    body = client.post("/-/rescan").json()
-    assert body["rescanned"] is False
-
-
 def test_synchronizer_toggle(sync_app):
     client, fake = sync_app
     client.post("/-/synchronizer/push")
     assert fake.push is True
     client.delete("/-/synchronizer/pull")
     assert fake.pull is False
-
-
-def test_schedule_lists_at_mds(sync_app, team_repo: Path):
-    (team_repo / "vault" / "case" / "job1.md").write_text(
-        "---\nat: 2026-07-01 09:00\n---\nrun me\n", encoding="utf-8"
-    )
-    client, _ = sync_app
-    items = client.get("/-/schedule").json()["schedules"]
-    assert any(s["name"] == "job1" and "2026-07-01" in s["trigger"] for s in items)
 
 
 def test_no_synchronizer_role(team_repo):
