@@ -14,12 +14,12 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
 
 from bibi import state
 from bibi.daemon import job_db, openapi
-from bibi.daemon.openapi import JobView
+from bibi.daemon.openapi import JobReservation, JobView, NextRequest, StatusReport
 from bibi.daemon.roles import Roles
 
 log = logging.getLogger("bibi.daemon")
@@ -65,6 +65,35 @@ def _add_scheduler_routes(app: FastAPI) -> None:
         if job is None:
             return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
         return job
+
+    # ── Scheduler-Auswahl: Reservierung + Statusmeldung (PLAN-3 §3.2) ─────────
+    @app.post("/-/scheduler/next", response_model=JobReservation, tags=["scheduler"])
+    def scheduler_next(req: NextRequest | None = None):
+        conn = job_db.connect()
+        try:
+            res = job_db.reserve_next(conn, worker=req.worker if req else None)
+        finally:
+            conn.close()
+        if res is None:
+            return Response(status_code=204)  # nichts zu tun (leerer Body)
+        return res
+
+    @app.post("/-/scheduler/status/{id}", tags=["scheduler"])
+    def scheduler_status(id: str, report: StatusReport):  # noqa: A002
+        conn = job_db.connect()
+        try:
+            outcome = job_db.report_status(
+                conn, id, status=str(report.status), reason=report.reason,
+                exit_code=report.exit_code, host=report.host,
+                worker=report.worker, output_ref=report.output_ref,
+            )
+        finally:
+            conn.close()
+        if outcome == "not_found":
+            return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
+        if outcome == "invalid":
+            return JSONResponse(status_code=409, content={"error": "illegal transition", "id": id})
+        return {"id": id, "status": str(report.status)}
 
 
 def create_app(roles: Roles, synchronizer=None) -> FastAPI:

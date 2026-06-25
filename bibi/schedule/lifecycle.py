@@ -159,6 +159,14 @@ def events_from(status: Status, *, kind: Kind | None = None) -> set[Event]:
     }
 
 
+def targets(status: Status, *, kind: Kind | None = None) -> set[Status]:
+    """Alle aus ``status`` erreichbaren Folgezustände (optional typ-gefiltert).
+
+    Nützlich, um eine Status*meldung* zu prüfen, ohne den Event-Namen zu kennen
+    (der Worker meldet den Zielzustand, §4.4): ``dst in targets(current)``."""
+    return {_TRANSITIONS[(status, ev)] for ev in events_from(status, kind=kind)}
+
+
 def reason_for(event: Event, *, kill_reason: Reason | None = None) -> Reason | None:
     """Die Root Cause eines Events (§5.5), falls eine zugeordnet ist.
 

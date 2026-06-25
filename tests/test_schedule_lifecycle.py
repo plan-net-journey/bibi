@@ -155,3 +155,19 @@ def test_kill_reasons_set():
     assert lc.KILL_REASONS == frozenset(
         {Reason.NO_PROCESS, Reason.BY_USER, Reason.BY_WALL_TIME}
     )
+
+
+# ── targets() (Statusmeldungs-Validierung, §4.4) ─────────────────────────────
+
+
+def test_targets_of_running():
+    t = lc.targets(Status.RUNNING, kind=Kind.JOB)
+    assert t == {Status.COMPLETE, Status.FAILED, Status.DEFERRED, Status.KILLED, Status.ZOMBIE}
+    # app: awaiting statt silence-zombie
+    ta = lc.targets(Status.RUNNING, kind=Kind.APP)
+    assert Status.AWAITING in ta and Status.ZOMBIE not in ta
+
+
+def test_targets_of_pending_and_terminal():
+    assert lc.targets(Status.PENDING) == {Status.RUNNING}
+    assert lc.targets(Status.COMPLETE) == {Status.PENDING}

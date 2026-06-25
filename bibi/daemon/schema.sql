@@ -83,3 +83,11 @@ CREATE TABLE IF NOT EXISTS journal (
 
 CREATE INDEX IF NOT EXISTS journal_slug_idx
     ON journal (slug, archived_at DESC);
+
+-- Scheduler-Zustand als key/value (Schema v2). Hält u. a. den Fairness-Cursor
+-- `dispatcher_offset` (§4.4) — ein read-modify-write, das in der Reservierungs-
+-- Transaktion (BEGIN IMMEDIATE) mit der Job-Auswahl serialisiert wird.
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);

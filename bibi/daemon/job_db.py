@@ -12,6 +12,7 @@ Schema-Versionierung über ``PRAGMA user_version``: die Basis (v1) liegt in
 from __future__ import annotations
 
 import secrets
+import socket
 import sqlite3
 import time
 from pathlib import Path
@@ -19,14 +20,19 @@ from pathlib import Path
 from dateutil import parser as _date_parser
 
 from bibi import repo
-from bibi.schedule import discovery
+from bibi.schedule import discovery, dispatcher, lifecycle
+from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
-#: Additive Migrationen ab v1: ``from_version -> [DDL, …]``. Noch leer (v1 = Basis).
-_MIGRATIONS: dict[int, list[str]] = {}
+#: Additive Migrationen für *bestehende* DBs: ``from_version -> [DDL, …]``.
+#: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte
+#: heben ältere DBs Stück für Stück an (PLAN-3 §3.1: Migrationen von Anfang an).
+_MIGRATIONS: dict[int, list[str]] = {
+    1: ["CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);"],
+}
 
 
 def db_path(path: Path | None = None) -> Path:
@@ -34,10 +40,15 @@ def db_path(path: Path | None = None) -> Path:
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
-    """Frische Connection zur Job-DB; stellt Schema + Migrationen sicher (idempotent)."""
+    """Frische Connection zur Job-DB; stellt Schema + Migrationen sicher (idempotent).
+
+    ``isolation_level=None`` (Autocommit): erlaubt explizite ``BEGIN IMMEDIATE``-
+    Transaktionen für die atomare Reservierung (§3.2); übrige Schreibpfade
+    committen je Statement.
+    """
     p = db_path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(p, check_same_thread=False)
+    conn = sqlite3.connect(p, check_same_thread=False, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
@@ -49,14 +60,14 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version == 0:
-        conn.executescript(_SCHEMA_SQL)
-        version = SCHEMA_VERSION
-    while version in _MIGRATIONS:
-        for ddl in _MIGRATIONS[version]:
+        conn.executescript(_SCHEMA_SQL)  # frische DB: volles aktuelles Schema
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        return
+    while version < SCHEMA_VERSION:  # bestehende DB: schrittweise migrieren
+        for ddl in _MIGRATIONS.get(version, []):
             conn.executescript(ddl)
         version += 1
     conn.execute(f"PRAGMA user_version = {version}")
-    conn.commit()
 
 
 # ── next_fire_at-Berechnung (§5.2) ──────────────────────────────────────────
@@ -231,3 +242,111 @@ def rescan(conn: sqlite3.Connection, vault_root: Path | None = None) -> dict:
             {"slug": c.slug, "schedule_refs": list(c.schedule_refs)} for c in result.collisions
         ],
     }
+
+
+# ── Fairness-Cursor (meta) ───────────────────────────────────────────────────
+
+
+def _get_offset(conn: sqlite3.Connection) -> float:
+    row = conn.execute("SELECT value FROM meta WHERE key='dispatcher_offset'").fetchone()
+    return float(row["value"]) if row else 0.0
+
+
+def _set_offset(conn: sqlite3.Connection, value: float) -> None:
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('dispatcher_offset', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (str(float(value)),),
+    )
+
+
+# ── Reservierung + Statusmeldung (§4.4, §3.2) ────────────────────────────────
+
+
+def reservation_view(row: sqlite3.Row) -> dict:
+    """Antwort auf ``/-/scheduler/next`` (§4.4): der reservierte Job + Env-Stub.
+    Den vollständigen Env-Bau übernimmt die Typ-Registry des Wrappers (Stufe 3.3)."""
+    return {
+        "id": row["id"], "slug": row["slug"], "kind": row["kind"],
+        "payload": row["payload"], "model": row["model"], "env": {},
+    }
+
+
+def reserve_next(
+    conn: sqlite3.Connection, *, worker: str | None = None,
+    host: str | None = None, now: float | None = None,
+) -> dict | None:
+    """Nächstbesten Job atomar reservieren (§4.4/§3.2). ``None`` = nichts zu tun.
+
+    Auswahl (Fairness-Offset), Lock (Compare-and-Swap) und Offset-Vorrücken
+    laufen in **einer** ``BEGIN IMMEDIATE``-Transaktion — SQLite serialisiert
+    Writer, also können zwei gleichzeitige ``/next`` denselben Job nicht bekommen
+    und der read-modify-write des Cursors bleibt konsistent (Invariante: genau 1
+    Scheduler).
+    """
+    now = time.time() if now is None else now
+    host = host or socket.gethostname()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        offset = _get_offset(conn)
+        rows = conn.execute(
+            "SELECT id, priority, enqueued_at, rowid AS seq FROM jobs "
+            "WHERE status='pending' AND locked_at IS NULL"
+        ).fetchall()
+        chosen, new_offset = dispatcher.select([dict(r) for r in rows], offset)
+        if chosen is None:
+            conn.execute("COMMIT")
+            return None
+        cur = conn.execute(
+            "UPDATE jobs SET status='running', locked_at=:now, started_at=:now, "
+            "worker=:w, host=:h "
+            "WHERE id=:id AND status='pending' AND locked_at IS NULL",
+            {"now": now, "w": worker, "h": host, "id": chosen["id"]},
+        )
+        if cur.rowcount != 1:  # unter BEGIN IMMEDIATE eigentlich unerreichbar
+            conn.execute("ROLLBACK")
+            return None
+        _set_offset(conn, new_offset)
+        row = conn.execute("SELECT * FROM jobs WHERE id=?", (chosen["id"],)).fetchone()
+        conn.execute("COMMIT")
+        return reservation_view(row)
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def report_status(
+    conn: sqlite3.Connection, job_id: str, *, status: str,
+    reason: str | None = None, exit_code: int | None = None,
+    host: str | None = None, worker: str | None = None,
+    output_ref: str | None = None, now: float | None = None,
+) -> str:
+    """Worker meldet einen Zustandswechsel (§4.4, output-frei). Rückgabe:
+    ``ok`` | ``invalid`` (verbotener Übergang, §5.4) | ``not_found``."""
+    now = time.time() if now is None else now
+    row = conn.execute("SELECT status, kind FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if row is None:
+        return "not_found"
+    current = Status(row["status"])
+    target = Status(status)
+    if target != current and target not in lifecycle.targets(current, kind=Kind(row["kind"])):
+        return "invalid"
+
+    fields: dict = {"status": target.value, "reason": reason, "updated_at": now}
+    if target in lifecycle.TERMINAL:
+        fields["finished_at"] = now
+    if target is Status.PENDING:  # reset löst den Lock
+        fields["locked_at"] = None
+    if exit_code is not None:
+        fields["exit_code"] = exit_code
+    if host is not None:
+        fields["host"] = host
+    if worker is not None:
+        fields["worker"] = worker
+    if output_ref is not None:  # nur Referenz — der Scheduler bleibt output-frei (§4.4)
+        fields["output_ref"] = output_ref
+
+    assignments = ", ".join(f"{k}=:{k}" for k in fields)
+    fields["id"] = job_id
+    conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
+    return "ok"

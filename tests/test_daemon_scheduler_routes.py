@@ -71,9 +71,54 @@ def test_rescan_reports_collision(sched):
     assert client.get("/-/job").json() == []
 
 
+def test_scheduler_next_reserves_priority_first(sched):
+    client, root = sched
+    _seed(root, "z/README.md", '---\nschedule: now\njob: "echo z"\npriority: 0\n---\n')
+    _seed(root, "p/README.md", '---\nschedule: now\njob: "echo p"\npriority: 5\n---\n')
+    client.post("/-/rescan")
+    r = client.post("/-/scheduler/next").json()
+    assert r["slug"] == "p"                       # höchste Priorität zuerst
+    assert r["kind"] == "job" and r["payload"] == "echo p"
+    # reservierter Job ist jetzt running
+    jobs = {j["slug"]: j for j in client.get("/-/job").json()}
+    assert jobs["p"]["status"] == "running"
+    assert jobs["z"]["status"] == "pending"
+
+
+def test_scheduler_next_empty_is_204(sched):
+    client, _ = sched
+    assert client.post("/-/scheduler/next").status_code == 204
+
+
+def test_scheduler_status_running_to_complete(sched):
+    client, root = sched
+    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    client.post("/-/rescan")
+    jid = client.post("/-/scheduler/next").json()["id"]
+    r = client.post(f"/-/scheduler/status/{jid}", json={"status": "complete", "exit_code": 0})
+    assert r.status_code == 200
+    assert client.get(f"/-/job/{jid}").json()["status"] == "complete"
+
+
+def test_scheduler_status_illegal_is_409(sched):
+    client, root = sched
+    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    client.post("/-/rescan")
+    jid = client.get("/-/job").json()[0]["id"]   # noch pending
+    r = client.post(f"/-/scheduler/status/{jid}", json={"status": "complete"})
+    assert r.status_code == 409
+
+
+def test_scheduler_status_404(sched):
+    client, _ = sched
+    r = client.post("/-/scheduler/status/deadbeef", json={"status": "running"})
+    assert r.status_code == 404
+
+
 def test_non_scheduler_job_is_501_stub(team_repo):
     # Ohne scheduler-Rolle bleibt der 3.0-Contract-Stub (501) stehen.
     app = create_app(roles.resolve({"worker"}))
     with TestClient(app) as client:
         assert client.get("/-/job").status_code == 501
+        assert client.post("/-/scheduler/next").status_code == 501
         assert client.post("/-/rescan").status_code in (404, 405)
