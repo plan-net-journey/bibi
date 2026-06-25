@@ -11,7 +11,10 @@ diese Engine.
 
 from __future__ import annotations
 
+import datetime
 import os
+import platform
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -70,10 +73,37 @@ def _has_staged() -> bool:
     return bool(_git(["diff", "--cached", "--name-only"]).stdout.strip())
 
 
+def is_dirty() -> bool:
+    """True, wenn der Working Tree unsaubere (uncommittete) Änderungen hat."""
+    return bool(_git(["status", "--porcelain"]).stdout.strip())
+
+
+def is_rebase_in_progress() -> bool:
+    """True, wenn ein (konfliktbehafteter) Rebase aussteht."""
+    git_dir = Path(_git(["rev-parse", "--git-dir"]).stdout.strip())
+    if not git_dir.is_absolute():
+        git_dir = repo.root() / git_dir
+    return (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists()
+
+
+def conflicted_files() -> list[str]:
+    """Pfade mit Merge-Konflikt (unmerged) — Input für die KI-Auflösung."""
+    out = _git(["diff", "--name-only", "--diff-filter=U"]).stdout
+    return [l for l in out.splitlines() if l.strip()]
+
+
 # --- Bausteine ---
 
 def current_branch() -> str:
     return _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+
+
+def auto_commit_message() -> str:
+    """Message für transiente Hintergrund-Commits (A9): ``auto: ts | user | host``."""
+    ts = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    raw = _git(["config", "user.name"], check=False).stdout.strip()
+    user = re.sub(r"\s+", "-", raw.lower()) or "unknown"
+    return f"auto: {ts} | {user} | {platform.node()}"
 
 
 def stage_and_commit(scope: Path | None, message: str) -> bool:
@@ -95,12 +125,17 @@ def stage_and_commit(scope: Path | None, message: str) -> bool:
     return True
 
 
-def integrate(branch: str) -> tuple[bool, str | None]:
+def integrate(branch: str, keep_conflict: bool = False) -> tuple[bool, str | None]:
     """Origin minimal integrieren: fetch + ff/rebase (kein Push).
 
     Gibt (ok, kind) zurück. kind ist None bei Erfolg, sonst
-    ``"unreachable"``/``"auth"``/``"conflict"``. Lässt nie einen
-    hängengebliebenen Rebase zurück.
+    ``"unreachable"``/``"auth"``/``"conflict"``.
+
+    ``keep_conflict=False`` (Default, für save/close/done/hook-stop): bricht
+    einen Rebase-Konflikt sauber ab. ``keep_conflict=True`` (für interaktives
+    ``/sync``): lässt den Konflikt im Working Tree stehen, damit die geteilte
+    KI-Auflösung (§1.6 A) die Marker auflösen und ``continue_rebase_and_push``
+    rufen kann.
     """
     fetch = _git(["fetch", "origin", branch], check=False, timeout=GIT_NET_TIMEOUT)
     if fetch.returncode != 0:
@@ -118,9 +153,42 @@ def integrate(branch: str) -> tuple[bool, str | None]:
     # echte Divergenz → rebase
     rb = _git(["rebase", "FETCH_HEAD"], check=False, timeout=GIT_NET_TIMEOUT)
     if rb.returncode != 0:
+        kind = _classify_failure(rb.stderr.strip())
+        if kind == "conflict" and keep_conflict:
+            return False, "conflict"  # im Tree stehen lassen — KI-Auflösung folgt
         _git(["rebase", "--abort"], check=False)
-        return False, _classify_failure(rb.stderr.strip())
+        return False, kind
     return True, None
+
+
+def abort_rebase() -> None:
+    _git(["rebase", "--abort"], check=False)
+
+
+def continue_rebase_and_push() -> tuple[bool, list[str], str | None]:
+    """Nach KI-Auflösung: gelöste Dateien stagen, Rebase fortsetzen, pushen.
+
+    Den Branch erst NACH ``--continue`` ermitteln: während des Rebase ist HEAD
+    detached. Gibt (ok, log, kind) zurück; bleiben Konflikte → kind
+    ``"conflict"`` (Rebase weiterhin offen).
+    """
+    log: list[str] = []
+    _git(["add", "-A"])
+    # core.editor=true akzeptiert die bestehende Commit-Message ohne Editor.
+    cont = _git(["-c", "core.editor=true", "rebase", "--continue"], check=False)
+    if cont.returncode != 0:
+        if conflicted_files():
+            log.append("weiterhin Konflikte — auflösen, dann erneut continue")
+            return False, log, "conflict"
+        log.append(f"rebase --continue FAILED: {cont.stderr.strip()}")
+        return False, log, _classify_failure(cont.stderr.strip())
+    log.append("Konflikt aufgelöst, rebase fortgesetzt")
+    branch = current_branch()  # HEAD ist nach --continue wieder am Branch
+    pok, pmsg = push(branch)
+    log.append(f"push {'ok' if pok else 'FAIL'}")
+    if not pok and pmsg:
+        log.append(pmsg)
+    return (pok, log, None if pok else _classify_failure(pmsg))
 
 
 def push(branch: str) -> tuple[bool, str]:

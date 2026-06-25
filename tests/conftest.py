@@ -26,6 +26,9 @@ def _init_repo(root: Path, branch: str = "trunk") -> None:
     (root / "pyproject.toml").write_text(
         '[project]\nname = "t"\nversion = "0.0.0"\n', encoding="utf-8"
     )
+    # wie ein echtes Team-Repo: Laufzeit-State gitignored (DESIGN §3.2), damit
+    # .state.md den Working Tree nicht "dirty" macht.
+    (root / ".gitignore").write_text(".claude/.state.md\ndata/\n", encoding="utf-8")
     _git(root, "init", "-q", "-b", branch)
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "user.email", "test@example.com")

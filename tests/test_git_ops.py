@@ -140,3 +140,68 @@ def test_commit_and_push_skips_push_when_disabled(repo_with_origin):
     assert ok and kind is None
     assert _head_msg(root) == "save: full"          # lokal committed
     assert "save: full" not in _sh(origin, "log", "-1", "--pretty=%s")  # aber nicht gepusht
+
+
+# --- Phase 1.5: dirty/rebase-Status + Konflikt-Auflösung ---
+
+def _diverge_on_pyproject(root: Path, origin: Path, tmp_path: Path):
+    """Remote und lokal ändern dieselbe Datei → echter Rebase-Konflikt."""
+    other = clone(origin, tmp_path / "other")
+    (other / "pyproject.toml").write_text("REMOTE\n", encoding="utf-8")
+    _sh(other, "add", "-A"); _sh(other, "commit", "-q", "-m", "remote edit")
+    _sh(other, "push", "-q", "origin", "trunk")
+    (root / "pyproject.toml").write_text("LOCAL\n", encoding="utf-8")
+    git_ops.stage_and_commit(None, "local edit")
+
+
+def test_is_dirty(repo_with_origin):
+    root, _ = repo_with_origin
+    assert git_ops.is_dirty() is False
+    (root / "x.txt").write_text("x", encoding="utf-8")
+    assert git_ops.is_dirty() is True
+
+
+def test_is_rebase_in_progress_false(repo_with_origin):
+    assert git_ops.is_rebase_in_progress() is False
+
+
+def test_integrate_keep_conflict_leaves_rebase(repo_with_origin, tmp_path):
+    root, origin = repo_with_origin
+    _diverge_on_pyproject(root, origin, tmp_path)
+    ok, kind = git_ops.integrate("trunk", keep_conflict=True)
+    assert ok is False and kind == "conflict"
+    assert git_ops.is_rebase_in_progress() is True            # NICHT abgebrochen
+    assert "pyproject.toml" in git_ops.conflicted_files()
+
+
+def test_continue_rebase_and_push_after_resolution(repo_with_origin, tmp_path):
+    root, origin = repo_with_origin
+    _diverge_on_pyproject(root, origin, tmp_path)
+    git_ops.integrate("trunk", keep_conflict=True)
+    # KI-Auflösung simulieren: Marker auflösen
+    (root / "pyproject.toml").write_text("RESOLVED\n", encoding="utf-8")
+    ok, log, kind = git_ops.continue_rebase_and_push()
+    assert ok and kind is None
+    assert git_ops.is_rebase_in_progress() is False
+    assert (root / "pyproject.toml").read_text() == "RESOLVED\n"
+    # Origin trägt die aufgelöste Version
+    assert "RESOLVED" in _sh(origin, "show", "trunk:pyproject.toml")
+
+
+def test_abort_rebase(repo_with_origin, tmp_path):
+    root, origin = repo_with_origin
+    _diverge_on_pyproject(root, origin, tmp_path)
+    git_ops.integrate("trunk", keep_conflict=True)
+    assert git_ops.is_rebase_in_progress() is True
+    git_ops.abort_rebase()
+    assert git_ops.is_rebase_in_progress() is False
+    assert (root / "pyproject.toml").read_text() == "LOCAL\n"  # lokaler Stand zurück
+
+
+def test_integrate_default_still_aborts(repo_with_origin, tmp_path):
+    # save/close/done verlassen sich aufs Abbrechen (unverändert)
+    root, origin = repo_with_origin
+    _diverge_on_pyproject(root, origin, tmp_path)
+    ok, kind = git_ops.integrate("trunk")  # keep_conflict=False default
+    assert ok is False and kind == "conflict"
+    assert git_ops.is_rebase_in_progress() is False
