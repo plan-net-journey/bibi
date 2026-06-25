@@ -10,6 +10,7 @@ import argparse
 import sys
 
 from . import (
+    daemon_cmd,
     init_cmd,
     lifecycle_cmd,
     open_cmd,
@@ -33,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     lifecycle_cmd.register(sub)
     protocol_cmd.register(sub)
     sync_cmd.register(sub)
+    daemon_cmd.register(sub)
 
     args = parser.parse_args(argv)
     if not getattr(args, "cmd", None):

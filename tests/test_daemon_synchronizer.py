@@ -147,3 +147,23 @@ def test_real_push_reaches_origin(repo_with_origin):
         capture_output=True, text=True,
     ).stdout
     assert subj.startswith("auto:")                     # transiente Auto-Commit-Message
+
+
+def test_push_gated_by_consent(team_repo):
+    calls = {"push": 0}
+    consent = {"on": False}
+
+    def push_fn():
+        calls["push"] += 1
+        return (True, [], None)
+
+    s = Synchronizer(
+        push=True, consent=lambda: consent["on"],
+        diff_stat=lambda: ("x", 10), push_fn=push_fn, pull_fn=lambda: (True, None),
+    )
+    s.tick(0.0)
+    s.tick(600.0)
+    assert calls["push"] == 0          # Zustimmung aus → kein Push (Fenster bleibt offen)
+    consent["on"] = True
+    s.tick(1200.0)
+    assert calls["push"] == 1          # Zustimmung an → abgelaufenes Fenster pusht sofort

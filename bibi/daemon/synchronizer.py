@@ -114,9 +114,14 @@ class Synchronizer:
         push_fn=_default_push,
         pull_fn=_default_pull,
         clock=time.monotonic,
+        consent=None,
     ) -> None:
         self._push = push
         self._pull = pull or push          # Push schließt Pull ein (§4.3)
+        # Optionales Per-Tick-Gate für den tatsächlichen Push (§4.9-Kopplung):
+        # der Daemon hängt es an ``auto_sync`` (stehende Push-Zustimmung), damit
+        # ``/sync on|off`` live wirkt. None = ungated (mechanische Tests).
+        self._consent = consent
         self.pull_interval_s = pull_interval_s
         self.poll_s = poll_s
         self._diff_stat = diff_stat
@@ -159,7 +164,10 @@ class Synchronizer:
         if self._push:
             stat, lines = self._diff_stat()
             self._debounce.observe(now, stat, lines)
-            if self._debounce.should_push(now):
+            # observe() läuft immer (Fenster-Tracking); der Push selbst wartet
+            # zusätzlich auf die Zustimmung. Ohne Zustimmung bleibt das Fenster
+            # offen → sobald sie kommt, pusht ein bereits abgelaufenes Fenster sofort.
+            if self._debounce.should_push(now) and (self._consent is None or self._consent()):
                 ok, loglines, kind = self._push_fn()
                 self.last_push_at, self.last_ok, self.last_log = now, ok, loglines
                 oks.append(ok)
