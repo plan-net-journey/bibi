@@ -19,11 +19,7 @@ from bibi import case_store, git_ops, repo, state, sync
 
 
 def _active_case() -> Path | None:
-    path = state.get_path()
-    if not path:
-        return None
-    folder = repo.vault() / path
-    return folder if folder.exists() else None
+    return case_store.active_case()
 
 
 def _no_active() -> int:

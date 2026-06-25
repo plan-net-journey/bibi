@@ -17,7 +17,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from bibi import frontmatter, repo
+from bibi import frontmatter, repo, state
 
 VALID_STATUS = {"open", "paused", "closed"}
 
@@ -102,6 +102,19 @@ def create_case(topic: str) -> Path:
     body = f"\n# {topic}\n\nAngelegt am {date.today().isoformat()}.\n"
     (folder / "README.md").write_text(frontmatter.join(fm, body), encoding="utf-8")
     return folder
+
+
+def active_case() -> Path | None:
+    """Ordner des aktiven Case (aus dem geparkten cwd) oder None.
+
+    Geteilt von close/done/delete/on-stop. Die Wahrheit ist das cwd
+    (``state.get_path``); der ``.state.md``-Mirror wird nicht herangezogen.
+    """
+    path = state.get_path()
+    if not path:
+        return None
+    folder = repo.vault() / path
+    return folder if folder.exists() else None
 
 
 def read_frontmatter(folder: Path) -> dict[str, Any]:
