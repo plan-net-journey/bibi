@@ -4,9 +4,10 @@ Eine Binary, die Rollen werden per Flag kombiniert (A5). ``--connect`` ist ein
 *Modifikator*, keine eigene Rolle. ``--pull``/``--push`` steuern die
 Synchronizer-Betriebsart (§4.3).
 
-Phase 2 implementiert real nur ``synchronizer``; ``scheduler``/``worker`` und
-der ``connect``-Modifikator werden erkannt, aber als „noch nicht in dieser
-Phase" gemeldet (PLAN-2 §2.1).
+Ab Stufe 3.0 starten ``synchronizer``, ``scheduler`` und ``worker`` den Daemon;
+``scheduler``/``worker`` servieren zunächst den eingefrorenen ``/-/``-Vertrag als
+501-Stubs (echte Ausführung folgt in 3.1–3.5). Nur der ``connect``-Modifikator
+(Worker-Verbund) ist noch nicht gebaut (Stufe 3.6).
 """
 
 from __future__ import annotations
@@ -16,8 +17,9 @@ from dataclasses import dataclass
 # Bekannte Rollen-Namen (aus BIBI_ROLE / Flags). ``connect`` ist Modifikator.
 KNOWN_ROLES = frozenset({"synchronizer", "scheduler", "worker"})
 
-# In Phase 2 tatsächlich aktive Rollen/Modifikatoren.
-PHASE2_IMPLEMENTED = frozenset({"synchronizer"})
+# Rollen, die den Daemon starten dürfen. scheduler/worker servieren ab Stufe 3.0
+# den /-/-Vertrag (501-Stubs); ``connect`` fehlt noch (Stufe 3.6).
+STARTABLE = frozenset({"synchronizer", "scheduler", "worker"})
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,10 @@ def validate(r: Roles) -> list[str]:
     return errs
 
 
-def unsupported_in_phase2(r: Roles) -> list[str]:
-    """Aktive Rollen/Modifikatoren, die Phase 2 (noch) nicht ausführt."""
-    return [n for n in r.active_names() if n not in PHASE2_IMPLEMENTED]
+def unsupported(r: Roles) -> list[str]:
+    """Aktive Rollen/Modifikatoren, die der Daemon (noch) nicht starten kann.
+
+    Ab Stufe 3.0 sind das nur noch ``connect`` (Worker-Verbund, Stufe 3.6) —
+    ``scheduler``/``worker`` starten und servieren den ``/-/``-Vertrag.
+    """
+    return [n for n in r.active_names() if n not in STARTABLE]

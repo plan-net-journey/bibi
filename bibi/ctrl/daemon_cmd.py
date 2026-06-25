@@ -22,7 +22,7 @@ def resolve_from_args(args: argparse.Namespace) -> tuple[R.Roles, list[str]]:
     """Rollen aus ``BIBI_ROLE`` + CLI-Flags auflösen und validieren.
 
     Gibt (Roles, Fehler) zurück. Fehler = harte Invarianten (§4.2) plus die
-    Phase-2-Abgrenzung (nur ``synchronizer`` ist implementiert).
+    noch nicht startbaren Rollen/Modifikatoren (ab Stufe 3.0 nur ``connect``).
     """
     active = R.parse_role_env(config.read_env().get("BIBI_ROLE", ""))
     for name in ("synchronizer", "scheduler", "worker"):
@@ -30,11 +30,11 @@ def resolve_from_args(args: argparse.Namespace) -> tuple[R.Roles, list[str]]:
             active.add(name)
     r = R.resolve(active, connect=args.connect, pull=args.pull, push=args.push)
     errs = R.validate(r)
-    unsup = R.unsupported_in_phase2(r)
+    unsup = R.unsupported(r)
     if unsup:
         errs.append(
-            f"Phase 2 implementiert nur 'synchronizer'; nicht (noch nicht) aktiv: "
-            f"{', '.join(unsup)} — siehe PLAN-3."
+            f"Noch nicht implementiert: {', '.join(unsup)} — siehe PLAN-3 §3.6 "
+            f"(--connect / Worker-Verbund)."
         )
     return r, errs
 

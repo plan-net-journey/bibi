@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from bibi import state
-from bibi.daemon import schedules
+from bibi.daemon import openapi, schedules
 from bibi.daemon.roles import Roles
 
 log = logging.getLogger("bibi.daemon")
@@ -37,6 +37,7 @@ def create_app(roles: Roles, synchronizer=None) -> FastAPI:
 
     app = FastAPI(
         title="bibi · daemon",
+        version=openapi.CONTRACT_VERSION,
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
@@ -87,6 +88,11 @@ def create_app(roles: Roles, synchronizer=None) -> FastAPI:
     @app.get("/-/schedule")
     def schedule():
         return {"schedules": schedules.list_schedules()}
+
+    # ── Gefrorener /-/-Vertrag (PLAN-3 §1.1/§3.0) ───────────────────────────
+    # job/scheduler/worker/journal als versionierte Schemata + 501-Stubs; die
+    # echte Implementierung kommt stufenweise (3.1–3.6). Reine JSON-API (§1.1).
+    openapi.add_contract_routes(app)
 
     # ── Synchronizer-Laufzeit-Toggle (nur wenn Rolle aktiv) ─────────────────
 

@@ -36,9 +36,15 @@ def test_resolve_scheduler_connect_invariant(env_iso):
     assert any("connect" in e.lower() for e in errs)
 
 
-def test_resolve_worker_unsupported_in_phase2(env_iso):
+def test_resolve_worker_startable(env_iso):
+    # Ab Stufe 3.0 startbar (Vertrag als Stubs) — keine Fehler mehr.
     _r, errs = daemon_cmd.resolve_from_args(_args(worker=True))
-    assert any("Phase 2" in e for e in errs)
+    assert errs == []
+
+
+def test_resolve_connect_not_yet(env_iso):
+    _r, errs = daemon_cmd.resolve_from_args(_args(worker=True, connect=True))
+    assert any("connect" in e.lower() for e in errs)
 
 
 def test_resolve_role_from_env(env_iso, monkeypatch: pytest.MonkeyPatch):
@@ -50,7 +56,8 @@ def test_resolve_role_from_env(env_iso, monkeypatch: pytest.MonkeyPatch):
 
 def test_run_returns_2_on_validation_error(env_iso):
     # main() parst + ruft run(); validierungsbedingter Frühausstieg (vor uvicorn).
-    assert main(["daemon", "run", "--worker"]) == 2
+    # connect ist noch nicht gebaut (Stufe 3.6) → Frühausstieg statt uvicorn-Start.
+    assert main(["daemon", "run", "--worker", "--connect"]) == 2
     assert main(["daemon", "run", "--scheduler", "--connect"]) == 2
 
 

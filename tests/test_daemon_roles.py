@@ -41,13 +41,13 @@ def test_validate_clean_synchronizer_has_no_errors():
     assert roles.validate(roles.resolve({"synchronizer"})) == []
 
 
-def test_phase2_only_synchronizer_implemented():
-    # scheduler/worker/connect sind erkannt, aber in Phase 2 nicht aktiv.
-    assert roles.unsupported_in_phase2(roles.resolve({"scheduler"})) == ["scheduler"]
-    assert roles.unsupported_in_phase2(roles.resolve({"worker"})) == ["worker"]
-    assert roles.unsupported_in_phase2(roles.resolve({"synchronizer"})) == []
+def test_scheduler_worker_startable_connect_not_yet():
+    # Ab Stufe 3.0 starten scheduler/worker (Vertrag als Stubs); nur connect fehlt.
+    assert roles.unsupported(roles.resolve({"scheduler"})) == []
+    assert roles.unsupported(roles.resolve({"worker"})) == []
+    assert roles.unsupported(roles.resolve({"synchronizer"})) == []
     r = roles.resolve({"synchronizer"}, connect=True)
-    assert "connect" in roles.unsupported_in_phase2(r)
+    assert "connect" in roles.unsupported(r)
 
 
 def test_no_role_is_valid_but_idle():
