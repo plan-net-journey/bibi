@@ -1,0 +1,109 @@
+"""Wrapper: output.jsonl + Typ-Registry (DESIGN §4.5/§7.5; PLAN-3 §3.3)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from bibi import wrapper
+from bibi.wrapper import output
+
+
+# ── output.py ────────────────────────────────────────────────────────────────
+
+
+def test_append_and_read(tmp_path: Path):
+    p = tmp_path / "output.jsonl"
+    output.append(p, "out", "hallo", t=1.0)
+    output.append(p, "err", "ups", t=2.0)
+    evs = output.read_events(p)
+    assert evs == [
+        {"t": 1.0, "s": "out", "line": "hallo"},
+        {"t": 2.0, "s": "err", "line": "ups"},
+    ]
+
+
+def test_lines_filter(tmp_path: Path):
+    p = tmp_path / "output.jsonl"
+    output.append(p, "out", "a")
+    output.append(p, "err", "b")
+    output.append(p, "out", "c")
+    assert output.lines(p, "out") == ["a", "c"]
+    assert output.lines(p, "err") == ["b"]
+    assert output.lines(p) == ["a", "b", "c"]
+
+
+def test_append_collapses_newlines(tmp_path: Path):
+    p = tmp_path / "output.jsonl"
+    output.append(p, "out", "line1\r\nline2")
+    assert output.lines(p) == ["line1  line2"]   # eine physische Zeile
+    assert len(output.read_events(p)) == 1
+
+
+def test_read_missing_is_empty(tmp_path: Path):
+    assert output.read_events(tmp_path / "nope.jsonl") == []
+
+
+# ── registry / run_job ───────────────────────────────────────────────────────
+
+
+def test_registry_has_job_and_claude():
+    assert "job" in wrapper.REGISTRY
+    assert "claude" in wrapper.REGISTRY
+
+
+def test_claude_argv_uses_model():
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_JOB_MODEL": "claude-haiku-4-5-20251001"}
+    )
+    assert argv[:3] == ["claude", "-p", "hi"]
+    assert "--model" in argv and "claude-haiku-4-5-20251001" in argv
+
+
+def test_claude_argv_default_model():
+    argv = wrapper.REGISTRY["claude"].build_command({"BIBI_JOB_PROMPT": "hi"})
+    assert "claude-sonnet-4-6" in argv
+
+
+def test_run_job_executes_and_captures(tmp_path: Path):
+    out = tmp_path / "output.jsonl"
+    env = {
+        "BIBI_JOB_TYPE": "job",
+        "BIBI_OUTPUT_PATH": str(out),
+        "BIBI_JOB_CMD": "echo hallo && echo fertig",
+    }
+    code = wrapper.run_job(env)
+    assert code == 0
+    assert output.lines(out, "out") == ["hallo", "fertig"]
+
+
+def test_run_job_captures_stderr_and_exit(tmp_path: Path):
+    out = tmp_path / "output.jsonl"
+    env = {
+        "BIBI_JOB_TYPE": "job",
+        "BIBI_OUTPUT_PATH": str(out),
+        "BIBI_JOB_CMD": "echo oops 1>&2; exit 3",
+    }
+    code = wrapper.run_job(env)
+    assert code == 3
+    assert output.lines(out, "err") == ["oops"]
+
+
+def test_run_job_runs_in_worktree(tmp_path: Path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    out = tmp_path / "output.jsonl"
+    env = {
+        "BIBI_JOB_TYPE": "job",
+        "BIBI_OUTPUT_PATH": str(out),
+        "BIBI_WORKTREE": str(wt),
+        "BIBI_JOB_CMD": "pwd",
+    }
+    wrapper.run_job(env)
+    assert output.lines(out, "out")[0].endswith("/wt")
+
+
+def test_unknown_type_raises(tmp_path: Path):
+    with pytest.raises(KeyError):
+        wrapper.run_job({"BIBI_JOB_TYPE": "bogus", "BIBI_OUTPUT_PATH": str(tmp_path / "o")})

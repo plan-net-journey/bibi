@@ -11,16 +11,22 @@ Synchronizer und ohne globale Rollen-Erkennung. Der Daemon-Entrypoint
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Query, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from bibi import state
 from bibi.daemon import job_db, openapi
-from bibi.daemon.openapi import JobReservation, JobView, NextRequest, StatusReport
+from bibi.daemon.openapi import JobReservation, JobView, KillRequest, NextRequest, StatusReport
 from bibi.daemon.roles import Roles
+from bibi.daemon.worker import Worker
+from bibi.schedule.lifecycle import TERMINAL
+from bibi.schedule.models import Status
+from bibi.wrapper import output
 
 log = logging.getLogger("bibi.daemon")
 
@@ -95,15 +101,105 @@ def _add_scheduler_routes(app: FastAPI) -> None:
             return JSONResponse(status_code=409, content={"error": "illegal transition", "id": id})
         return {"id": id, "status": str(report.status)}
 
+    # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────
+    @app.get("/-/journal", tags=["journal"])
+    def journal(slug: str | None = None, host: str | None = None):
+        conn = job_db.connect()
+        try:
+            return job_db.list_journal(conn, slug=slug, host=host)
+        finally:
+            conn.close()
 
-def create_app(roles: Roles, synchronizer=None) -> FastAPI:
+
+def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
+    """Worker-gated Job-Endpunkte (§4.5) — Streams aus ``output.jsonl`` + kill.
+    Reine JSON/SSE-API (§1.1). Ersetzen die 3.0-Stubs (zuerst registriert)."""
+
+    def _job_status(job_id: str) -> str | None:
+        conn = job_db.connect(worker.db_path)
+        try:
+            row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        finally:
+            conn.close()
+        return row["status"] if row else None
+
+    def _sse(job_id: str, stream: str | None, from_offset: int) -> StreamingResponse:
+        async def gen():
+            path = worker.output_path(job_id)
+            sent = from_offset
+            while True:
+                events = output.read_events(path)
+                for e in events[sent:]:
+                    if stream is None or e.get("s") == stream:
+                        yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n"
+                sent = len(events)
+                st = _job_status(job_id)
+                if st is not None and Status(st) in TERMINAL and sent >= len(output.read_events(path)):
+                    break
+                await asyncio.sleep(0.2)
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.get("/-/job/{id}/status", response_model=JobView, tags=["job"])
+    def job_status(id: str):  # noqa: A002
+        conn = job_db.connect(worker.db_path)
+        try:
+            job = job_db.get_job(conn, id)
+        finally:
+            conn.close()
+        if job is None:
+            return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
+        return job
+
+    @app.get("/-/job/{id}/log", tags=["job"])
+    def job_log(id: str):  # noqa: A002
+        path = worker.output_path(id)
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            raw = ""
+        return Response(content=raw, media_type="application/x-ndjson")
+
+    @app.get("/-/job/{id}/out", tags=["job"])
+    def job_out(id: str, from_: int = Query(0, alias="from")):  # noqa: A002
+        return _sse(id, "out", from_)
+
+    @app.get("/-/job/{id}/err", tags=["job"])
+    def job_err(id: str, from_: int = Query(0, alias="from")):  # noqa: A002
+        return _sse(id, "err", from_)
+
+    @app.get("/-/job/{id}/stream", tags=["job"])
+    def job_stream(id: str, from_: int = Query(0, alias="from")):  # noqa: A002
+        return _sse(id, None, from_)
+
+    @app.post("/-/job/{id}/kill", tags=["job"])
+    def job_kill(id: str, req: KillRequest | None = None):  # noqa: A002
+        signaled = worker.kill(id)
+        conn = job_db.connect(worker.db_path)
+        try:
+            outcome = job_db.report_status(conn, id, status="killed", reason="by_user")
+        finally:
+            conn.close()
+        if outcome == "not_found":
+            return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
+        if outcome == "invalid":
+            return JSONResponse(status_code=409, content={"error": "job not running", "id": id})
+        return {"id": id, "status": "killed", "signaled": signaled}
+
+
+def create_app(roles: Roles, synchronizer=None, worker: Worker | None = None) -> FastAPI:
+    if worker is None and roles.worker:
+        worker = Worker(worker_name="local")
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if synchronizer is not None:
             await synchronizer.start()
+        if worker is not None:
+            await worker.start()
         try:
             yield
         finally:
+            if worker is not None:
+                await worker.stop()
             if synchronizer is not None:
                 await synchronizer.stop()
 
@@ -156,6 +252,10 @@ def create_app(roles: Roles, synchronizer=None) -> FastAPI:
     # Zuerst registriert ⇒ gewinnen gegen die 3.0-Contract-Stubs für /-/job.
     if roles.scheduler:
         _add_scheduler_routes(app)
+
+    # ── Worker-Rolle: Job-Streams + kill (PLAN-3 §3.3) ──────────────────────
+    if worker is not None:
+        _add_worker_routes(app, worker)
 
     # ── Gefrorener /-/-Vertrag (PLAN-3 §1.1/§3.0) ───────────────────────────
     # job/scheduler/worker/journal als versionierte Schemata + 501-Stubs; die

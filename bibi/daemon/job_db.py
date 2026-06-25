@@ -11,6 +11,7 @@ Schema-Versionierung über ``PRAGMA user_version``: die Basis (v1) liegt in
 
 from __future__ import annotations
 
+import json
 import secrets
 import socket
 import sqlite3
@@ -349,4 +350,71 @@ def report_status(
     assignments = ", ".join(f"{k}=:{k}" for k in fields)
     fields["id"] = job_id
     conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
+
+    # Terminal-Übergang → eine Journal-Zeile (disponierte Domäne, §1.4).
+    if target in lifecycle.TERMINAL:
+        _write_journal(conn, job_id, now)
     return "ok"
+
+
+# ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────────
+
+
+def _write_journal(conn: sqlite3.Connection, job_id: str, archived_at: float) -> None:
+    """Eine append-only Journal-Zeile aus dem aktuellen Job-Zustand schreiben.
+
+    Watermark-Dedup: pro (run_id, status) genau eine Zeile — ein erneuter
+    Terminal-Report (z. B. idempotenter Retry) dupliziert nicht."""
+    row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if row is None:
+        return
+    run_id = f"{row['slug']}:{row['attempt']}"
+    dup = conn.execute(
+        "SELECT 1 FROM journal WHERE run_id=? AND status=?", (run_id, row["status"])
+    ).fetchone()
+    if dup:
+        return
+    exec_runtime = None
+    if row["started_at"] is not None and row["finished_at"] is not None:
+        exec_runtime = row["finished_at"] - row["started_at"]
+    conn.execute(
+        "INSERT INTO journal (run_id, slug, kind, status, reason, started_at, "
+        "finished_at, exit_code, exec_runtime, host, worker, output_ref, snapshot, "
+        "archived_at) VALUES (:run_id,:slug,:kind,:status,:reason,:started_at,"
+        ":finished_at,:exit_code,:exec_runtime,:host,:worker,:output_ref,:snapshot,"
+        ":archived_at)",
+        {
+            "run_id": run_id, "slug": row["slug"], "kind": row["kind"],
+            "status": row["status"], "reason": row["reason"],
+            "started_at": row["started_at"], "finished_at": row["finished_at"],
+            "exit_code": row["exit_code"], "exec_runtime": exec_runtime,
+            "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
+            "snapshot": json.dumps(job_view(row), ensure_ascii=False),
+            "archived_at": archived_at,
+        },
+    )
+
+
+def journal_view(row: sqlite3.Row) -> dict:
+    return {
+        "run_id": row["run_id"], "slug": row["slug"], "kind": row["kind"],
+        "status": row["status"], "reason": row["reason"],
+        "started_at": row["started_at"], "finished_at": row["finished_at"],
+        "exit_code": row["exit_code"], "exec_runtime": row["exec_runtime"],
+        "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
+    }
+
+
+def list_journal(
+    conn: sqlite3.Connection, slug: str | None = None, host: str | None = None
+) -> list[dict]:
+    sql = "SELECT * FROM journal"
+    clauses, params = [], []
+    if slug:
+        clauses.append("slug=?"); params.append(slug)
+    if host:
+        clauses.append("host=?"); params.append(host)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY archived_at DESC"
+    return [journal_view(r) for r in conn.execute(sql, params).fetchall()]
