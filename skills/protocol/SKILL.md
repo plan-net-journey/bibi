@@ -46,3 +46,5 @@ extracts the last turn from Claude Code's session log and appends it to
 ## What it does not do
 
 - No truncation: the file grows per turn. In `debug` mode it can get large.
+- No rotation or cleanup: delete `protocol.json` in the case folder by hand to
+  reset a case's log.
