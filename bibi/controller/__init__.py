@@ -53,10 +53,16 @@ def add_controller_routes(
         except Exception:  # noqa: BLE001 — Daemon-Selbstaufruf, defensiv (§2.7)
             return {}
 
+    def _schedules() -> list:
+        try:
+            return client.schedules()
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return []
+
     @app.get("/-/", include_in_schema=False)
     def root(request: Request):
         if _wants_html(request):
-            return HTMLResponse(render.dashboard_page(_status()))
+            return HTMLResponse(render.dashboard_page(_status(), _schedules()))
         return JSONResponse(service_descriptor(roles))
 
     @app.get("/-/ui/verdict", include_in_schema=False)

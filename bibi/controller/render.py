@@ -65,6 +65,21 @@ def _ago(ts: float | None, now: float) -> str:
     return f"vor {d // 86400} d"
 
 
+def _until(ts: float | None, now: float) -> str:
+    """Zukunfts-Distanz („in …") für „nächster Lauf". Vergangenes/None → „—"
+    (ein bereits gefeuerter/erledigter Trigger hat keinen nächsten Lauf)."""
+    if ts is None or ts <= now:
+        return "—"
+    d = int(ts - now)
+    if d < 60:
+        return f"in {d}s"
+    if d < 3600:
+        return f"in {d // 60} min"
+    if d < 86400:
+        return f"in {d // 3600} h"
+    return f"in {d // 86400} d"
+
+
 def _e(v) -> str:
     return html.escape("" if v is None else str(v))
 
@@ -139,8 +154,61 @@ def verdict_fragment(status: dict, now: float | None = None) -> str:
     return f"<div {attrs}>{body}</div>"
 
 
-def dashboard_page(status: dict, now: float | None = None) -> str:
-    """Die App-Wurzel ``/-/`` (Browser): Server-Render inkl. initialem Verdikt."""
+# ── Volle Schedule-Liste + Archiv (Ebene 2, §4.4) ────────────────────────────
+
+#: Terminale Sicht-Zustände — ein One-shot in einem davon gilt als „abgelaufen".
+_TERMINAL_VIEW = {"complete", "error", "inactive", "zombie", "killed"}
+
+
+def _is_archived(s: dict) -> bool:
+    # Abgelaufener One-shot (at:, schon gelaufen) → Archiv; läuft noch bevor → aktiv.
+    return bool(s.get("oneshot")) and s.get("last_status") in _TERMINAL_VIEW
+
+
+def _sched_row(s: dict, now: float) -> str:
+    slug = _e(s.get("slug"))
+    st = _e(s.get("last_status"))
+    nxt = _until(s.get("next_fire_at"), now)
+    return (
+        "<tr>"
+        f'<td><a class="slug" href="/-/ui/schedule/{slug}">{slug}</a></td>'
+        f'<td class="st {st}">{st}</td>'
+        f"<td>{_ago(s.get('last_run_at'), now)}</td>"
+        f"<td>{nxt}</td>"
+        "</tr>"
+    )
+
+
+def _sched_table(items: list[dict], now: float) -> str:
+    rows = "".join(_sched_row(s, now) for s in items)
+    return ('<table><thead><tr><th>Schedule</th><th>Status</th>'
+            f'<th>letzter</th><th>nächster</th></tr></thead><tbody>{rows}'
+            "</tbody></table>")
+
+
+def schedule_list(schedules: list[dict], now: float | None = None) -> str:
+    """Die volle, **aufklappbare** Liste (nicht primär): aktive Schedules + ein
+    eingeklapptes Archiv abgelaufener One-shots (MD bleibt — A15, §4.4)."""
+    now = time.time() if now is None else now
+    if not schedules:
+        return ('<details class="all"><summary>Alle Schedules (0)</summary>'
+                '<p class="out-empty">— keine Schedules —</p></details>')
+    archived = [s for s in schedules if _is_archived(s)]
+    active = [s for s in schedules if not _is_archived(s)]
+    body = (_sched_table(active, now) if active
+            else '<p class="out-empty">— keine aktiven Schedules —</p>')
+    if archived:
+        body += (f'<details class="archive"><summary>Archiv ({len(archived)})'
+                 f"</summary>{_sched_table(archived, now)}</details>")
+    return (f'<details class="all"><summary>Alle Schedules ({len(schedules)})'
+            f"</summary>{body}</details>")
+
+
+def dashboard_page(
+    status: dict, schedules: list[dict] | None = None, now: float | None = None
+) -> str:
+    """Die App-Wurzel ``/-/`` (Browser): Server-Render — Verdikt + Abweichungen
+    (Ebene 0/1) zuerst, darunter die aufklappbare volle Liste (Ebene 2)."""
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'
@@ -151,7 +219,7 @@ def dashboard_page(status: dict, now: float | None = None) -> str:
         '<header><h1>bibi</h1><span class="muted">Health- &amp; Anomalie-Sicht'
         "</span></header>"
         f"{verdict_fragment(status, now)}"
-        '<p class="muted">Klick auf einen Schedule → Detail &amp; Output (4.2).</p>'
+        f"{schedule_list(schedules or [], now)}"
         "</body></html>"
     )
 
@@ -286,7 +354,7 @@ def schedule_detail_page(
     kind = _e(s.get("kind") or (runs[0].get("kind") if runs else ""))
     trigger = _e(s.get("trigger"))
     last = _e(s.get("last_status"))
-    nxt = _ago(s.get("next_fire_at"), now) if s.get("next_fire_at") else "—"
+    nxt = _until(s.get("next_fire_at"), now)
     meta = (f"Typ <b>{kind}</b> · Trigger <code>{trigger}</code> · "
             f"letzter Status <b>{last}</b> · nächster Lauf {nxt}")
     runs_html = (

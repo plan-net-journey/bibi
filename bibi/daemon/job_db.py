@@ -260,6 +260,8 @@ def schedule_view(row: sqlite3.Row) -> dict:
         "slug": row["slug"], "kind": row["kind"], "trigger": trigger or "",
         "next_fire_at": row["next_fire_at"], "last_status": row["status"],
         "last_run_at": row["finished_at"],
+        # One-shot (at:) hat kein wiederkehrendes schedule — Basis fürs Archiv (§4.4).
+        "oneshot": row["schedule"] is None,
     }
 
 

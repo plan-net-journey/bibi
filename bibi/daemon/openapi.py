@@ -57,6 +57,7 @@ class ScheduleView(BaseModel):
     next_fire_at: float | None = None
     last_status: Status | None = None
     last_run_at: float | None = None
+    oneshot: bool = False  # One-shot (at:) — Basis fürs Archiv (§4.4)
 
 
 class NextRequest(BaseModel):
