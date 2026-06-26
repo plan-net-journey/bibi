@@ -25,7 +25,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -57,6 +57,15 @@ def _mig_jobs_fire(conn: sqlite3.Connection) -> None:  # v4 → v5
         conn.execute("ALTER TABLE jobs ADD COLUMN fire INTEGER NOT NULL DEFAULT 0")
 
 
+def _mig_journal_commit(conn: sqlite3.Connection) -> None:  # v5 → v6
+    # Commit-SHA + Branch je Lauf (PLAN-4 §2.3, Stufe 4.0): der Worker committet
+    # das Worktree, der SHA gehört in die Lauf-Historie (F7-Commit-Link).
+    if not _has_column(conn, "journal", "commit_sha"):
+        conn.execute("ALTER TABLE journal ADD COLUMN commit_sha TEXT")
+    if not _has_column(conn, "journal", "branch"):
+        conn.execute("ALTER TABLE journal ADD COLUMN branch TEXT")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -65,6 +74,7 @@ _MIGRATIONS: dict[int, list] = {
     2: [_mig_journal_domain],
     3: [_mig_jobs_deferred_at],
     4: [_mig_jobs_fire],
+    5: [_mig_journal_commit],
 }
 
 
@@ -383,7 +393,8 @@ def report_status(
     reason: str | None = None, exit_code: int | None = None,
     host: str | None = None, worker: str | None = None,
     output_ref: str | None = None, attempt: int | None = None,
-    next_fire_at: float | None = None, now: float | None = None,
+    next_fire_at: float | None = None, commit_sha: str | None = None,
+    branch: str | None = None, now: float | None = None,
 ) -> str:
     """Worker meldet einen Zustandswechsel (§4.4, output-frei). Rückgabe:
     ``ok`` | ``invalid`` (verbotener Übergang, §5.4) | ``not_found``."""
@@ -426,7 +437,7 @@ def report_status(
 
     # Terminal-Übergang → eine Journal-Zeile (disponierte Domäne, §1.4) …
     if target in lifecycle.TERMINAL:
-        _write_journal(conn, job_id, now)
+        _write_journal(conn, job_id, now, commit_sha=commit_sha, branch=branch)
         # … und für wiederkehrende (cron-)Schedules sofort neu einplanen (§5.2):
         # nächster Tick als pending, frischer Zähler, fire++ (eindeutige run_id).
         sched = conn.execute("SELECT schedule FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -534,11 +545,16 @@ def reconcile_startup_orphans(
 # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────────
 
 
-def _write_journal(conn: sqlite3.Connection, job_id: str, archived_at: float) -> None:
+def _write_journal(
+    conn: sqlite3.Connection, job_id: str, archived_at: float,
+    *, commit_sha: str | None = None, branch: str | None = None,
+) -> None:
     """Eine append-only Journal-Zeile aus dem aktuellen Job-Zustand schreiben.
 
     Watermark-Dedup: pro (run_id, status) genau eine Zeile — ein erneuter
-    Terminal-Report (z. B. idempotenter Retry) dupliziert nicht."""
+    Terminal-Report (z. B. idempotenter Retry) dupliziert nicht. ``commit_sha``/
+    ``branch`` kommen vom Worker-Report (v6, §2.3); Sweeper-/Reconcile-Terminals
+    ohne Worktree-Commit lassen sie ``NULL``."""
     row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return
@@ -555,16 +571,17 @@ def _write_journal(conn: sqlite3.Connection, job_id: str, archived_at: float) ->
         exec_runtime = row["finished_at"] - row["started_at"]
     conn.execute(
         "INSERT INTO journal (run_id, slug, kind, status, reason, started_at, "
-        "finished_at, exit_code, exec_runtime, host, worker, output_ref, snapshot, "
-        "archived_at) VALUES (:run_id,:slug,:kind,:status,:reason,:started_at,"
-        ":finished_at,:exit_code,:exec_runtime,:host,:worker,:output_ref,:snapshot,"
-        ":archived_at)",
+        "finished_at, exit_code, exec_runtime, host, worker, output_ref, commit_sha, "
+        "branch, snapshot, archived_at) VALUES (:run_id,:slug,:kind,:status,:reason,"
+        ":started_at,:finished_at,:exit_code,:exec_runtime,:host,:worker,:output_ref,"
+        ":commit_sha,:branch,:snapshot,:archived_at)",
         {
             "run_id": run_id, "slug": row["slug"], "kind": row["kind"],
             "status": row["status"], "reason": row["reason"],
             "started_at": row["started_at"], "finished_at": row["finished_at"],
             "exit_code": row["exit_code"], "exec_runtime": exec_runtime,
             "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
+            "commit_sha": commit_sha, "branch": branch,
             "snapshot": json.dumps(job_view(row), ensure_ascii=False),
             "archived_at": archived_at,
         },
@@ -573,13 +590,21 @@ def _write_journal(conn: sqlite3.Connection, job_id: str, archived_at: float) ->
 
 def journal_view(row: sqlite3.Row) -> dict:
     return {
-        "run_id": row["run_id"], "slug": row["slug"], "kind": row["kind"],
-        "status": row["status"], "reason": row["reason"],
+        "id": row["id"], "run_id": row["run_id"], "slug": row["slug"],
+        "kind": row["kind"], "status": row["status"], "reason": row["reason"],
         "started_at": row["started_at"], "finished_at": row["finished_at"],
         "exit_code": row["exit_code"], "exec_runtime": row["exec_runtime"],
         "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
+        "commit_sha": row["commit_sha"], "branch": row["branch"],
         "domain": row["domain"],
     }
+
+
+def delete_journal(conn: sqlite3.Connection, journal_id: int) -> bool:
+    """Einen Lauf-Record löschen (PLAN-4 §4.0 / A15: **nur** DB-Records, kein
+    MD-CRUD). Rückgabe: True, wenn eine Zeile entfernt wurde."""
+    cur = conn.execute("DELETE FROM journal WHERE id=?", (journal_id,))
+    return cur.rowcount > 0
 
 
 def list_journal(
@@ -598,6 +623,39 @@ def list_journal(
         sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY archived_at DESC"
     return [journal_view(r) for r in conn.execute(sql, params).fetchall()]
+
+
+#: Live-Zustände, die als **Abweichung** zählen (PLAN-4 §3/§4.1): „lief nicht".
+#: ``failed`` (Retry-wartend), ``error`` (aufgegeben), ``zombie``/``killed``.
+PROBLEM_STATES = ("failed", "error", "zombie", "killed")
+
+
+def verdict(conn: sqlite3.Connection, now: float | None = None) -> dict:
+    """Server-seitiges „läuft alles?" (PLAN-4 §2.3): Abweichungen (aktueller
+    Job-Zustand in :data:`PROBLEM_STATES`) + **überfällige** Jobs (``pending``,
+    deren ``next_fire_at`` in der Vergangenheit liegt — Trigger verpasst). DB-nah
+    und wiederverwendbar (Controller, ``bibi-ctrl status``, Föderation)."""
+    now = time.time() if now is None else now
+    placeholders = ",".join("?" * len(PROBLEM_STATES))
+    deviations = [
+        job_view(r) for r in conn.execute(
+            f"SELECT * FROM jobs WHERE status IN ({placeholders}) ORDER BY updated_at DESC",
+            PROBLEM_STATES,
+        ).fetchall()
+    ]
+    overdue = [
+        job_view(r) for r in conn.execute(
+            "SELECT * FROM jobs WHERE status='pending' AND next_fire_at IS NOT NULL "
+            "AND next_fire_at < ? ORDER BY next_fire_at ASC", (now,),
+        ).fetchall()
+    ]
+    return {
+        "ok": not deviations and not overdue,
+        "problems": len(deviations),
+        "overdue": len(overdue),
+        "deviations": deviations,
+        "overdue_jobs": overdue,
+    }
 
 
 def write_local_journal(

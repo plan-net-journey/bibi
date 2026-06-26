@@ -149,7 +149,10 @@ def execute_reservation(
     )
 
     rel = out_path.relative_to(repo_root).as_posix()
-    common = {"exit_code": code, "output_ref": rel, "worker": worker_name, "host": host}
+    # Commit-SHA + Branch des Worktrees journalen (v6, §2.3): "" → None.
+    branch = worktree.branch_name(reservation["slug"]) if commit_sha else None
+    common = {"exit_code": code, "output_ref": rel, "worker": worker_name, "host": host,
+              "commit_sha": commit_sha or None, "branch": branch}
     if outcome == "wall_time":
         fields = {"status": "killed", "reason": "by_wall_time", **common}
     elif outcome == "silence":

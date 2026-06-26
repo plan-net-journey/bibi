@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>bibi</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem;
+           max-width: 60rem; margin-inline: auto; }
+    header { display: flex; align-items: baseline; gap: .75rem; }
+    h1 { font-size: 1.4rem; margin: 0; }
+    .muted { color: #888; font-size: .85rem; }
+    #verdict { margin: 1.5rem 0; padding: 1rem 1.25rem; border-radius: .6rem;
+               border: 1px solid #8884; font-size: 1.25rem; font-weight: 600; }
+    #verdict.ok { background: #1a7f3722; }
+    #verdict.bad { background: #c0392b22; }
+    .placeholder { color: #888; font-weight: 400; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>bibi</h1>
+    <span class="muted">Health- &amp; Anomalie-Sicht</span>
+  </header>
+
+  <!-- Stufe 4.0: Skelett. Das Verdikt (4.1) holt sich die Seite live aus
+       /-/status; die Abweichungs-Liste folgt in Stufe 4.1. -->
+  <div id="verdict"><span class="placeholder">Verdikt wird geladen …</span></div>
+
+  <p class="muted">Abweichungs-Liste &amp; Detail: Stufe 4.1 / 4.2.</p>
+
+  <script>
+    async function loadVerdict() {
+      const el = document.getElementById("verdict");
+      try {
+        const r = await fetch("/-/status", {headers: {"Accept": "application/json"}});
+        const s = await r.json();
+        const v = s.verdict;
+        if (!v) {
+          el.className = "";
+          el.innerHTML = '<span class="placeholder">Kein Verdikt — Scheduler-Rolle nötig.</span>';
+          return;
+        }
+        if (v.ok) {
+          el.className = "ok";
+          el.textContent = "✓ alles lief";
+        } else {
+          el.className = "bad";
+          el.textContent = `⚠ ${v.problems} Probleme · ${v.overdue} überfällig`;
+        }
+      } catch (e) {
+        el.className = "";
+        el.innerHTML = '<span class="placeholder">Status nicht erreichbar.</span>';
+      }
+    }
+    loadVerdict();
+    setInterval(loadVerdict, 5000);
+  </script>
+</body>
+</html>

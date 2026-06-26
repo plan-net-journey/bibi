@@ -108,6 +108,7 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry) -> None:
                 exit_code=report.exit_code, host=report.host,
                 worker=report.worker, output_ref=report.output_ref,
                 attempt=report.attempt, next_fire_at=report.next_fire_at,
+                commit_sha=report.commit_sha, branch=report.branch,
             )
         finally:
             conn.close()
@@ -125,6 +126,19 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry) -> None:
             return job_db.list_journal(conn, slug=slug, host=host)
         finally:
             conn.close()
+
+    @app.delete("/-/journal/{jid}", tags=["journal"])
+    def journal_delete(jid: int):
+        # A15: nur Lauf-Records aus der DB löschen, kein MD-CRUD (PLAN-4 §4.0).
+        conn = job_db.connect()
+        try:
+            ok = job_db.delete_journal(conn, jid)  # autocommit (isolation_level=None)
+        finally:
+            conn.close()
+        if not ok:
+            return JSONResponse(status_code=404,
+                                content={"error": "journal entry not found", "id": jid})
+        return {"deleted": jid}
 
     # ── Worker-Verbund: Anmeldung/Heartbeat + Liste (PLAN-3 §3.6, A12) ────────
     @app.post("/-/worker", tags=["worker"], dependencies=[Depends(_auth)])
@@ -330,6 +344,14 @@ def create_app(
             out["synchronizer"] = synchronizer.status()
         if worker_registry is not None:
             out["workers"] = worker_registry.list()
+        # Verdikt „läuft alles?" — DB-nah, nur am Knoten mit Scheduler-Rolle (der
+        # die Job-DB besitzt). Föderation aggregiert je-Knoten-/-/status (§2.2).
+        if roles.scheduler:
+            conn = job_db.connect()
+            try:
+                out["verdict"] = job_db.verdict(conn)
+            finally:
+                conn.close()
         return out
 
     @app.post("/-/maintenance")
@@ -350,6 +372,11 @@ def create_app(
     # ── Worker-Rolle: Job-Streams + kill (PLAN-3 §3.3) ──────────────────────
     if worker is not None:
         _add_worker_routes(app, worker)
+
+    # ── Controller-Rolle: Web-App-Wurzel auf /-/ (PLAN-4 §2.1/§4.0) ─────────
+    if roles.controller:
+        from bibi.controller import add_controller_routes
+        add_controller_routes(app, roles)
 
     # ── Gefrorener /-/-Vertrag (PLAN-3 §1.1/§3.0) ───────────────────────────
     # job/scheduler/worker/journal als versionierte Schemata + 501-Stubs; die

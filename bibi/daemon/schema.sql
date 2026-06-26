@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS journal (
     host          TEXT,
     worker        TEXT,
     output_ref    TEXT,                        -- referenziert, enthält nicht (§1.4)
+    commit_sha    TEXT,                        -- Worktree-Commit des Laufs (v6, F7-Link)
+    branch        TEXT,                        -- agent/<slug> (v6)
     snapshot      TEXT NOT NULL DEFAULT '{}',
     archived_at   REAL NOT NULL,
     -- Ausführungs-Domäne (§1.4): 'scheduled' (disponiert, über den Scheduler) vs.

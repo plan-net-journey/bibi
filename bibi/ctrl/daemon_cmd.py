@@ -25,7 +25,7 @@ def resolve_from_args(args: argparse.Namespace) -> tuple[R.Roles, list[str]]:
     noch nicht startbaren Rollen/Modifikatoren (ab Stufe 3.0 nur ``connect``).
     """
     active = R.parse_role_env(config.read_env().get("BIBI_ROLE", ""))
-    for name in ("synchronizer", "scheduler", "worker"):
+    for name in ("synchronizer", "scheduler", "worker", "controller"):
         if getattr(args, name, False):
             active.add(name)
     r = R.resolve(active, connect=args.connect, pull=args.pull, push=args.push)
@@ -112,6 +112,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     pr.add_argument("--synchronizer", action="store_true")
     pr.add_argument("--scheduler", action="store_true")
     pr.add_argument("--worker", action="store_true")
+    pr.add_argument("--controller", action="store_true")
     pr.add_argument("--connect", action="store_true")
     pr.add_argument("--pull", action="store_true")
     pr.add_argument("--push", action="store_true")

@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from bibi.schedule.models import Kind, Reason, Status
 
 #: Vertrags-Version — bei Änderungen am ``/-/``-Vertrag bewusst hochzählen (§1.1).
-CONTRACT_VERSION = "3.0"
+CONTRACT_VERSION = "3.1"
 
 
 # ── Schemata (§4.4/§4.5/§1.4) ───────────────────────────────────────────────
@@ -96,6 +96,8 @@ class StatusReport(BaseModel):
     output_ref: str | None = None
     attempt: int | None = None        # Retry-Accounting (§3.5/§3.6)
     next_fire_at: float | None = None  # Backoff-Zeitpunkt
+    commit_sha: str | None = None      # Worktree-Commit des Laufs (v6, F7-Link)
+    branch: str | None = None          # agent/<slug> (v6)
 
 
 class KillRequest(BaseModel):
@@ -108,6 +110,7 @@ class JournalEntryView(BaseModel):
     """Eine Journal-Zeile (§1.4). ``host``/``worker`` first-class (föderierte
     A13-Sicht), ``output_ref`` referenziert die ``output.jsonl``."""
 
+    id: int | None = None  # DB-Zeilen-ID — Schlüssel für DELETE /-/journal/{id}
     run_id: str
     slug: str
     kind: Kind
@@ -120,6 +123,8 @@ class JournalEntryView(BaseModel):
     host: str | None = None
     worker: str | None = None
     output_ref: str | None = None
+    commit_sha: str | None = None  # Worktree-Commit des Laufs (v6, F7-Link)
+    branch: str | None = None      # agent/<slug> (v6)
     domain: str = "scheduled"  # 'scheduled' (disponiert) | 'local' (/run), §1.4
 
 
@@ -232,3 +237,7 @@ def add_contract_routes(app: FastAPI) -> None:
     @app.get("/-/journal", response_model=list[JournalEntryView], tags=["journal"])
     def journal_list(slug: str | None = None, host: str | None = None):  # noqa: ARG001
         return _todo("GET /-/journal")
+
+    @app.delete("/-/journal/{jid}", tags=["journal"])
+    def journal_delete(jid: int):  # noqa: ARG001
+        return _todo("DELETE /-/journal/{id}")

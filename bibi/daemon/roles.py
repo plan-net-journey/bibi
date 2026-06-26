@@ -15,11 +15,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Bekannte Rollen-Namen (aus BIBI_ROLE / Flags). ``connect`` ist Modifikator.
-KNOWN_ROLES = frozenset({"synchronizer", "scheduler", "worker"})
+# ``controller`` (Phase 4) serviert die Web-App auf ``/-/`` (PLAN-4 §2.1).
+KNOWN_ROLES = frozenset({"synchronizer", "scheduler", "worker", "controller"})
 
 # Rollen/Modifikatoren, die den Daemon starten dürfen. ``connect`` (Worker-Verbund,
 # Stufe 3.6) ist seit jeher per Invariante an ``worker`` gebunden (scheduler⊥connect).
-STARTABLE = frozenset({"synchronizer", "scheduler", "worker", "connect"})
+STARTABLE = frozenset({"synchronizer", "scheduler", "worker", "controller", "connect"})
 
 
 @dataclass(frozen=True)
@@ -29,12 +30,14 @@ class Roles:
     synchronizer: bool = False
     scheduler: bool = False
     worker: bool = False
+    controller: bool = False
     connect: bool = False
     pull: bool = False
     push: bool = False
 
     def active_names(self) -> list[str]:
-        names = [n for n in ("synchronizer", "scheduler", "worker") if getattr(self, n)]
+        names = [n for n in ("synchronizer", "scheduler", "worker", "controller")
+                 if getattr(self, n)]
         if self.connect:
             names.append("connect")
         return names
@@ -71,6 +74,7 @@ def resolve(
         synchronizer=is_sync,
         scheduler="scheduler" in active,
         worker="worker" in active,
+        controller="controller" in active,
         connect=connect,
         pull=effective_pull if is_sync else False,
         push=push if is_sync else False,

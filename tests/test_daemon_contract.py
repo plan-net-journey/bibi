@@ -31,7 +31,7 @@ def test_openapi_covers_job_scheduler_worker_journal(client):
 
 def test_openapi_is_versioned(client):
     spec = client.get("/-/openapi.json").json()
-    assert spec["info"]["version"] == CONTRACT_VERSION == "3.0"
+    assert spec["info"]["version"] == CONTRACT_VERSION == "3.1"
 
 
 def test_schemas_present_in_components(client):
@@ -68,6 +68,7 @@ def test_status_enum_in_schema(client):
         ("post", "/-/job/abc/reset", None),
         ("get", "/-/worker", None),
         ("get", "/-/journal", None),
+        ("delete", "/-/journal/1", None),
     ],
 )
 def test_all_stubs_return_501_json_no_html(client, method, path, body):
