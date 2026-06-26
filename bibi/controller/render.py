@@ -5,6 +5,7 @@ damit voll unit-testbar. Look: Terminal/Konsole-nah, minimal (§2.5)."""
 from __future__ import annotations
 
 import html
+import re
 import time
 
 _HTMX = "https://unpkg.com/htmx.org@1.9.12"
@@ -30,6 +31,20 @@ td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
 a.slug { font-weight: 600; text-decoration: none; }
 a.slug:hover { text-decoration: underline; }
 h2 { font-size: .95rem; color: #888; margin: 1.5rem 0 .4rem; font-weight: 600; }
+.back { color: #888; text-decoration: none; font-size: .85rem; }
+.meta { color: #aaa; font-size: .9rem; margin: .2rem 0 1rem; }
+.term { background: #0008; border: 1px solid #8883; border-radius: .4rem;
+        padding: .6rem .8rem; overflow-x: auto; font-family: ui-monospace, monospace;
+        font-size: .82rem; line-height: 1.45; white-space: pre-wrap; }
+.term .err { color: #e06c5a; }
+.md { font-size: .92rem; }
+.md pre { background: #0008; border: 1px solid #8883; border-radius: .4rem;
+          padding: .6rem .8rem; overflow-x: auto; }
+.md code { font-family: ui-monospace, monospace; font-size: .85em; }
+.out-empty { color: #888; font-size: .85rem; font-style: italic; }
+button { font: inherit; background: #8882; border: 1px solid #8884;
+         border-radius: .35rem; padding: .15rem .5rem; cursor: pointer; color: inherit; }
+.commit { font-family: ui-monospace, monospace; font-size: .8rem; color: #888; }
 """
 
 
@@ -137,5 +152,160 @@ def dashboard_page(status: dict, now: float | None = None) -> str:
         "</span></header>"
         f"{verdict_fragment(status, now)}"
         '<p class="muted">Klick auf einen Schedule → Detail &amp; Output (4.2).</p>'
+        "</body></html>"
+    )
+
+
+# ── Output-Rendering (§2.5: event-typ-fähig, nicht „alles ist eine Textzeile") ──
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI.sub("", s)
+
+
+def _md_inline(s: str) -> str:
+    # s ist bereits HTML-escaped. Inline-Spans: code zuerst (kein Markup darin).
+    s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+    s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
+    return s
+
+
+def _markdown(text: str) -> str:
+    """Minimaler, sicherer Markdown→HTML-Renderer (Überschriften, Fett, Inline-/
+    Block-Code, Listen, Absätze). Bewusst klein; deckt typische ``claude``-Ausgabe
+    ab und degradiert sonst zu Absätzen. Voll-Markdown ist eine spätere Ausbaustufe."""
+    lines = text.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if ln.startswith("```"):  # Fenced Code: roh (escaped), kein Inline
+            i += 1
+            buf = []
+            while i < len(lines) and not lines[i].startswith("```"):
+                buf.append(html.escape(lines[i]))
+                i += 1
+            i += 1  # schließendes Fence
+            out.append("<pre><code>" + "\n".join(buf) + "</code></pre>")
+            continue
+        m = re.match(r"(#{1,3})\s+(.*)", ln)
+        if m:
+            lvl = len(m.group(1))
+            out.append(f"<h{lvl}>{_md_inline(html.escape(m.group(2)))}</h{lvl}>")
+            i += 1
+            continue
+        if ln.startswith("- "):
+            items = []
+            while i < len(lines) and lines[i].startswith("- "):
+                items.append(f"<li>{_md_inline(html.escape(lines[i][2:]))}</li>")
+                i += 1
+            out.append("<ul>" + "".join(items) + "</ul>")
+            continue
+        if ln.strip() == "":
+            i += 1
+            continue
+        # Absatz: zusammenhängende Nicht-Spezial-Zeilen
+        para = []
+        while i < len(lines) and lines[i].strip() != "" \
+                and not lines[i].startswith(("```", "- ")) \
+                and not re.match(r"#{1,3}\s+", lines[i]):
+            para.append(_md_inline(html.escape(lines[i])))
+            i += 1
+        out.append("<p>" + "<br>".join(para) + "</p>")
+    return "".join(out)
+
+
+def output_block(events: list[dict], kind: str) -> str:
+    """Output eines Laufs rendern. **Dispatch nach Event-Typ** (``s``): heute
+    ``out``/``err``; Steuer-/Fortschritts-/HITL-Events (Phase 6) docken ohne Umbau
+    an. Render je **Job-Typ**: ``claude`` → Markdown flüssig, ``job``/sonst →
+    Terminal/preformatted (ANSI bereinigt). Top-Prio F4."""
+    if not events:
+        return '<div class="out-empty">— kein Output —</div>'
+    if kind == "claude":
+        # stdout als Markdown-Blob; stderr als Terminal-Block darunter.
+        out_text = "\n".join(_strip_ansi(e["line"]) for e in events if e.get("s") == "out")
+        err_evts = [e for e in events if e.get("s") == "err"]
+        html_parts = []
+        if out_text.strip():
+            html_parts.append(f'<div class="md">{_markdown(out_text)}</div>')
+        if err_evts:
+            errs = "\n".join(_e(_strip_ansi(e["line"])) for e in err_evts)
+            html_parts.append(f'<pre class="term"><span class="err">{errs}</span></pre>')
+        return "".join(html_parts) or '<div class="out-empty">— kein Output —</div>'
+    # job/app: preformatted, stderr-Zeilen rot.
+    rows = []
+    for e in events:
+        line = _e(_strip_ansi(e.get("line", "")))
+        rows.append(f'<span class="err">{line}</span>' if e.get("s") == "err" else line)
+    return f'<pre class="term">{chr(10).join(rows)}</pre>'
+
+
+# ── Schedule-Detail (Ebene 3, schedule-zentriert) ────────────────────────────
+
+
+def _commit_cell(run: dict) -> str:
+    sha = run.get("commit_sha")
+    if not sha:
+        return "—"
+    short = _e(sha[:7])
+    branch = _e(run.get("branch") or "")
+    return f'<span class="commit" title="{_e(sha)} {branch}">{short}</span>'
+
+
+def _run_rows(runs: list[dict], now: float) -> str:
+    rows = []
+    for r in runs:
+        rid = r.get("id")
+        st = _e(r.get("status"))
+        rows.append(
+            "<tr>"
+            f"<td>{_ago(r.get('finished_at') or r.get('started_at'), now)}</td>"
+            f'<td class="st {st}">{st}</td>'
+            f"<td>{_e(r.get('reason'))}</td>"
+            f"<td>{_e(r.get('exit_code'))}</td>"
+            f"<td>{_commit_cell(r)}</td>"
+            f'<td><button hx-get="/-/ui/run/{rid}/output" hx-target="#out-{rid}" '
+            'hx-swap="innerHTML">Output</button></td>'
+            "</tr>"
+            f'<tr><td colspan="6"><div id="out-{rid}"></div></td></tr>'
+        )
+    return "".join(rows)
+
+
+def schedule_detail_page(
+    schedule: dict | None, runs: list[dict], slug: str = "", now: float | None = None
+) -> str:
+    """Schedule-zentrierte Detail-Sicht (§3 Ebene 3): MD-Anker (Typ/Trigger/Status)
+    + direkt darunter die Lauf-Liste mit Output-Toggle je Lauf."""
+    now = time.time() if now is None else now
+    s = schedule or {}
+    name = _e(s.get("slug") or slug)
+    kind = _e(s.get("kind") or (runs[0].get("kind") if runs else ""))
+    trigger = _e(s.get("trigger"))
+    last = _e(s.get("last_status"))
+    nxt = _ago(s.get("next_fire_at"), now) if s.get("next_fire_at") else "—"
+    meta = (f"Typ <b>{kind}</b> · Trigger <code>{trigger}</code> · "
+            f"letzter Status <b>{last}</b> · nächster Lauf {nxt}")
+    runs_html = (
+        '<table><thead><tr><th>Zeit</th><th>Status</th><th>Grund</th>'
+        '<th>exit</th><th>Commit</th><th>Output</th></tr></thead>'
+        f"<tbody>{_run_rows(runs, now)}</tbody></table>"
+        if runs else '<p class="out-empty">— noch keine Läufe —</p>'
+    )
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>bibi · {name}</title>"
+        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
+        f"<style>{_CSS}</style></head><body>"
+        '<a class="back" href="/-/">← zurück</a>'
+        f"<h1>{name}</h1>"
+        f'<div class="meta">{meta}</div>'
+        "<h2>Läufe</h2>"
+        f"{runs_html}"
         "</body></html>"
     )

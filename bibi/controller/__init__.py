@@ -62,3 +62,22 @@ def add_controller_routes(
     @app.get("/-/ui/verdict", include_in_schema=False)
     def verdict_fragment():
         return HTMLResponse(render.verdict_fragment(_status()))
+
+    @app.get("/-/ui/schedule/{slug}", include_in_schema=False)
+    def schedule_detail(slug: str):
+        try:
+            schedule = next((s for s in client.schedules()
+                             if s.get("slug") == slug), None)
+            runs = client.journal(slug=slug)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            schedule, runs = None, []
+        return HTMLResponse(render.schedule_detail_page(schedule, runs, slug=slug))
+
+    @app.get("/-/ui/run/{jid}/output", include_in_schema=False)
+    def run_output(jid: int):
+        try:
+            data = client.run_output(jid)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            data = {}
+        return HTMLResponse(render.output_block(
+            data.get("events", []), data.get("kind", "job")))

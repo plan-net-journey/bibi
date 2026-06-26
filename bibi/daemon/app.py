@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from bibi import config, state
+from bibi import config, repo, state
 from bibi.daemon import job_db, openapi
 from bibi.daemon.openapi import (
     JobReservation, JobView, KillRequest, NextRequest, RunRequest, StatusReport,
@@ -126,6 +126,21 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry) -> None:
             return job_db.list_journal(conn, slug=slug, host=host)
         finally:
             conn.close()
+
+    @app.get("/-/journal/{jid}/output", tags=["journal"])
+    def journal_output(jid: int):
+        # Replay-Quelle (§4.2): die output.jsonl des Laufs als getypte Events.
+        conn = job_db.connect()
+        try:
+            entry = job_db.get_journal(conn, jid)
+        finally:
+            conn.close()
+        if entry is None:
+            return JSONResponse(status_code=404,
+                                content={"error": "journal entry not found", "id": jid})
+        ref = entry.get("output_ref")
+        events = output.read_events(repo.root() / ref) if ref else []
+        return {"id": jid, "kind": entry["kind"], "events": events, "output_ref": ref}
 
     @app.delete("/-/journal/{jid}", tags=["journal"])
     def journal_delete(jid: int):

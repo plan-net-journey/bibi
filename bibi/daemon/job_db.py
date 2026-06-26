@@ -600,6 +600,12 @@ def journal_view(row: sqlite3.Row) -> dict:
     }
 
 
+def get_journal(conn: sqlite3.Connection, journal_id: int) -> dict | None:
+    """Eine Journal-Zeile per ID (für Output-Replay & Detail-Sicht, §4.2)."""
+    row = conn.execute("SELECT * FROM journal WHERE id=?", (journal_id,)).fetchone()
+    return journal_view(row) if row else None
+
+
 def delete_journal(conn: sqlite3.Connection, journal_id: int) -> bool:
     """Einen Lauf-Record löschen (PLAN-4 §4.0 / A15: **nur** DB-Records, kein
     MD-CRUD). Rückgabe: True, wenn eine Zeile entfernt wurde."""

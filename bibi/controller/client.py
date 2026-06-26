@@ -38,3 +38,6 @@ class ControllerClient:
     def schedules(self) -> list[dict]:
         data = self._get("/-/schedule") or {}
         return data.get("schedules", []) if isinstance(data, dict) else []
+
+    def run_output(self, journal_id: int) -> dict:
+        return self._get(f"/-/journal/{journal_id}/output") or {}
