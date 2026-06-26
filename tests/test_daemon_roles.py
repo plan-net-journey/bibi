@@ -41,13 +41,12 @@ def test_validate_clean_synchronizer_has_no_errors():
     assert roles.validate(roles.resolve({"synchronizer"})) == []
 
 
-def test_scheduler_worker_startable_connect_not_yet():
-    # Ab Stufe 3.0 starten scheduler/worker (Vertrag als Stubs); nur connect fehlt.
+def test_all_roles_startable():
+    # Ab Stufe 3.6 ist auch der connect-Modifikator startbar (Worker-Verbund).
     assert roles.unsupported(roles.resolve({"scheduler"})) == []
     assert roles.unsupported(roles.resolve({"worker"})) == []
     assert roles.unsupported(roles.resolve({"synchronizer"})) == []
-    r = roles.resolve({"synchronizer"}, connect=True)
-    assert "connect" in roles.unsupported(r)
+    assert roles.unsupported(roles.resolve({"worker"}, connect=True)) == []
 
 
 def test_no_role_is_valid_but_idle():

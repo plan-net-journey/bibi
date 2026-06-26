@@ -161,11 +161,12 @@ def test_execute_reservation_skips_if_already_terminal(gitrepo: Path):
     res = job_db.reserve_next(conn)  # → running
     conn.execute("UPDATE jobs SET status='killed', reason='by_user' WHERE id=?", (jid,))
     conn.close()
+    from bibi.daemon.scheduler_client import LocalScheduler
     out = execute_reservation(
         res, repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
-        db_path=gitrepo / "data" / "jobs.sqlite", worker_name="t",
+        client=LocalScheduler(gitrepo / "data" / "jobs.sqlite"), worker_name="t",
     )
-    assert out["status"] is None  # nichts gemeldet
+    assert out["status"] is None  # killed→complete ist invalid ⇒ nichts überschrieben
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "killed"
     conn.close()

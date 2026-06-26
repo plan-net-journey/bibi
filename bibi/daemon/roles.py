@@ -17,9 +17,9 @@ from dataclasses import dataclass
 # Bekannte Rollen-Namen (aus BIBI_ROLE / Flags). ``connect`` ist Modifikator.
 KNOWN_ROLES = frozenset({"synchronizer", "scheduler", "worker"})
 
-# Rollen, die den Daemon starten dürfen. scheduler/worker servieren ab Stufe 3.0
-# den /-/-Vertrag (501-Stubs); ``connect`` fehlt noch (Stufe 3.6).
-STARTABLE = frozenset({"synchronizer", "scheduler", "worker"})
+# Rollen/Modifikatoren, die den Daemon starten dürfen. ``connect`` (Worker-Verbund,
+# Stufe 3.6) ist seit jeher per Invariante an ``worker`` gebunden (scheduler⊥connect).
+STARTABLE = frozenset({"synchronizer", "scheduler", "worker", "connect"})
 
 
 @dataclass(frozen=True)

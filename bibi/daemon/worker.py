@@ -126,64 +126,45 @@ def _run_wrapper(
 
 
 def execute_reservation(
-    reservation: dict, *, repo_root: Path, work_dir: Path,
-    db_path: Path | None = None, worker_name: str | None = None,
-    register=None,
+    reservation: dict, *, repo_root: Path, work_dir: Path, client,
+    worker_name: str | None = None, host: str | None = None, register=None,
 ) -> dict:
-    """Einen **disponierten** (reservierten) Job ausführen + dem Scheduler melden,
+    """Einen **disponierten** (reservierten) Job ausführen + via ``client`` melden,
     inkl. Lifecycle-Kanten (§5.5): wall_time→killed, silence→zombie, exit≠0→failed
-    (mit Backoff, attempt++). Ein bereits terminaler Job (z. B. ``killed`` per
-    ``/-/job/{id}/kill``) wird **nicht** überschrieben."""
-    jid = reservation["id"]
-    conn = job_db.connect(db_path)
-    try:
-        jr = conn.execute(
-            "SELECT wall_time, silence_timeout, attempts, backoff FROM jobs WHERE id=?",
-            (jid,),
-        ).fetchone()
-    finally:
-        conn.close()
-    wall_time = jr["wall_time"] if jr else None
-    silence_timeout = jr["silence_timeout"] if jr else None
-    attempts = jr["attempts"] if jr else 1
-    backoff_strategy = jr["backoff"] if jr else "fixed"
+    (mit Backoff, attempt++). Alle Ausführungs-/Retry-Parameter kommen aus der
+    **Reservierung** (so braucht ein Remote-Worker keine lokale DB, §3.6).
 
+    Der Status wird über ``client.report`` gesetzt; ist der Job bereits terminal
+    (z. B. ``killed`` per ``/-/job/{id}/kill``), lehnt der Scheduler den Übergang ab
+    (``invalid``) und der Worker überschreibt nichts."""
+    jid = reservation["id"]
+    host = host or socket.gethostname()
     code, commit_sha, out_path, outcome = _run_wrapper(
         job_id=jid, slug=reservation["slug"], kind=reservation["kind"],
         payload=reservation["payload"], model=reservation.get("model"),
         soul=reservation.get("soul"), session=reservation.get("session"),
-        wall_time=wall_time, silence_timeout=silence_timeout,
+        wall_time=reservation.get("wall_time"),
+        silence_timeout=reservation.get("silence_timeout"),
         repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
     )
 
-    reported: str | None = None
-    conn = job_db.connect(db_path)
-    try:
-        cur = conn.execute("SELECT status, attempt FROM jobs WHERE id=?", (jid,)).fetchone()
-        if cur is not None and Status(cur["status"]) not in TERMINAL:
-            rel = out_path.relative_to(repo_root).as_posix()
-            common = {"exit_code": code, "output_ref": rel, "worker": worker_name}
-            if outcome == "wall_time":
-                reported = "killed"
-                job_db.report_status(conn, jid, status="killed", reason="by_wall_time", **common)
-            elif outcome == "silence":
-                reported = "zombie"
-                job_db.report_status(conn, jid, status="zombie", reason="silence", **common)
-            elif code == 0:
-                reported = "complete"
-                job_db.report_status(conn, jid, status="complete", **common)
-            else:
-                reported = "failed"
-                attempt = cur["attempt"] + 1
-                base = float(os.environ.get("BIBI_RETRY_BASE") or backoff.DEFAULT_BASE)
-                nf = time.time() + backoff.delay(backoff_strategy, attempt, base=base)
-                job_db.report_status(
-                    conn, jid, status="failed", attempt=attempt, next_fire_at=nf, **common,
-                )
-    finally:
-        conn.close()
+    rel = out_path.relative_to(repo_root).as_posix()
+    common = {"exit_code": code, "output_ref": rel, "worker": worker_name, "host": host}
+    if outcome == "wall_time":
+        fields = {"status": "killed", "reason": "by_wall_time", **common}
+    elif outcome == "silence":
+        fields = {"status": "zombie", "reason": "silence", **common}
+    elif code == 0:
+        fields = {"status": "complete", **common}
+    else:
+        attempt = (reservation.get("attempt") or 0) + 1
+        base = float(os.environ.get("BIBI_RETRY_BASE") or backoff.DEFAULT_BASE)
+        nf = time.time() + backoff.delay(reservation.get("backoff") or "fixed", attempt, base=base)
+        fields = {"status": "failed", "attempt": attempt, "next_fire_at": nf, **common}
+
+    res = client.report(jid, **fields)
     return {"id": jid, "exit_code": code, "commit": commit_sha,
-            "status": reported, "outcome": outcome, "attempts": attempts}
+            "status": fields["status"] if res == "ok" else None, "outcome": outcome}
 
 
 def _resolve_spec(repo_root: Path, slug: str):
@@ -250,17 +231,32 @@ class Worker:
         self, *, repo_root: Path | None = None, work_dir: Path | None = None,
         db_path: Path | None = None, poll_interval: float = 1.0,
         worker_name: str | None = None, autopoll: bool = True,
+        client=None, connect: bool = False, scheduler_url: str | None = None,
+        secret: str | None = None, heartbeat_interval: float = 15.0,
     ) -> None:
         self.repo_root = repo_root
         self.work_dir = work_dir
         self.db_path = db_path
         self.poll_interval = poll_interval
-        self.worker_name = worker_name
+        self.worker_name = worker_name or socket.gethostname()
+        self.host = socket.gethostname()
         # autopoll=False: nur die Routen (Streams/kill) bedienen, kein Pull-Loop —
         # für Tests und für reine Stream-Knoten ohne lokale Ausführung.
         self.autopoll = autopoll
+        self.connect = connect
+        self.heartbeat_interval = heartbeat_interval
+        # Scheduler-Client: lokal (Single-Node) oder remote (--connect, §3.6).
+        if client is not None:
+            self.client = client
+        elif connect:
+            from bibi.daemon.scheduler_client import RemoteScheduler
+            self.client = RemoteScheduler(scheduler_url or "http://127.0.0.1:8769", secret=secret)
+        else:
+            from bibi.daemon.scheduler_client import LocalScheduler
+            self.client = LocalScheduler(db_path)
         self._procs: dict[str, subprocess.Popen] = {}
         self._task: asyncio.Task | None = None
+        self._hb_task: asyncio.Task | None = None
         self._running = False
 
     def _roots(self) -> tuple[Path, Path]:
@@ -279,23 +275,39 @@ class Worker:
             self._procs[job_id] = proc
 
     def tick_once(self) -> bool:
-        """Einen Job reservieren + ausführen. ``False`` = nichts zu tun."""
-        conn = job_db.connect(self.db_path)
-        try:
-            res = job_db.reserve_next(conn, worker=self.worker_name)
-        finally:
-            conn.close()
+        """Einen Job über den Client reservieren + ausführen. ``False`` = nichts zu tun."""
+        res = self.client.next(worker=self.worker_name, host=self.host)
         if res is None:
             return False
         root, work = self._roots()
         try:
             execute_reservation(
-                res, repo_root=root, work_dir=work, db_path=self.db_path,
-                worker_name=self.worker_name, register=self._register,
+                res, repo_root=root, work_dir=work, client=self.client,
+                worker_name=self.worker_name, host=self.host, register=self._register,
             )
         except Exception:  # ein kaputter Run darf den Loop nicht killen (§2.7)
             log.exception("Job-Ausführung fehlgeschlagen: %s", res.get("id"))
         return True
+
+    def _git_status(self) -> str:
+        """Kurzer Git-Status des Knotens (Branch) für den Heartbeat (A12)."""
+        root, _ = self._roots()
+        try:
+            r = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                               cwd=root, capture_output=True, text=True, check=False)
+            return r.stdout.strip() if r.returncode == 0 else "n/a"
+        except OSError:
+            return "n/a"
+
+    async def _heartbeat_loop(self) -> None:
+        loop = asyncio.get_event_loop()
+        while self._running:
+            try:
+                await loop.run_in_executor(
+                    None, lambda: self.client.register(self.worker_name, self.host, self._git_status()))
+            except Exception:
+                log.warning("Heartbeat fehlgeschlagen (Scheduler erreichbar?)")
+            await asyncio.sleep(self.heartbeat_interval)
 
     def kill(self, job_id: str) -> bool:
         """SIGTERM an die Prozessgruppe des laufenden Wrappers (best-effort)."""
@@ -324,13 +336,17 @@ class Worker:
             return  # nur Routen bedienen, kein Pull-Loop
         self._running = True
         self._task = asyncio.create_task(self._loop())
+        if self.connect:  # beim entfernten Scheduler an-/abmelden (Heartbeat, A12)
+            self.client.register(self.worker_name, self.host, self._git_status())
+            self._hb_task = asyncio.create_task(self._heartbeat_loop())
 
     async def stop(self) -> None:
         self._running = False
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        for task in (self._task, self._hb_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._task = self._hb_task = None

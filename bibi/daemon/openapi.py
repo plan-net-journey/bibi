@@ -74,6 +74,13 @@ class JobReservation(BaseModel):
     kind: Kind
     payload: str
     model: str | None = None
+    soul: str | None = None
+    session: str | None = None
+    attempt: int = 0
+    attempts: int = 1
+    backoff: str = "fixed"
+    wall_time: int | None = None
+    silence_timeout: int | None = None
     env: dict[str, str] = Field(default_factory=dict)
 
 
@@ -87,6 +94,8 @@ class StatusReport(BaseModel):
     host: str | None = None
     worker: str | None = None
     output_ref: str | None = None
+    attempt: int | None = None        # Retry-Accounting (§3.5/§3.6)
+    next_fire_at: float | None = None  # Backoff-Zeitpunkt
 
 
 class KillRequest(BaseModel):
@@ -123,6 +132,14 @@ class RunRequest(BaseModel):
     kind: str = "job"
 
 
+class WorkerHeartbeat(BaseModel):
+    """``POST /-/worker`` — Anmeldung/Heartbeat eines verbundenen Workers (A12, §3.6)."""
+
+    worker: str
+    host: str
+    git_status: str | None = None
+
+
 class WorkerView(BaseModel):
     """Ein beim Scheduler angemeldeter Worker (§4.5, A12) — Heartbeat + Git-Status."""
 
@@ -131,6 +148,7 @@ class WorkerView(BaseModel):
     connected_at: float | None = None
     last_heartbeat: float | None = None
     git_status: str | None = None
+    stale: bool = False
 
 
 def _todo(endpoint: str) -> JSONResponse:

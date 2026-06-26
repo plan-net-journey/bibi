@@ -42,9 +42,10 @@ def test_resolve_worker_startable(env_iso):
     assert errs == []
 
 
-def test_resolve_connect_not_yet(env_iso):
-    _r, errs = daemon_cmd.resolve_from_args(_args(worker=True, connect=True))
-    assert any("connect" in e.lower() for e in errs)
+def test_resolve_worker_connect_ok(env_iso):
+    # Ab Stufe 3.6: Worker + connect ist gültig (Worker-Verbund).
+    r, errs = daemon_cmd.resolve_from_args(_args(worker=True, connect=True))
+    assert r.worker and r.connect and errs == []
 
 
 def test_resolve_role_from_env(env_iso, monkeypatch: pytest.MonkeyPatch):
@@ -56,8 +57,7 @@ def test_resolve_role_from_env(env_iso, monkeypatch: pytest.MonkeyPatch):
 
 def test_run_returns_2_on_validation_error(env_iso):
     # main() parst + ruft run(); validierungsbedingter Frühausstieg (vor uvicorn).
-    # connect ist noch nicht gebaut (Stufe 3.6) → Frühausstieg statt uvicorn-Start.
-    assert main(["daemon", "run", "--worker", "--connect"]) == 2
+    # scheduler⊥connect ist eine harte Invariante (§4.2) → Frühausstieg.
     assert main(["daemon", "run", "--scheduler", "--connect"]) == 2
 
 

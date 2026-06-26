@@ -296,7 +296,12 @@ def reservation_view(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"], "slug": row["slug"], "kind": row["kind"],
         "payload": row["payload"], "model": row["model"],
-        "soul": row["soul"], "session": row["session"], "env": {},
+        "soul": row["soul"], "session": row["session"],
+        # Ausführungs-/Retry-Parameter, damit ein Remote-Worker (ohne lokale DB)
+        # überwachen + Backoff rechnen kann (§3.6).
+        "attempt": row["attempt"], "attempts": row["attempts"],
+        "backoff": row["backoff"], "wall_time": row["wall_time"],
+        "silence_timeout": row["silence_timeout"], "env": {},
     }
 
 

@@ -14,18 +14,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Query, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from bibi import state
 from bibi.daemon import job_db, openapi
 from bibi.daemon.openapi import (
     JobReservation, JobView, KillRequest, NextRequest, RunRequest, StatusReport,
+    WorkerHeartbeat, WorkerView,
 )
 from bibi.daemon.roles import Roles
 from bibi.daemon.worker import Worker, run_local
+from bibi.daemon.worker_registry import WorkerRegistry
 from bibi.schedule.lifecycle import TERMINAL
 from bibi.schedule.models import Status
 from bibi.wrapper import output
@@ -33,11 +36,20 @@ from bibi.wrapper import output
 log = logging.getLogger("bibi.daemon")
 
 
-def _add_scheduler_routes(app: FastAPI) -> None:
+def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry) -> None:
     """Echte DB-gestützte Scheduler-Routen (PLAN-3 §3.1) — nur bei aktiver
     ``scheduler``-Rolle (sie hält die Job-DB, §4.4). Ersetzen die 3.0-Stubs für
     ``/-/job``/``/-/job/{id}`` (zuerst registriert ⇒ gewinnen) und den
     Phase-2-Stub von ``/-/rescan``/``/-/schedule``. Reine JSON-API (§1.1)."""
+
+    # Optionaler Shared-Secret-Schutz für Verbund-Endpunkte (§1.3): ist
+    # BIBI_CONNECT_SECRET gesetzt, müssen Remote-Worker den Header mitschicken;
+    # ohne Secret gilt die Loopback-/Trust-Netz-Annahme (Single-Node/Tailscale).
+    _secret = os.environ.get("BIBI_CONNECT_SECRET")
+
+    def _auth(x_bibi_secret: str | None = Header(default=None)):
+        if _secret and x_bibi_secret != _secret:
+            raise HTTPException(status_code=401, detail="bad or missing shared secret")
 
     @app.post("/-/rescan", tags=["scheduler"])
     def rescan():
@@ -75,7 +87,8 @@ def _add_scheduler_routes(app: FastAPI) -> None:
         return job
 
     # ── Scheduler-Auswahl: Reservierung + Statusmeldung (PLAN-3 §3.2) ─────────
-    @app.post("/-/scheduler/next", response_model=JobReservation, tags=["scheduler"])
+    @app.post("/-/scheduler/next", response_model=JobReservation, tags=["scheduler"],
+              dependencies=[Depends(_auth)])
     def scheduler_next(req: NextRequest | None = None):
         conn = job_db.connect()
         try:
@@ -86,7 +99,7 @@ def _add_scheduler_routes(app: FastAPI) -> None:
             return Response(status_code=204)  # nichts zu tun (leerer Body)
         return res
 
-    @app.post("/-/scheduler/status/{id}", tags=["scheduler"])
+    @app.post("/-/scheduler/status/{id}", tags=["scheduler"], dependencies=[Depends(_auth)])
     def scheduler_status(id: str, report: StatusReport):  # noqa: A002
         conn = job_db.connect()
         try:
@@ -94,6 +107,7 @@ def _add_scheduler_routes(app: FastAPI) -> None:
                 conn, id, status=str(report.status), reason=report.reason,
                 exit_code=report.exit_code, host=report.host,
                 worker=report.worker, output_ref=report.output_ref,
+                attempt=report.attempt, next_fire_at=report.next_fire_at,
             )
         finally:
             conn.close()
@@ -111,6 +125,15 @@ def _add_scheduler_routes(app: FastAPI) -> None:
             return job_db.list_journal(conn, slug=slug, host=host)
         finally:
             conn.close()
+
+    # ── Worker-Verbund: Anmeldung/Heartbeat + Liste (PLAN-3 §3.6, A12) ────────
+    @app.post("/-/worker", tags=["worker"], dependencies=[Depends(_auth)])
+    def worker_heartbeat(hb: WorkerHeartbeat):
+        return registry.heartbeat(hb.worker, hb.host, hb.git_status)
+
+    @app.get("/-/worker", response_model=list[WorkerView], tags=["worker"])
+    def worker_list():
+        return registry.list()
 
 
 def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
@@ -223,6 +246,7 @@ def create_app(
     if sweeper is None and roles.scheduler:
         from bibi.daemon.sweeper import Sweeper
         sweeper = Sweeper()
+    worker_registry = WorkerRegistry() if roles.scheduler else None
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if synchronizer is not None:
@@ -274,6 +298,8 @@ def create_app(
         }
         if synchronizer is not None:
             out["synchronizer"] = synchronizer.status()
+        if worker_registry is not None:
+            out["workers"] = worker_registry.list()
         return out
 
     @app.post("/-/maintenance")
@@ -289,7 +315,7 @@ def create_app(
     # ── Scheduler-Rolle: echte DB-Routen (PLAN-3 §3.1) ──────────────────────
     # Zuerst registriert ⇒ gewinnen gegen die 3.0-Contract-Stubs für /-/job.
     if roles.scheduler:
-        _add_scheduler_routes(app)
+        _add_scheduler_routes(app, worker_registry)
 
     # ── Worker-Rolle: Job-Streams + kill (PLAN-3 §3.3) ──────────────────────
     if worker is not None:

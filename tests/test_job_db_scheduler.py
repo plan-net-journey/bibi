@@ -100,7 +100,10 @@ def test_reserve_flips_to_running(conn):
 def test_reservation_view_shape(conn):
     _insert(conn, "a", 0, time.time())
     r = job_db.reserve_next(conn)
-    assert set(r) == {"id", "slug", "kind", "payload", "model", "soul", "session", "env"}
+    assert set(r) == {
+        "id", "slug", "kind", "payload", "model", "soul", "session",
+        "attempt", "attempts", "backoff", "wall_time", "silence_timeout", "env",
+    }
     assert r["kind"] == "job" and r["payload"] == "echo hi"
 
 

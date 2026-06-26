@@ -54,10 +54,24 @@ def run(args: argparse.Namespace) -> int:
         # Push-Fähigkeit immer an; der tatsächliche Push ist an auto_sync gegated.
         synchronizer = Synchronizer(push=True, pull=True, consent=state.get_auto_sync)
 
+    worker = None
+    if r.worker:
+        import os
+
+        from bibi.daemon.worker import Worker
+        # --connect ⇒ Remote-Pull beim Scheduler (BIBI_SCHEDULER_URL: env > Config-Datei).
+        url = None
+        if r.connect:
+            url = os.environ.get("BIBI_SCHEDULER_URL") or config.read_env().get("BIBI_SCHEDULER_URL")
+        worker = Worker(
+            connect=r.connect, scheduler_url=url,
+            secret=os.environ.get("BIBI_CONNECT_SECRET"),
+        )
+
     import uvicorn
 
     from bibi.daemon.app import create_app
-    app = create_app(r, synchronizer=synchronizer)
+    app = create_app(r, synchronizer=synchronizer, worker=worker)
     port = args.port or config.daemon_port()
     print(f"bibi daemon: rollen={r.active_names() or ['idle']} port={port}", file=sys.stderr)
     uvicorn.run(app, host=args.host, port=port)
