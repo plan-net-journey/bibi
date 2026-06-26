@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     status          TEXT NOT NULL DEFAULT 'pending',
     reason          TEXT,
     attempt         INTEGER NOT NULL DEFAULT 0,
+    deferred_at     REAL,                      -- erster Defer-Zeitpunkt (§5.5 defer_max)
     locked_at       REAL,
     started_at      REAL,
     finished_at     REAL,

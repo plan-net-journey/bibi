@@ -108,6 +108,22 @@ def test_kill_missing_is_404(client):
     assert client.post("/-/job/deadbeef/kill").status_code == 404
 
 
+def test_reset_complete_to_pending(client):
+    jid = _seed_complete([("out", "x")])
+    r = client.post(f"/-/job/{jid}/reset")
+    assert r.status_code == 200
+    assert client.get(f"/-/job/{jid}/status").json()["status"] == "pending"
+
+
+def test_reset_running_is_409(client):
+    jid = _seed_status("running")  # running ist kein Terminalzustand
+    assert client.post(f"/-/job/{jid}/reset").status_code == 409
+
+
+def test_reset_missing_is_404(client):
+    assert client.post("/-/job/deadbeef/reset").status_code == 404
+
+
 def test_journal_lists_terminal_runs(client):
     # Einen Lauf simulieren: running → complete schreibt eine Journal-Zeile.
     jid = _seed_status("running")

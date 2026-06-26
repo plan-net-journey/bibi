@@ -26,7 +26,7 @@ from pathlib import Path
 
 from bibi import repo
 from bibi.daemon import job_db, worktree
-from bibi.schedule import discovery
+from bibi.schedule import backoff, discovery
 from bibi.schedule.lifecycle import TERMINAL
 from bibi.schedule.models import Status
 
@@ -37,13 +37,49 @@ def _output_path(repo_root: Path, job_id: str) -> Path:
     return repo_root / "data" / "job" / job_id / "output.jsonl"
 
 
+def _last_activity(out_path: Path, default: float) -> float:
+    """Zeitpunkt der jüngsten Output-Zeile (mtime), sonst ``default``."""
+    try:
+        return out_path.stat().st_mtime
+    except OSError:
+        return default
+
+
+def _monitored_wait(
+    proc: subprocess.Popen, *, out_path: Path, started: float,
+    wall_time: int | None, silence_timeout: int | None, poll: float = 0.1,
+) -> tuple[int, str]:
+    """Auf den Child warten und dabei wall_time/silence überwachen (§5.5).
+
+    Gibt ``(exit_code, outcome)`` mit ``outcome`` ∈ {``normal``, ``wall_time``,
+    ``silence``}. Bei wall_time/silence wird die Prozessgruppe terminiert."""
+    while proc.poll() is None:
+        now = time.time()
+        if wall_time and now - started > wall_time:
+            _terminate(proc)
+            return proc.wait(), "wall_time"
+        if silence_timeout and now - _last_activity(out_path, started) > silence_timeout:
+            _terminate(proc)
+            return proc.wait(), "silence"
+        time.sleep(poll)
+    return proc.returncode, "normal"
+
+
+def _terminate(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        pass
+
+
 def _run_wrapper(
     *, job_id: str, slug: str, kind: str, payload: str, model: str | None = None,
     soul: str | None = None, session: str | None = None,
+    wall_time: int | None = None, silence_timeout: int | None = None,
     repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
-) -> tuple[int, str, Path]:
+) -> tuple[int, str, Path, str]:
     """Der gemeinsame Ausführungs-Kern beider Pfade: Worktree → Wrapper-Subprozess
-    → Commit. Gibt ``(exit_code, commit_sha, output_path)``.
+    (überwacht) → Commit. Gibt ``(exit_code, commit_sha, output_path, outcome)``.
 
     ``ephemeral=True`` (für ``/run``) entfernt den Worktree nach dem Lauf wieder.
     Der Wrapper ist die einzige Ausführungs-Einheit; nur der Aufrufweg
@@ -68,6 +104,7 @@ def _run_wrapper(
         if session:
             env["BIBI_JOB_SESSION"] = session
 
+    started = time.time()
     # eigene Session ⇒ kill kann die ganze Prozessgruppe (Wrapper + Child) treffen.
     proc = subprocess.Popen(
         [sys.executable, "-m", "bibi.wrapper"],
@@ -75,14 +112,17 @@ def _run_wrapper(
     )
     if register is not None:
         register(job_id, proc)
-    code = proc.wait()
+    code, outcome = _monitored_wait(
+        proc, out_path=out_path, started=started,
+        wall_time=wall_time, silence_timeout=silence_timeout,
+    )
     if register is not None:
         register(job_id, None)
 
     commit_sha = worktree.commit(worktree=wt_path, message=f"{slug}: run {job_id}", slug=slug)
     if ephemeral:
         worktree.remove(repo_root=repo_root, worktree=wt_path)
-    return code, commit_sha, out_path
+    return code, commit_sha, out_path, outcome
 
 
 def execute_reservation(
@@ -90,31 +130,60 @@ def execute_reservation(
     db_path: Path | None = None, worker_name: str | None = None,
     register=None,
 ) -> dict:
-    """Einen **disponierten** (reservierten) Job ausführen + dem Scheduler melden.
-
-    Ist der Job beim Abschluss bereits terminal (z. B. ``killed``), überschreibt
-    der Worker den Zustand **nicht**."""
+    """Einen **disponierten** (reservierten) Job ausführen + dem Scheduler melden,
+    inkl. Lifecycle-Kanten (§5.5): wall_time→killed, silence→zombie, exit≠0→failed
+    (mit Backoff, attempt++). Ein bereits terminaler Job (z. B. ``killed`` per
+    ``/-/job/{id}/kill``) wird **nicht** überschrieben."""
     jid = reservation["id"]
-    code, commit_sha, out_path = _run_wrapper(
+    conn = job_db.connect(db_path)
+    try:
+        jr = conn.execute(
+            "SELECT wall_time, silence_timeout, attempts, backoff FROM jobs WHERE id=?",
+            (jid,),
+        ).fetchone()
+    finally:
+        conn.close()
+    wall_time = jr["wall_time"] if jr else None
+    silence_timeout = jr["silence_timeout"] if jr else None
+    attempts = jr["attempts"] if jr else 1
+    backoff_strategy = jr["backoff"] if jr else "fixed"
+
+    code, commit_sha, out_path, outcome = _run_wrapper(
         job_id=jid, slug=reservation["slug"], kind=reservation["kind"],
         payload=reservation["payload"], model=reservation.get("model"),
         soul=reservation.get("soul"), session=reservation.get("session"),
+        wall_time=wall_time, silence_timeout=silence_timeout,
         repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
     )
+
     reported: str | None = None
     conn = job_db.connect(db_path)
     try:
-        cur = conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
+        cur = conn.execute("SELECT status, attempt FROM jobs WHERE id=?", (jid,)).fetchone()
         if cur is not None and Status(cur["status"]) not in TERMINAL:
-            reported = "complete" if code == 0 else "failed"
             rel = out_path.relative_to(repo_root).as_posix()
-            job_db.report_status(
-                conn, jid, status=reported, exit_code=code,
-                output_ref=rel, worker=worker_name,
-            )
+            common = {"exit_code": code, "output_ref": rel, "worker": worker_name}
+            if outcome == "wall_time":
+                reported = "killed"
+                job_db.report_status(conn, jid, status="killed", reason="by_wall_time", **common)
+            elif outcome == "silence":
+                reported = "zombie"
+                job_db.report_status(conn, jid, status="zombie", reason="silence", **common)
+            elif code == 0:
+                reported = "complete"
+                job_db.report_status(conn, jid, status="complete", **common)
+            else:
+                reported = "failed"
+                attempt = cur["attempt"] + 1
+                base = float(os.environ.get("BIBI_RETRY_BASE") or backoff.DEFAULT_BASE)
+                nf = time.time() + backoff.delay(backoff_strategy, attempt, base=base)
+                job_db.report_status(
+                    conn, jid, status="failed", attempt=attempt, next_fire_at=nf, **common,
+                )
     finally:
         conn.close()
-    return {"id": jid, "exit_code": code, "commit": commit_sha, "status": reported}
+    return {"id": jid, "exit_code": code, "commit": commit_sha,
+            "status": reported, "outcome": outcome, "attempts": attempts}
 
 
 def _resolve_spec(repo_root: Path, slug: str):
@@ -151,7 +220,7 @@ def run_local(
 
     jid = secrets.token_hex(4)
     started = time.time()
-    code, commit_sha, out_path = _run_wrapper(
+    code, commit_sha, out_path, outcome = _run_wrapper(
         job_id=jid, slug=eff_slug, kind=eff_kind, payload=payload, model=eff_model,
         soul=eff_soul, session=eff_session,
         repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=True,

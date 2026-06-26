@@ -65,6 +65,31 @@ def _show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _kill(args: argparse.Namespace) -> int:
+    code, body = _req(f"{_base(args)}/-/job/{args.id}/kill", method="POST")
+    if code == 404:
+        print(f"kein Job mit id {args.id}", file=sys.stderr); return 1
+    if code == 409:
+        print(f"Job {args.id} läuft nicht (nicht killbar)", file=sys.stderr); return 1
+    if code != 200:
+        return 1
+    print(f"{args.id} killed")
+    return 0
+
+
+def _restart(args: argparse.Namespace) -> int:
+    # restart = reset (Terminalzustand → pending, neu eingeplant, §5.6)
+    code, body = _req(f"{_base(args)}/-/job/{args.id}/reset", method="POST")
+    if code == 404:
+        print(f"kein Job mit id {args.id}", file=sys.stderr); return 1
+    if code == 409:
+        print(f"Job {args.id} ist nicht in einem Terminalzustand", file=sys.stderr); return 1
+    if code != 200:
+        return 1
+    print(f"{args.id} → pending")
+    return 0
+
+
 def _rescan(args: argparse.Namespace) -> int:
     code, body = _req(f"{_base(args)}/-/rescan", method="POST")
     if code != 200 or not isinstance(body, dict):
@@ -90,6 +115,14 @@ def register(sub: argparse._SubParsersAction) -> None:
     ps = jsub.add_parser("show", help="einen Job zeigen")
     ps.add_argument("id")
     ps.set_defaults(func=_show)
+
+    pk = jsub.add_parser("kill", help="laufenden Job beenden (by_user)")
+    pk.add_argument("id")
+    pk.set_defaults(func=_kill)
+
+    pr = jsub.add_parser("restart", help="Terminal-Job neu einplanen (reset)")
+    pr.add_argument("id")
+    pr.set_defaults(func=_restart)
 
     jsub.add_parser("rescan", help="Vault neu scannen").set_defaults(func=_rescan)
 

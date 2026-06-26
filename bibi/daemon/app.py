@@ -187,6 +187,19 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
             return JSONResponse(status_code=409, content={"error": "job not running", "id": id})
         return {"id": id, "status": "killed", "signaled": signaled}
 
+    @app.post("/-/job/{id}/reset", tags=["job"])
+    def job_reset(id: str):  # noqa: A002  — §5.6 Verb: Terminalzustand → pending
+        conn = job_db.connect(worker.db_path)
+        try:
+            outcome = job_db.report_status(conn, id, status="pending")
+        finally:
+            conn.close()
+        if outcome == "not_found":
+            return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
+        if outcome == "invalid":
+            return JSONResponse(status_code=409, content={"error": "not resettable", "id": id})
+        return {"id": id, "status": "pending"}
+
     # ── /run: lokale On-Demand-Ausführung (PLAN-3 §3.3b) ──────────────────────
     @app.post("/-/run", tags=["job"])
     def run(req: RunRequest):
@@ -202,13 +215,20 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
             return JSONResponse(status_code=404, content={"error": str(exc)})
 
 
-def create_app(roles: Roles, synchronizer=None, worker: Worker | None = None) -> FastAPI:
+def create_app(
+    roles: Roles, synchronizer=None, worker: Worker | None = None, sweeper=None,
+) -> FastAPI:
     if worker is None and roles.worker:
         worker = Worker(worker_name="local")
+    if sweeper is None and roles.scheduler:
+        from bibi.daemon.sweeper import Sweeper
+        sweeper = Sweeper()
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if synchronizer is not None:
             await synchronizer.start()
+        if sweeper is not None:
+            await sweeper.start()
         if worker is not None:
             await worker.start()
         try:
@@ -216,6 +236,8 @@ def create_app(roles: Roles, synchronizer=None, worker: Worker | None = None) ->
         finally:
             if worker is not None:
                 await worker.stop()
+            if sweeper is not None:
+                await sweeper.stop()
             if synchronizer is not None:
                 await synchronizer.stop()
 

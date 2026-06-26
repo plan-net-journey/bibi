@@ -66,7 +66,7 @@ def test_migration_v2_to_v3_adds_journal_domain(tmp_path: Path):
     c2 = job_db.connect(p)
     cols = {r["name"] for r in c2.execute("PRAGMA table_info(journal)")}
     assert "domain" in cols
-    assert c2.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert c2.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
     c2.close()
 
 
@@ -151,6 +151,47 @@ def test_report_output_ref_only_no_blob(conn):
 
 
 # ── Concurrency: n parallele /next → disjunkt (§3.2/§3.8) ─────────────────────
+
+
+def test_sweep_exhausted_failed_to_error(conn):
+    import secrets
+    jid = secrets.token_hex(4)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempt, "
+        "attempts, next_fire_at, enqueued_at) VALUES (?,?,?,?,?, 'failed', 2, 2, 0, ?)",
+        (jid, "x", "x.md", "job", "e", time.time()),
+    )
+    res = job_db.sweep(conn, now=time.time())
+    assert res["errored"] == 1
+    assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "error"
+    assert any(j["status"] == "error" for j in job_db.list_journal(conn))
+
+
+def test_sweep_leaves_retriable_failed(conn):
+    import secrets
+    jid = secrets.token_hex(4)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempt, "
+        "attempts, next_fire_at, enqueued_at) VALUES (?,?,?,?,?, 'failed', 1, 2, 0, ?)",
+        (jid, "y", "y.md", "job", "e", time.time()),
+    )
+    assert job_db.sweep(conn, now=time.time())["errored"] == 0
+    assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "failed"
+
+
+def test_sweep_deferred_expired_to_inactive(conn):
+    import secrets
+    jid = secrets.token_hex(4)
+    now = time.time()
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, deferred_at, "
+        "defer_max, enqueued_at) VALUES (?,?,?,?,?, 'deferred', ?, 10, ?)",
+        (jid, "d", "d.md", "job", "e", now - 100, now),
+    )
+    res = job_db.sweep(conn, now=now)
+    assert res["inactivated"] == 1
+    row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "inactive" and row["reason"] == "deferred_expired"
 
 
 def test_concurrent_reserve_disjoint(tmp_path: Path):

@@ -25,8 +25,14 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
+
+def _has_table(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone() is not None
+
 
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(r["name"] == column for r in conn.execute(f"PRAGMA table_info({table})"))
@@ -41,12 +47,18 @@ def _mig_journal_domain(conn: sqlite3.Connection) -> None:  # v2 → v3
         conn.execute("ALTER TABLE journal ADD COLUMN domain TEXT NOT NULL DEFAULT 'scheduled'")
 
 
+def _mig_jobs_deferred_at(conn: sqlite3.Connection) -> None:  # v3 → v4
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "deferred_at"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN deferred_at REAL")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
 _MIGRATIONS: dict[int, list] = {
     1: [_mig_meta],
     2: [_mig_journal_domain],
+    3: [_mig_jobs_deferred_at],
 }
 
 
@@ -305,9 +317,17 @@ def reserve_next(
     conn.execute("BEGIN IMMEDIATE")
     try:
         offset = _get_offset(conn)
+        # Eligibel: pending, retriable failed (Backoff fällig, Versuche übrig) und
+        # fällige deferred (resume) — §5.4 failed→running / deferred→running.
         rows = conn.execute(
             "SELECT id, priority, enqueued_at, rowid AS seq FROM jobs "
-            "WHERE status='pending' AND locked_at IS NULL"
+            "WHERE locked_at IS NULL AND ("
+            "  status='pending'"
+            "  OR (status='failed' AND attempt < attempts "
+            "      AND (next_fire_at IS NULL OR next_fire_at <= :now))"
+            "  OR (status='deferred' AND (next_fire_at IS NULL OR next_fire_at <= :now))"
+            ")",
+            {"now": now},
         ).fetchall()
         chosen, new_offset = dispatcher.select([dict(r) for r in rows], offset)
         if chosen is None:
@@ -316,7 +336,8 @@ def reserve_next(
         cur = conn.execute(
             "UPDATE jobs SET status='running', locked_at=:now, started_at=:now, "
             "worker=:w, host=:h "
-            "WHERE id=:id AND status='pending' AND locked_at IS NULL",
+            "WHERE id=:id AND status IN ('pending','failed','deferred') "
+            "AND locked_at IS NULL",
             {"now": now, "w": worker, "h": host, "id": chosen["id"]},
         )
         if cur.rowcount != 1:  # unter BEGIN IMMEDIATE eigentlich unerreichbar
@@ -335,7 +356,8 @@ def report_status(
     conn: sqlite3.Connection, job_id: str, *, status: str,
     reason: str | None = None, exit_code: int | None = None,
     host: str | None = None, worker: str | None = None,
-    output_ref: str | None = None, now: float | None = None,
+    output_ref: str | None = None, attempt: int | None = None,
+    next_fire_at: float | None = None, now: float | None = None,
 ) -> str:
     """Worker meldet einen Zustandswechsel (§4.4, output-frei). Rückgabe:
     ``ok`` | ``invalid`` (verbotener Übergang, §5.4) | ``not_found``."""
@@ -351,8 +373,18 @@ def report_status(
     fields: dict = {"status": target.value, "reason": reason, "updated_at": now}
     if target in lifecycle.TERMINAL:
         fields["finished_at"] = now
-    if target is Status.PENDING:  # reset löst den Lock
+    # failed/deferred/pending sind wieder dispatchbar ⇒ Lock lösen (reserve braucht NULL).
+    if target in (Status.FAILED, Status.DEFERRED, Status.PENDING):
         fields["locked_at"] = None
+    if target is Status.PENDING:  # reset = frische Neueinplanung (§5.6)
+        fields["attempt"] = 0
+        fields["next_fire_at"] = None
+        fields["reason"] = None
+        fields["deferred_at"] = None
+    if attempt is not None:
+        fields["attempt"] = attempt
+    if next_fire_at is not None:
+        fields["next_fire_at"] = next_fire_at
     if exit_code is not None:
         fields["exit_code"] = exit_code
     if host is not None:
@@ -370,6 +402,33 @@ def report_status(
     if target in lifecycle.TERMINAL:
         _write_journal(conn, job_id, now)
     return "ok"
+
+
+def sweep(conn: sqlite3.Connection, now: float | None = None) -> dict:
+    """Zeitgesteuerte Scheduler-Übergänge (§5.4/§5.5; PLAN-3 §3.5).
+
+    - **failed + erschöpft** (``attempt >= attempts``, Backoff fällig) → ``error``.
+    - **deferred + abgelaufen** (``defer_max`` überschritten) → ``inactive``
+      (``deferred_expired``).
+
+    Worker-seitige Übergänge (wall_time/silence/no_process während der Ausführung)
+    macht der Worker selbst — der Sweep deckt nur die rein zeit-/zählerbasierten
+    Scheduler-Entscheidungen ab."""
+    now = time.time() if now is None else now
+    errored = inactivated = 0
+    for r in conn.execute(
+        "SELECT id FROM jobs WHERE status='failed' AND attempt >= attempts "
+        "AND (next_fire_at IS NULL OR next_fire_at <= ?)", (now,)
+    ).fetchall():
+        report_status(conn, r["id"], status="error", now=now)
+        errored += 1
+    for r in conn.execute(
+        "SELECT id FROM jobs WHERE status='deferred' AND deferred_at IS NOT NULL "
+        "AND defer_max IS NOT NULL AND (? - deferred_at) >= defer_max", (now,)
+    ).fetchall():
+        report_status(conn, r["id"], status="inactive", reason="deferred_expired", now=now)
+        inactivated += 1
+    return {"errored": errored, "inactivated": inactivated}
 
 
 # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────────

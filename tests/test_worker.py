@@ -101,6 +101,59 @@ def test_tick_empty_returns_false(gitrepo: Path):
     assert _worker(gitrepo).tick_once() is False
 
 
+def test_wall_time_kills_job(gitrepo: Path):
+    jid = _seed(gitrepo, "slow/README.md",
+                '---\nschedule: now\njob: "sleep 30"\nwall_time: 1\n---\n')
+    _worker(gitrepo).tick_once()
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    try:
+        row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+        assert row["status"] == "killed" and row["reason"] == "by_wall_time"
+        assert job_db.list_journal(conn)[0]["reason"] == "by_wall_time"
+    finally:
+        conn.close()
+
+
+def test_silence_zombies_job(gitrepo: Path):
+    # kein Output + silence_timeout abgelaufen → zombie(silence)
+    jid = _seed(gitrepo, "hang/README.md",
+                '---\nschedule: now\njob: "sleep 30"\nsilence_timeout: 1\n---\n')
+    _worker(gitrepo).tick_once()
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    try:
+        row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+        assert row["status"] == "zombie" and row["reason"] == "silence"
+    finally:
+        conn.close()
+
+
+def test_retry_then_error(gitrepo: Path, monkeypatch):
+    monkeypatch.setenv("BIBI_RETRY_BASE", "0")  # kein Warten zwischen Versuchen
+    jid = _seed(gitrepo, "boom/README.md",
+                '---\nschedule: now\njob: "exit 1"\nattempts: 2\n---\n')
+    w = _worker(gitrepo)
+    dbp = gitrepo / "data" / "jobs.sqlite"
+
+    assert w.tick_once() is True   # Versuch 1 → failed (attempt 1)
+    conn = job_db.connect(dbp)
+    assert conn.execute("SELECT status, attempt FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "failed"
+    conn.close()
+
+    assert w.tick_once() is True   # Versuch 2 (failed→running) → failed (attempt 2)
+    conn = job_db.connect(dbp)
+    row = conn.execute("SELECT status, attempt FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "failed" and row["attempt"] == 2
+    conn.close()
+
+    assert w.tick_once() is False  # erschöpft → nicht mehr reservierbar
+    conn = job_db.connect(dbp)
+    job_db.sweep(conn)             # Sweep: erschöpftes failed → error
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "error"
+    assert any(j["status"] == "error" for j in job_db.list_journal(conn))
+    conn.close()
+
+
 def test_execute_reservation_skips_if_already_terminal(gitrepo: Path):
     # Wird der Job vor Abschluss killed, überschreibt der Worker nicht.
     jid = _seed(gitrepo, "r/README.md", '---\nschedule: now\njob: "echo hi"\n---\n')
