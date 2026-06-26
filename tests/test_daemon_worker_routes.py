@@ -124,6 +124,20 @@ def test_reset_missing_is_404(client):
     assert client.post("/-/job/deadbeef/reset").status_code == 404
 
 
+def test_start_pending_ok(client):
+    jid = _seed_status("pending")
+    assert client.post(f"/-/job/{jid}/start").status_code == 200
+
+
+def test_start_running_is_409(client):
+    jid = _seed_status("running")  # nur pending ist startbar
+    assert client.post(f"/-/job/{jid}/start").status_code == 409
+
+
+def test_start_missing_is_404(client):
+    assert client.post("/-/job/deadbeef/start").status_code == 404
+
+
 def test_journal_lists_terminal_runs(client):
     # Einen Lauf simulieren: running → complete schreibt eine Journal-Zeile.
     jid = _seed_status("running")

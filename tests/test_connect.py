@@ -41,6 +41,37 @@ def test_registry_update_keeps_connected_at():
     assert lst[0]["host"] == "h2" and lst[0]["connected_at"] == 0
 
 
+def test_registry_stale_workers():
+    reg = WorkerRegistry()
+    reg.heartbeat("dead", "h", now=0)
+    reg.heartbeat("alive", "h", now=100)
+    assert reg.stale_workers(now=100, stale_after=60) == {"dead"}
+
+
+def test_sweeper_reconciles_no_process(tmp_path: Path):
+    import secrets
+    import time as _t
+
+    from bibi.daemon import job_db
+    from bibi.daemon.sweeper import Sweeper
+    p = tmp_path / "j.sqlite"
+    conn = job_db.connect(p)
+    jid = secrets.token_hex(4)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, worker, "
+        "enqueued_at, next_fire_at) VALUES (?,?,?,?,?, 'running', 'gone', ?, 0)",
+        (jid, "x", "x.md", "job", "e", _t.time()))
+    conn.close()
+    reg = WorkerRegistry()
+    reg.heartbeat("gone", "h", now=0)  # last_heartbeat=0 ⇒ stale gegen now
+    sw = Sweeper(db_path=p, registry=reg, autorun=False)
+    assert sw.tick_once()["no_process"] == 1
+    conn = job_db.connect(p)
+    row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "killed" and row["reason"] == "no_process"
+    conn.close()
+
+
 # ── /-/worker-Routen (Scheduler-Rolle) ───────────────────────────────────────
 
 

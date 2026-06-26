@@ -19,17 +19,22 @@ log = logging.getLogger("bibi.sweeper")
 
 class Sweeper:
     def __init__(self, *, db_path: Path | None = None, interval: float = 2.0,
-                 autorun: bool = True) -> None:
+                 autorun: bool = True, registry=None) -> None:
         self.db_path = db_path
         self.interval = interval
         self.autorun = autorun
+        self.registry = registry  # WorkerRegistry für no_process-Reconcile (§3.6)
         self._task: asyncio.Task | None = None
         self._running = False
 
     def tick_once(self) -> dict:
         conn = job_db.connect(self.db_path)
         try:
-            return job_db.sweep(conn)
+            out = job_db.sweep(conn)
+            if self.registry is not None:  # verwaiste running-Jobs toter Worker
+                stale = self.registry.stale_workers()
+                out["no_process"] = job_db.reconcile_no_process(conn, stale)
+            return out
         finally:
             conn.close()
 

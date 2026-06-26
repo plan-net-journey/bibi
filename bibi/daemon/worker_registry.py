@@ -41,3 +41,9 @@ class WorkerRegistry:
 
     def fresh_count(self, *, stale_after: float = STALE_AFTER, now: float | None = None) -> int:
         return sum(1 for w in self.list(stale_after=stale_after, now=now) if not w["stale"])
+
+    def stale_workers(self, *, stale_after: float = STALE_AFTER, now: float | None = None) -> set[str]:
+        """Namen **bekannter, aber abgelaufener** Worker (für no_process-Reconcile).
+        Unbekannte (nie angemeldete, z. B. lokale) Worker sind absichtlich NICHT
+        enthalten — sonst würde ein lebender lokaler Worker fälschlich verwaisen."""
+        return {w["worker"] for w in self.list(stale_after=stale_after, now=now) if w["stale"]}

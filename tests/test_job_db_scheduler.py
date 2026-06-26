@@ -227,6 +227,106 @@ def test_sweep_deferred_expired_to_inactive(conn):
     assert row["status"] == "inactive" and row["reason"] == "deferred_expired"
 
 
+def _seed_full(conn, **cols):
+    import secrets
+    cols.setdefault("id", secrets.token_hex(4))
+    cols.setdefault("schedule_ref", f"{cols.get('slug','x')}.md")
+    cols.setdefault("kind", "job")
+    cols.setdefault("payload", "e")
+    cols.setdefault("status", "pending")
+    cols.setdefault("enqueued_at", time.time())
+    names = ", ".join(cols)
+    ph = ", ".join(f":{k}" for k in cols)
+    conn.execute(f"INSERT INTO jobs ({names}) VALUES ({ph})", cols)
+    return cols["id"]
+
+
+# ── #1 cron-Recurrence ───────────────────────────────────────────────────────
+
+
+def test_cron_job_reschedules_after_complete(conn):
+    jid = _seed_full(conn, slug="cronjob", schedule="*/5 * * * *",
+                     status="running", next_fire_at=0, fire=0)
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    row = conn.execute("SELECT status, next_fire_at, fire, attempt FROM jobs WHERE id=?",
+                       (jid,)).fetchone()
+    assert row["status"] == "pending"            # neu eingeplant
+    assert row["next_fire_at"] > time.time()     # nächster cron-Tick in der Zukunft
+    assert row["fire"] == 1                       # Zähler hoch
+    assert row["attempt"] == 0
+    # eine Journal-Zeile für den abgeschlossenen Lauf
+    assert len(job_db.list_journal(conn)) == 1
+
+
+def test_cron_two_fires_two_journal_rows(conn):
+    jid = _seed_full(conn, slug="c", schedule="* * * * *", status="running",
+                     next_fire_at=0, fire=0)
+    job_db.report_status(conn, jid, status="complete")          # fire 0
+    # zweiter Lauf: wieder running → complete (fire jetzt 1)
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (jid,))
+    job_db.report_status(conn, jid, status="complete")          # fire 1
+    rows = job_db.list_journal(conn)
+    assert len(rows) == 2                          # KEIN Dedup über fires hinweg
+    assert {r["run_id"] for r in rows} == {"c:0", "c:1"}
+
+
+def test_now_job_does_not_recur(conn):
+    jid = _seed_full(conn, slug="oneshot", schedule="now", status="running",
+                     next_fire_at=0, fire=0)
+    job_db.report_status(conn, jid, status="complete")
+    assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "complete"
+
+
+# ── #2 startup ───────────────────────────────────────────────────────────────
+
+
+def test_fire_startup_enqueues(conn):
+    jid = _seed_full(conn, slug="boot", schedule="startup", status="complete",
+                     next_fire_at=None)
+    assert job_db.fire_startup(conn) == 1
+    row = conn.execute("SELECT status, next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "pending" and row["next_fire_at"] is not None
+    # nach fire_startup ist er fällig → reservierbar
+    assert job_db.reserve_next(conn)["slug"] == "boot"
+
+
+# ── #3 start_now ─────────────────────────────────────────────────────────────
+
+
+def test_start_now_makes_due(conn):
+    jid = _seed_full(conn, slug="later", schedule="0 9 * * *",
+                     next_fire_at=time.time() + 99999)  # weit in der Zukunft
+    assert job_db.reserve_next(conn) is None      # nicht fällig
+    assert job_db.start_now(conn, jid) == "ok"
+    assert job_db.reserve_next(conn)["slug"] == "later"  # jetzt fällig
+
+
+def test_start_now_invalid_and_missing(conn):
+    jid = _seed_full(conn, slug="r", status="running", next_fire_at=0)
+    assert job_db.start_now(conn, jid) == "invalid"   # nicht pending
+    assert job_db.start_now(conn, "deadbeef") == "not_found"
+
+
+# ── #4 no_process-Reconcile ──────────────────────────────────────────────────
+
+
+def test_reconcile_no_process_kills_stale_worker_jobs(conn):
+    jid = _seed_full(conn, slug="remote", status="running", worker="deadnode", next_fire_at=0)
+    other = _seed_full(conn, slug="alive", status="running", worker="livenode", next_fire_at=0)
+    n = job_db.reconcile_no_process(conn, {"deadnode"})
+    assert n == 1
+    assert conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()["reason"] == "no_process"
+    assert conn.execute("SELECT status FROM jobs WHERE id=?", (other,)).fetchone()["status"] == "running"
+
+
+def test_reconcile_startup_orphans(conn):
+    mine = _seed_full(conn, slug="mine", status="running", worker="me", next_fire_at=0)
+    theirs = _seed_full(conn, slug="theirs", status="running", worker="remote", next_fire_at=0)
+    assert job_db.reconcile_startup_orphans(conn, "me") == 1
+    assert conn.execute("SELECT status, reason FROM jobs WHERE id=?", (mine,)).fetchone()["status"] == "killed"
+    assert conn.execute("SELECT status FROM jobs WHERE id=?", (theirs,)).fetchone()["status"] == "running"
+
+
 def test_concurrent_reserve_disjoint(tmp_path: Path):
     p = tmp_path / "jobs.sqlite"
     seed = job_db.connect(p)

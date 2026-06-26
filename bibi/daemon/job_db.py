@@ -25,7 +25,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -52,6 +52,11 @@ def _mig_jobs_deferred_at(conn: sqlite3.Connection) -> None:  # v3 → v4
         conn.execute("ALTER TABLE jobs ADD COLUMN deferred_at REAL")
 
 
+def _mig_jobs_fire(conn: sqlite3.Connection) -> None:  # v4 → v5
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "fire"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN fire INTEGER NOT NULL DEFAULT 0")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -59,6 +64,7 @@ _MIGRATIONS: dict[int, list] = {
     1: [_mig_meta],
     2: [_mig_journal_domain],
     3: [_mig_jobs_deferred_at],
+    4: [_mig_jobs_fire],
 }
 
 
@@ -113,9 +119,22 @@ def compute_next_fire(spec, now: float | None = None) -> float | None:
         return None
     if sched == "now":
         return now
+    return _next_cron(sched, now)
+
+
+_SPECIAL = ("now", "startup", "never")
+
+
+def is_recurring(schedule: str | None) -> bool:
+    """True für wiederkehrende (croniter-)Schedules — nicht ``now``/``startup``/
+    ``never`` und kein ``at:`` (one-shot)."""
+    return schedule is not None and schedule not in _SPECIAL
+
+
+def _next_cron(expr: str, now: float) -> float | None:
     try:
         import croniter
-        return croniter.croniter(sched, now).get_next(float)
+        return croniter.croniter(expr, now).get_next(float)
     except Exception:
         return None
 
@@ -405,9 +424,21 @@ def report_status(
     fields["id"] = job_id
     conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
 
-    # Terminal-Übergang → eine Journal-Zeile (disponierte Domäne, §1.4).
+    # Terminal-Übergang → eine Journal-Zeile (disponierte Domäne, §1.4) …
     if target in lifecycle.TERMINAL:
         _write_journal(conn, job_id, now)
+        # … und für wiederkehrende (cron-)Schedules sofort neu einplanen (§5.2):
+        # nächster Tick als pending, frischer Zähler, fire++ (eindeutige run_id).
+        sched = conn.execute("SELECT schedule FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if sched is not None and is_recurring(sched["schedule"]):
+            nf = _next_cron(sched["schedule"], now)
+            conn.execute(
+                "UPDATE jobs SET status='pending', next_fire_at=:nf, attempt=0, "
+                "reason=NULL, fire=fire+1, locked_at=NULL, started_at=NULL, "
+                "finished_at=NULL, exit_code=NULL, output_ref=NULL, deferred_at=NULL, "
+                "updated_at=:now WHERE id=:id",
+                {"nf": nf, "now": now, "id": job_id},
+            )
     return "ok"
 
 
@@ -438,6 +469,68 @@ def sweep(conn: sqlite3.Connection, now: float | None = None) -> dict:
     return {"errored": errored, "inactivated": inactivated}
 
 
+def fire_startup(conn: sqlite3.Connection, now: float | None = None) -> int:
+    """``schedule: startup``-Jobs zum Feuern bei Daemon-Start re-enqueuen (§5.2).
+
+    Setzt sie auf ``pending`` + ``next_fire_at=now`` (frischer Zähler) — bei jedem
+    Daemon-Start einmal. Gibt die Anzahl angestoßener Jobs zurück."""
+    now = time.time() if now is None else now
+    cur = conn.execute(
+        "UPDATE jobs SET status='pending', next_fire_at=:now, attempt=0, reason=NULL, "
+        "fire=fire+1, locked_at=NULL, started_at=NULL, finished_at=NULL, exit_code=NULL, "
+        "output_ref=NULL, deferred_at=NULL, updated_at=:now WHERE schedule='startup'",
+        {"now": now},
+    )
+    return cur.rowcount
+
+
+def start_now(conn: sqlite3.Connection, job_id: str, now: float | None = None) -> str:
+    """User-Verb ``start`` (§5.6): einen ``pending``-Job **sofort** fällig machen
+    (``next_fire_at=now``), ohne auf den Trigger zu warten. ``ok`` | ``invalid``
+    (nicht pending) | ``not_found``."""
+    now = time.time() if now is None else now
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if row is None:
+        return "not_found"
+    if row["status"] != "pending":
+        return "invalid"
+    conn.execute("UPDATE jobs SET next_fire_at=?, updated_at=? WHERE id=?", (now, now, job_id))
+    return "ok"
+
+
+def reconcile_no_process(
+    conn: sqlite3.Connection, stale_workers: set[str], now: float | None = None
+) -> int:
+    """``running``-Jobs verwaister (heartbeat-veralteter) Worker → ``killed``
+    (``no_process``), §5.5. ``stale_workers`` = bekannte, aber abgelaufene Worker
+    (lokale Worker ohne Heartbeat sind NICHT dabei ⇒ keine Fehlalarme)."""
+    now = time.time() if now is None else now
+    n = 0
+    for w in stale_workers:
+        for r in conn.execute(
+            "SELECT id FROM jobs WHERE status='running' AND worker=?", (w,)
+        ).fetchall():
+            report_status(conn, r["id"], status="killed", reason="no_process", now=now)
+            n += 1
+    return n
+
+
+def reconcile_startup_orphans(
+    conn: sqlite3.Connection, worker_name: str, now: float | None = None
+) -> int:
+    """Beim Start eines lokalen Workers: dessen ``running``-Jobs aus einem früheren
+    (abgestürzten) Daemon sind verwaist → ``killed``/``no_process``. Nur eigene
+    Jobs (``worker=worker_name``) — Remote-Worker bleiben unangetastet."""
+    now = time.time() if now is None else now
+    n = 0
+    for r in conn.execute(
+        "SELECT id FROM jobs WHERE status='running' AND worker=?", (worker_name,)
+    ).fetchall():
+        report_status(conn, r["id"], status="killed", reason="no_process", now=now)
+        n += 1
+    return n
+
+
 # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────────
 
 
@@ -449,7 +542,9 @@ def _write_journal(conn: sqlite3.Connection, job_id: str, archived_at: float) ->
     row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return
-    run_id = f"{row['slug']}:{row['attempt']}"
+    # run_id je Trigger eindeutig (fire) ⇒ Watermark-Dedup kollidiert nicht über
+    # wiederkehrende cron-Läufe hinweg.
+    run_id = f"{row['slug']}:{row['fire']}"
     dup = conn.execute(
         "SELECT 1 FROM journal WHERE run_id=? AND status=?", (run_id, row["status"])
     ).fetchone()

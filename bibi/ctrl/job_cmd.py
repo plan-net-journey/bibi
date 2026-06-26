@@ -65,6 +65,18 @@ def _show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _start(args: argparse.Namespace) -> int:
+    code, _ = _req(f"{_base(args)}/-/job/{args.id}/start", method="POST")
+    if code == 404:
+        print(f"kein Job mit id {args.id}", file=sys.stderr); return 1
+    if code == 409:
+        print(f"Job {args.id} ist nicht pending (nicht startbar)", file=sys.stderr); return 1
+    if code != 200:
+        return 1
+    print(f"{args.id} → jetzt fällig")
+    return 0
+
+
 def _kill(args: argparse.Namespace) -> int:
     code, body = _req(f"{_base(args)}/-/job/{args.id}/kill", method="POST")
     if code == 404:
@@ -115,6 +127,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     ps = jsub.add_parser("show", help="einen Job zeigen")
     ps.add_argument("id")
     ps.set_defaults(func=_show)
+
+    pst = jsub.add_parser("start", help="pending-Job sofort fällig machen (§5.6)")
+    pst.add_argument("id")
+    pst.set_defaults(func=_start)
 
     pk = jsub.add_parser("kill", help="laufenden Job beenden (by_user)")
     pk.add_argument("id")

@@ -223,6 +223,19 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
             return JSONResponse(status_code=409, content={"error": "not resettable", "id": id})
         return {"id": id, "status": "pending"}
 
+    @app.post("/-/job/{id}/start", tags=["job"])
+    def job_start(id: str):  # noqa: A002  — §5.6 Verb: pending sofort fällig machen
+        conn = job_db.connect(worker.db_path)
+        try:
+            outcome = job_db.start_now(conn, id)
+        finally:
+            conn.close()
+        if outcome == "not_found":
+            return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
+        if outcome == "invalid":
+            return JSONResponse(status_code=409, content={"error": "not pending", "id": id})
+        return {"id": id, "status": "started"}
+
     # ── /run: lokale On-Demand-Ausführung (PLAN-3 §3.3b) ──────────────────────
     @app.post("/-/run", tags=["job"])
     def run(req: RunRequest):
@@ -243,14 +256,31 @@ def create_app(
 ) -> FastAPI:
     if worker is None and roles.worker:
         worker = Worker(worker_name="local")
+    worker_registry = WorkerRegistry() if roles.scheduler else None
     if sweeper is None and roles.scheduler:
         from bibi.daemon.sweeper import Sweeper
-        sweeper = Sweeper()
-    worker_registry = WorkerRegistry() if roles.scheduler else None
+        sweeper = Sweeper(registry=worker_registry)
+
+    def _scheduler_startup() -> None:
+        # Beim Start: Schedules erfassen, startup-Jobs feuern (§5.2), verwaiste
+        # lokale running-Jobs aus einem Vorab-Absturz aufräumen (no_process, §5.5).
+        conn = job_db.connect()
+        try:
+            job_db.rescan(conn)
+            job_db.fire_startup(conn)
+            if worker is not None:
+                job_db.reconcile_startup_orphans(conn, worker.worker_name)
+        except Exception:
+            log.warning("scheduler-startup (rescan/startup/reconcile) übersprungen")
+        finally:
+            conn.close()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if synchronizer is not None:
             await synchronizer.start()
+        if roles.scheduler:
+            _scheduler_startup()
         if sweeper is not None:
             await sweeper.start()
         if worker is not None:
