@@ -45,6 +45,7 @@ class JobView(BaseModel):
     host: str | None = None
     worker: str | None = None
     output_ref: str | None = None
+    next_fire_at: float | None = None  # nächster geplanter Trigger (überfällig-Anzeige)
 
 
 class ScheduleView(BaseModel):

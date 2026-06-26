@@ -71,8 +71,11 @@ def run(args: argparse.Namespace) -> int:
     import uvicorn
 
     from bibi.daemon.app import create_app
-    app = create_app(r, synchronizer=synchronizer, worker=worker)
+    # Controller ruft die /-/-API über HTTP am **tatsächlichen** Bind-Port auf
+    # (nicht config.daemon_port() — sonst zeigt --port ins Leere/auf einen Fremd-Daemon).
     port = args.port or config.daemon_port()
+    app = create_app(r, synchronizer=synchronizer, worker=worker,
+                     controller_base_url=f"http://{args.host}:{port}")
     print(f"bibi daemon: rollen={r.active_names() or ['idle']} port={port}", file=sys.stderr)
     uvicorn.run(app, host=args.host, port=port)
     return 0

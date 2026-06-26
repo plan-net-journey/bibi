@@ -250,7 +250,7 @@ def job_view(row: sqlite3.Row) -> dict:
         "enqueued_at": row["enqueued_at"], "started_at": row["started_at"],
         "finished_at": row["finished_at"], "exit_code": row["exit_code"],
         "attempt": row["attempt"], "host": row["host"], "worker": row["worker"],
-        "output_ref": row["output_ref"],
+        "output_ref": row["output_ref"], "next_fire_at": row["next_fire_at"],
     }
 
 

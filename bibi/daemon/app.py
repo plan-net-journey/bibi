@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from bibi import state
+from bibi import config, state
 from bibi.daemon import job_db, openapi
 from bibi.daemon.openapi import (
     JobReservation, JobView, KillRequest, NextRequest, RunRequest, StatusReport,
@@ -267,6 +267,7 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
 
 def create_app(
     roles: Roles, synchronizer=None, worker: Worker | None = None, sweeper=None,
+    controller_client=None, controller_base_url: str | None = None,
 ) -> FastAPI:
     if worker is None and roles.worker:
         worker = Worker(worker_name="local")
@@ -373,10 +374,12 @@ def create_app(
     if worker is not None:
         _add_worker_routes(app, worker)
 
-    # ── Controller-Rolle: Web-App-Wurzel auf /-/ (PLAN-4 §2.1/§4.0) ─────────
+    # ── Controller-Rolle: Web-App-Wurzel auf /-/ (PLAN-4 §2.1/§4.1) ─────────
     if roles.controller:
-        from bibi.controller import add_controller_routes
-        add_controller_routes(app, roles)
+        from bibi.controller import ControllerClient, add_controller_routes
+        client = controller_client or ControllerClient(
+            controller_base_url or f"http://127.0.0.1:{config.daemon_port()}")
+        add_controller_routes(app, roles, client)
 
     # ── Gefrorener /-/-Vertrag (PLAN-3 §1.1/§3.0) ───────────────────────────
     # job/scheduler/worker/journal als versionierte Schemata + 501-Stubs; die
