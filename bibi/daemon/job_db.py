@@ -322,15 +322,17 @@ def reserve_next(
     conn.execute("BEGIN IMMEDIATE")
     try:
         offset = _get_offset(conn)
-        # Eligibel: pending, retriable failed (Backoff fällig, Versuche übrig) und
-        # fällige deferred (resume) — §5.4 failed→running / deferred→running.
+        # Eligibel nur, was **fällig** ist (§5.2): pending feuert erst, wenn
+        # next_fire_at gesetzt UND erreicht ist (`now` ⇒ sofort, `at:`/cron ⇒ zur
+        # Zeit, `never` ⇒ next_fire_at NULL ⇒ nie). Dazu retriable failed (Backoff
+        # fällig, Versuche übrig) und fällige deferred (resume), §5.4.
         rows = conn.execute(
             "SELECT id, priority, enqueued_at, rowid AS seq FROM jobs "
             "WHERE locked_at IS NULL AND ("
-            "  status='pending'"
+            "  (status='pending' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='failed' AND attempt < attempts "
-            "      AND (next_fire_at IS NULL OR next_fire_at <= :now))"
-            "  OR (status='deferred' AND (next_fire_at IS NULL OR next_fire_at <= :now))"
+            "      AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
+            "  OR (status='deferred' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             ")",
             {"now": now},
         ).fetchall()

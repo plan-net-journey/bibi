@@ -21,9 +21,10 @@ def conn(tmp_path: Path):
 def _insert(conn, slug, priority, enqueued_at):
     import secrets
     jid = secrets.token_hex(4)
+    # next_fire_at=0 ⇒ fällig (immer <= now); enqueued_at bleibt der FIFO-Schlüssel.
     conn.execute(
         "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, priority, "
-        "status, enqueued_at) VALUES (?,?,?,?,?,?, 'pending', ?)",
+        "status, enqueued_at, next_fire_at) VALUES (?,?,?,?,?,?, 'pending', ?, 0)",
         (jid, slug, f"{slug}.md", "job", "echo hi", priority, enqueued_at),
     )
     return jid
@@ -87,6 +88,34 @@ def test_reserve_priority_then_fifo(conn):
     assert job_db.reserve_next(conn) is None         # leer
 
 
+def test_reserve_gates_on_next_fire_at(conn):
+    import secrets
+    now = time.time()
+
+    def _ins(slug, next_fire):
+        jid = secrets.token_hex(4)
+        if next_fire is None:
+            conn.execute(
+                "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+                "enqueued_at) VALUES (?,?,?,?,?, 'pending', ?)",
+                (jid, slug, f"{slug}.md", "job", "e", now))
+        else:
+            conn.execute(
+                "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+                "enqueued_at, next_fire_at) VALUES (?,?,?,?,?, 'pending', ?, ?)",
+                (jid, slug, f"{slug}.md", "job", "e", now, next_fire))
+        return jid
+
+    _ins("due", now - 10)       # fällig
+    _ins("future", now + 3600)  # at:/cron in der Zukunft
+    _ins("never", None)         # schedule: never → next_fire_at NULL
+
+    r1 = job_db.reserve_next(conn)
+    assert r1 is not None and r1["slug"] == "due"
+    # future ist nicht fällig, never ist deaktiviert ⇒ nichts mehr
+    assert job_db.reserve_next(conn) is None
+
+
 def test_reserve_flips_to_running(conn):
     jid = _insert(conn, "a", 0, time.time())
     job_db.reserve_next(conn, worker="w1")
@@ -112,7 +141,8 @@ def test_reservation_includes_claude_fields(conn):
     jid = secrets.token_hex(4)
     conn.execute(
         "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, priority, status, "
-        "enqueued_at, model, soul, session) VALUES (?,?,?,?,?,?, 'pending', ?,?,?,?)",
+        "enqueued_at, next_fire_at, model, soul, session) "
+        "VALUES (?,?,?,?,?,?, 'pending', ?, 0, ?,?,?)",
         (jid, "k", "k.md", "claude", "prompt", 0, time.time(),
          "claude-haiku-4-5-20251001", "Data", "sess-9"),
     )
