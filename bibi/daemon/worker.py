@@ -38,7 +38,8 @@ def _output_path(repo_root: Path, job_id: str) -> Path:
 
 
 def _run_wrapper(
-    *, job_id: str, slug: str, kind: str, payload: str, model: str | None,
+    *, job_id: str, slug: str, kind: str, payload: str, model: str | None = None,
+    soul: str | None = None, session: str | None = None,
     repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
 ) -> tuple[int, str, Path]:
     """Der gemeinsame Ausführungs-Kern beider Pfade: Worktree → Wrapper-Subprozess
@@ -62,6 +63,10 @@ def _run_wrapper(
         env["BIBI_JOB_PROMPT"] = payload
         if model:
             env["BIBI_JOB_MODEL"] = model
+        if soul:
+            env["BIBI_JOB_SOUL"] = soul
+        if session:
+            env["BIBI_JOB_SESSION"] = session
 
     # eigene Session ⇒ kill kann die ganze Prozessgruppe (Wrapper + Child) treffen.
     proc = subprocess.Popen(
@@ -93,6 +98,7 @@ def execute_reservation(
     code, commit_sha, out_path = _run_wrapper(
         job_id=jid, slug=reservation["slug"], kind=reservation["kind"],
         payload=reservation["payload"], model=reservation.get("model"),
+        soul=reservation.get("soul"), session=reservation.get("session"),
         repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
     )
     reported: str | None = None
@@ -130,6 +136,7 @@ def run_local(
     Entweder ``slug`` (erfasste MD) **oder** ``cmd`` (ad-hoc, rein lokal)."""
     repo_root = repo_root or repo.root()
     work_dir = work_dir or (repo_root / "data" / "worktrees")
+    eff_soul = eff_session = None
     if cmd is not None:
         eff_slug, payload, eff_kind, eff_model = slug or "adhoc", cmd, kind, model
     else:
@@ -140,11 +147,13 @@ def run_local(
             raise LookupError(f"kein Schedule mit Slug {slug!r}")
         s = pr.spec
         eff_slug, payload, eff_kind, eff_model = s.slug, s.payload, s.kind.value, s.model
+        eff_soul, eff_session = s.soul, s.session
 
     jid = secrets.token_hex(4)
     started = time.time()
     code, commit_sha, out_path = _run_wrapper(
         job_id=jid, slug=eff_slug, kind=eff_kind, payload=payload, model=eff_model,
+        soul=eff_soul, session=eff_session,
         repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=True,
     )
     finished = time.time()

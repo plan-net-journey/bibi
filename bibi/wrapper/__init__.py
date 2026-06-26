@@ -39,9 +39,13 @@ class TypeHandler:
 
 
 def _claude_argv(env: dict[str, str]) -> list[str]:
-    argv = ["claude", "-p", env.get("BIBI_JOB_PROMPT", "")]
-    model = env.get("BIBI_JOB_MODEL") or DEFAULT_CLAUDE_MODEL
-    argv += ["--model", model]
+    # BIBI_CLAUDE_BIN überschreibt das Binary (Tests/Stubs); Default ``claude``.
+    binary = env.get("BIBI_CLAUDE_BIN") or "claude"
+    argv = [binary, "-p", env.get("BIBI_JOB_PROMPT", "")]
+    argv += ["--model", env.get("BIBI_JOB_MODEL") or DEFAULT_CLAUDE_MODEL]
+    session = env.get("BIBI_JOB_SESSION")
+    if session:  # Dialog fortsetzen (§5.3)
+        argv += ["--resume", session]
     return argv
 
 

@@ -66,6 +66,37 @@ def test_claude_argv_default_model():
     assert "claude-sonnet-4-6" in argv
 
 
+def test_claude_argv_bin_override():
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_CLAUDE_BIN": "/x/fakeclaude"})
+    assert argv[0] == "/x/fakeclaude"
+
+
+def test_claude_argv_session_resume():
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_JOB_SESSION": "sess-1"})
+    assert "--resume" in argv and "sess-1" in argv
+
+
+def test_claude_argv_no_session_no_resume():
+    argv = wrapper.REGISTRY["claude"].build_command({"BIBI_JOB_PROMPT": "hi"})
+    assert "--resume" not in argv
+
+
+def test_run_job_claude_via_stub(tmp_path: Path):
+    # claude-Pfad end-to-end ohne echtes claude — Stub-Binary echot.
+    fake = tmp_path / "fakeclaude"
+    fake.write_text("#!/bin/sh\necho claude-hallo\n", encoding="utf-8")
+    fake.chmod(0o755)
+    out = tmp_path / "output.jsonl"
+    env = {
+        "BIBI_JOB_TYPE": "claude", "BIBI_OUTPUT_PATH": str(out),
+        "BIBI_JOB_PROMPT": "Antworte hallo", "BIBI_CLAUDE_BIN": str(fake),
+    }
+    assert wrapper.run_job(env) == 0
+    assert output.lines(out, "out") == ["claude-hallo"]
+
+
 def test_run_job_executes_and_captures(tmp_path: Path):
     out = tmp_path / "output.jsonl"
     env = {

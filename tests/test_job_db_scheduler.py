@@ -100,8 +100,23 @@ def test_reserve_flips_to_running(conn):
 def test_reservation_view_shape(conn):
     _insert(conn, "a", 0, time.time())
     r = job_db.reserve_next(conn)
-    assert set(r) == {"id", "slug", "kind", "payload", "model", "env"}
+    assert set(r) == {"id", "slug", "kind", "payload", "model", "soul", "session", "env"}
     assert r["kind"] == "job" and r["payload"] == "echo hi"
+
+
+def test_reservation_includes_claude_fields(conn):
+    import secrets
+    jid = secrets.token_hex(4)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, priority, status, "
+        "enqueued_at, model, soul, session) VALUES (?,?,?,?,?,?, 'pending', ?,?,?,?)",
+        (jid, "k", "k.md", "claude", "prompt", 0, time.time(),
+         "claude-haiku-4-5-20251001", "Data", "sess-9"),
+    )
+    r = job_db.reserve_next(conn)
+    assert r["kind"] == "claude"
+    assert r["model"] == "claude-haiku-4-5-20251001"
+    assert r["soul"] == "Data" and r["session"] == "sess-9"
 
 
 # ── report_status (lifecycle-validiert, §5.4) ────────────────────────────────

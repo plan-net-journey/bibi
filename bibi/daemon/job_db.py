@@ -283,7 +283,8 @@ def reservation_view(row: sqlite3.Row) -> dict:
     Den vollständigen Env-Bau übernimmt die Typ-Registry des Wrappers (Stufe 3.3)."""
     return {
         "id": row["id"], "slug": row["slug"], "kind": row["kind"],
-        "payload": row["payload"], "model": row["model"], "env": {},
+        "payload": row["payload"], "model": row["model"],
+        "soul": row["soul"], "session": row["session"], "env": {},
     }
 
 
