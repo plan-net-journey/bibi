@@ -75,3 +75,11 @@ def get_sync_conflict() -> bool:
 
 def set_sync_conflict(value: bool) -> None:
     patch(sync_conflict=value)
+
+
+def get_maintenance() -> bool:
+    return bool(read().get("maintenance", False))
+
+
+def set_maintenance(value: bool) -> None:
+    patch(maintenance=value)

@@ -18,6 +18,19 @@ KEYS: dict[str, str] = {
     "BIBI_REMOTE": "",
 }
 
+DAEMON_PORT_DEFAULT = 8769
+
+
+def daemon_port() -> int:
+    """Lauschport des Daemons — ``BIBI_DAEMON_PORT`` env, sonst Default 8769."""
+    raw = os.environ.get("BIBI_DAEMON_PORT", "").strip()
+    if not raw:
+        return DAEMON_PORT_DEFAULT
+    try:
+        return int(raw)
+    except ValueError:
+        return DAEMON_PORT_DEFAULT
+
 
 def env_path() -> Path:
     """Pfad zu ``env`` — respektiert ``XDG_CONFIG_HOME``, sonst ``~/.config``."""

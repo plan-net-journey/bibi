@@ -53,6 +53,11 @@ def state_path() -> Path:
     return root() / ".claude" / ".state.md"
 
 
+def data() -> Path:
+    """Gitignored Laufzeit-Verzeichnis (DESIGN §3.2) — Job-DB, output.jsonl, Journal."""
+    return root() / "data"
+
+
 def case_dir_name() -> str:
     """``BIBI_CASE_DIR`` > pyproject ``[tool.bibi] case_dir`` > Default ``case``."""
     env = os.environ.get("BIBI_CASE_DIR")

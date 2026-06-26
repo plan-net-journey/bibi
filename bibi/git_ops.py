@@ -106,6 +106,25 @@ def auto_commit_message() -> str:
     return f"auto: {ts} | {user} | {platform.node()}"
 
 
+def diff_stat() -> tuple[str, int]:
+    """Working-Tree-Delta als (Signal, geänderte Zeilen) (DESIGN §4.3).
+
+    Das **Signal** ist ``git status --porcelain`` — es erkennt auch *untracked*
+    Dateien (neue Case-MDs!), die ``git diff --stat`` übersieht; es ändert sich,
+    sobald sich am Tree etwas tut. Das **Zeilenmaß** (für die Debounce-Buckets)
+    kommt aus ``git diff --shortstat HEAD`` (Insertions+Deletions getrackter
+    Änderungen). Sauberer Tree → ``("", 0)``. Billig genug für den 60-s-Poll.
+    """
+    # ``-uall`` listet untracked Dateien einzeln (statt das Verzeichnis zu
+    # kollabieren) — so ändert sich das Signal pro neuer Datei.
+    signal = _git(["status", "--porcelain", "-uall"], check=False).stdout.strip()
+    short = _git(["diff", "--shortstat", "HEAD"], check=False).stdout
+    lines = 0
+    for m in re.finditer(r"(\d+) (insertion|deletion)", short):
+        lines += int(m.group(1))
+    return signal, lines
+
+
 def stage_and_commit(scope: Path | None, message: str) -> bool:
     """Stagen (scope-begrenzt oder ganzes Repo) und committen, falls dirty.
 

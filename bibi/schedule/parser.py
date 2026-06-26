@@ -1,0 +1,240 @@
+"""Eine MD-Datei → ``ScheduleSpec`` (oder Grund, warum nicht). DESIGN §5.2/§5.3.
+
+Drei Ausgänge (wie bibi3' Parser, auf das bibi4-Modell übertragen):
+
+- **skip**  — kein ``schedule:``/``at:`` im Frontmatter → keine Schedule-MD.
+- **error** — Trigger/Typ vorhanden, aber ungültig (kaputter Cron, unparsbares
+  Datum, fehlendes/doppeltes Payload) → gemeldet, zur Laufzeit ignoriert.
+- **ok**    — ``ScheduleSpec`` steht.
+
+Trigger-Syntax (§5.2): ``schedule:`` ist ein croniter-Ausdruck **oder** ein
+Spezialwert (``now``/``startup``/``never``); ``at:`` ein ISO-8601-Zeitpunkt.
+Genau einer von beiden. Typ-Schlüssel (§5.3): genau einer von ``job:``/``claude:``/
+``app:`` (Key == Typ == Registry-Schlüssel, §1.2).
+
+Slug-Ableitung (§6.6/bibi3 §2.5): explizites ``slug:`` gewinnt; sonst bei
+``README.md``/``SCHEDULE.md`` der Ordnername; sonst der Dateistamm.
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import croniter
+from dateutil import parser as _date_parser
+
+from bibi import frontmatter
+from bibi.schedule.models import (
+    DEFAULT_CLAUDE_MODEL,
+    DEFAULT_HITL_TIMEOUT,
+    DEFAULT_SILENCE_TIMEOUT,
+    Kind,
+    ScheduleSpec,
+)
+
+#: Spezialwerte von ``schedule:`` (§5.2) — keine cron-Ausdrücke.
+SPECIAL_SCHEDULES: frozenset[str] = frozenset({"now", "startup", "never"})
+
+#: Dateinamen, bei denen der Ordnername den Slug bestimmt (§6.6).
+SCHEDULE_FILENAMES: frozenset[str] = frozenset({"README.md", "SCHEDULE.md"})
+
+#: Frontmatter-Key → Typ (§5.3). Reihenfolge irrelevant; genau einer muss gesetzt sein.
+_TYPE_KEYS: dict[str, Kind] = {"job": Kind.JOB, "claude": Kind.CLAUDE, "app": Kind.APP}
+
+_VALID_BACKOFF: frozenset[str] = frozenset({"fixed", "linear", "exponential"})
+
+
+@dataclass(frozen=True, slots=True)
+class ParseResult:
+    """Ergebnis des Parsens einer MD. ``slug_explicit``/``mtime`` tragen die
+    Dateisystem-Metadaten, die der Discovery/Reconcile braucht (nicht der Spec)."""
+
+    schedule_ref: str
+    spec: ScheduleSpec | None = None
+    slug_explicit: bool = False
+    mtime: float = 0.0
+    error: str | None = None
+
+    @property
+    def is_ok(self) -> bool:
+        return self.spec is not None
+
+    @property
+    def is_skip(self) -> bool:
+        return self.spec is None and self.error is None
+
+    @property
+    def is_error(self) -> bool:
+        return self.error is not None
+
+
+def derive_slug(path: Path, fm: dict[str, Any]) -> tuple[str, bool]:
+    """``(slug, is_explicit)`` (§6.6)."""
+    explicit = fm.get("slug")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip(), True
+    if path.name in SCHEDULE_FILENAMES:
+        return path.parent.name, False
+    return path.stem, False
+
+
+def _validate_cron(expr: str) -> str | None:
+    if not isinstance(expr, str) or not expr.strip():
+        return "schedule: cron-Ausdruck muss ein nicht-leerer String sein"
+    try:
+        croniter.croniter(expr)
+    except (croniter.CroniterBadCronError, ValueError) as exc:
+        return f"schedule: ungültiger cron-Ausdruck: {exc}"
+    return None
+
+
+def _to_naive_local(value: _dt.datetime) -> _dt.datetime:
+    """Auf naive Lokalzeit normalisieren — der Daemon vergleicht durchweg gegen
+    ein naives ``datetime.now()`` (eine tz-aware Differenz wirft TypeError)."""
+    if value.tzinfo is not None:
+        return value.astimezone().replace(tzinfo=None)
+    return value
+
+
+def _validate_at(value: Any) -> tuple[str | None, str | None]:
+    """``(iso_string, error)`` — genau eines ist None. ISO immer tz-naiv (lokal)."""
+    if isinstance(value, _dt.datetime):
+        return _to_naive_local(value).isoformat(), None
+    if isinstance(value, _dt.date):
+        return _dt.datetime.combine(value, _dt.time()).isoformat(), None
+    if not isinstance(value, str) or not value.strip():
+        return None, "at: muss ein String oder Zeitstempel sein"
+    try:
+        parsed = _date_parser.isoparse(value)
+    except ValueError as exc:
+        return None, f"at: ungültiger Zeitstempel: {exc}"
+    return _to_naive_local(parsed).isoformat(), None
+
+
+def _coerce_int(fm: dict[str, Any], key: str, default: int) -> tuple[int, str | None]:
+    val = fm.get(key, default)
+    if isinstance(val, bool):  # bool ist int-Subtyp — explizit ablehnen
+        return default, f"{key}: muss eine Ganzzahl sein, nicht bool"
+    if isinstance(val, int):
+        return val, None
+    return default, f"{key}: muss eine Ganzzahl sein, nicht {type(val).__name__}"
+
+
+def parse_text(
+    text: str, *, schedule_ref: str, path: Path, mtime: float = 0.0
+) -> ParseResult:
+    """MD-Text parsen. ``path`` für Slug/Dateiname, ``schedule_ref`` als Referenz."""
+    fm, _body = frontmatter.split(text)
+
+    has_schedule = "schedule" in fm
+    has_at = "at" in fm
+    if not has_schedule and not has_at:
+        return ParseResult(schedule_ref=schedule_ref)  # skip
+    if has_schedule and has_at:
+        return ParseResult(
+            schedule_ref=schedule_ref,
+            error="Frontmatter hat `schedule:` UND `at:` — genau einen wählen (§5.2)",
+        )
+
+    # ── Trigger validieren (§5.2) ────────────────────────────────────────────
+    schedule_val: str | None = None
+    at_val: str | None = None
+    if has_schedule:
+        raw = fm["schedule"]
+        if isinstance(raw, str) and raw.strip() in SPECIAL_SCHEDULES:
+            schedule_val = raw.strip()
+        else:
+            err = _validate_cron(raw)
+            if err:
+                return ParseResult(schedule_ref=schedule_ref, error=err)
+            schedule_val = raw
+    else:
+        at_val, err = _validate_at(fm["at"])
+        if err:
+            return ParseResult(schedule_ref=schedule_ref, error=err)
+
+    # ── Typ + Payload (§5.3) — genau einer von job/claude/app ─────────────────
+    present = [(k, kind) for k, kind in _TYPE_KEYS.items()
+               if isinstance(fm.get(k), str) and fm[k].strip() != ""]
+    if len(present) == 0:
+        return ParseResult(
+            schedule_ref=schedule_ref,
+            error="Frontmatter braucht genau einen Typ: `job:`, `claude:` oder `app:` (§5.3)",
+        )
+    if len(present) > 1:
+        keys = ", ".join(f"`{k}:`" for k, _ in present)
+        return ParseResult(
+            schedule_ref=schedule_ref,
+            error=f"Frontmatter hat mehrere Typen ({keys}) — genau einen wählen (§5.3)",
+        )
+    type_key, kind = present[0]
+    payload = fm[type_key].strip()
+
+    # ── Ganzzahl-Felder (§5.5) ───────────────────────────────────────────────
+    errors: list[str] = []
+    priority, e = _coerce_int(fm, "priority", 0); errors += [e] if e else []
+    attempts, e = _coerce_int(fm, "attempts", 1); errors += [e] if e else []
+    silence_timeout, e = _coerce_int(fm, "silence_timeout", DEFAULT_SILENCE_TIMEOUT)
+    errors += [e] if e else []
+    hitl_timeout, e = _coerce_int(fm, "hitl_timeout", DEFAULT_HITL_TIMEOUT)
+    errors += [e] if e else []
+    wall_time = defer_time = defer_max = app_port = None
+    if "wall_time" in fm:
+        wall_time, e = _coerce_int(fm, "wall_time", 0); errors += [e] if e else []
+    if "defer_time" in fm:
+        defer_time, e = _coerce_int(fm, "defer_time", 0); errors += [e] if e else []
+    if "defer_max" in fm:
+        defer_max, e = _coerce_int(fm, "defer_max", 0); errors += [e] if e else []
+    if "app_port" in fm:
+        app_port, e = _coerce_int(fm, "app_port", 0); errors += [e] if e else []
+    if errors:
+        return ParseResult(schedule_ref=schedule_ref, error="; ".join(errors))
+
+    backoff = fm.get("backoff", "fixed")
+    if not isinstance(backoff, str) or backoff.lower() not in _VALID_BACKOFF:
+        return ParseResult(
+            schedule_ref=schedule_ref,
+            error=f"backoff: muss eines von {sorted(_VALID_BACKOFF)} sein",
+        )
+
+    # ── claude-/app-Felder ───────────────────────────────────────────────────
+    model = DEFAULT_CLAUDE_MODEL
+    if kind is Kind.CLAUDE and isinstance(fm.get("model"), str) and fm["model"].strip():
+        model = fm["model"].strip()
+    soul = fm["soul"].strip() if isinstance(fm.get("soul"), str) and fm["soul"].strip() else None
+    session = fm["session"].strip() if isinstance(fm.get("session"), str) and fm["session"].strip() else None
+    app_prefix = fm["app_prefix"].strip() if isinstance(fm.get("app_prefix"), str) and fm["app_prefix"].strip() else None
+    image = fm["image"].strip() if isinstance(fm.get("image"), str) and fm["image"].strip() else None
+
+    slug, slug_explicit = derive_slug(path, fm)
+
+    spec = ScheduleSpec(
+        slug=slug, kind=kind, payload=payload,
+        schedule=schedule_val, at=at_val, priority=priority,
+        model=model, soul=soul, session=session,
+        attempts=attempts, backoff=backoff.lower(),
+        silence_timeout=silence_timeout, wall_time=wall_time,
+        defer_time=defer_time, defer_max=defer_max, hitl_timeout=hitl_timeout,
+        app_port=app_port, app_prefix=app_prefix, image=image,
+    )
+    return ParseResult(
+        schedule_ref=schedule_ref, spec=spec, slug_explicit=slug_explicit, mtime=mtime
+    )
+
+
+def parse_file(path: Path, *, vault_root: Path) -> ParseResult:
+    """MD von Platte lesen + parsen. ``schedule_ref`` = Pfad relativ zum Vault."""
+    try:
+        rel = path.relative_to(vault_root)
+    except ValueError:
+        rel = path  # außerhalb des Vault — defensiv absolut behalten
+    schedule_ref = rel.as_posix()
+    try:
+        text = path.read_text(encoding="utf-8")
+        mtime = path.stat().st_mtime
+    except (OSError, UnicodeDecodeError) as exc:
+        return ParseResult(schedule_ref=schedule_ref, error=f"Datei nicht lesbar: {exc}")
+    return parse_text(text, schedule_ref=schedule_ref, path=path, mtime=mtime)
