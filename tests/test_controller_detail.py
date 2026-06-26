@@ -88,14 +88,40 @@ def test_schedule_detail_page_no_runs():
     assert "noch keine Läufe" in html
 
 
+def test_schedule_detail_action_bar_with_job():
+    sched = {"slug": "boom", "kind": "job", "trigger": "now", "last_status": "error"}
+    job = {"id": "abc123", "slug": "boom", "status": "error"}
+    html = render.schedule_detail_page(sched, [], job, slug="boom")
+    for verb in ("start", "reset", "kill"):
+        assert f'hx-post="/-/ui/schedule/boom/{verb}"' in html
+    assert "#detail" in html
+
+
+def test_schedule_detail_no_action_bar_without_job():
+    sched = {"slug": "boom", "kind": "job", "trigger": "now", "last_status": "error"}
+    html = render.schedule_detail_page(sched, [], None, slug="boom")
+    assert "hx-post=" not in html  # keine Verben ohne Live-Job
+
+
+def test_run_row_has_delete_button():
+    runs = [{"id": 9, "status": "complete", "exit_code": 0, "kind": "job"}]
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now"}, runs, slug="x")
+    assert 'hx-delete="/-/ui/schedule/x/run/9"' in html
+
+
 # ── Routen mit gefaktem Client ───────────────────────────────────────────────
 
 
 class FakeClient:
-    def __init__(self, *, schedules=None, journal=None, output=None) -> None:
+    def __init__(self, *, schedules=None, journal=None, output=None,
+                 jobs=None) -> None:
         self._schedules = schedules or []
         self._journal = journal or []
         self._output = output or {}
+        self._jobs = jobs or []
+        self.actions: list[tuple] = []
+        self.deleted: list[int] = []
 
     def status(self) -> dict:
         return {}
@@ -106,8 +132,19 @@ class FakeClient:
     def journal(self, *, slug=None, host=None) -> list[dict]:
         return [j for j in self._journal if slug is None or j.get("slug") == slug]
 
+    def jobs(self, *, status=None) -> list[dict]:
+        return self._jobs
+
     def run_output(self, jid: int) -> dict:
         return self._output
+
+    def job_action(self, job_id: str, verb: str) -> dict:
+        self.actions.append((job_id, verb))
+        return {"id": job_id, "status": verb}
+
+    def delete_journal(self, jid: int) -> dict:
+        self.deleted.append(jid)
+        return {"deleted": jid}
 
 
 @pytest.fixture
@@ -140,3 +177,33 @@ def test_run_output_route_renders(app_with):
         assert r.status_code == 200
         assert "hallo" in r.text
         assert 'class="err"' in r.text and "fehler" in r.text
+
+
+def test_action_route_calls_verb_and_rerenders(app_with):
+    client = FakeClient(
+        schedules=[{"slug": "boom", "kind": "job", "trigger": "now",
+                    "last_status": "error"}],
+        journal=[],
+        jobs=[{"id": "abc123", "slug": "boom", "status": "error"}])
+    with TestClient(app_with(client)) as c:
+        r = c.post("/-/ui/schedule/boom/start")
+        assert r.status_code == 200
+        assert client.actions == [("abc123", "start")]
+        assert 'id="detail"' in r.text  # re-rendertes Fragment
+
+def test_action_route_rejects_unknown_verb(app_with):
+    client = FakeClient(jobs=[{"id": "abc123", "slug": "boom"}])
+    with TestClient(app_with(client)) as c:
+        assert c.post("/-/ui/schedule/boom/destroy").status_code == 404
+        assert client.actions == []
+
+
+def test_run_delete_route(app_with):
+    client = FakeClient(
+        schedules=[{"slug": "boom", "kind": "job", "trigger": "now"}],
+        jobs=[{"id": "abc123", "slug": "boom"}])
+    with TestClient(app_with(client)) as c:
+        r = c.request("DELETE", "/-/ui/schedule/boom/run/42")
+        assert r.status_code == 200
+        assert client.deleted == [42]
+        assert 'id="detail"' in r.text

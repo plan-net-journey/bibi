@@ -69,15 +69,20 @@ def add_controller_routes(
     def verdict_fragment():
         return HTMLResponse(render.verdict_fragment(_status()))
 
-    @app.get("/-/ui/schedule/{slug}", include_in_schema=False)
-    def schedule_detail(slug: str):
+    def _detail_data(slug: str):
         try:
             schedule = next((s for s in client.schedules()
                              if s.get("slug") == slug), None)
             runs = client.journal(slug=slug)
+            job = next((j for j in client.jobs() if j.get("slug") == slug), None)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            schedule, runs = None, []
-        return HTMLResponse(render.schedule_detail_page(schedule, runs, slug=slug))
+            schedule, runs, job = None, [], None
+        return schedule, runs, job
+
+    @app.get("/-/ui/schedule/{slug}", include_in_schema=False)
+    def schedule_detail(slug: str):
+        schedule, runs, job = _detail_data(slug)
+        return HTMLResponse(render.schedule_detail_page(schedule, runs, job, slug=slug))
 
     @app.get("/-/ui/run/{jid}/output", include_in_schema=False)
     def run_output(jid: int):
@@ -87,3 +92,27 @@ def add_controller_routes(
             data = {}
         return HTMLResponse(render.output_block(
             data.get("events", []), data.get("kind", "job")))
+
+    # ── Verben (§5.6) + Löschen (§4.0) — wirken, dann #detail neu rendern ─────
+    # Sichtbarkeit/Scope (read-only vs. operator) wird in 4.6 (Traefik) erzwungen.
+    @app.post("/-/ui/schedule/{slug}/{verb}", include_in_schema=False)
+    def schedule_action(slug: str, verb: str):
+        if verb not in render._VERBS:
+            return JSONResponse(status_code=404, content={"error": "unknown verb"})
+        _, _, job = _detail_data(slug)
+        if job and job.get("id"):
+            try:
+                client.job_action(job["id"], verb)
+            except Exception:  # noqa: BLE001 — defensiv (§2.7)
+                pass
+        schedule, runs, job = _detail_data(slug)
+        return HTMLResponse(render.schedule_detail_inner(schedule, runs, job, slug=slug))
+
+    @app.delete("/-/ui/schedule/{slug}/run/{jid}", include_in_schema=False)
+    def run_delete(slug: str, jid: int):
+        try:
+            client.delete_journal(jid)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        schedule, runs, job = _detail_data(slug)
+        return HTMLResponse(render.schedule_detail_inner(schedule, runs, job, slug=slug))

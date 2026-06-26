@@ -45,6 +45,8 @@ h2 { font-size: .95rem; color: #888; margin: 1.5rem 0 .4rem; font-weight: 600; }
 button { font: inherit; background: #8882; border: 1px solid #8884;
          border-radius: .35rem; padding: .15rem .5rem; cursor: pointer; color: inherit; }
 .commit { font-family: ui-monospace, monospace; font-size: .8rem; color: #888; }
+.actions { margin: .6rem 0 1.2rem; display: flex; gap: .5rem; }
+.actions button { padding: .3rem .8rem; font-weight: 600; }
 """
 
 
@@ -323,7 +325,8 @@ def _commit_cell(run: dict) -> str:
     return f'<span class="commit" title="{_e(sha)} {branch}">{short}</span>'
 
 
-def _run_rows(runs: list[dict], now: float) -> str:
+def _run_rows(runs: list[dict], slug: str, now: float) -> str:
+    s = _e(slug)
     rows = []
     for r in runs:
         rid = r.get("id")
@@ -336,18 +339,37 @@ def _run_rows(runs: list[dict], now: float) -> str:
             f"<td>{_e(r.get('exit_code'))}</td>"
             f"<td>{_commit_cell(r)}</td>"
             f'<td><button hx-get="/-/ui/run/{rid}/output" hx-target="#out-{rid}" '
-            'hx-swap="innerHTML">Output</button></td>'
+            'hx-swap="innerHTML">Output</button> '
+            f'<button hx-delete="/-/ui/schedule/{s}/run/{rid}" hx-target="#detail" '
+            'hx-swap="outerHTML" hx-confirm="Lauf-Record löschen?">Löschen</button></td>'
             "</tr>"
             f'<tr><td colspan="6"><div id="out-{rid}"></div></td></tr>'
         )
     return "".join(rows)
 
 
-def schedule_detail_page(
-    schedule: dict | None, runs: list[dict], slug: str = "", now: float | None = None
+#: §5.6-Verben, die der Controller als Buttons anbietet (Durchsetzung/Scope: 4.6).
+_VERBS = ("start", "reset", "kill")
+
+
+def _action_bar(slug: str, job: dict | None) -> str:
+    if not job or not job.get("id"):
+        return ""  # kein Live-Job (z. B. nie gelaufener/entfernter Schedule)
+    s = _e(slug)
+    btns = "".join(
+        f'<button hx-post="/-/ui/schedule/{s}/{v}" hx-target="#detail" '
+        f'hx-swap="outerHTML">{v.upper()}</button> '
+        for v in _VERBS
+    )
+    return f'<div class="actions">{btns}</div>'
+
+
+def schedule_detail_inner(
+    schedule: dict | None, runs: list[dict], job: dict | None,
+    slug: str = "", now: float | None = None,
 ) -> str:
-    """Schedule-zentrierte Detail-Sicht (§3 Ebene 3): MD-Anker (Typ/Trigger/Status)
-    + direkt darunter die Lauf-Liste mit Output-Toggle je Lauf."""
+    """Der austauschbare Detail-Kern (``#detail``): MD-Anker + Aktions-Leiste
+    (START/RESET/KILL) + Lauf-Liste (Output-Toggle + Löschen je Lauf)."""
     now = time.time() if now is None else now
     s = schedule or {}
     name = _e(s.get("slug") or slug)
@@ -359,10 +381,27 @@ def schedule_detail_page(
             f"letzter Status <b>{last}</b> · nächster Lauf {nxt}")
     runs_html = (
         '<table><thead><tr><th>Zeit</th><th>Status</th><th>Grund</th>'
-        '<th>exit</th><th>Commit</th><th>Output</th></tr></thead>'
-        f"<tbody>{_run_rows(runs, now)}</tbody></table>"
+        '<th>exit</th><th>Commit</th><th>Aktion</th></tr></thead>'
+        f"<tbody>{_run_rows(runs, slug, now)}</tbody></table>"
         if runs else '<p class="out-empty">— noch keine Läufe —</p>'
     )
+    return (
+        '<div id="detail">'
+        f"<h1>{name}</h1>"
+        f'<div class="meta">{meta}</div>'
+        f"{_action_bar(slug, job)}"
+        "<h2>Läufe</h2>"
+        f"{runs_html}"
+        "</div>"
+    )
+
+
+def schedule_detail_page(
+    schedule: dict | None, runs: list[dict], job: dict | None = None,
+    slug: str = "", now: float | None = None,
+) -> str:
+    """Schedule-zentrierte Detail-Sicht (§3 Ebene 3) als volle Seite."""
+    name = _e((schedule or {}).get("slug") or slug)
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'
@@ -371,9 +410,6 @@ def schedule_detail_page(
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         '<a class="back" href="/-/">← zurück</a>'
-        f"<h1>{name}</h1>"
-        f'<div class="meta">{meta}</div>'
-        "<h2>Läufe</h2>"
-        f"{runs_html}"
+        f"{schedule_detail_inner(schedule, runs, job, slug, now)}"
         "</body></html>"
     )

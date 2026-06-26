@@ -16,15 +16,19 @@ class ControllerClient:
         self.base = base_url.rstrip("/")
         self.timeout = timeout
 
-    def _get(self, path: str, params: dict | None = None) -> object:
+    def _request(self, method: str, path: str, params: dict | None = None) -> object:
         url = self.base + path
         if params:
             url += "?" + urllib.parse.urlencode({k: v for k, v in params.items()
                                                  if v is not None})
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        req = urllib.request.Request(url, method=method,
+                                     headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310
             body = resp.read()
             return json.loads(body) if body else None
+
+    def _get(self, path: str, params: dict | None = None) -> object:
+        return self._request("GET", path, params)
 
     def status(self) -> dict:
         return self._get("/-/status") or {}
@@ -41,3 +45,10 @@ class ControllerClient:
 
     def run_output(self, journal_id: int) -> dict:
         return self._get(f"/-/journal/{journal_id}/output") or {}
+
+    def job_action(self, job_id: str, verb: str) -> dict:
+        # verb ∈ {start, reset, kill} — wirkt auf den Live-Job (§5.6).
+        return self._request("POST", f"/-/job/{job_id}/{verb}") or {}
+
+    def delete_journal(self, journal_id: int) -> dict:
+        return self._request("DELETE", f"/-/journal/{journal_id}") or {}
