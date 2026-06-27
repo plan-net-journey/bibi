@@ -12,6 +12,7 @@ import sys
 from . import (
     at_cmd,
     daemon_cmd,
+    doctor_cmd,
     init_cmd,
     job_cmd,
     lifecycle_cmd,
@@ -41,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     job_cmd.register(sub)
     run_cmd.register(sub)
     at_cmd.register(sub)
+    doctor_cmd.register(sub)
 
     args = parser.parse_args(argv)
     if not getattr(args, "cmd", None):
