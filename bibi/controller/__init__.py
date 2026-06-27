@@ -95,6 +95,22 @@ def add_controller_routes(
     def logs_page():
         return HTMLResponse(render.log_page())
 
+    def _journal() -> list:
+        # Feed-Quelle = Journal (Frontend-Plan §A). Letzte 50 (DESC) als Backfill;
+        # neueste landen via feed_list unten. Live-Push besorgt /-/feed/stream.
+        try:
+            return client.journal()[:50]
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return []
+
+    @app.get("/-/ui/feed", include_in_schema=False)
+    def feed_screen():
+        return HTMLResponse(render.feed_page(_journal()))
+
+    @app.get("/-/ui/feed/list", include_in_schema=False)
+    def feed_list_fragment():
+        return HTMLResponse(render.feed_list(_journal()))
+
     _TERMINAL = {"complete", "error", "inactive", "zombie", "killed"}
 
     def _detail_data(slug: str):

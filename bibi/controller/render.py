@@ -78,6 +78,15 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .logbox .ln.warning { color: #d6a23e; }
 .logbox .ln.error   { color: #e06c5a; }
 .logbox .ln.debug   { color: #888; }
+.feed { height: 72vh; overflow-y: auto; background: #0008; border: 1px solid #8883;
+        border-radius: .4rem; padding: .6rem .8rem; font-family: ui-monospace, monospace;
+        font-size: .85rem; line-height: 1.7; }
+.feed-row { white-space: pre-wrap; }
+.feed-row .t  { color: #888; }
+.feed-row .ex { color: #888; }
+.feed-row a.run  { color: inherit; text-decoration: none; opacity: .75; }
+.feed-row a.run:hover { text-decoration: underline; opacity: 1; }
+.feed-row .st.complete { font-weight: 600; }
 """
 
 
@@ -387,6 +396,112 @@ def log_page() -> str:
         "</div>"
         '<div id="log" class="logbox"></div>'
         f"<script>{_LOG_JS}</script>"
+        "</body></html>"
+    )
+
+
+# ── Feed (Home) — Journal als zeitsortierte Strömung (Frontend-Plan §C.1) ────
+
+def _hms(ts: float | None) -> str:
+    """Absolute Uhrzeit ``HH:MM:SS`` (lokal) — der Feed zeigt *wann*, nicht *vor wie lang*."""
+    if ts is None:
+        return "--:--:--"
+    return time.strftime("%H:%M:%S", time.localtime(ts))
+
+
+def feed_row(r: dict, now: float | None = None) -> str:
+    """Eine Journal-Zeile als Feed-Eintrag (rein). ``status`` trägt die CSS-Klasse
+    (complete prominent); ``run_id`` verlinkt zum Execution-Detail (Stufe 4),
+    ``slug`` zum Schedule-Detail. Kein inline-Output (Entscheidung #4 — Link genügt)."""
+    rid = _e(r.get("run_id"))
+    slug = _e(r.get("slug"))
+    st = _e(r.get("status"))
+    jid = r.get("id")
+    t = _hms(r.get("finished_at") or r.get("started_at"))
+    exit_code = r.get("exit_code")
+    ex = f'<span class="ex">exit {_e(exit_code)}</span> ' if exit_code is not None else ""
+    sha = r.get("commit_sha")
+    commit = f'<span class="commit">⎘ {_e(sha[:7])}</span>' if sha else ""
+    run = (f'<a class="run" href="/-/ui/run/{_e(jid)}">{rid}</a>'
+           if jid is not None else rid)
+    return (
+        f'<div class="feed-row" data-jid="{_e(jid)}">'
+        f'<span class="t">{t}</span> '
+        f'<span class="st {st}">{st}</span> '
+        f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a> '
+        f"{run} {ex}{commit}"
+        "</div>"
+    )
+
+
+def feed_list(rows: list[dict], now: float | None = None) -> str:
+    """Die Journal-Zeilen als Feed (rein). Eingabe = ``/-/journal`` (archived_at
+    **DESC**, neueste zuerst); der Feed zeigt neueste **unten** → umgedreht gerendert."""
+    now = time.time() if now is None else now
+    body = "".join(feed_row(r, now) for r in reversed(rows))
+    return f'<div id="feed" class="feed">{body}</div>'
+
+
+#: Live-Feed: an ``/-/feed/stream`` (Stufe 0) hängen; jedes Journal-Event als Zeile
+#: **unten** anhängen (Tail), Autoscroll wenn am Ende. Backfill-Dedup über data-jid
+#: (der Server hat die Backfill-Zeilen schon gerendert) — der Stream re-sendet sie,
+#: wir überspringen bereits bekannte IDs und hängen nur wirklich Neues an.
+_FEED_JS = """
+(function(){
+  const feed = document.getElementById('feed');
+  if (!feed) return;
+  const seen = new Set([...feed.querySelectorAll('.feed-row')].map(e => e.dataset.jid));
+  feed.scrollTop = feed.scrollHeight;
+  function el(tag, cls, txt){ const e=document.createElement(tag);
+    if(cls) e.className=cls; if(txt!=null) e.textContent=txt; return e; }
+  function feedRow(o){
+    const row = el('div','feed-row'); row.dataset.jid = o.id;
+    const t = o.finished_at ? new Date(o.finished_at*1000).toLocaleTimeString() : '';
+    row.appendChild(el('span','t',t)); row.append(' ');
+    row.appendChild(el('span','st '+(o.status||''), o.status||'')); row.append(' ');
+    const s = el('a','slug',o.slug||''); s.href='/-/ui/schedule/'+encodeURIComponent(o.slug||'');
+    row.appendChild(s); row.append(' ');
+    const r = el('a','run',o.run_id||''); r.href='/-/ui/run/'+encodeURIComponent(o.id);
+    row.appendChild(r); row.append(' ');
+    if (o.exit_code!=null){ row.appendChild(el('span','ex','exit '+o.exit_code)); row.append(' '); }
+    if (o.commit_sha) row.appendChild(el('span','commit','\\u2398 '+String(o.commit_sha).slice(0,7)));
+    return row;
+  }
+  const atBottom = () => feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 24;
+  const es = new EventSource('/-/feed/stream');
+  es.onmessage = (e) => {
+    let o; try { o = JSON.parse(e.data); } catch(_) { return; }
+    if (o.id==null || seen.has(String(o.id))) return;
+    seen.add(String(o.id));
+    const stick = atBottom();
+    feed.appendChild(feedRow(o));
+    if (stick) feed.scrollTop = feed.scrollHeight;
+  };
+})();
+"""
+
+
+def _feed_nav() -> str:
+    """Screen-Navigation (PLAN-4-Screens). Schedules zeigt vorerst auf die Wurzel
+    (Dashboard-Liste); der dedizierte Schedules-Screen folgt in Stufe 3."""
+    return ('<span class="muted">Feed · '
+            '<a class="back" href="/-/">Schedules</a> · '
+            '<a class="back" href="/-/ui/logs">Live-Log</a> · '
+            '<a class="back" href="/-/docs">API-Docs</a></span>')
+
+
+def feed_page(rows: list[dict], now: float | None = None) -> str:
+    """Der Feed-Screen (Home): Server-gerendeter Backfill (neueste unten) + Live-Push
+    per SSE. Analog zum Live-Log-Panel — der Daemon liefert JSON-Events, das FE rendert."""
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>bibi · Feed</title>"
+        f"<style>{_CSS}</style></head><body>"
+        f'<header><h1>bibi</h1>{_feed_nav()}</header>'
+        f"{feed_list(rows, now)}"
+        f"<script>{_FEED_JS}</script>"
         "</body></html>"
     )
 
