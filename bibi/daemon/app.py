@@ -329,6 +329,14 @@ def create_app(
 ) -> FastAPI:
     if worker is None and roles.worker:
         worker = Worker(worker_name="local")
+    # Merge-back für den **lokalen** Worker (PLAN-6): der geht nicht über die
+    # HTTP-Route /-/scheduler/status, darum den Hook direkt an den LocalScheduler
+    # hängen. Nur am Knoten mit Scheduler-Rolle (besitzt trunk-Repo + Job-DB).
+    if roles.scheduler and worker is not None:
+        from bibi.daemon.scheduler_client import LocalScheduler
+        if isinstance(getattr(worker, "client", None), LocalScheduler):
+            worker.client.on_complete = lambda branch: _merge_back(
+                branch, sync_lock=sync_lock, synchronizer=synchronizer)
     worker_registry = WorkerRegistry() if roles.scheduler else None
     if sweeper is None and roles.scheduler:
         from bibi.daemon.sweeper import Sweeper

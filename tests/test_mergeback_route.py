@@ -92,6 +92,32 @@ def test_merge_conflict_sets_sync_conflict_but_job_complete(repo_with_origin):
         state.set_sync_conflict(False)  # Test-State aufräumen
 
 
+def test_local_scheduler_report_merges(repo_with_origin):
+    """Der **lokale** Worker meldet via LocalScheduler (nicht HTTP-Route) — der
+    Merge-back-Hook muss auch dort feuern (Live-Lücke 2026-06-27m)."""
+    from bibi.daemon import job_db
+    from bibi.daemon.scheduler_client import LocalScheduler
+    root, _origin = repo_with_origin
+    merged: list[str] = []
+    sched = LocalScheduler(on_complete=merged.append)
+    # einen running-Job in die DB bringen, dann via LocalScheduler complete melden.
+    _seed(root, "loc/README.md", '---\nschedule: now\njob: "echo x"\n---\n')
+    conn = job_db.connect()
+    try:
+        job_db.rescan(conn)
+        res = job_db.reserve_next(conn, worker="w", host="h")
+        jid = res["id"]
+    finally:
+        conn.close()
+    out = sched.report(jid, status="complete", exit_code=0, branch="agent/loc")
+    assert out == "ok"
+    assert merged == ["agent/loc"]   # Hook gefeuert
+    # ohne Branch (echo) feuert er nicht:
+    merged.clear()
+    sched2 = LocalScheduler(on_complete=merged.append)
+    assert merged == []
+
+
 def test_merged_commit_is_pushed_when_consent(repo_with_origin, monkeypatch):
     root, origin = repo_with_origin
     from bibi.daemon.synchronizer import Synchronizer

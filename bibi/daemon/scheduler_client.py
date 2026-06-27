@@ -25,10 +25,16 @@ SECRET_HEADER = "X-Bibi-Secret"
 
 
 class LocalScheduler:
-    """In-Process-Scheduler — direkte ``job_db``-Aufrufe (Single-Node)."""
+    """In-Process-Scheduler — direkte ``job_db``-Aufrufe (Single-Node).
 
-    def __init__(self, db_path: Path | None = None) -> None:
+    ``on_complete(branch)`` (optional): Hook, der nach einem erfolgreichen terminalen
+    ``complete``-Report mit Ergebnis-Branch feuert — der lokale Worker geht **nicht**
+    über die HTTP-Route ``/-/scheduler/status``, darum hängt der Merge-back hier
+    (PLAN-6; sonst mergt nur der Remote-Pfad). Wird in ``create_app`` verdrahtet."""
+
+    def __init__(self, db_path: Path | None = None, *, on_complete=None) -> None:
         self.db_path = db_path
+        self.on_complete = on_complete
 
     def next(self, worker: str | None = None, host: str | None = None) -> dict | None:
         conn = job_db.connect(self.db_path)
@@ -40,9 +46,13 @@ class LocalScheduler:
     def report(self, job_id: str, **fields) -> str:
         conn = job_db.connect(self.db_path)
         try:
-            return job_db.report_status(conn, job_id, **fields)
+            res = job_db.report_status(conn, job_id, **fields)
         finally:
             conn.close()
+        if (res == "ok" and self.on_complete is not None
+                and fields.get("status") == "complete" and fields.get("branch")):
+            self.on_complete(fields["branch"])
+        return res
 
     def register(self, worker: str, host: str, git_status: str | None = None) -> None:
         pass  # Single-Node: keine Anmeldung nötig
