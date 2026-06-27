@@ -651,6 +651,26 @@ def verdict(conn: sqlite3.Connection, now: float | None = None) -> dict:
             PROBLEM_STATES,
         ).fetchall()
     ]
+    # Lauf-Historie einbeziehen: ein wiederkehrender Job re-armt nach Fehlschlag zu
+    # `pending` — der Zeilen-Status ist dann harmlos, aber der LETZTE LAUF im Journal
+    # ist gescheitert. Sonst meldete das Verdikt fälschlich „alles lief". Dedup gegen
+    # die Zeilen-Abweichungen; laufende/entfernte Schedules ausgenommen.
+    current_slugs = {d["slug"] for d in deviations}
+    for r in conn.execute(
+        "SELECT j.* FROM journal j JOIN ("
+        "  SELECT slug, MAX(id) AS mx FROM journal WHERE domain='scheduled' GROUP BY slug"
+        ") m ON j.id = m.mx "
+        f"WHERE j.status IN ({placeholders}) ORDER BY j.finished_at DESC",
+        PROBLEM_STATES,
+    ).fetchall():
+        if r["slug"] in current_slugs:
+            continue
+        jr = conn.execute("SELECT status FROM jobs WHERE slug=?", (r["slug"],)).fetchone()
+        if jr is None or jr["status"] == "running":
+            continue  # Schedule entfernt oder läuft gerade → kein „letzter-Lauf"-Problem
+        d = journal_view(r)
+        d["last_run"] = True  # Zeile re-armt, aber letzter Lauf gescheitert
+        deviations.append(d)
     overdue = [
         job_view(r) for r in conn.execute(
             "SELECT * FROM jobs WHERE status='pending' AND next_fire_at IS NOT NULL "

@@ -147,6 +147,47 @@ def test_status_verdict_counts_problems(sched):
     assert v["deviations"][0]["status"] == "failed"
 
 
+def test_status_verdict_flags_failing_recurring_job(sched):
+    # Wiederkehrender Job re-armt nach Fehlschlag zu `pending` (Zeile harmlos), aber
+    # der LETZTE LAUF im Journal ist `error` → Verdikt darf NICHT „alles lief" sein.
+    client, root = sched
+    _seed(root, "witzy/README.md", '---\nschedule: "*/3 * * * *"\nclaude: x\n---\n')
+    client.post("/-/rescan")  # jobs-Zeile pending
+    c = job_db.connect()
+    try:
+        c.execute(
+            "INSERT INTO journal (run_id, slug, kind, status, finished_at, exit_code, "
+            "archived_at, domain) VALUES ('witzy:0','witzy','claude','error',100.0,1,100.0,'scheduled')"
+        )
+        c.commit()
+    finally:
+        c.close()
+    v = client.get("/-/status").json()["verdict"]
+    assert v["ok"] is False
+    devs = [d for d in v["deviations"] if d["slug"] == "witzy"]
+    assert devs and devs[0]["status"] == "error" and devs[0].get("last_run") is True
+
+
+def test_status_verdict_running_not_flagged_by_old_failure(sched):
+    # Läuft der Job gerade (running), zählt ein alter Fehllauf NICHT als Abweichung.
+    client, root = sched
+    _seed(root, "busy/README.md", '---\nschedule: now\nclaude: x\n---\n')
+    client.post("/-/rescan")
+    jid = client.post("/-/scheduler/next").json()["id"]  # sofort fällig → running
+    assert jid
+    c = job_db.connect()
+    try:
+        c.execute(
+            "INSERT INTO journal (run_id, slug, kind, status, finished_at, exit_code, "
+            "archived_at, domain) VALUES ('busy:0','busy','claude','error',100.0,1,100.0,'scheduled')"
+        )
+        c.commit()
+    finally:
+        c.close()
+    v = client.get("/-/status").json()["verdict"]
+    assert not [d for d in v["deviations"] if d["slug"] == "busy"]
+
+
 def test_status_verdict_counts_overdue(sched):
     client, root = sched
     _seed(root, "a/README.md", '---\nschedule: "0 9 * * *"\njob: "x"\n---\n')

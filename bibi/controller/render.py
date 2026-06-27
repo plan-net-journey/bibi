@@ -120,10 +120,11 @@ def _deviation_rows(deviations: list[dict], now: float) -> str:
     rows = []
     for d in deviations:
         when = d.get("finished_at") or d.get("started_at")
+        hint = ' <span class="muted">(letzter Lauf)</span>' if d.get("last_run") else ""
         rows.append(
             "<tr>"
             f"<td>{_slug_link(d.get('slug'))}</td>"
-            f'<td class="st {_e(d.get("status"))}">{_e(d.get("status"))}</td>'
+            f'<td class="st {_e(d.get("status"))}">{_e(d.get("status"))}{hint}</td>'
             f"<td>{_e(d.get('reason'))}</td>"
             f"<td>{_ago(when, now)}</td>"
             f"<td>{_e(d.get('host'))}</td>"
@@ -465,10 +466,11 @@ def schedule_detail_inner(
     name = _e(s.get("slug") or slug)
     kind = _e(s.get("kind") or (runs[0].get("kind") if runs else ""))
     trigger = _e(s.get("trigger"))
-    last = _e(s.get("last_status"))
+    cur = _e(s.get("last_status"))                      # aktueller Schedule-Zeilen-Zustand
+    last_run = _e(runs[0]["status"]) if runs else "—"   # Ergebnis des letzten Laufs (Journal)
     nxt = _until(s.get("next_fire_at"), now)
     meta = (f"Typ <b>{kind}</b> · Trigger <code>{trigger}</code> · "
-            f"letzter Status <b>{last}</b> · nächster Lauf {nxt}")
+            f"letzter Lauf <b>{last_run}</b> · Status <b>{cur}</b> · nächster Lauf {nxt}")
     runs_html = (
         '<table><thead><tr><th>Zeit</th><th>Status</th><th>Grund</th>'
         '<th>exit</th><th>Commit</th><th>Aktion</th></tr></thead>'

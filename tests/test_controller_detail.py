@@ -207,3 +207,14 @@ def test_run_delete_route(app_with):
         assert r.status_code == 200
         assert client.deleted == [42]
         assert 'id="detail"' in r.text
+
+
+def test_detail_shows_last_run_distinct_from_schedule_status():
+    # „letzter Lauf" = Ergebnis des letzten Laufs (Journal), getrennt vom Zeilen-Status.
+    s = {"slug": "witz", "kind": "claude", "trigger": "*/3 * * * *",
+         "last_status": "pending", "next_fire_at": None}
+    runs = [{"id": 9, "slug": "witz", "status": "error", "exit_code": 1,
+             "started_at": 1.0, "finished_at": 2.0, "kind": "claude"}]
+    html = render.schedule_detail_inner(s, runs, None, slug="witz", now=10.0)
+    assert "letzter Lauf <b>error</b>" in html
+    assert "Status <b>pending</b>" in html
