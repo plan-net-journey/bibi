@@ -78,7 +78,7 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .logbox .ln.warning { color: #d6a23e; }
 .logbox .ln.error   { color: #e06c5a; }
 .logbox .ln.debug   { color: #888; }
-.feed { height: 72vh; overflow-y: auto; background: #0008; border: 1px solid #8883;
+.feed { height: 45vh; overflow-y: auto; background: #0008; border: 1px solid #8883;
         border-radius: .4rem; padding: .6rem .8rem; font-family: ui-monospace, monospace;
         font-size: .85rem; line-height: 1.7; }
 .feed-row { white-space: pre-wrap; }
@@ -726,9 +726,18 @@ def _feed_handles(status: dict | None = None) -> str:
     )
 
 
+def _maint_banner(status: dict | None = None) -> str:
+    """Sichtbarer Wartungs-Hinweis (Feedback fürs MAINT-CTA): nur wenn Wartung an."""
+    on = bool((status or {}).get("maintenance"))
+    hide = "" if on else ' style="display:none"'
+    return (f'<div id="maintbanner" class="banner bad"{hide}>'
+            "⚠ Wartungsmodus aktiv — Job-Dispatch pausiert</div>")
+
+
 #: RESCAN + MAINT als plain-JS-Buttons gegen die JSON-API (§1.1). RESCAN → POST
-#: /-/rescan (kurze Quittung); MAINT → POST/DELETE /-/maintenance, Zustand am Button
-#: gespiegelt. FOLLOW besorgt _FOLLOW_JS (window.bibiFollow). Defensiv (Fehler ignoriert).
+#: /-/rescan (kurze Quittung). MAINT → POST/DELETE /-/maintenance; der Button **und
+#: ein Banner** spiegeln die **echte Server-Antwort** (kein optimistisches Toggle —
+#: bei Fehler bleibt der Zustand). FOLLOW besorgt _FOLLOW_JS (window.bibiFollow).
 _FEED_HANDLES_JS = """
 (function(){
   const rescan = document.getElementById('rescan');
@@ -739,11 +748,20 @@ _FEED_HANDLES_JS = """
     setTimeout(() => { rescan.textContent = 'RESCAN'; rescan.disabled = false; }, 1200);
   });
   const maint = document.getElementById('maint');
+  const banner = document.getElementById('maintbanner');
+  function setMaint(on){
+    maint.classList.toggle('warn', on);
+    maint.textContent = on ? 'MAINT: AN' : 'MAINT: aus';
+    if (banner) banner.style.display = on ? '' : 'none';
+  }
   if (maint) maint.addEventListener('click', async () => {
     const on = maint.classList.contains('warn');
-    try { await fetch('/-/maintenance', {method: on ? 'DELETE' : 'POST'}); } catch(_){}
-    maint.classList.toggle('warn', !on);
-    maint.textContent = on ? 'MAINT: aus' : 'MAINT: AN';
+    let next = on;
+    try {
+      const r = await fetch('/-/maintenance', {method: on ? 'DELETE' : 'POST'});
+      const d = await r.json(); next = !!d.maintenance;   // echte Server-Antwort
+    } catch(_) { next = on; }                              // Fehler → Zustand unverändert
+    setMaint(next);
   });
 })();
 """
@@ -763,6 +781,7 @@ def feed_page(rows: list[dict], jobs: list[dict] | None = None,
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Feed')}"
         f"{_feed_handles(status)}"
+        f"{_maint_banner(status)}"
         f"{feed_list(rows, now)}"
         f"{bands_fragment(jobs or [], now)}"
         f"<script>{_CLOCK_JS}</script>"

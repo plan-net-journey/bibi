@@ -129,7 +129,7 @@ def add_controller_routes(
 
     @app.get("/-/ui/feed", include_in_schema=False)
     def feed_screen():
-        return HTMLResponse(render.feed_page(_journal(), jobs=_jobs()))
+        return HTMLResponse(render.feed_page(_journal(), jobs=_jobs(), status=_status()))
 
     @app.get("/-/ui/feed/list", include_in_schema=False)
     def feed_list_fragment():

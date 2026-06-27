@@ -38,6 +38,26 @@ def test_feed_follow_gates_live():
     assert "window.bibiFollow === false" in html  # Live-Append + Band-Poll gegated
 
 
+def test_feed_maint_banner_visible_when_on():
+    on = render.feed_page([], jobs=[], status={"maintenance": True}, now=1.0)
+    assert 'id="maintbanner"' in on and "Wartungsmodus aktiv" in on
+    # sichtbar (kein display:none am Banner)
+    assert 'id="maintbanner" class="banner bad">' in on
+    off = render.feed_page([], jobs=[], status={"maintenance": False}, now=1.0)
+    assert "display:none" in off.split('id="maintbanner"', 1)[1][:40]  # versteckt
+
+
+def test_feed_maint_button_reflects_server_response():
+    # Der Button spiegelt die echte Server-Antwort (kein optimistisches Toggle).
+    html = render.feed_page([], jobs=[], now=1.0)
+    assert "d.maintenance" in html or ".maintenance" in html.split("maint.addEventListener", 1)[1]
+
+
+def test_feed_journal_height_shortened():
+    assert "height: 45vh" in render.feed_page([], jobs=[], now=1.0)
+    assert "height: 72vh" not in render.feed_page([], jobs=[], now=1.0).split(".feed {", 1)[1][:40]
+
+
 # ── Routen ────────────────────────────────────────────────────────────────────
 
 
