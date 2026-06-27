@@ -171,6 +171,19 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
         finally:
             conn.close()
 
+    @app.get("/-/journal/{jid}", tags=["journal"])
+    def journal_get(jid: int):
+        # Eine Journal-Zeile (Metadaten) — Quelle des Execution-Detail (§C.4).
+        conn = job_db.connect()
+        try:
+            entry = job_db.get_journal(conn, jid)
+        finally:
+            conn.close()
+        if entry is None:
+            return JSONResponse(status_code=404,
+                                content={"error": "journal entry not found", "id": jid})
+        return entry
+
     @app.get("/-/journal/{jid}/output", tags=["journal"])
     def journal_output(jid: int):
         # Replay-Quelle (§4.2): die output.jsonl des Laufs als getypte Events.

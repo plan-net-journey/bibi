@@ -95,6 +95,7 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
         margin-bottom: .4rem; font-family: ui-monospace, monospace; font-size: .85rem; }
 .band.collapsed { display: none; }
 .band-row { padding: .15rem 0; }
+.outscroll { max-height: 72vh; overflow-y: auto; }
 """
 
 
@@ -811,6 +812,7 @@ def _run_rows(runs: list[dict], slug: str, now: float,
             f"<td>{_e(r.get('exit_code'))}</td>"
             f"<td>{_commit_cell(r)}</td>"
             f"<td>{out_cell} "
+            f'<a class="back" href="/-/ui/run/{rid}">→ Detail</a> '
             f'<button hx-delete="/-/ui/schedule/{s}/run/{rid}" hx-target="#detail" '
             'hx-swap="outerHTML" hx-confirm="Lauf-Record löschen?">Löschen</button></td>'
             "</tr>"
@@ -918,5 +920,62 @@ def schedule_detail_page(
         f"<style>{_CSS}</style></head><body>"
         '<a class="back" href="/-/">← zurück</a>'
         f"{schedule_detail_inner(schedule, runs, job, slug, now, top_output=top_output, live_output=live_output)}"
+        "</body></html>"
+    )
+
+
+# ── Execution-Detail (Ebene 4, lauf-zentriert; Frontend-Plan §C.4) ───────────
+
+
+def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
+                          now: float | None = None) -> str:
+    """Ein **Lauf** (``run_id``): Meta (Status/exit/Dauer/host/worker/Commit) + voller
+    per-Run-Output aus ``output_ref``. Ziel der Feed-/Journal-/Schedule-Links."""
+    now = time.time() if now is None else now
+    e = entry or {}
+    run_id = _e(e.get("run_id"))
+    slug = _e(e.get("slug"))
+    st = _e(e.get("status"))
+    k = _e(e.get("kind") or kind)
+    meta = [f'<span class="st {st}">{st}</span>', k]
+    if e.get("exit_code") is not None:
+        meta.append(f"exit {_e(e.get('exit_code'))}")
+    dur = e.get("exec_runtime")
+    if dur is None and e.get("started_at") is not None and e.get("finished_at") is not None:
+        dur = e["finished_at"] - e["started_at"]
+    if dur is not None:
+        meta.append(f"Dauer {int(dur)} s")
+    if e.get("reason"):
+        meta.append(_e(e.get("reason")))
+    times = []
+    if e.get("started_at"):
+        times.append(f"gestartet {_hms(e.get('started_at'))}")
+    if e.get("finished_at"):
+        times.append(f"beendet {_hms(e.get('finished_at'))}")
+    if e.get("host"):
+        times.append(f"host {_e(e.get('host'))}")
+    if e.get("worker"):
+        times.append(f"worker {_e(e.get('worker'))}")
+    commit = ""
+    if e.get("commit_sha"):
+        sha = e["commit_sha"]
+        branch = _e(e.get("branch") or "")
+        commit = (f'<div class="meta">Ergebnis-Commit '
+                  f'<span class="commit" title="{_e(sha)} {branch}">⎘ {_e(sha[:7])}</span></div>')
+    out = output_block(events, e.get("kind") or kind)
+    back = (f'<a class="back" href="/-/ui/schedule/{slug}">← {slug}</a> · '
+            f'<a class="back" href="/-/ui/feed">Feed</a>')
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>bibi · {run_id}</title>"
+        f"<style>{_CSS}</style></head><body>"
+        f'<header><h1>bibi · {run_id}</h1><span class="muted">{back}</span></header>'
+        f'<div class="meta">{" · ".join(meta)}</div>'
+        f'<div class="meta">{" · ".join(times)}</div>'
+        f"{commit}"
+        "<h2>Output</h2>"
+        f'<div class="outscroll">{out}</div>'
         "</body></html>"
     )

@@ -173,6 +173,17 @@ def add_controller_routes(
             schedule, runs, job, slug=slug,
             top_output=top_output, live_output=live_output))
 
+    @app.get("/-/ui/run/{jid}", include_in_schema=False)
+    def run_detail(jid: int):
+        # Execution-Detail (§C.4): ein Lauf — Meta (Journal-Zeile) + voller Output.
+        try:
+            entry = client.journal_entry(jid)
+            data = client.run_output(jid)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            entry, data = {}, {}
+        return HTMLResponse(render.execution_detail_page(
+            entry, data.get("events", []), data.get("kind") or entry.get("kind", "job")))
+
     @app.get("/-/ui/run/{jid}/output", include_in_schema=False)
     def run_output(jid: int):
         try:

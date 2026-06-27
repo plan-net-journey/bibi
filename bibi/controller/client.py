@@ -43,6 +43,10 @@ class ControllerClient:
         data = self._get("/-/schedule") or {}
         return data.get("schedules", []) if isinstance(data, dict) else []
 
+    def journal_entry(self, journal_id: int) -> dict:
+        # Metadaten einer Journal-Zeile (Execution-Detail, §C.4).
+        return self._get(f"/-/journal/{journal_id}") or {}
+
     def run_output(self, journal_id: int) -> dict:
         return self._get(f"/-/journal/{journal_id}/output") or {}
 
