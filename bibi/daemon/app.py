@@ -21,7 +21,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from bibi import config, repo, state
-from bibi.daemon import activity, job_db, openapi
+from bibi.daemon import activity, job_db, mergeback, openapi
 from bibi.daemon.openapi import (
     JobReservation, JobView, KillRequest, NextRequest, RunRequest, StatusReport,
     WorkerHeartbeat, WorkerView,
@@ -36,11 +36,42 @@ from bibi.wrapper import output
 log = logging.getLogger("bibi.daemon")
 
 
-def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry) -> None:
+def _merge_back(branch: str, *, sync_lock=None, synchronizer=None) -> None:
+    """``agent/<slug>`` nach trunk mergen (PLAN-6) und — bei Zustimmung — pushen.
+
+    Defensiv: jeder Fehler bleibt hier (der Lauf ist bereits terminal ``complete``,
+    der Commit über den Branch erreichbar). Konflikt → ``sync_conflict`` (auflösbar)."""
+    slug = branch.removeprefix("agent/")
+    try:
+        res = mergeback.merge_back(repo_root=repo.root(), slug=slug, lock=sync_lock)
+    except Exception as exc:  # nie den Status-Report killen
+        activity.emit(log, logging.ERROR, "worker.merge_error",
+                      "Merge-back fehlgeschlagen", role="scheduler", slug=slug, error=str(exc))
+        return
+    if res.status == "merged":
+        activity.emit(log, logging.INFO, "worker.merge", role="scheduler",
+                      slug=slug, trunk=res.trunk_sha)
+        if synchronizer is not None:  # D5: Merge-Commit aktiv pushen (debouncer-blind)
+            synchronizer.push_now()
+    elif res.status == "conflict":
+        state.set_sync_conflict(True)
+        activity.emit(log, logging.WARNING, "worker.merge_conflict",
+                      "Merge-back-Konflikt — trunk unverändert, Branch intakt (/sync)",
+                      role="scheduler", slug=slug, detail=res.detail)
+    elif res.status == "error":
+        activity.emit(log, logging.ERROR, "worker.merge_error",
+                      "Merge-back-Fehler", role="scheduler", slug=slug, detail=res.detail)
+
+
+def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
+                          *, sync_lock=None, synchronizer=None) -> None:
     """Echte DB-gestützte Scheduler-Routen (PLAN-3 §3.1) — nur bei aktiver
     ``scheduler``-Rolle (sie hält die Job-DB, §4.4). Ersetzen die 3.0-Stubs für
     ``/-/job``/``/-/job/{id}`` (zuerst registriert ⇒ gewinnen) und den
-    Phase-2-Stub von ``/-/rescan``/``/-/schedule``. Reine JSON-API (§1.1)."""
+    Phase-2-Stub von ``/-/rescan``/``/-/schedule``. Reine JSON-API (§1.1).
+
+    ``sync_lock``/``synchronizer``: Merge-back ``agent/<slug>`` → trunk nach einem
+    erfolgreichen Lauf (PLAN-6) — scheduler-seitig (hier lebt das trunk-Repo)."""
 
     # Optionaler Shared-Secret-Schutz für Verbund-Endpunkte (§1.3): ist
     # BIBI_CONNECT_SECRET gesetzt, müssen Remote-Worker den Header mitschicken;
@@ -123,6 +154,10 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry) -> None:
             return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
         if outcome == "invalid":
             return JSONResponse(status_code=409, content={"error": "illegal transition", "id": id})
+        # Erfolgreicher Lauf mit Ergebnis-Branch → Merge-back nach trunk (PLAN-6).
+        # Nur ``complete`` + vorhandener Branch (echo/No-op liefert keinen Commit).
+        if str(report.status) == "complete" and report.branch:
+            _merge_back(report.branch, sync_lock=sync_lock, synchronizer=synchronizer)
         return {"id": id, "status": str(report.status)}
 
     # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────
@@ -290,6 +325,7 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
 def create_app(
     roles: Roles, synchronizer=None, worker: Worker | None = None, sweeper=None,
     rescanner=None, controller_client=None, controller_base_url: str | None = None,
+    sync_lock=None,
 ) -> FastAPI:
     if worker is None and roles.worker:
         worker = Worker(worker_name="local")
@@ -422,7 +458,8 @@ def create_app(
     # ── Scheduler-Rolle: echte DB-Routen (PLAN-3 §3.1) ──────────────────────
     # Zuerst registriert ⇒ gewinnen gegen die 3.0-Contract-Stubs für /-/job.
     if roles.scheduler:
-        _add_scheduler_routes(app, worker_registry)
+        _add_scheduler_routes(app, worker_registry,
+                              sync_lock=sync_lock, synchronizer=synchronizer)
 
     # ── Worker-Rolle: Job-Streams + kill (PLAN-3 §3.3) ──────────────────────
     if worker is not None:

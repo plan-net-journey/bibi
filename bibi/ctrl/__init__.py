@@ -16,6 +16,7 @@ from . import (
     init_cmd,
     job_cmd,
     lifecycle_cmd,
+    mergeback_cmd,
     open_cmd,
     protocol_cmd,
     run_cmd,
@@ -43,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     run_cmd.register(sub)
     at_cmd.register(sub)
     doctor_cmd.register(sub)
+    mergeback_cmd.register(sub)
     job_cmd.register_rescan(sub)
 
     args = parser.parse_args(argv)

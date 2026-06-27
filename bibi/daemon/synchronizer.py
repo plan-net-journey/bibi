@@ -15,6 +15,7 @@ und ohne asyncio testbar ist:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from dataclasses import dataclass
@@ -117,6 +118,7 @@ class Synchronizer:
         pull_fn=_default_pull,
         clock=time.monotonic,
         consent=None,
+        lock=None,
     ) -> None:
         self._push = push
         self._pull = pull or push          # Push schließt Pull ein (§4.3)
@@ -124,6 +126,9 @@ class Synchronizer:
         # der Daemon hängt es an ``auto_sync`` (stehende Push-Zustimmung), damit
         # ``/sync on|off`` live wirkt. None = ungated (mechanische Tests).
         self._consent = consent
+        # Gemeinsamer ``sync_lock`` mit dem Merge-back (PLAN-6 §3 D2): Pull/Push und
+        # Merge nach trunk dürfen sich nicht überschneiden. None = ungated (Tests).
+        self._lock = lock
         self.pull_interval_s = pull_interval_s
         self.poll_s = poll_s
         self._diff_stat = diff_stat
@@ -136,6 +141,23 @@ class Synchronizer:
         self.last_push_at: float | None = None
         self.last_ok: bool | None = None
         self.last_log: list[str] = []
+
+    def _lock_ctx(self):
+        return self._lock if self._lock is not None else contextlib.nullcontext()
+
+    def push_now(self) -> tuple[bool, list[str], str | None] | None:
+        """Sofort pushen (debouncer-unabhängig), z. B. nach einem Merge-back (D5).
+
+        Der Push-Debouncer beobachtet nur den Working-Tree-Diff; ein Merge-Commit
+        (sauberer Tree) würde ihn nie auslösen. Respektiert Push-Rolle + Zustimmung
+        + ``sync_lock``. ``None`` wenn Push aus/ohne Zustimmung."""
+        if not self._push or (self._consent is not None and not self._consent()):
+            return None
+        with self._lock_ctx():
+            ok, loglines, kind = self._push_fn()
+        self.last_push_at, self.last_ok, self.last_log = self._clock(), ok, loglines
+        activity.emit(log, logging.INFO, "sync.push", role="synchronizer", ok=ok, kind=kind)
+        return ok, loglines, kind
 
     # — Laufzeit-Toggle (§4.3-Endpunkte) —
     def set_pull(self, value: bool) -> None:
@@ -170,7 +192,8 @@ class Synchronizer:
             # zusätzlich auf die Zustimmung. Ohne Zustimmung bleibt das Fenster
             # offen → sobald sie kommt, pusht ein bereits abgelaufenes Fenster sofort.
             if self._debounce.should_push(now) and (self._consent is None or self._consent()):
-                ok, loglines, kind = self._push_fn()
+                with self._lock_ctx():
+                    ok, loglines, kind = self._push_fn()
                 self.last_push_at, self.last_ok, self.last_log = now, ok, loglines
                 oks.append(ok)
                 kinds.append(kind)
@@ -180,7 +203,8 @@ class Synchronizer:
                               role="synchronizer", ok=ok, kind=kind)
 
         if self._pull and self._pull_due(now):
-            ok, kind = self._pull_fn()
+            with self._lock_ctx():
+                ok, kind = self._pull_fn()
             self._last_pull_at = now
             oks.append(ok)
             kinds.append(kind)

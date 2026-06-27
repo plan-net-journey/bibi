@@ -49,13 +49,19 @@ def run(args: argparse.Namespace) -> int:
             print(e, file=sys.stderr)
         return 2
 
+    # Gemeinsamer sync_lock (PLAN-6 §3 D2): koordiniert Synchronizer-Pull/Push mit
+    # dem Merge-back nach trunk im Scheduler — sie dürfen sich nicht überschneiden.
+    import threading
+    sync_lock = threading.Lock()
+
     synchronizer = None
     if r.synchronizer:
         from bibi.daemon.synchronizer import Synchronizer
         if r.push:
             state.set_auto_sync(True)   # --push = stehende Push-Zustimmung an (§4.9)
         # Push-Fähigkeit immer an; der tatsächliche Push ist an auto_sync gegated.
-        synchronizer = Synchronizer(push=True, pull=True, consent=state.get_auto_sync)
+        synchronizer = Synchronizer(push=True, pull=True, consent=state.get_auto_sync,
+                                    lock=sync_lock)
 
     worker = None
     if r.worker:
@@ -76,7 +82,8 @@ def run(args: argparse.Namespace) -> int:
     # (nicht config.daemon_port() — sonst zeigt --port ins Leere/auf einen Fremd-Daemon).
     port = args.port or config.daemon_port()
     app = create_app(r, synchronizer=synchronizer, worker=worker,
-                     controller_base_url=f"http://{args.host}:{port}")
+                     controller_base_url=f"http://{args.host}:{port}",
+                     sync_lock=sync_lock)
     # Aktivitätslog verdrahten (§5.1): JSONL unter gitignored data/ + Klartext auf
     # stdout → der Vordergrund-Startschirm *ist* der Live-Tail.
     names = r.active_names() or ["idle"]
