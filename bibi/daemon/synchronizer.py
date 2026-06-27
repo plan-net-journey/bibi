@@ -119,6 +119,7 @@ class Synchronizer:
         clock=time.monotonic,
         consent=None,
         lock=None,
+        repo_root=None,
     ) -> None:
         self._push = push
         self._pull = pull or push          # Push schließt Pull ein (§4.3)
@@ -129,6 +130,9 @@ class Synchronizer:
         # Gemeinsamer ``sync_lock`` mit dem Merge-back (PLAN-6 §3 D2): Pull/Push und
         # Merge nach trunk dürfen sich nicht überschneiden. None = ungated (Tests).
         self._lock = lock
+        # F-a (PLAN-7): periodischer Merge-Sweep liegengebliebener agent/*-Branches.
+        # None ⇒ kein Sweep (mechanische Tests). Sonst je Tick remerge_all.
+        self._repo_root = repo_root
         self.pull_interval_s = pull_interval_s
         self.poll_s = poll_s
         self._diff_stat = diff_stat
@@ -213,7 +217,26 @@ class Synchronizer:
                           role="synchronizer", ok=ok, kind=kind)
 
         self._resolve_conflict(oks, kinds)
+        self._merge_sweep()
         return did
+
+    def _merge_sweep(self) -> None:
+        """F-a (PLAN-7): liegengebliebene ``agent/*``-Branches nach trunk mergen —
+        das Retry-Netz für Merge-backs, die beim Report scheiterten (z. B. dirty
+        Tree). Unter dem gemeinsamen ``sync_lock`` (remerge_all hält ihn selbst),
+        darum **außerhalb** der Pull/Push-Lock-Blöcke aufrufen (Lock nicht reentrant)."""
+        if self._repo_root is None:
+            return
+        from bibi.daemon import mergeback
+        try:
+            results = mergeback.remerge_all(repo_root=self._repo_root, lock=self._lock)
+        except Exception:  # ein Sweep-Fehler darf den Sync-Loop nie killen (§2.7)
+            log.warning("merge-sweep übersprungen", exc_info=True)
+            return
+        merged = [b for b, s in results.items() if s == "merged"]
+        if merged:
+            activity.emit(log, logging.INFO, "merge.sweep", role="synchronizer",
+                          merged=len(merged), branches=",".join(merged))
 
     def _pull_due(self, now: float) -> bool:
         return self._last_pull_at is None or (now - self._last_pull_at) >= self.pull_interval_s

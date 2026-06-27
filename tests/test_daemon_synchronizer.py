@@ -167,3 +167,37 @@ def test_push_gated_by_consent(team_repo):
     consent["on"] = True
     s.tick(1200.0)
     assert calls["push"] == 1          # Zustimmung an → abgelaufenes Fenster pusht sofort
+
+
+def test_tick_merge_sweep_merges_unmerged_branches(tmp_path):
+    """F-a (PLAN-7): der Tick mergt liegengebliebene agent/*-Branches nach trunk."""
+    import subprocess
+
+    from bibi.daemon import worktree as wt
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+    # ungemergten agent/x-Branch erzeugen
+    p = wt.prepare(repo_root=root, work_dir=root / "data" / "wt", slug="x")
+    (p / "n.md").write_text("hi\n")
+    wt.commit(worktree=p, message="run", slug="x")
+    assert wt.is_ahead(repo_root=root, branch="agent/x", trunk="trunk")
+
+    s = Synchronizer(repo_root=root)   # kein push/pull, nur Sweep
+    s.tick(0.0)
+    assert not wt.is_ahead(repo_root=root, branch="agent/x", trunk="trunk")  # gemergt
+
+
+def test_tick_no_sweep_without_repo_root(team_repo):
+    s, calls = _mk()           # repo_root=None ⇒ kein Sweep, kein Fehler
+    s.tick(0.0)                # darf nicht werfen

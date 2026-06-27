@@ -61,7 +61,7 @@ def run(args: argparse.Namespace) -> int:
             state.set_auto_sync(True)   # --push = stehende Push-Zustimmung an (§4.9)
         # Push-Fähigkeit immer an; der tatsächliche Push ist an auto_sync gegated.
         synchronizer = Synchronizer(push=True, pull=True, consent=state.get_auto_sync,
-                                    lock=sync_lock)
+                                    lock=sync_lock, repo_root=repo.root())
 
     worker = None
     if r.worker:

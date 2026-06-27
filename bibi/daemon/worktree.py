@@ -52,11 +52,28 @@ def head_commit(worktree: Path) -> str:
     return r.stdout.strip() if r.code == 0 else ""
 
 
+def is_ahead(*, repo_root: Path, branch: str, trunk: str = "trunk") -> bool:
+    """Hat ``branch`` Commits, die **nicht** in ``trunk`` stecken? (False bei Fehlen)."""
+    r = _git(["rev-list", "--count", f"{trunk}..{branch}"], cwd=repo_root, check=False)
+    return r.code == 0 and r.stdout.strip() not in ("", "0")
+
+
 def prepare(*, repo_root: Path, work_dir: Path, slug: str, trunk: str = "trunk") -> Path:
     """Frischen Worktree unter ``work_dir/<slug>/`` auf ``agent/<slug>`` anlegen.
 
     Ein evtl. veralteter Worktree (z. B. nach Crash) wird vorher entfernt;
-    ``git worktree add -B`` setzt den Branch auf trunk-HEAD und verlinkt neu."""
+    ``git worktree add -B`` setzt den Branch auf trunk-HEAD und verlinkt neu.
+
+    **F-b (PLAN-7):** Hat ``agent/<slug>`` noch **ungemergte** Commits voraus von
+    trunk (Merge-back stand aus), würde ``-B`` sie verwerfen → Datenverlust. Darum:
+    abbrechen statt verwerfen. Der periodische Merge-Sweep (F-a) holt den Branch
+    nach; der Lauf scheitert sauber als ``failed`` und wird neu versucht."""
+    branch = branch_name(slug)
+    if is_ahead(repo_root=repo_root, branch=branch, trunk=trunk):
+        raise GitOpError(
+            ["worktree", "prepare"],
+            f"{branch} hat ungemergte Commits voraus von {trunk} — "
+            "-B-Reset verweigert (F-b), Merge-Sweep holt nach", 1)
     work_dir.mkdir(parents=True, exist_ok=True)
     path = work_dir / slug
     if path.exists():

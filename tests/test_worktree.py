@@ -65,6 +65,20 @@ def test_commit_returns_sha_on_change(repo: Path):
     assert author == "Bibi"
 
 
+def test_prepare_refuses_unmerged_branch(repo: Path):
+    # F-b (PLAN-7): ungemergte Commits voraus von trunk dürfen nicht via -B verworfen
+    # werden — prepare bricht ab, der Branch bleibt intakt.
+    work = repo / "data" / "worktrees"
+    p = wt.prepare(repo_root=repo, work_dir=work, slug="run1")
+    (p / "new.txt").write_text("x\n")
+    wt.commit(worktree=p, message="add", slug="run1")   # agent/run1 jetzt voraus
+    assert wt.is_ahead(repo_root=repo, branch="agent/run1", trunk="trunk")
+    with pytest.raises(wt.GitOpError):
+        wt.prepare(repo_root=repo, work_dir=work, slug="run1")
+    # Commit nicht verloren:
+    assert wt.is_ahead(repo_root=repo, branch="agent/run1", trunk="trunk")
+
+
 def test_remove_idempotent(repo: Path):
     work = repo / "data" / "worktrees"
     path = wt.prepare(repo_root=repo, work_dir=work, slug="run1")
