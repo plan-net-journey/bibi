@@ -34,6 +34,19 @@ def _init_repo(root: Path, branch: str = "trunk") -> None:
     _git(root, "config", "user.email", "test@example.com")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_node_config(tmp_path_factory, monkeypatch: pytest.MonkeyPatch):
+    """Tests nie gegen die **echte** ``~/.config/bibi/env`` laufen lassen — sonst
+    leaken Knoten-Settings (BIBI_EXEC_MODE=container, Auth-Token, BIBI_CLAUDE_BIN …)
+    in die Suite und verfälschen Host-Modus-Tests. ``env_path()`` respektiert
+    ``XDG_CONFIG_HOME`` → auf ein leeres Temp-Dir zeigen + Dev-Shell-Übersteuerungen
+    der Exec-Variablen neutralisieren."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("bibicfg")))
+    for k in ("BIBI_EXEC_MODE", "BIBI_JOB_IMAGE", "BIBI_DOCKER_BIN",
+              "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+
+
 @pytest.fixture
 def team_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Temporäres Team-Repo; cwd ist hineingeparkt. Gibt den Repo-Root zurück."""

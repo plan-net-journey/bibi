@@ -155,8 +155,14 @@ def _run_wrapper(
             env["BIBI_JOB_SESSION"] = session
 
     # Container-Exec-Konfig an den Wrapper reichen (PLAN-8): BIBI_EXEC_MODE/IMAGE/
-    # DOCKER_BIN + ANTHROPIC_API_KEY. Leer ⇒ Host-Modus (unverändert).
+    # DOCKER_BIN + Auth-Token. Leer ⇒ Host-Modus (unverändert).
     env.update(_exec_config())
+    # Der Container-Name ``bibi-<job_id>`` ist bei wiederkehrenden Jobs stabil; ein
+    # in „Created"/„Exited" steckender Rest (von --rm nicht erfasst) würde den
+    # nächsten ``docker run`` mit „name already in use" sofort scheitern lassen.
+    # Darum vor dem Lauf best-effort freiräumen (idempotent).
+    if _is_container():
+        _docker(["rm", "-f", exec_backend.container_name(job_id)])
 
     started = time.time()
     # eigene Session ⇒ kill kann die ganze Prozessgruppe (Wrapper + Child) treffen.
