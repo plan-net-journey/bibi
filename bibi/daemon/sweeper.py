@@ -12,7 +12,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from bibi.daemon import job_db
+from bibi.daemon import activity, job_db
 
 log = logging.getLogger("bibi.sweeper")
 
@@ -34,6 +34,8 @@ class Sweeper:
             if self.registry is not None:  # verwaiste running-Jobs toter Worker
                 stale = self.registry.stale_workers()
                 out["no_process"] = job_db.reconcile_no_process(conn, stale)
+            if any(out.values()):  # nur wenn wirklich etwas terminalisiert wurde
+                activity.emit(log, logging.INFO, "sweeper.reap", role="scheduler", **out)
             return out
         finally:
             conn.close()

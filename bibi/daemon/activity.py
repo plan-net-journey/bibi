@@ -29,6 +29,26 @@ LOG_FILENAME = "daemon.jsonl"
 DEFAULT_MAX_BYTES = 2_000_000
 DEFAULT_BACKUPS = 5
 
+# Log-Level-Namen (case-insensitiv) → stdlib-Level. Bei Vollabdeckung (§5.4) ist
+# der Knopf nötig, damit der Live-Tail nicht im DEBUG-Firehose ersäuft.
+LEVELS = {"debug": logging.DEBUG, "info": logging.INFO,
+          "warning": logging.WARNING, "warn": logging.WARNING,
+          "error": logging.ERROR}
+
+
+def resolve_level(cli: str | None = None, env: str | None = None,
+                  default: int = logging.INFO) -> int:
+    """Log-Level wählen: CLI (``--log-level``) > env (``BIBI_LOG_LEVEL``) > Default.
+
+    Unbekannte/leere Werte werden übersprungen (defensiv → Default).
+    """
+    for raw in (cli, env):
+        if raw:
+            lvl = LEVELS.get(raw.strip().lower())
+            if lvl is not None:
+                return lvl
+    return default
+
 # Felder, die im JSONL-Objekt erste Klasse sind (nicht in „fields" gemischt).
 _KNOWN = ("ts", "level", "role", "event", "msg", "slug", "run_id")
 

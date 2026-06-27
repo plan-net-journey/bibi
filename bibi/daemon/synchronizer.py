@@ -201,8 +201,13 @@ class Synchronizer:
         from bibi import state
         if "conflict" in kinds:
             state.set_sync_conflict(True)
+            activity.emit(log, logging.WARNING, "sync.conflict",
+                          "Pull/Push-Konflikt — Auflösung via /sync (§1.6)",
+                          role="synchronizer")
         elif any(oks) and state.get_sync_conflict():
             state.set_sync_conflict(False)
+            activity.emit(log, logging.INFO, "sync.conflict_cleared",
+                          role="synchronizer")
 
     # — asyncio-Loop —
     async def start(self) -> None:

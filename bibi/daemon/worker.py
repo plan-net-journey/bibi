@@ -85,6 +85,8 @@ def _run_wrapper(
     Der Wrapper ist die einzige Ausführungs-Einheit; nur der Aufrufweg
     unterscheidet disponiert (execute_reservation) von lokal (run_local), §3.3b."""
     wt_path = worktree.prepare(repo_root=repo_root, work_dir=work_dir, slug=slug)
+    activity.emit(log, logging.DEBUG, "worktree.prepare", role="worker",
+                  slug=slug, run_id=job_id, path=str(wt_path))
     out_path = _output_path(repo_root, job_id)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -120,8 +122,12 @@ def _run_wrapper(
         register(job_id, None)
 
     commit_sha = worktree.commit(worktree=wt_path, message=f"{slug}: run {job_id}", slug=slug)
+    activity.emit(log, logging.DEBUG, "worktree.commit", role="worker",
+                  slug=slug, run_id=job_id, commit=(commit_sha or None))
     if ephemeral:
         worktree.remove(repo_root=repo_root, worktree=wt_path)
+        activity.emit(log, logging.DEBUG, "worktree.remove", role="worker",
+                      slug=slug, run_id=job_id)
     return code, commit_sha, out_path, outcome
 
 
@@ -186,6 +192,10 @@ def execute_reservation(
         fields = {**_retry_fields(reservation), **common}
 
     res = client.report(jid, **fields)
+    activity.emit(log, logging.INFO, "worker.report", role="worker",
+                  slug=reservation.get("slug"), run_id=jid, status=fields["status"],
+                  reason=fields.get("reason"), exit_code=code, outcome=outcome,
+                  applied=(res == "ok"))
     return {"id": jid, "exit_code": code, "commit": commit_sha,
             "status": fields["status"] if res == "ok" else None, "outcome": outcome}
 
@@ -309,9 +319,7 @@ class Worker:
             execute_reservation(
                 res, repo_root=root, work_dir=work, client=self.client,
                 worker_name=self.worker_name, host=self.host, register=self._register,
-            )
-            activity.emit(log, logging.INFO, "worker.done", role="worker",
-                          slug=res.get("slug"), run_id=res.get("id"))
+            )  # terminales Outcome loggt execute_reservation selbst (worker.report)
         except Exception:  # ein kaputter Run darf den Loop nicht killen (§2.7)
             activity.emit(log, logging.ERROR, "worker.error",
                           "Job-Ausführung fehlgeschlagen", role="worker",
@@ -335,8 +343,11 @@ class Worker:
             try:
                 await loop.run_in_executor(
                     None, lambda: self.client.register(self.worker_name, self.host, self._git_status()))
+                activity.emit(log, logging.DEBUG, "worker.heartbeat", role="worker",
+                              worker=self.worker_name)
             except Exception:
-                log.warning("Heartbeat fehlgeschlagen (Scheduler erreichbar?)")
+                activity.emit(log, logging.WARNING, "worker.heartbeat",
+                              "Heartbeat fehlgeschlagen (Scheduler erreichbar?)", role="worker")
             await asyncio.sleep(self.heartbeat_interval)
 
     def kill(self, job_id: str) -> bool:
@@ -346,6 +357,8 @@ class Worker:
             return False
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            activity.emit(log, logging.INFO, "worker.kill", "SIGTERM an Wrapper-Prozessgruppe",
+                          role="worker", run_id=job_id)
             return True
         except (ProcessLookupError, OSError):
             return False

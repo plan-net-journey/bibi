@@ -109,6 +109,32 @@ def test_setup_logging_two_sinks_and_writes_jsonl(tmp_path):
             logging.getLogger("bibi").removeHandler(h)
 
 
+def test_resolve_level_precedence_and_tolerance():
+    # CLI > env > Default; case-insensitiv; Unbekanntes wird übersprungen.
+    assert activity.resolve_level("debug", "error") == logging.DEBUG
+    assert activity.resolve_level(None, "WARNING") == logging.WARNING
+    assert activity.resolve_level(None, None) == logging.INFO
+    assert activity.resolve_level("bogus", "info") == logging.INFO  # CLI ungültig → env
+    assert activity.resolve_level("bogus", "nonsense") == logging.INFO  # → Default
+
+
+def test_setup_logging_respects_level(tmp_path):
+    path = activity.setup_logging(log_dir=tmp_path / "lvl", level=logging.WARNING,
+                                  to_stdout=False)
+    try:
+        log = logging.getLogger("bibi.worker")
+        activity.emit(log, logging.INFO, "worker.pickup")      # unter Schwelle → raus
+        activity.emit(log, logging.WARNING, "worker.heartbeat")  # ab Schwelle → drin
+        for h in logging.getLogger("bibi").handlers:
+            h.flush()
+        events = [json.loads(ln)["event"] for ln in
+                  path.read_text(encoding="utf-8").splitlines()]
+        assert "worker.heartbeat" in events and "worker.pickup" not in events
+    finally:
+        for h in list(logging.getLogger("bibi").handlers):
+            logging.getLogger("bibi").removeHandler(h)
+
+
 def test_setup_logging_is_idempotent(tmp_path):
     activity.setup_logging(log_dir=tmp_path / "a")
     activity.setup_logging(log_dir=tmp_path / "b")  # darf nicht doppelt verdrahten

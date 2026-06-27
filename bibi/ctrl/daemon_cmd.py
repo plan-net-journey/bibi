@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import urllib.request
 
@@ -81,10 +82,13 @@ def run(args: argparse.Namespace) -> int:
     # Aktivitätslog verdrahten (§5.1): JSONL unter gitignored data/ + Klartext auf
     # stdout → der Vordergrund-Startschirm *ist* der Live-Tail.
     names = r.active_names() or ["idle"]
-    log_path = activity.setup_logging(role_names=names,
+    level = activity.resolve_level(getattr(args, "log_level", None),
+                                   os.environ.get("BIBI_LOG_LEVEL"))
+    log_path = activity.setup_logging(role_names=names, level=level,
                                       log_dir=repo.root() / "data" / "daemon-log")
     activity.emit(logging.getLogger("bibi.daemon"), logging.INFO, "daemon.start",
-                  role="daemon", roles=",".join(names), port=port, log=str(log_path))
+                  role="daemon", roles=",".join(names), port=port,
+                  loglevel=logging.getLevelName(level), log=str(log_path))
     uvicorn.run(app, host=args.host, port=port)
     return 0
 
@@ -153,6 +157,8 @@ def register(sub: argparse._SubParsersAction) -> None:
     pr.add_argument("--connect", action="store_true")
     pr.add_argument("--pull", action="store_true")
     pr.add_argument("--push", action="store_true")
+    pr.add_argument("--log-level", default=None,
+                    help="debug|info|warning|error (sonst BIBI_LOG_LEVEL, Default info)")
     pr.set_defaults(func=run)
 
     pi = dsub.add_parser("install", help="Autostart-Unit/Plist schreiben")

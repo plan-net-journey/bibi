@@ -101,6 +101,9 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry) -> None:
             conn.close()
         if res is None:
             return Response(status_code=204)  # nichts zu tun (leerer Body)
+        activity.emit(log, logging.INFO, "scheduler.dispatch", role="scheduler",
+                      slug=res.get("slug"), run_id=res.get("id"), kind=res.get("kind"),
+                      worker=req.worker if req else None)
         return res
 
     @app.post("/-/scheduler/status/{id}", tags=["scheduler"], dependencies=[Depends(_auth)])
@@ -300,10 +303,12 @@ def create_app(
         # lokale running-Jobs aus einem Vorab-Absturz aufräumen (no_process, §5.5).
         conn = job_db.connect()
         try:
-            job_db.rescan(conn)
-            job_db.fire_startup(conn)
-            if worker is not None:
-                job_db.reconcile_startup_orphans(conn, worker.worker_name)
+            rs = job_db.rescan(conn)
+            fired = job_db.fire_startup(conn)
+            orphans = (job_db.reconcile_startup_orphans(conn, worker.worker_name)
+                       if worker is not None else 0)
+            activity.emit(log, logging.INFO, "scheduler.startup", role="scheduler",
+                          inserted=rs.get("inserted"), fired=fired, orphans=orphans)
         except Exception:
             log.warning("scheduler-startup (rescan/startup/reconcile) übersprungen")
         finally:
