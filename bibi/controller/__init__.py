@@ -69,6 +69,28 @@ def add_controller_routes(
     def verdict_fragment():
         return HTMLResponse(render.verdict_fragment(_status()))
 
+    @app.get("/-/ui/schedules", include_in_schema=False)
+    def schedules_fragment():
+        return HTMLResponse(render.schedules_fragment(_schedules()))
+
+    @app.post("/-/ui/rescan", include_in_schema=False)
+    def ui_rescan():
+        try:
+            client.rescan()
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        return HTMLResponse(render.schedules_fragment(_schedules()))
+
+    @app.post("/-/ui/maintenance", include_in_schema=False)
+    def ui_maintenance():
+        # Toggle: aktuellen Zustand lesen, umschalten, den Handle neu rendern.
+        on = bool(_status().get("maintenance"))
+        try:
+            client.maintenance(not on)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        return HTMLResponse(render.maint_handle(_status()))
+
     @app.get("/-/ui/logs", include_in_schema=False)
     def logs_page():
         return HTMLResponse(render.log_page())

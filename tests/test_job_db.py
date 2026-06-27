@@ -140,4 +140,19 @@ def test_schedule_view_trigger_and_status(conn, tmp_path: Path):
     assert sched[0]["slug"] == "daily"
     assert sched[0]["trigger"] == "0 9 * * *"
     assert sched[0]["kind"] == "claude"
-    assert sched[0]["last_status"] == "pending"
+    assert sched[0]["last_status"] == "pending"   # nie gelaufen → Zeilen-Status
+
+
+def test_schedule_list_status_is_last_run_not_rearmed_pending(conn, tmp_path: Path):
+    # Ein wiederkehrender Job re-armt nach `complete` sofort zu `pending`. Die Liste
+    # soll dennoch den **letzten Lauf** (complete) zeigen, nicht den Zeilen-Status.
+    _write(tmp_path / "case" / "rec.md", '---\nschedule: "0 9 * * *"\njob: "echo x"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    conn.execute("UPDATE jobs SET next_fire_at=1.0 WHERE slug='rec'")  # fällig machen
+    res = job_db.reserve_next(conn, worker="w", host="h")
+    job_db.report_status(conn, res["id"], status="complete", exit_code=0,
+                         branch="agent/rec", commit_sha="a" * 40)
+    sched = next(s for s in job_db.list_schedules(conn) if s["slug"] == "rec")
+    assert sched["row_status"] == "pending"      # re-armt
+    assert sched["last_status"] == "complete"    # aber letzter Lauf: complete
+    assert sched["last_run_at"] is not None

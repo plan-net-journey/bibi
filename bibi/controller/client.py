@@ -52,3 +52,10 @@ class ControllerClient:
 
     def delete_journal(self, journal_id: int) -> dict:
         return self._request("DELETE", f"/-/journal/{journal_id}") or {}
+
+    def rescan(self) -> dict:
+        return self._request("POST", "/-/rescan") or {}
+
+    def maintenance(self, on: bool) -> dict:
+        # POST = an, DELETE = aus (§ daemon-weit, /-/maintenance).
+        return self._request("POST" if on else "DELETE", "/-/maintenance") or {}

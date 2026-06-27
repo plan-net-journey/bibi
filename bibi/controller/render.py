@@ -26,8 +26,19 @@ th { text-align: left; color: #888; font-weight: 500; padding: .35rem .5rem;
      border-bottom: 1px solid #8883; }
 td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
 .st { font-family: ui-monospace, monospace; }
+.st.complete { color: #5fb37a; }
+.st.running { color: #5a9fe0; }
+.st.pending, .st.deferred { color: #888; }
 .st.failed, .st.error, .st.killed, .st.zombie { color: #e06c5a; }
 .st.overdue { color: #d6a23e; }
+.kind { font-family: ui-monospace, monospace; font-size: .82rem; color: #999; }
+.handles { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center;
+           margin: 1rem 0 .25rem; }
+.handles a, .handles button { font: inherit; font-size: .82rem; text-decoration: none;
+           color: inherit; background: #8882; border: 1px solid #8884;
+           border-radius: .35rem; padding: .25rem .7rem; cursor: pointer; }
+.handles .handle.on { background: #1a7f3733; border-color: #1a7f3766; }
+.handles .handle.warn { background: #d6a23e33; border-color: #d6a23e88; }
 a.slug { font-weight: 600; text-decoration: none; }
 a.slug:hover { text-decoration: underline; }
 h2 { font-size: .95rem; color: #888; margin: 1.5rem 0 .4rem; font-weight: 600; }
@@ -157,8 +168,8 @@ def verdict_fragment(status: dict, now: float | None = None) -> str:
     """Der selbst-pollende Verdikt-Block: Banner + Abweichungs-/Überfällig-Listen.
     ``status`` ist die Antwort von ``GET /-/status``."""
     now = time.time() if now is None else now
-    attrs = ('id="verdict" hx-get="/-/ui/verdict" hx-trigger="every 5s" '
-             'hx-swap="outerHTML"')
+    attrs = ('id="verdict" hx-get="/-/ui/verdict" '
+             'hx-trigger="every 5s [window.bibiFollow]" hx-swap="outerHTML"')
     v = status.get("verdict")
     if v is None:
         return (f'<div {attrs}><div class="banner">Kein Verdikt — '
@@ -182,10 +193,12 @@ def _is_archived(s: dict) -> bool:
 def _sched_row(s: dict, now: float) -> str:
     slug = _e(s.get("slug"))
     st = _e(s.get("last_status"))
+    kind = _e(s.get("kind"))
     nxt = _until(s.get("next_fire_at"), now)
     return (
         "<tr>"
         f'<td><a class="slug" href="/-/ui/schedule/{slug}">{slug}</a></td>'
+        f'<td class="kind">{kind}</td>'
         f'<td class="st {st}">{st}</td>'
         f"<td>{_ago(s.get('last_run_at'), now)}</td>"
         f"<td>{nxt}</td>"
@@ -195,18 +208,20 @@ def _sched_row(s: dict, now: float) -> str:
 
 def _sched_table(items: list[dict], now: float) -> str:
     rows = "".join(_sched_row(s, now) for s in items)
-    return ('<table><thead><tr><th>Schedule</th><th>Status</th>'
+    return ('<table><thead><tr><th>Schedule</th><th>Art</th><th>Status</th>'
             f'<th>letzter</th><th>nächster</th></tr></thead><tbody>{rows}'
             "</tbody></table>")
 
 
 def schedule_list(schedules: list[dict], now: float | None = None) -> str:
-    """Die volle, **aufklappbare** Liste (nicht primär): aktive Schedules + ein
-    eingeklapptes Archiv abgelaufener One-shots (MD bleibt — A15, §4.4)."""
+    """Die volle Liste — **flach + immer sichtbar** (kein Top-Level-Klapp mehr, so
+    überleben keine Expands den 5s-Poll, und es deckt sich mit der bibi-v3-Sicht):
+    aktive Schedules als Tabelle + ein eingeklapptes Archiv abgelaufener One-shots
+    (MD bleibt — A15, §4.4)."""
     now = time.time() if now is None else now
+    head = f'<h2>Schedules ({len(schedules)})</h2>'
     if not schedules:
-        return ('<details class="all"><summary>Alle Schedules (0)</summary>'
-                '<p class="out-empty">— keine Schedules —</p></details>')
+        return head + '<p class="out-empty">— keine Schedules —</p>'
     archived = [s for s in schedules if _is_archived(s)]
     active = [s for s in schedules if not _is_archived(s)]
     body = (_sched_table(active, now) if active
@@ -214,26 +229,78 @@ def schedule_list(schedules: list[dict], now: float | None = None) -> str:
     if archived:
         body += (f'<details class="archive"><summary>Archiv ({len(archived)})'
                  f"</summary>{_sched_table(archived, now)}</details>")
-    return (f'<details class="all"><summary>Alle Schedules ({len(schedules)})'
-            f"</summary>{body}</details>")
+    return head + body
+
+
+def schedules_fragment(schedules: list[dict], now: float | None = None) -> str:
+    """Self-pollender Wrapper um die Schedule-Liste (analog ``verdict_fragment``):
+    aktualisiert sich alle 5s — sofern FOLLOW an ist (``window.bibiFollow``)."""
+    now = time.time() if now is None else now
+    attrs = ('id="schedules" hx-get="/-/ui/schedules" '
+             'hx-trigger="every 5s [window.bibiFollow]" hx-swap="outerHTML"')
+    return f"<div {attrs}>{schedule_list(schedules, now)}</div>"
+
+
+def maint_handle(status: dict) -> str:
+    """Maintenance-Toggle, der seinen Zustand spiegelt (``/-/status.maintenance``)."""
+    on = bool(status.get("maintenance"))
+    label = "MAINT: AN" if on else "MAINT: aus"
+    cls = "handle warn" if on else "handle"
+    return (f'<button id="maint" class="{cls}" hx-post="/-/ui/maintenance" '
+            f'hx-target="#maint" hx-swap="outerHTML">{label}</button>')
+
+
+def _handles(status: dict) -> str:
+    """Die Handle-Leiste: Rescan, Docs, Live-Log, FOLLOW-Toggle, Maintenance."""
+    return (
+        '<nav class="handles">'
+        '<button hx-post="/-/ui/rescan" hx-target="#schedules" '
+        'hx-swap="outerHTML">RESCAN</button>'
+        '<button id="follow" class="handle on" onclick="bibiToggleFollow()">FOLLOW: AN</button>'
+        f"{maint_handle(status)}"
+        '<a href="/-/ui/logs">Live-Log</a>'
+        '<a href="/-/docs">API-Docs</a>'
+        '<a href="/-/redoc">ReDoc</a>'
+        "</nav>"
+    )
+
+
+#: FOLLOW-Toggle: steuert ``window.bibiFollow`` (Trigger-Filter der Poll-Fragmente).
+#: Vor htmx-Init gesetzt (im <head>), damit die Trigger den Startzustand sehen.
+_FOLLOW_JS = """
+window.bibiFollow = (localStorage.getItem('bibiFollow') ?? '1') === '1';
+function bibiToggleFollow(){
+  window.bibiFollow = !window.bibiFollow;
+  localStorage.setItem('bibiFollow', window.bibiFollow ? '1' : '0');
+  const b = document.getElementById('follow');
+  b.textContent = 'FOLLOW: ' + (window.bibiFollow ? 'AN' : 'aus');
+  b.className = 'handle ' + (window.bibiFollow ? 'on' : '');
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const b = document.getElementById('follow');
+  if (b && !window.bibiFollow){ b.textContent = 'FOLLOW: aus'; b.className = 'handle'; }
+});
+"""
 
 
 def dashboard_page(
     status: dict, schedules: list[dict] | None = None, now: float | None = None
 ) -> str:
-    """Die App-Wurzel ``/-/`` (Browser): Server-Render — Verdikt + Abweichungen
-    (Ebene 0/1) zuerst, darunter die aufklappbare volle Liste (Ebene 2)."""
+    """Die App-Wurzel ``/-/`` (Browser): Server-Render — Handle-Leiste, dann Verdikt
+    + Abweichungen (Ebene 0/1), darunter die flache, self-pollende Liste (Ebene 2)."""
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi</title>"
+        f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         '<header><h1>bibi</h1><span class="muted">Health- &amp; Anomalie-Sicht'
-        ' · <a class="back" href="/-/ui/logs">Live-Log</a></span></header>'
+        "</span></header>"
+        f"{_handles(status)}"
         f"{verdict_fragment(status, now)}"
-        f"{schedule_list(schedules or [], now)}"
+        f"{schedules_fragment(schedules or [], now)}"
         "</body></html>"
     )
 

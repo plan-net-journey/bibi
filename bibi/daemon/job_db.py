@@ -236,8 +236,17 @@ def get_job(conn: sqlite3.Connection, job_id: str) -> dict | None:
 
 
 def list_schedules(conn: sqlite3.Connection) -> list[dict]:
+    # Letzten disponierten Lauf je Slug aus dem Journal (für STATUS = „letzter Lauf",
+    # nicht der nach Cron-Re-Arm harmlose Zeilen-Status `pending`).
+    last: dict[str, dict] = {}
+    for r in conn.execute(
+        "SELECT j.slug, j.status, j.finished_at FROM journal j JOIN ("
+        "  SELECT slug, MAX(id) AS mx FROM journal WHERE domain='scheduled' GROUP BY slug"
+        ") m ON j.id = m.mx"
+    ).fetchall():
+        last[r["slug"]] = {"status": r["status"], "finished_at": r["finished_at"]}
     rows = conn.execute("SELECT * FROM jobs ORDER BY slug").fetchall()
-    return [schedule_view(r) for r in rows]
+    return [schedule_view(r, last_run=last.get(r["slug"])) for r in rows]
 
 
 # ── Row → View (JobView/ScheduleView-Form, §3.0-Schemata) ────────────────────
@@ -254,12 +263,21 @@ def job_view(row: sqlite3.Row) -> dict:
     }
 
 
-def schedule_view(row: sqlite3.Row) -> dict:
+def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
     trigger = row["schedule"] if row["schedule"] is not None else row["at_iso"]
+    row_status = row["status"]
+    # STATUS-Spalte: läuft gerade → running; sonst Ergebnis des letzten Laufs
+    # (Journal); sonst der Zeilen-Status (nie gelaufen → pending).
+    if row_status == "running":
+        last_status, last_run_at = "running", row["finished_at"]
+    elif last_run is not None:
+        last_status, last_run_at = last_run["status"], last_run["finished_at"]
+    else:
+        last_status, last_run_at = row_status, row["finished_at"]
     return {
         "slug": row["slug"], "kind": row["kind"], "trigger": trigger or "",
-        "next_fire_at": row["next_fire_at"], "last_status": row["status"],
-        "last_run_at": row["finished_at"],
+        "next_fire_at": row["next_fire_at"], "last_status": last_status,
+        "last_run_at": last_run_at, "row_status": row_status,
         # One-shot (at:) hat kein wiederkehrendes schedule — Basis fürs Archiv (§4.4).
         "oneshot": row["schedule"] is None,
     }
