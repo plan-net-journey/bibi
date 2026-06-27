@@ -592,6 +592,7 @@ _FEED_JS = """
   const atBottom = () => feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 24;
   const es = new EventSource('/-/feed/stream');
   es.onmessage = (e) => {
+    if (window.bibiFollow === false) return;   // FOLLOW aus → Live pausiert
     let o; try { o = JSON.parse(e.data); } catch(_) { return; }
     if (o.id==null || seen.has(String(o.id))) return;
     seen.add(String(o.id));
@@ -692,6 +693,7 @@ _BANDS_JS = """
   };
   applyBands(); autoOpenAktiv();
   setInterval(async () => {
+    if (window.bibiFollow === false) return;   // FOLLOW aus → Band-Poll pausiert
     try{
       const r=await fetch('/-/ui/feed/bands'); if(!r.ok) return;
       const html=await r.text();
@@ -708,21 +710,63 @@ def _feed_nav() -> str:
     return _screen_nav("Feed")
 
 
+def _feed_handles(status: dict | None = None) -> str:
+    """Ops-Bedienelemente auf der Home (Feed): RESCAN, MAINT-Toggle (spiegelt
+    ``status.maintenance``), FOLLOW-Toggle (pausiert die Live-Updates). Plain-JS
+    (``_FEED_HANDLES_JS`` + ``_FOLLOW_JS``) — passend zum Feed-Idiom (kein htmx)."""
+    maint = bool((status or {}).get("maintenance"))
+    mcls = "handle warn" if maint else "handle"
+    mlabel = "MAINT: AN" if maint else "MAINT: aus"
+    return (
+        '<nav class="handles">'
+        '<button id="rescan" class="handle">RESCAN</button>'
+        f'<button id="maint" class="{mcls}">{mlabel}</button>'
+        '<button id="follow" class="handle on" onclick="bibiToggleFollow()">FOLLOW: AN</button>'
+        "</nav>"
+    )
+
+
+#: RESCAN + MAINT als plain-JS-Buttons gegen die JSON-API (§1.1). RESCAN → POST
+#: /-/rescan (kurze Quittung); MAINT → POST/DELETE /-/maintenance, Zustand am Button
+#: gespiegelt. FOLLOW besorgt _FOLLOW_JS (window.bibiFollow). Defensiv (Fehler ignoriert).
+_FEED_HANDLES_JS = """
+(function(){
+  const rescan = document.getElementById('rescan');
+  if (rescan) rescan.addEventListener('click', async () => {
+    rescan.disabled = true; rescan.textContent = 'RESCAN…';
+    try { await fetch('/-/rescan', {method:'POST'}); } catch(_){}
+    rescan.textContent = 'RESCAN ✓';
+    setTimeout(() => { rescan.textContent = 'RESCAN'; rescan.disabled = false; }, 1200);
+  });
+  const maint = document.getElementById('maint');
+  if (maint) maint.addEventListener('click', async () => {
+    const on = maint.classList.contains('warn');
+    try { await fetch('/-/maintenance', {method: on ? 'DELETE' : 'POST'}); } catch(_){}
+    maint.classList.toggle('warn', !on);
+    maint.textContent = on ? 'MAINT: aus' : 'MAINT: AN';
+  });
+})();
+"""
+
+
 def feed_page(rows: list[dict], jobs: list[dict] | None = None,
-              now: float | None = None) -> str:
-    """Der Feed-Screen (Home): Server-Backfill (neueste unten) + Live-Push per SSE,
-    darunter die Bänder „aktiv"/„wartet" (gezählt, klappbar). Der Daemon liefert
-    JSON; das FE rendert — analog zum Live-Log-Panel."""
+              status: dict | None = None, now: float | None = None) -> str:
+    """Der Feed-Screen (Home): Ops-Handles (RESCAN/MAINT/FOLLOW) + Server-Backfill
+    (neueste unten) + Live-Push per SSE, darunter die Bänder „aktiv"/„wartet". Der
+    Daemon liefert JSON; das FE rendert — analog zum Live-Log-Panel."""
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Feed</title>"
+        f"<script>{_FOLLOW_JS}</script>"
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Feed')}"
+        f"{_feed_handles(status)}"
         f"{feed_list(rows, now)}"
         f"{bands_fragment(jobs or [], now)}"
         f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_FEED_HANDLES_JS}</script>"
         f"<script>{_FEED_JS}</script>"
         f"<script>{_BANDS_JS}</script>"
         "</body></html>"

@@ -61,9 +61,17 @@ def add_controller_routes(
 
     @app.get("/-/", include_in_schema=False)
     def root(request: Request):
+        # Home = Feed (Frontend-Plan, Entscheidung #5). Browser → Feed-Screen;
+        # Nicht-Browser → JSON-Deskriptor (§1.1 bleibt an der Wurzel gewahrt).
         if _wants_html(request):
-            return HTMLResponse(render.dashboard_page(_status(), _schedules()))
+            return HTMLResponse(render.feed_page(_journal(), jobs=_jobs(), status=_status()))
         return JSONResponse(service_descriptor(roles))
+
+    @app.get("/-/ui/dashboard", include_in_schema=False)
+    def dashboard():
+        # Health-/Anomalie-Sicht + Ops-Handles (RESCAN/MAINT) — über die Nav („Status")
+        # erreichbar, seit der Feed die Home ist.
+        return HTMLResponse(render.dashboard_page(_status(), _schedules()))
 
     @app.get("/-/ui/verdict", include_in_schema=False)
     def verdict_fragment():

@@ -150,13 +150,14 @@ class FakeClient:
         return {"maintenance": on}
 
 
-def test_root_html_lists_schedules(team_repo: Path):
+def test_dashboard_html_lists_schedules(team_repo: Path):
+    # Die Health-/Anomalie-Sicht liegt seit „Feed als Home" auf /-/ui/dashboard.
     status = {"verdict": {"ok": True, "problems": 0, "overdue": 0,
                           "deviations": [], "overdue_jobs": []}}
     client = FakeClient(status, [_sched("daily", last_status="complete")])
     app = create_app(roles.resolve({"controller"}), controller_client=client)
     with TestClient(app) as c:
-        r = c.get("/-/", headers={"Accept": "text/html"})
+        r = c.get("/-/ui/dashboard", headers={"Accept": "text/html"})
         assert r.status_code == 200
         assert "Schedules (" in r.text
         assert 'href="/-/ui/schedule/daily"' in r.text
