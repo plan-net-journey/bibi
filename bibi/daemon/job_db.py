@@ -346,6 +346,9 @@ def reservation_view(row: sqlite3.Row) -> dict:
         "id": row["id"], "slug": row["slug"], "kind": row["kind"],
         "payload": row["payload"], "model": row["model"],
         "soul": row["soul"], "session": row["session"],
+        # fire (Pro-Lauf-Zähler, §5.2): der Worker bildet daraus run_id=slug:fire
+        # → per-Run-Output-Pfad (kein Akkumulieren über Läufe).
+        "fire": row["fire"],
         # Ausführungs-/Retry-Parameter, damit ein Remote-Worker (ohne lokale DB)
         # überwachen + Backoff rechnen kann (§3.6).
         "attempt": row["attempt"], "attempts": row["attempts"],

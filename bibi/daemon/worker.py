@@ -41,9 +41,11 @@ def _output_path(repo_root: Path, job_id: str) -> Path:
 def _last_activity(out_path: Path, default: float) -> float:
     """Zeitpunkt der jüngsten Output-Zeile (mtime), **nie vor Lauf-Start** (``default``).
 
-    Die ``output.jsonl`` wird pro (stabilem) job_id wiederverwendet; eine veraltete
-    mtime aus einem früheren Lauf würde den Silence-Timeout sofort auslösen (zombie),
-    bevor der neue Lauf — z. B. ein langsam startender Container — Output produziert."""
+    Seit per-Run-Output (``data/job/<slug:fire>/``) startet jeder Lauf mit frischer
+    Datei — eine veraltete mtime aus einem Vorlauf kann nicht mehr durchschlagen.
+    Der ``default``-Floor bleibt als Robustheit: existiert die Datei noch nicht
+    (langsam startender Container), liefert ``stat`` einen Fehler ⇒ Lauf-Start, und
+    der ``max`` deckt einen evtl. wiederverwendeten run_id-Pfad mit ab."""
     try:
         return max(out_path.stat().st_mtime, default)
     except OSError:
@@ -125,17 +127,24 @@ def _run_wrapper(
     soul: str | None = None, session: str | None = None,
     wall_time: int | None = None, silence_timeout: int | None = None,
     repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
+    run_id: str | None = None,
 ) -> tuple[int, str, Path, str]:
     """Der gemeinsame Ausführungs-Kern beider Pfade: Worktree → Wrapper-Subprozess
     (überwacht) → Commit. Gibt ``(exit_code, commit_sha, output_path, outcome)``.
 
     ``ephemeral=True`` (für ``/run``) entfernt den Worktree nach dem Lauf wieder.
     Der Wrapper ist die einzige Ausführungs-Einheit; nur der Aufrufweg
-    unterscheidet disponiert (execute_reservation) von lokal (run_local), §3.3b."""
+    unterscheidet disponiert (execute_reservation) von lokal (run_local), §3.3b.
+
+    ``run_id`` bestimmt den ``output.jsonl``-**Pfad** (per-Run-Isolation; disponiert
+    = ``slug:fire``). Default = ``job_id`` (run_local hat schon eine eindeutige
+    Hash-ID). Der **Container-Name** bleibt an ``job_id`` (doppelpunktfreie
+    Docker-Namensregel; der Output ist host-seitig, nur der Worktree wird gemountet)."""
+    out_run_id = run_id or job_id
     wt_path = worktree.prepare(repo_root=repo_root, work_dir=work_dir, slug=slug)
     activity.emit(log, logging.DEBUG, "worktree.prepare", role="worker",
-                  slug=slug, run_id=job_id, path=str(wt_path))
-    out_path = _output_path(repo_root, job_id)
+                  slug=slug, run_id=out_run_id, path=str(wt_path))
+    out_path = _output_path(repo_root, out_run_id)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
@@ -183,13 +192,13 @@ def _run_wrapper(
     if register is not None:
         register(job_id, None)
 
-    commit_sha = worktree.commit(worktree=wt_path, message=f"{slug}: run {job_id}", slug=slug)
+    commit_sha = worktree.commit(worktree=wt_path, message=f"{slug}: run {out_run_id}", slug=slug)
     activity.emit(log, logging.DEBUG, "worktree.commit", role="worker",
-                  slug=slug, run_id=job_id, commit=(commit_sha or None))
+                  slug=slug, run_id=out_run_id, commit=(commit_sha or None))
     if ephemeral:
         worktree.remove(repo_root=repo_root, worktree=wt_path)
         activity.emit(log, logging.DEBUG, "worktree.remove", role="worker",
-                      slug=slug, run_id=job_id)
+                      slug=slug, run_id=out_run_id)
     return code, commit_sha, out_path, outcome
 
 
@@ -223,6 +232,10 @@ def execute_reservation(
     (z. B. ``killed`` per ``/-/job/{id}/kill``), lehnt der Scheduler den Übergang ab
     (``invalid``) und der Worker überschreibt nichts."""
     jid = reservation["id"]
+    # run_id je Lauf eindeutig (fire ist der Pro-Trigger-Zähler, §5.2) → per-Run-
+    # Output-Pfad ``data/job/<slug:fire>/output.jsonl`` (kein Akkumulieren über
+    # cron-Wiederholungen). Identisch zur run_id, die das Journal vergibt.
+    run_id = f"{reservation['slug']}:{reservation.get('fire', 0)}"
     host = host or socket.gethostname()
     try:
         code, commit_sha, out_path, outcome = _run_wrapper(
@@ -232,6 +245,7 @@ def execute_reservation(
             wall_time=reservation.get("wall_time"),
             silence_timeout=reservation.get("silence_timeout"),
             repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
+            run_id=run_id,
         )
     except Exception as exc:
         # Setup/Run-Fehler VOR jeder Statusmeldung (Worktree/Wrapper/Commit, Fund B):
@@ -370,8 +384,21 @@ class Worker:
         return root, work
 
     def output_path(self, job_id: str) -> Path:
+        """``output.jsonl``-Pfad des **aktuellen** Laufs eines Jobs (Live-Routen).
+
+        Löst die stabile ``job_id`` über die DB auf den laufenden run_id
+        (``slug:fire``) auf — so zeigt ``/-/job/{id}/…`` immer nur den jüngsten
+        Lauf (Historie früherer Läufe läuft über ``output_ref`` im Journal). Ist
+        die ID unbekannt (z. B. ephemerer ``/run``), bleibt sie selbst der Pfad."""
         root, _ = self._roots()
-        return _output_path(root, job_id)
+        conn = job_db.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT slug, fire FROM jobs WHERE id=?", (job_id,)).fetchone()
+        finally:
+            conn.close()
+        run_id = f"{row['slug']}:{row['fire']}" if row else job_id
+        return _output_path(root, run_id)
 
     def _register(self, job_id: str, proc: subprocess.Popen | None) -> None:
         if proc is None:

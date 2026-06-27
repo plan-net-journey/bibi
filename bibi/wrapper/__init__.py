@@ -9,8 +9,8 @@ docken ohne Umbau an.
 Aufruf als eigener Prozess: ``python -m bibi.wrapper``. Env (vom Worker gesetzt):
 
 - ``BIBI_JOB_TYPE``   — Registry-Schlüssel (``job``/``claude``).
-- ``BIBI_JOB_ID``     — Hash-ID; bestimmt den ``output.jsonl``-Pfad.
-- ``BIBI_OUTPUT_PATH``— absoluter Pfad der ``output.jsonl``.
+- ``BIBI_JOB_ID``     — stabile Job-Hash-ID (Container-Name ``bibi-<id>``, Identität).
+- ``BIBI_OUTPUT_PATH``— absoluter Pfad der ``output.jsonl`` (vom Worker je run_id gesetzt).
 - ``BIBI_WORKTREE``   — Arbeitsverzeichnis des Childs (Worktree).
 - typ-spezifisch: ``BIBI_JOB_CMD`` (job), ``BIBI_JOB_PROMPT``/``BIBI_JOB_MODEL`` (claude).
 """

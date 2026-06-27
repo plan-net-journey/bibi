@@ -27,16 +27,18 @@ def client(team_repo: Path):
 
 def _seed_complete(lines: list[tuple[str, str]]) -> str:
     jid = secrets.token_hex(4)
+    # Output liegt am run_id-Pfad (slug:fire), den die Live-Route auflöst; fire=0.
+    run_id = "run1:0"
     conn = job_db.connect()
     try:
         conn.execute(
             "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, host, "
             "worker, output_ref, enqueued_at) VALUES (?,?,?,?,?, 'complete', 'h','w1',?,?)",
-            (jid, "run1", "run1.md", "job", "echo", f"data/job/{jid}/output.jsonl", time.time()),
+            (jid, "run1", "run1.md", "job", "echo", f"data/job/{run_id}/output.jsonl", time.time()),
         )
     finally:
         conn.close()
-    out = repo.data() / "job" / jid / "output.jsonl"
+    out = repo.data() / "job" / run_id / "output.jsonl"
     for stream, line in lines:
         output.append(out, stream, line)
     return jid

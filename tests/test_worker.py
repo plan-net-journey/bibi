@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -64,18 +65,21 @@ def test_tick_runs_job_to_complete(gitrepo: Path):
         assert row["status"] == "complete"
         assert row["exit_code"] == 0
         assert row["worker"] == "t"
-        assert row["output_ref"] == f"data/job/{jid}/output.jsonl"
+        # Output je **run_id** (slug:fire), nicht je stabilem job_id — `now` läuft
+        # mit fire=0 (kein cron-Re-Arm). Kein Akkumulieren über Läufe (Bug 27s #4).
+        assert row["output_ref"] == "data/job/run1:0/output.jsonl"
         journal = job_db.list_journal(conn)
         assert len(journal) == 1
         assert journal[0]["slug"] == "run1"
+        assert journal[0]["run_id"] == "run1:0"
         assert journal[0]["host"] is not None         # host first-class (§1.4)
-        assert journal[0]["output_ref"] is not None    # referenziert (§1.4)
+        assert journal[0]["output_ref"] == "data/job/run1:0/output.jsonl"  # referenziert (§1.4)
     finally:
         conn.close()
 
-    # output.jsonl trägt die zwei Zeilen
+    # output.jsonl trägt die zwei Zeilen — am run_id-Pfad
     from bibi.wrapper import output
-    out = gitrepo / "data" / "job" / jid / "output.jsonl"
+    out = gitrepo / "data" / "job" / "run1:0" / "output.jsonl"
     assert output.lines(out, "out") == ["hallo", "fertig"]
 
 
@@ -214,6 +218,51 @@ def test_execute_reservation_setup_failure_does_not_hang_running(gitrepo: Path, 
     conn.close()
     assert row["status"] == "failed"   # raus aus `running` (Fund B behoben)
     assert row["exit_code"] == -1 and row["attempt"] == 1
+
+
+def test_per_run_output_isolation(gitrepo: Path):
+    # Wiederkehrender Job läuft zweimal (fire 0, dann 1) → **getrennte** Output-
+    # Dateien je run_id, kein Anhängen an eine geteilte job_id-Datei (Bug 27s #4).
+    from bibi.wrapper import output
+    jid = _seed(gitrepo, "tick/README.md",
+                '---\nschedule: "* * * * *"\njob: "echo hallo"\n---\n')
+    dbp = gitrepo / "data" / "jobs.sqlite"
+    w = _worker(gitrepo)
+
+    def _make_due() -> None:  # cron-next liegt in der Zukunft → fällig schalten
+        conn = job_db.connect(dbp)
+        conn.execute("UPDATE jobs SET next_fire_at=? WHERE id=?", (time.time(), jid))
+        conn.commit()
+        conn.close()
+
+    _make_due()
+    assert w.tick_once() is True   # Lauf fire=0 → complete → cron re-armt zu fire=1
+    _make_due()
+    assert w.tick_once() is True   # Lauf fire=1
+
+    out0 = gitrepo / "data" / "job" / "tick:0" / "output.jsonl"
+    out1 = gitrepo / "data" / "job" / "tick:1" / "output.jsonl"
+    # Jede Datei trägt genau die EINE Zeile ihres Laufs — kein Akkumulieren.
+    assert output.lines(out0, "out") == ["hallo"]
+    assert output.lines(out1, "out") == ["hallo"]
+
+    conn = job_db.connect(dbp)
+    try:
+        journal = job_db.list_journal(conn)
+        run_ids = {j["run_id"] for j in journal}
+        assert run_ids == {"tick:0", "tick:1"}
+        refs = {j["output_ref"] for j in journal}
+        assert refs == {"data/job/tick:0/output.jsonl", "data/job/tick:1/output.jsonl"}
+    finally:
+        conn.close()
+
+
+def test_output_path_resolves_current_run(gitrepo: Path):
+    # Die Live-Route fragt worker.output_path(job_id) — das muss den AKTUELLEN
+    # Lauf (slug:fire) treffen, nicht die stabile job_id.
+    jid = _seed(gitrepo, "r/README.md", '---\nschedule: now\njob: "echo x"\n---\n')
+    w = _worker(gitrepo)
+    assert w.output_path(jid) == gitrepo / "data" / "job" / "r:0" / "output.jsonl"
 
 
 def test_report_level_by_status():
