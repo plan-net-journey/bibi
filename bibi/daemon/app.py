@@ -186,6 +186,35 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
         events = output.read_events(repo.root() / ref) if ref else []
         return {"id": jid, "kind": entry["kind"], "events": events, "output_ref": ref}
 
+    @app.get("/-/feed/stream", tags=["feed"])
+    def feed_stream(n: int = Query(50, ge=0, le=1000), follow: bool = True):
+        """Feed-SSE (Frontend-Plan §C.0): Backfill der letzten ``n`` terminalen
+        Journal-Läufe (**älteste zuerst** → der Client hängt unten an, Konsolen-Tail)
+        + Live-Push bei jedem Journal-Write. Quelle ist das **Journal**, nicht der
+        Log. ``follow=false`` = nur Backfill (Snapshot, terminiert). Reine SSE-API."""
+        broadcaster = activity.get_feed_broadcaster()
+
+        async def gen():
+            conn = job_db.connect()
+            try:
+                rows = job_db.list_journal(conn)  # archived_at DESC
+            finally:
+                conn.close()
+            recent = rows[:n] if n and n > 0 else rows
+            for row in reversed(recent):  # ältester zuerst
+                yield f"data: {json.dumps(row, ensure_ascii=False)}\n\n"
+            if not follow:
+                return
+            q = broadcaster.subscribe()
+            try:
+                while True:
+                    line = await q.get()
+                    yield f"data: {line}\n\n"
+            finally:
+                broadcaster.unsubscribe(q)
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
     @app.delete("/-/journal/{jid}", tags=["journal"])
     def journal_delete(jid: int):
         # A15: nur Lauf-Records aus der DB löschen, kein MD-CRUD (PLAN-4 §4.0).
@@ -376,12 +405,18 @@ def create_app(
         finally:
             conn.close()
 
+    def _feed_publish(row: dict) -> None:
+        # Journal-Zeile → Feed-Broadcaster (Frontend-Plan §C.0). Best-effort, blendet
+        # nie in den Status-Pfad zurück (job_db._notify_journal fängt Fehler).
+        activity.get_feed_broadcaster().publish(json.dumps(row, ensure_ascii=False))
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if synchronizer is not None:
             await synchronizer.start()
         if roles.scheduler:
             _scheduler_startup()
+            job_db.set_journal_listener(_feed_publish)  # Feed-Live-Push aktivieren
         if sweeper is not None:
             await sweeper.start()
         if rescanner is not None:
@@ -391,6 +426,8 @@ def create_app(
         try:
             yield
         finally:
+            if roles.scheduler:
+                job_db.set_journal_listener(None)  # Feed-Hook wieder lösen
             if worker is not None:
                 await worker.stop()
             if rescanner is not None:

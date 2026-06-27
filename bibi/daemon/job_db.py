@@ -567,6 +567,31 @@ def reconcile_startup_orphans(
 
 # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────────
 
+#: Optionaler Hook: wird nach jedem Journal-Insert mit der frischen ``journal_view``-
+#: Zeile gerufen — der Daemon registriert hier seinen Feed-Broadcaster (Frontend-Plan
+#: §B). Hält ``job_db`` vom Daemon entkoppelt (keine Broadcaster-Importe). ``None`` = aus.
+_journal_listener = None
+
+
+def set_journal_listener(cb) -> None:
+    """Den Feed-Hook setzen (``cb(journal_view_dict)``) oder mit ``None`` löschen."""
+    global _journal_listener
+    _journal_listener = cb
+
+
+def _notify_journal(conn: sqlite3.Connection, journal_id: int | None) -> None:
+    """Den Listener best-effort mit der gerade geschriebenen Journal-Zeile rufen.
+    Ein Fehler im Feed-Broadcast darf den DB-/Status-Pfad **nie** killen."""
+    cb = _journal_listener
+    if cb is None or journal_id is None:
+        return
+    try:
+        row = get_journal(conn, journal_id)
+        if row is not None:
+            cb(row)
+    except Exception:
+        pass
+
 
 def _write_journal(
     conn: sqlite3.Connection, job_id: str, archived_at: float,
@@ -592,7 +617,7 @@ def _write_journal(
     exec_runtime = None
     if row["started_at"] is not None and row["finished_at"] is not None:
         exec_runtime = row["finished_at"] - row["started_at"]
-    conn.execute(
+    cur = conn.execute(
         "INSERT INTO journal (run_id, slug, kind, status, reason, started_at, "
         "finished_at, exit_code, exec_runtime, host, worker, output_ref, commit_sha, "
         "branch, snapshot, archived_at) VALUES (:run_id,:slug,:kind,:status,:reason,"
@@ -609,6 +634,7 @@ def _write_journal(
             "archived_at": archived_at,
         },
     )
+    _notify_journal(conn, cur.lastrowid)  # Feed-Push (Frontend-Plan §C.0)
 
 
 def journal_view(row: sqlite3.Row) -> dict:
@@ -715,7 +741,7 @@ def write_local_journal(
 ) -> None:
     """Journal-Zeile der **lokalen** Domäne (§1.4) — von ``/run``. Bewusst **ohne**
     ``jobs``-Eintrag: die zentrale Queue sieht den Lauf nie. ``domain='local'``."""
-    conn.execute(
+    cur = conn.execute(
         "INSERT INTO journal (run_id, slug, kind, status, reason, started_at, "
         "finished_at, exit_code, exec_runtime, host, worker, output_ref, snapshot, "
         "archived_at, domain) VALUES (:run_id,:slug,:kind,:status,:reason,:started_at,"
@@ -731,3 +757,4 @@ def write_local_journal(
             "archived_at": finished_at,
         },
     )
+    _notify_journal(conn, cur.lastrowid)  # Feed-Push (Frontend-Plan §C.0)

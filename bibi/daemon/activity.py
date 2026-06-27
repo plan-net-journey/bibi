@@ -220,6 +220,17 @@ def get_broadcaster() -> LogBroadcaster:
     return _broadcaster
 
 
+#: Eigener Broadcaster für **Journal-/Feed-Events** (Frontend-Plan §C.0) — getrennt
+#: vom Aktivitäts-Log. Trägt strukturierte Journal-Zeilen (JSON) statt Log-Zeilen;
+#: gespeist über ``job_db.set_journal_listener`` (vom Daemon verdrahtet).
+_feed_broadcaster = LogBroadcaster()
+
+
+def get_feed_broadcaster() -> LogBroadcaster:
+    """Der prozessweite Feed-Broadcaster (vom ``/-/feed/stream``-Endpunkt abonniert)."""
+    return _feed_broadcaster
+
+
 class _BroadcastHandler(logging.Handler):
     """Logging-Handler, der jede Zeile (JSONL) an den Broadcaster weiterreicht."""
 
