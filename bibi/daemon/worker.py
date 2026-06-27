@@ -125,6 +125,14 @@ def _run_wrapper(
     return code, commit_sha, out_path, outcome
 
 
+def _retry_fields(reservation: dict) -> dict:
+    """``failed``-Statusfelder mit Backoff/attempt++ (Retry; Dauerfehler exhaust→error, §5.5)."""
+    attempt = (reservation.get("attempt") or 0) + 1
+    base = float(os.environ.get("BIBI_RETRY_BASE") or backoff.DEFAULT_BASE)
+    nf = time.time() + backoff.delay(reservation.get("backoff") or "fixed", attempt, base=base)
+    return {"status": "failed", "attempt": attempt, "next_fire_at": nf}
+
+
 def execute_reservation(
     reservation: dict, *, repo_root: Path, work_dir: Path, client,
     worker_name: str | None = None, host: str | None = None, register=None,
@@ -139,14 +147,29 @@ def execute_reservation(
     (``invalid``) und der Worker überschreibt nichts."""
     jid = reservation["id"]
     host = host or socket.gethostname()
-    code, commit_sha, out_path, outcome = _run_wrapper(
-        job_id=jid, slug=reservation["slug"], kind=reservation["kind"],
-        payload=reservation["payload"], model=reservation.get("model"),
-        soul=reservation.get("soul"), session=reservation.get("session"),
-        wall_time=reservation.get("wall_time"),
-        silence_timeout=reservation.get("silence_timeout"),
-        repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
-    )
+    try:
+        code, commit_sha, out_path, outcome = _run_wrapper(
+            job_id=jid, slug=reservation["slug"], kind=reservation["kind"],
+            payload=reservation["payload"], model=reservation.get("model"),
+            soul=reservation.get("soul"), session=reservation.get("session"),
+            wall_time=reservation.get("wall_time"),
+            silence_timeout=reservation.get("silence_timeout"),
+            repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
+        )
+    except Exception as exc:
+        # Setup/Run-Fehler VOR jeder Statusmeldung (Worktree/Wrapper/Commit, Fund B):
+        # den Job NICHT in `running` hängen lassen. Als Fehlschlag melden
+        # (Backoff/attempt++; Dauerfehler exhaust→error) → sofort als Abweichung sichtbar.
+        activity.emit(log, logging.ERROR, "worker.setup_error",
+                      "Setup/Run vor Statusmeldung fehlgeschlagen", role="worker",
+                      slug=reservation.get("slug"), run_id=jid, error=str(exc))
+        log.exception("Setup/Run fehlgeschlagen: %s", jid)
+        fields = {**_retry_fields(reservation), "exit_code": -1, "output_ref": None,
+                  "worker": worker_name, "host": host, "commit_sha": None, "branch": None}
+        res = client.report(jid, **fields)
+        return {"id": jid, "exit_code": -1, "commit": None,
+                "status": fields["status"] if res == "ok" else None,
+                "outcome": "setup_error"}
 
     rel = out_path.relative_to(repo_root).as_posix()
     # Commit-SHA + Branch des Worktrees journalen (v6, §2.3): "" → None.
@@ -160,10 +183,7 @@ def execute_reservation(
     elif code == 0:
         fields = {"status": "complete", **common}
     else:
-        attempt = (reservation.get("attempt") or 0) + 1
-        base = float(os.environ.get("BIBI_RETRY_BASE") or backoff.DEFAULT_BASE)
-        nf = time.time() + backoff.delay(reservation.get("backoff") or "fixed", attempt, base=base)
-        fields = {"status": "failed", "attempt": attempt, "next_fire_at": nf, **common}
+        fields = {**_retry_fields(reservation), **common}
 
     res = client.report(jid, **fields)
     return {"id": jid, "exit_code": code, "commit": commit_sha,

@@ -170,3 +170,30 @@ def test_execute_reservation_skips_if_already_terminal(gitrepo: Path):
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "killed"
     conn.close()
+
+
+def test_execute_reservation_setup_failure_does_not_hang_running(gitrepo: Path, monkeypatch):
+    # Härtung Fund B (PLAN-5 §5.3): schlägt Setup/Run VOR der Statusmeldung fehl,
+    # darf der Job nicht in `running` hängen — er wird als `failed` gemeldet.
+    import bibi.daemon.worker as W
+    jid = _seed(gitrepo, "boom/README.md", '---\nschedule: now\njob: "echo hi"\n---\n')
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    res = job_db.reserve_next(conn)  # → running
+    conn.close()
+    assert res["id"] == jid
+
+    def boom(**_kwargs):  # Worktree-/Wrapper-Setup scheitert
+        raise RuntimeError("worktree prepare kaputt")
+    monkeypatch.setattr(W, "_run_wrapper", boom)
+
+    from bibi.daemon.scheduler_client import LocalScheduler
+    out = execute_reservation(  # darf NICHT werfen
+        res, repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
+        client=LocalScheduler(gitrepo / "data" / "jobs.sqlite"), worker_name="t",
+    )
+    assert out["outcome"] == "setup_error" and out["status"] == "failed"
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    row = conn.execute("SELECT status, exit_code, attempt FROM jobs WHERE id=?", (jid,)).fetchone()
+    conn.close()
+    assert row["status"] == "failed"   # raus aus `running` (Fund B behoben)
+    assert row["exit_code"] == -1 and row["attempt"] == 1
