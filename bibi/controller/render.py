@@ -87,6 +87,14 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .feed-row a.run  { color: inherit; text-decoration: none; opacity: .75; }
 .feed-row a.run:hover { text-decoration: underline; opacity: 1; }
 .feed-row .st.complete { font-weight: 600; }
+.bandbar { display: flex; gap: .5rem; margin: .7rem 0 .35rem; }
+.bandtog { font: inherit; font-size: .82rem; background: #8882; border: 1px solid #8884;
+           border-radius: .35rem; padding: .2rem .7rem; cursor: pointer; color: inherit; }
+.bandtog.open { background: #5a9fe022; border-color: #5a9fe066; }
+.band { border: 1px solid #8883; border-radius: .4rem; padding: .35rem .6rem;
+        margin-bottom: .4rem; font-family: ui-monospace, monospace; font-size: .85rem; }
+.band.collapsed { display: none; }
+.band-row { padding: .15rem 0; }
 """
 
 
@@ -481,6 +489,95 @@ _FEED_JS = """
 """
 
 
+#: Band-Zugehörigkeit (Frontend-Plan §C.2, Achse #2 „nicht im Journal"): nur
+#: **nicht-terminale** jobs-Zustände. Terminale (complete/error/killed/zombie/
+#: inactive) stehen im Feed/Journal, nicht in den Bändern.
+_ACTIVE_STATES = ("running", "failed", "deferred")
+
+
+def _aktiv_row(j: dict, now: float) -> str:
+    slug = _e(j.get("slug"))
+    st = _e(j.get("status"))
+    bits: list[str] = []
+    if j.get("status") == "running" and j.get("started_at"):
+        bits.append(f"seit {_ago(j.get('started_at'), now)}")
+    if j.get("status") == "failed" and j.get("next_fire_at"):
+        bits.append(f"retry {_until(j.get('next_fire_at'), now)}")
+    if j.get("reason"):
+        bits.append(_e(j.get("reason")))
+    tail = " · ".join(bits)
+    return (f'<div class="band-row"><span class="st {st}">{st}</span> '
+            f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a>'
+            f'{" · " + tail if tail else ""}</div>')
+
+
+def _wartet_row(j: dict, now: float) -> str:
+    slug = _e(j.get("slug"))
+    nxt = _until(j.get("next_fire_at"), now)
+    return (f'<div class="band-row"><span class="st pending">○</span> '
+            f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a> '
+            f'<span class="muted">{nxt}</span></div>')
+
+
+def bands_fragment(jobs: list[dict], now: float | None = None) -> str:
+    """Die zwei Bänder (rein): aktiv (running/failed/deferred) + wartet (pending),
+    in der Kopfzeile gezählt. Klapp-Zustand client-seitig (``_BANDS_JS`` / localStorage),
+    darum hier nur das Markup mit ``data-band``; die Zähler sind serverseitig frisch."""
+    now = time.time() if now is None else now
+    active = [j for j in jobs if j.get("status") in _ACTIVE_STATES]
+    waiting = [j for j in jobs if j.get("status") == "pending"]
+    a_body = ("".join(_aktiv_row(j, now) for j in active)
+              or '<div class="out-empty">— nichts aktiv —</div>')
+    w_body = ("".join(_wartet_row(j, now) for j in waiting)
+              or '<div class="out-empty">— nichts wartend —</div>')
+    return (
+        '<div id="bands">'
+        '<div class="bandbar">'
+        f'<button class="bandtog" data-band="aktiv" onclick="bibiToggleBand(\'aktiv\')">'
+        f'▶ {len(active)} aktiv</button>'
+        f'<button class="bandtog" data-band="wartet" onclick="bibiToggleBand(\'wartet\')">'
+        f'○ {len(waiting)} wartet</button>'
+        '</div>'
+        f'<div class="band" data-band="aktiv">{a_body}</div>'
+        f'<div class="band" data-band="wartet">{w_body}</div>'
+        '</div>'
+    )
+
+
+#: Bänder: Klapp-Zustand aus localStorage (Default aktiv **auf**, wartet **zu** —
+#: Entscheidung #6) bei Load + nach jedem Refresh anwenden; alle 2 s ``/-/ui/feed/bands``
+#: nachladen (Live-State der jobs-Tabelle). Der stdout-Live-Stream im aktiv-Band
+#: folgt in Stufe 5.
+_BANDS_JS = """
+(function(){
+  function applyBands(){
+    document.querySelectorAll('.band').forEach(b => {
+      const k=b.dataset.band, def=(k==='aktiv'?'1':'0');
+      const open=(localStorage.getItem('bibiBand.'+k) ?? def)==='1';
+      b.classList.toggle('collapsed', !open);
+      const t=document.querySelector('.bandtog[data-band="'+k+'"]');
+      if(t) t.classList.toggle('open', open);
+    });
+  }
+  window.bibiToggleBand=function(k){
+    const def=(k==='aktiv'?'1':'0');
+    const cur=(localStorage.getItem('bibiBand.'+k) ?? def)==='1';
+    localStorage.setItem('bibiBand.'+k, cur?'0':'1');
+    applyBands();
+  };
+  applyBands();
+  setInterval(async () => {
+    try{
+      const r=await fetch('/-/ui/feed/bands'); if(!r.ok) return;
+      const html=await r.text();
+      const wrap=document.getElementById('bands');
+      if(wrap){ wrap.outerHTML=html; applyBands(); }
+    }catch(_){}
+  }, 2000);
+})();
+"""
+
+
 def _feed_nav() -> str:
     """Screen-Navigation (PLAN-4-Screens). Schedules zeigt vorerst auf die Wurzel
     (Dashboard-Liste); der dedizierte Schedules-Screen folgt in Stufe 3."""
@@ -490,9 +587,11 @@ def _feed_nav() -> str:
             '<a class="back" href="/-/docs">API-Docs</a></span>')
 
 
-def feed_page(rows: list[dict], now: float | None = None) -> str:
-    """Der Feed-Screen (Home): Server-gerendeter Backfill (neueste unten) + Live-Push
-    per SSE. Analog zum Live-Log-Panel — der Daemon liefert JSON-Events, das FE rendert."""
+def feed_page(rows: list[dict], jobs: list[dict] | None = None,
+              now: float | None = None) -> str:
+    """Der Feed-Screen (Home): Server-Backfill (neueste unten) + Live-Push per SSE,
+    darunter die Bänder „aktiv"/„wartet" (gezählt, klappbar). Der Daemon liefert
+    JSON; das FE rendert — analog zum Live-Log-Panel."""
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'
@@ -501,7 +600,9 @@ def feed_page(rows: list[dict], now: float | None = None) -> str:
         f"<style>{_CSS}</style></head><body>"
         f'<header><h1>bibi</h1>{_feed_nav()}</header>'
         f"{feed_list(rows, now)}"
+        f"{bands_fragment(jobs or [], now)}"
         f"<script>{_FEED_JS}</script>"
+        f"<script>{_BANDS_JS}</script>"
         "</body></html>"
     )
 

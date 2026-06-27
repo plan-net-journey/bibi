@@ -103,13 +103,25 @@ def add_controller_routes(
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             return []
 
+    def _jobs() -> list:
+        # Band-Quelle = jobs-Tabelle (Live-State, §C.2). Defensiv (ein FakeClient
+        # ohne jobs() oder ein Daemon-Hänger darf den Feed nicht killen).
+        try:
+            return client.jobs()
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return []
+
     @app.get("/-/ui/feed", include_in_schema=False)
     def feed_screen():
-        return HTMLResponse(render.feed_page(_journal()))
+        return HTMLResponse(render.feed_page(_journal(), jobs=_jobs()))
 
     @app.get("/-/ui/feed/list", include_in_schema=False)
     def feed_list_fragment():
         return HTMLResponse(render.feed_list(_journal()))
+
+    @app.get("/-/ui/feed/bands", include_in_schema=False)
+    def feed_bands_fragment():
+        return HTMLResponse(render.bands_fragment(_jobs()))
 
     _TERMINAL = {"complete", "error", "inactive", "zombie", "killed"}
 
