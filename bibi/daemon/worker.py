@@ -39,9 +39,13 @@ def _output_path(repo_root: Path, job_id: str) -> Path:
 
 
 def _last_activity(out_path: Path, default: float) -> float:
-    """Zeitpunkt der jüngsten Output-Zeile (mtime), sonst ``default``."""
+    """Zeitpunkt der jüngsten Output-Zeile (mtime), **nie vor Lauf-Start** (``default``).
+
+    Die ``output.jsonl`` wird pro (stabilem) job_id wiederverwendet; eine veraltete
+    mtime aus einem früheren Lauf würde den Silence-Timeout sofort auslösen (zombie),
+    bevor der neue Lauf — z. B. ein langsam startender Container — Output produziert."""
     try:
-        return out_path.stat().st_mtime
+        return max(out_path.stat().st_mtime, default)
     except OSError:
         return default
 
