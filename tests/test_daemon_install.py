@@ -30,6 +30,28 @@ def test_systemd_unit_text_without_role_omits_env():
     assert "BIBI_ROLE" not in t
 
 
+def test_systemd_unit_name_is_per_repo():
+    # Unit-Name aus dem Repo-Basisnamen → mehrere Instanzen je Host kollidieren nicht.
+    assert install._systemd_unit_name(Path("/srv/bibi-v3")) == "bibi-v3-daemon.service"
+    assert install._systemd_unit_name(
+        Path("/home/u/Project/bibi-notes")) == "bibi-notes-daemon.service"
+    # Verschiedene Repos → verschiedene Units (früher überschrieb der feste Name).
+    assert (install._systemd_unit_name(Path("/a/bibi-notes"))
+            != install._systemd_unit_name(Path("/a/bibi-v3")))
+    assert str(install._systemd_unit_path(Path("/srv/bibi-v3"))) == \
+        "/etc/systemd/system/bibi-v3-daemon.service"
+
+
+def test_systemd_unit_text_carries_daemon_port():
+    # Port landet als Env in der Unit (nicht nur in ExecStart), damit
+    # config.daemon_port() zur Laufzeit den Bind-Port trifft.
+    t = install.systemd_unit_text(
+        root=Path("/srv/team"), uv="/usr/bin/uv", port=8780, user="mra",
+    )
+    assert "Environment=BIBI_DAEMON_PORT=8780" in t
+    assert "--port 8780" in t
+
+
 def test_launchd_plist_text():
     t = install.launchd_plist_text(
         root=Path("/Users/x/team"), uv="/opt/homebrew/bin/uv", port=9001,

@@ -20,8 +20,23 @@ from pathlib import Path
 
 from bibi import config, repo
 
-SYSTEMD_UNIT = "bibi-daemon.service"
-SYSTEMD_UNIT_PATH = Path("/etc/systemd/system") / SYSTEMD_UNIT
+SYSTEMD_DIR = Path("/etc/systemd/system")
+
+
+def _systemd_unit_name(root: Path) -> str:
+    """Unit-Name **pro Repo eindeutig** (mehrere bibi-Instanzen je Host, §4.10).
+
+    Aus dem Repo-Ordnernamen abgeleitet (analog zum gehashten launchd-Label),
+    z. B. ``…/bibi-notes`` → ``bibi-notes-daemon.service``. Verhindert, dass eine
+    zweite Installation die Unit einer anderen Instanz überschreibt (früher fix
+    ``bibi-daemon.service``). Annahme: Repo-Basisname je Host eindeutig — wie für
+    systemd-Unit-Namen ohnehin nötig.
+    """
+    return f"{root.name}-daemon.service"
+
+
+def _systemd_unit_path(root: Path) -> Path:
+    return SYSTEMD_DIR / _systemd_unit_name(root)
 
 
 # ── gemeinsame Helfer ───────────────────────────────────────────────────────
@@ -63,7 +78,7 @@ def systemd_unit_text(*, root: Path, uv: str, port: int, user: str,
     path = f"{uv_dir}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     lines = [
         "[Unit]",
-        "Description=bibi daemon (Synchronizer/Scheduler/Worker)",
+        f"Description=bibi daemon ({root.name}) — port {port}",
         "After=network-online.target",
         "Wants=network-online.target",
         "",
@@ -73,6 +88,7 @@ def systemd_unit_text(*, root: Path, uv: str, port: int, user: str,
         f"WorkingDirectory={root}",
         f"Environment=HOME={Path.home()}",
         f"Environment=PATH={path}",
+        f"Environment=BIBI_DAEMON_PORT={port}",
     ]
     if role:
         lines.append(f"Environment=BIBI_ROLE={role}")
@@ -143,15 +159,17 @@ def install(role: str | None = None) -> str:
         subprocess.run(["launchctl", "load", str(plist)], check=False)
         return f"installed (launchd): {plist}"
     if sys.platform.startswith("linux"):
+        unit = _systemd_unit_name(root)
+        unit_path = _systemd_unit_path(root)
         text = systemd_unit_text(root=root, uv=uv, port=port,
                                  user=getpass.getuser(), role=role)
-        w = subprocess.run(["sudo", "tee", str(SYSTEMD_UNIT_PATH)],
+        w = subprocess.run(["sudo", "tee", str(unit_path)],
                            input=text, capture_output=True, text=True)
         if w.returncode != 0:
             return f"install FAILED: {w.stderr.strip() or 'sudo/permission'}"
         subprocess.run(["sudo", "systemctl", "daemon-reload"], check=False)
-        subprocess.run(["sudo", "systemctl", "enable", "--now", SYSTEMD_UNIT], check=False)
-        return f"installed (systemd): {SYSTEMD_UNIT_PATH}"
+        subprocess.run(["sudo", "systemctl", "enable", "--now", unit], check=False)
+        return f"installed (systemd): {unit_path}"
     return f"unsupported platform: {sys.platform}"
 
 
@@ -164,10 +182,12 @@ def uninstall() -> str:
             return f"uninstalled (launchd): {plist}"
         return "not installed"
     if sys.platform.startswith("linux"):
-        if not SYSTEMD_UNIT_PATH.exists():
+        unit = _systemd_unit_name(repo.root())
+        unit_path = _systemd_unit_path(repo.root())
+        if not unit_path.exists():
             return "not installed"
-        subprocess.run(["sudo", "systemctl", "disable", "--now", SYSTEMD_UNIT], check=False)
-        subprocess.run(["sudo", "rm", "-f", str(SYSTEMD_UNIT_PATH)], check=False)
+        subprocess.run(["sudo", "systemctl", "disable", "--now", unit], check=False)
+        subprocess.run(["sudo", "rm", "-f", str(unit_path)], check=False)
         subprocess.run(["sudo", "systemctl", "daemon-reload"], check=False)
-        return f"uninstalled (systemd): {SYSTEMD_UNIT_PATH}"
+        return f"uninstalled (systemd): {unit_path}"
     return f"unsupported platform: {sys.platform}"
