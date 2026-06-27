@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bibi.schedule.models import DEFAULT_CLAUDE_MODEL
-from bibi.wrapper import output
+from bibi.wrapper import exec_backend, output
 
 
 @dataclass(frozen=True)
@@ -66,12 +66,14 @@ def run_job(env: dict[str, str]) -> int:
     handler = REGISTRY.get(kind)
     if handler is None:
         raise KeyError(f"unbekannter Job-Typ: {kind!r} (Registry: {sorted(REGISTRY)})")
-    argv = handler.build_command(env)
+    child_argv = handler.build_command(env)
     out_path = Path(env["BIBI_OUTPUT_PATH"])
-    cwd = env.get("BIBI_WORKTREE") or None
+    # Exec-Backend (PLAN-8): Host-Prozess ODER ``docker run …`` um das Child.
+    # Output-Pumping/Monitoring bleibt identisch (wir pumpen die Pipes des Spawns).
+    spec = exec_backend.build_exec(child_argv, env)
 
     proc = subprocess.Popen(
-        argv, cwd=cwd, stdin=subprocess.DEVNULL,
+        spec.argv, cwd=spec.cwd, env=spec.env, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, bufsize=1,
     )
