@@ -289,7 +289,7 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
 
 def create_app(
     roles: Roles, synchronizer=None, worker: Worker | None = None, sweeper=None,
-    controller_client=None, controller_base_url: str | None = None,
+    rescanner=None, controller_client=None, controller_base_url: str | None = None,
 ) -> FastAPI:
     if worker is None and roles.worker:
         worker = Worker(worker_name="local")
@@ -297,6 +297,9 @@ def create_app(
     if sweeper is None and roles.scheduler:
         from bibi.daemon.sweeper import Sweeper
         sweeper = Sweeper(registry=worker_registry)
+    if rescanner is None and roles.scheduler:
+        from bibi.daemon.rescanner import Rescanner
+        rescanner = Rescanner()
 
     def _scheduler_startup() -> None:
         # Beim Start: Schedules erfassen, startup-Jobs feuern (§5.2), verwaiste
@@ -322,6 +325,8 @@ def create_app(
             _scheduler_startup()
         if sweeper is not None:
             await sweeper.start()
+        if rescanner is not None:
+            await rescanner.start()
         if worker is not None:
             await worker.start()
         try:
@@ -329,6 +334,8 @@ def create_app(
         finally:
             if worker is not None:
                 await worker.stop()
+            if rescanner is not None:
+                await rescanner.stop()
             if sweeper is not None:
                 await sweeper.stop()
             if synchronizer is not None:

@@ -197,3 +197,14 @@ def test_execute_reservation_setup_failure_does_not_hang_running(gitrepo: Path, 
     conn.close()
     assert row["status"] == "failed"   # raus aus `running` (Fund B behoben)
     assert row["exit_code"] == -1 and row["attempt"] == 1
+
+
+def test_report_level_by_status():
+    import logging
+
+    from bibi.daemon.worker import _report_level
+    assert _report_level("complete") == logging.INFO
+    assert _report_level("failed") == logging.WARNING
+    assert _report_level("killed") == logging.WARNING
+    assert _report_level("zombie") == logging.WARNING
+    assert _report_level("error") == logging.ERROR

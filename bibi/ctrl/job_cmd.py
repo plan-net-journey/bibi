@@ -102,7 +102,7 @@ def _restart(args: argparse.Namespace) -> int:
     return 0
 
 
-def _rescan(args: argparse.Namespace) -> int:
+def rescan(args: argparse.Namespace) -> int:
     code, body = _req(f"{_base(args)}/-/rescan", method="POST")
     if code != 200 or not isinstance(body, dict):
         print("rescan fehlgeschlagen (Scheduler aktiv?)", file=sys.stderr)
@@ -140,6 +140,12 @@ def register(sub: argparse._SubParsersAction) -> None:
     pr.add_argument("id")
     pr.set_defaults(func=_restart)
 
-    jsub.add_parser("rescan", help="Vault neu scannen").set_defaults(func=_rescan)
-
+    jsub.add_parser("rescan", help="Vault neu scannen").set_defaults(func=rescan)
     p.set_defaults(func=lambda _a: (p.print_help() or 1))
+
+
+def register_rescan(sub: argparse._SubParsersAction) -> None:
+    """Top-Level ``bibi-ctrl rescan`` — selbe Wirkung wie ``job rescan``, auffindbarer."""
+    p = sub.add_parser("rescan", help="Vault neu scannen + erfassen (mit Ausgabe)")
+    p.add_argument("--port", type=int, default=0, help="0 = aus BIBI_DAEMON_PORT/Default")
+    p.set_defaults(func=rescan)

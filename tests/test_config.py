@@ -28,6 +28,7 @@ def test_write_then_read_roundtrip(cfg_home: Path):
         "BIBI_SCHEDULER_URL": "http://sarasate:8769",
         "BIBI_ROLE": "worker,synchronizer",
         "BIBI_REMOTE": "https://example/repo.git",
+        "BIBI_CLAUDE_BIN": "/home/u/.local/bin/claude",
     }
     config.write_env(values)
     assert config.read_env() == values

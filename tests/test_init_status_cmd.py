@@ -28,21 +28,24 @@ def test_status_without_config(cfg_home: Path, capsys):
 
 
 def test_init_writes_env(cfg_home: Path, monkeypatch, capsys):
-    _feed_input(monkeypatch, ["http://sarasate:8769", "worker,synchronizer", "git@x/r.git"])
+    _feed_input(monkeypatch, ["http://sarasate:8769", "worker,synchronizer",
+                              "git@x/r.git", "/opt/bin/claude"])
     rc = main(["init"])
     assert rc == 0
     env = config.read_env()
     assert env["BIBI_SCHEDULER_URL"] == "http://sarasate:8769"
     assert env["BIBI_ROLE"] == "worker,synchronizer"
     assert env["BIBI_REMOTE"] == "git@x/r.git"
+    assert env["BIBI_CLAUDE_BIN"] == "/opt/bin/claude"
 
 
 def test_init_empty_input_uses_defaults(cfg_home: Path, monkeypatch):
-    _feed_input(monkeypatch, ["", "", ""])
+    _feed_input(monkeypatch, ["", "", "", ""])
     main(["init"])
     env = config.read_env()
     assert env["BIBI_SCHEDULER_URL"] == config.KEYS["BIBI_SCHEDULER_URL"]
     assert env["BIBI_ROLE"] == config.KEYS["BIBI_ROLE"]
+    assert env["BIBI_CLAUDE_BIN"] == config.KEYS["BIBI_CLAUDE_BIN"]
 
 
 def test_init_idempotent_decline_keeps_existing(cfg_home: Path, monkeypatch):
@@ -55,7 +58,7 @@ def test_init_idempotent_decline_keeps_existing(cfg_home: Path, monkeypatch):
 
 def test_init_force_skips_confirmation(cfg_home: Path, monkeypatch):
     config.write_env({"BIBI_ROLE": "synchronizer"})
-    _feed_input(monkeypatch, ["http://new", "worker", ""])  # keine j/N-Frage
+    _feed_input(monkeypatch, ["http://new", "worker", "", ""])  # keine j/N-Frage
     rc = main(["init", "--force"])
     assert rc == 0
     assert config.read_env()["BIBI_SCHEDULER_URL"] == "http://new"

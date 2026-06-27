@@ -16,6 +16,9 @@ KEYS: dict[str, str] = {
     "BIBI_SCHEDULER_URL": "http://localhost:8769",
     "BIBI_ROLE": "synchronizer",
     "BIBI_REMOTE": "",
+    # Pfad/Name des claude-Binaries (claude-Jobs). Default "claude" = via PATH;
+    # absoluter Pfad nötig, wenn claude nicht auf dem (Service-)PATH liegt.
+    "BIBI_CLAUDE_BIN": "claude",
 }
 
 DAEMON_PORT_DEFAULT = 8769

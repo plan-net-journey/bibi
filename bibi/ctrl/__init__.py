@@ -43,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     run_cmd.register(sub)
     at_cmd.register(sub)
     doctor_cmd.register(sub)
+    job_cmd.register_rescan(sub)
 
     args = parser.parse_args(argv)
     if not getattr(args, "cmd", None):

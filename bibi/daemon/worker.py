@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-from bibi import repo
+from bibi import config, repo
 from bibi.daemon import activity, job_db, worktree
 from bibi.schedule import backoff, discovery
 from bibi.schedule.lifecycle import TERMINAL
@@ -99,6 +99,10 @@ def _run_wrapper(
         env["BIBI_JOB_CMD"] = payload
     elif kind == "claude":
         env["BIBI_JOB_PROMPT"] = payload
+        # claude-Binary konfigurierbar: Prozess-Env > Knoten-Config > Default "claude".
+        # Absoluter Pfad nötig, wenn claude nicht auf dem (Service-)PATH liegt.
+        env["BIBI_CLAUDE_BIN"] = (os.environ.get("BIBI_CLAUDE_BIN")
+                                  or config.read_env().get("BIBI_CLAUDE_BIN") or "claude")
         if model:
             env["BIBI_JOB_MODEL"] = model
         if soul:
@@ -137,6 +141,15 @@ def _retry_fields(reservation: dict) -> dict:
     base = float(os.environ.get("BIBI_RETRY_BASE") or backoff.DEFAULT_BASE)
     nf = time.time() + backoff.delay(reservation.get("backoff") or "fixed", attempt, base=base)
     return {"status": "failed", "attempt": attempt, "next_fire_at": nf}
+
+
+def _report_level(status: str) -> int:
+    """Log-Level für ein terminales Outcome: Fehlschläge fallen nicht im INFO-Strom unter."""
+    if status == "error":
+        return logging.ERROR
+    if status in ("failed", "killed", "zombie"):
+        return logging.WARNING
+    return logging.INFO
 
 
 def execute_reservation(
@@ -192,7 +205,7 @@ def execute_reservation(
         fields = {**_retry_fields(reservation), **common}
 
     res = client.report(jid, **fields)
-    activity.emit(log, logging.INFO, "worker.report", role="worker",
+    activity.emit(log, _report_level(fields["status"]), "worker.report", role="worker",
                   slug=reservation.get("slug"), run_id=jid, status=fields["status"],
                   reason=fields.get("reason"), exit_code=code, outcome=outcome,
                   applied=(res == "ok"))

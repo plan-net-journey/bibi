@@ -45,6 +45,7 @@ def run(args: argparse.Namespace) -> int:
         "BIBI_SCHEDULER_URL": "Scheduler-URL",
         "BIBI_ROLE": "Rollen (kommagetrennt)",
         "BIBI_REMOTE": "Git-Remote",
+        "BIBI_CLAUDE_BIN": "claude-Binary (Pfad/Name)",
     }
     for key, fallback in config.KEYS.items():
         default = existing.get(key) or fallback
