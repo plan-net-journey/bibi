@@ -70,8 +70,16 @@ def add_controller_routes(
         return HTMLResponse(render.verdict_fragment(_status()))
 
     @app.get("/-/ui/schedules", include_in_schema=False)
-    def schedules_fragment():
-        return HTMLResponse(render.schedules_fragment(_schedules()))
+    def schedules_screen(typ: str | None = None, status: str | None = None):
+        # Der Schedules-Screen (Seite): Nav + Filter + gefilterte, self-pollende Liste.
+        items = render.filter_schedules(_schedules(), typ=typ, status=status)
+        return HTMLResponse(render.schedules_page(items, typ=typ, status=status))
+
+    @app.get("/-/ui/schedules/list", include_in_schema=False)
+    def schedules_list_fragment(typ: str | None = None, status: str | None = None):
+        # Filter-fähiges Fragment — Self-Poll-Ziel + Ziel der Filter-Dropdowns.
+        items = render.filter_schedules(_schedules(), typ=typ, status=status)
+        return HTMLResponse(render.schedules_fragment(items, typ=typ, status=status))
 
     @app.post("/-/ui/rescan", include_in_schema=False)
     def ui_rescan():

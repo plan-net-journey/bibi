@@ -234,7 +234,7 @@ def _sched_row(s: dict, now: float) -> str:
 def _sched_table(items: list[dict], now: float) -> str:
     rows = "".join(_sched_row(s, now) for s in items)
     return ('<table><thead><tr><th>Schedule</th><th>Art</th><th>Status</th>'
-            f'<th>letzter</th><th>nächster</th></tr></thead><tbody>{rows}'
+            f'<th>letzter / seit</th><th>nächster</th></tr></thead><tbody>{rows}'
             "</tbody></table>")
 
 
@@ -257,12 +257,96 @@ def schedule_list(schedules: list[dict], now: float | None = None) -> str:
     return head + body
 
 
-def schedules_fragment(schedules: list[dict], now: float | None = None) -> str:
-    """Self-pollender Wrapper um die Schedule-Liste (analog ``verdict_fragment``):
-    aktualisiert sich alle 5s — sofern FOLLOW an ist (``window.bibiFollow``)."""
+def schedules_fragment(schedules: list[dict], now: float | None = None,
+                       *, typ: str | None = None, status: str | None = None) -> str:
+    """Self-pollender Wrapper um die (bereits gefilterte) Schedule-Liste. Der
+    Self-Poll trägt den aktiven Filter in der URL, damit er ihn über den 2s-Tick
+    bewahrt. Ziel = ``/-/ui/schedules/list`` (das Fragment; die Seite liegt auf
+    ``/-/ui/schedules``)."""
     now = time.time() if now is None else now
-    attrs = (f'id="schedules" hx-get="/-/ui/schedules" hx-trigger="{_POLL}" hx-swap="outerHTML"')
+    qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status))
+                  if v and v != "alle")
+    url = "/-/ui/schedules/list" + (f"?{qs}" if qs else "")
+    attrs = (f'id="schedules" hx-get="{url}" hx-trigger="{_POLL}" hx-swap="outerHTML"')
     return f"<div {attrs}>{schedule_list(schedules, now)}</div>"
+
+
+# ── Schedules-Screen mit Filter (Frontend-Plan §C.3) ─────────────────────────
+
+#: Filter-Optionen. „problem" ist eine **Gruppe** (Abweichungen als Filter statt
+#: eigenem Block): failed/error/killed/zombie + überfällig (pending, fällig verpasst).
+_SCHED_TYPES = ("job", "claude", "app")
+_SCHED_STATUSES = ("running", "pending", "complete", "failed", "deferred", "problem")
+_SCHED_PROBLEM = {"failed", "error", "killed", "zombie"}
+
+
+def _sched_is_problem(s: dict, now: float) -> bool:
+    if s.get("last_status") in _SCHED_PROBLEM:
+        return True
+    nf = s.get("next_fire_at")  # überfällig: pending, dessen Trigger in der Vergangenheit liegt
+    return s.get("row_status") == "pending" and nf is not None and nf < now
+
+
+def filter_schedules(schedules: list[dict], *, typ: str | None = None,
+                     status: str | None = None, now: float | None = None) -> list[dict]:
+    """Schedules nach Typ und Status filtern (rein). ``alle``/leer = kein Filter;
+    ``status='problem'`` matcht die Abweichungs-Gruppe (inkl. überfällig)."""
+    now = time.time() if now is None else now
+    out = list(schedules)
+    if typ and typ != "alle":
+        out = [s for s in out if s.get("kind") == typ]
+    if status and status != "alle":
+        if status == "problem":
+            out = [s for s in out if _sched_is_problem(s, now)]
+        else:
+            out = [s for s in out if s.get("last_status") == status]
+    return out
+
+
+def _filter_bar(typ: str | None, status: str | None) -> str:
+    def _opts(values: tuple, cur: str | None) -> str:
+        cur = cur or "alle"
+        parts = [f'<option value="alle"{" selected" if cur == "alle" else ""}>alle</option>']
+        for v in values:
+            parts.append(f'<option value="{v}"{" selected" if cur == v else ""}>{v}</option>')
+        return "".join(parts)
+
+    common = ('hx-get="/-/ui/schedules/list" hx-target="#schedules" hx-swap="outerHTML" '
+              'hx-include="[name=\'typ\'],[name=\'status\']"')
+    return (
+        '<div class="logbar">'
+        f'<label>Typ <select name="typ" {common}>{_opts(_SCHED_TYPES, typ)}</select></label>'
+        f'<label>Status <select name="status" {common}>{_opts(_SCHED_STATUSES, status)}</select></label>'
+        '</div>'
+    )
+
+
+def _screen_nav(active: str) -> str:
+    """Screen-Tabs (Feed · Schedules · Live-Log · API-Docs); der aktive ohne Link."""
+    tabs = [("Feed", "/-/ui/feed"), ("Schedules", "/-/ui/schedules"),
+            ("Live-Log", "/-/ui/logs"), ("API-Docs", "/-/docs")]
+    items = [t if t == active else f'<a class="back" href="{h}">{t}</a>' for t, h in tabs]
+    return '<span class="muted">' + " · ".join(items) + "</span>"
+
+
+def schedules_page(schedules: list[dict], typ: str | None = None,
+                   status: str | None = None, now: float | None = None) -> str:
+    """Der Schedules-Screen: Nav + Filterleiste + (gefilterte) self-pollende Liste.
+    ``schedules`` ist bereits gefiltert; ``typ``/``status`` spiegeln die Auswahl."""
+    now = time.time() if now is None else now
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>bibi · Schedules</title>"
+        f"<script>{_FOLLOW_JS}</script>"
+        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
+        f"<style>{_CSS}</style></head><body>"
+        f'<header><h1>bibi</h1>{_screen_nav("Schedules")}</header>'
+        f"{_filter_bar(typ, status)}"
+        f"{schedules_fragment(schedules, now, typ=typ, status=status)}"
+        "</body></html>"
+    )
 
 
 def maint_handle(status: dict) -> str:
@@ -579,12 +663,8 @@ _BANDS_JS = """
 
 
 def _feed_nav() -> str:
-    """Screen-Navigation (PLAN-4-Screens). Schedules zeigt vorerst auf die Wurzel
-    (Dashboard-Liste); der dedizierte Schedules-Screen folgt in Stufe 3."""
-    return ('<span class="muted">Feed · '
-            '<a class="back" href="/-/">Schedules</a> · '
-            '<a class="back" href="/-/ui/logs">Live-Log</a> · '
-            '<a class="back" href="/-/docs">API-Docs</a></span>')
+    """Screen-Navigation des Feed (Home) — gemeinsame Tab-Leiste."""
+    return _screen_nav("Feed")
 
 
 def feed_page(rows: list[dict], jobs: list[dict] | None = None,

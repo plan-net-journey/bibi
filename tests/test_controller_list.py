@@ -106,7 +106,7 @@ def test_sched_row_has_kind_and_last_status():
 def test_schedules_fragment_self_polls_under_follow():
     frag = render.schedules_fragment([_sched("a")], now=1.0)
     assert 'id="schedules"' in frag
-    assert 'hx-get="/-/ui/schedules"' in frag
+    assert 'hx-get="/-/ui/schedules/list"' in frag  # Fragment-Route (Stufe 3)
     assert 'every 2s [window.bibiFollow]' in frag
 
 
