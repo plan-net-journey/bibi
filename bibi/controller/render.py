@@ -47,6 +47,17 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .commit { font-family: ui-monospace, monospace; font-size: .8rem; color: #888; }
 .actions { margin: .6rem 0 1.2rem; display: flex; gap: .5rem; }
 .actions button { padding: .3rem .8rem; font-weight: 600; }
+.logbar { display: flex; gap: .6rem; align-items: center; margin: 1rem 0 .6rem;
+          flex-wrap: wrap; }
+.logbar select, .logbar input { font: inherit; padding: .2rem .45rem; color: inherit;
+          background: #8881; border: 1px solid #8884; border-radius: .3rem; }
+.logbar input { flex: 1; min-width: 8rem; }
+.logbox { height: 72vh; overflow-y: auto; background: #0008; border: 1px solid #8883;
+          border-radius: .4rem; padding: .6rem .8rem; font-family: ui-monospace, monospace;
+          font-size: .82rem; line-height: 1.5; white-space: pre-wrap; }
+.logbox .ln.warning { color: #d6a23e; }
+.logbox .ln.error   { color: #e06c5a; }
+.logbox .ln.debug   { color: #888; }
 """
 
 
@@ -219,9 +230,88 @@ def dashboard_page(
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         '<header><h1>bibi</h1><span class="muted">Health- &amp; Anomalie-Sicht'
-        "</span></header>"
+        ' · <a class="back" href="/-/ui/logs">Live-Log</a></span></header>'
         f"{verdict_fragment(status, now)}"
         f"{schedule_list(schedules or [], now)}"
+        "</body></html>"
+    )
+
+
+# ── Live-Log-Panel (§5.4 Slice C) — EventSource gegen /-/log/stream ──────────
+
+_LOG_JS = """
+const box = document.getElementById('log');
+const lvlSel = document.getElementById('lvl');
+const q = document.getElementById('q');
+const RANK = {DEBUG:0, INFO:1, WARNING:2, WARN:2, ERROR:3};
+const buf = [];
+let paused = false;
+
+function passes(o){
+  if ((RANK[o.level] ?? 1) < parseInt(lvlSel.value, 10)) return false;
+  const t = q.value.trim().toLowerCase();
+  if (t){
+    const hay = ((o.role||'')+' '+(o.event||'')+' '+(o.slug||'')+' '+(o.msg||'')).toLowerCase();
+    if (!hay.includes(t)) return false;
+  }
+  return true;
+}
+function line(o){
+  const known = new Set(['ts','level','role','event','msg','slug','run_id']);
+  let ctx = '';
+  if (o.slug) ctx += ' slug='+o.slug;
+  if (o.run_id) ctx += ' run='+o.run_id;
+  for (const k in o){ if(!known.has(k)) ctx += ' '+k+'='+o[k]; }
+  const t = (o.ts||'').slice(11,19);
+  const el = document.createElement('div');
+  el.className = 'ln ' + (o.level||'').toLowerCase();
+  el.textContent = t+' '+(o.level||'').padEnd(5)+' '+(o.role||'')+' '+(o.event||'')
+                   + (o.msg ? '  '+o.msg : '') + (ctx ? '  '+ctx : '');
+  return el;
+}
+function autoscroll(){ if(!paused) box.scrollTop = box.scrollHeight; }
+function rerender(){
+  box.innerHTML = '';
+  for (const o of buf){ if(passes(o)) box.appendChild(line(o)); }
+  autoscroll();
+}
+const es = new EventSource('/-/log/stream?n=200');
+es.onmessage = (e) => {
+  let o; try { o = JSON.parse(e.data); } catch (_) { return; }
+  buf.push(o);
+  if (buf.length > 2000) buf.shift();
+  if (passes(o)) { box.appendChild(line(o)); autoscroll(); }
+};
+box.addEventListener('scroll', () => {
+  paused = box.scrollTop + box.clientHeight < box.scrollHeight - 24;
+});
+lvlSel.onchange = rerender;
+q.oninput = rerender;
+"""
+
+
+def log_page() -> str:
+    """Live-Log-Panel (§5.4 Slice C): EventSource gegen ``/-/log/stream``, mit
+    Level- + Text-Filter (Rolle/Event/slug/msg). Reines FE; der Daemon liefert
+    die Events als SSE. ``pure`` (kein HTTP/DB) — voll testbar."""
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>bibi · Live-Log</title>"
+        f"<style>{_CSS}</style></head><body>"
+        '<header><h1>bibi</h1><span class="muted">Live-Log · '
+        '<a class="back" href="/-/">zurück</a></span></header>'
+        '<div class="logbar">'
+        '<label>Level <select id="lvl">'
+        '<option value="0">debug</option>'
+        '<option value="1" selected>info</option>'
+        '<option value="2">warning</option>'
+        '<option value="3">error</option></select></label>'
+        '<input id="q" type="text" placeholder="Filter: Rolle/Event/slug/msg…">'
+        "</div>"
+        '<div id="log" class="logbox"></div>'
+        f"<script>{_LOG_JS}</script>"
         "</body></html>"
     )
 

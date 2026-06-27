@@ -338,8 +338,8 @@ def create_app(
         title="bibi · daemon",
         version=openapi.CONTRACT_VERSION,
         lifespan=lifespan,
-        docs_url=None,
-        redoc_url=None,
+        docs_url="/-/docs",       # Swagger-UI über die eingefrorene Spec
+        redoc_url="/-/redoc",     # ReDoc-Alternative
         openapi_url="/-/openapi.json",
     )
 

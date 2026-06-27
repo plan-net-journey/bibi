@@ -69,6 +69,10 @@ def add_controller_routes(
     def verdict_fragment():
         return HTMLResponse(render.verdict_fragment(_status()))
 
+    @app.get("/-/ui/logs", include_in_schema=False)
+    def logs_page():
+        return HTMLResponse(render.log_page())
+
     def _detail_data(slug: str):
         try:
             schedule = next((s for s in client.schedules()
