@@ -96,6 +96,7 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .band.collapsed { display: none; }
 .band-row { padding: .15rem 0; }
 .outscroll { max-height: 72vh; overflow-y: auto; }
+.liveterm { max-height: 24rem; overflow-y: auto; }
 """
 
 
@@ -775,6 +776,61 @@ def output_block(events: list[dict], kind: str) -> str:
     return f'<pre class="term">{chr(10).join(rows)}</pre>'
 
 
+# ── Live-Output (SSE; Frontend-Plan §C.5) ────────────────────────────────────
+
+
+def live_output_box(job_id: str, events: list[dict] | None = None,
+                    *, kind: str = "job") -> str:
+    """Eine **streamende** stdout/stderr-Box für einen laufenden Job. Server-seitig
+    mit dem aktuellen Output geseedet (no-JS-Paint), per ``_LIVE_JS`` ab ``data-from``
+    weitergestreamt (``/-/job/{id}/stream?from=N`` → kein Dup). ``hx-preserve`` hält
+    die Box + EventSource über den 2 s-``#detail``-Poll am Leben. Raw-Zeilen (kein
+    Markdown — das fließende „Live"-Bild ist roh; Markdown rendert das Execution-Detail)."""
+    evs = events or []
+    seed = "\n".join(
+        f'<span class="err">{_e(_strip_ansi(e.get("line", "")))}</span>'
+        if e.get("s") == "err" else _e(_strip_ansi(e.get("line", "")))
+        for e in evs
+    )
+    jid = _e(job_id)
+    return (f'<pre class="term liveterm" id="livebox-{jid}" data-job="{jid}" '
+            f'data-from="{len(evs)}" hx-preserve="true">{seed}</pre>')
+
+
+#: Hängt an jede ``.liveterm[data-job]`` eine EventSource (ab ``data-from``), hängt
+#: out/err-Zeilen unten an (err rot), Autoscroll am Ende. Erneut nach htmx-Swaps
+#: (neue Boxen); ``hx-preserve`` sorgt dafür, dass bestehende Boxen + Streams bleiben
+#: (WeakSet verhindert Doppel-Abos). Der Server schließt den Stream bei terminal →
+#: ``onerror`` schließt clientseitig (kein Reconnect/Dup).
+_LIVE_JS = """
+(function(){
+  const bound = new WeakSet();
+  function attach(){
+    document.querySelectorAll('.liveterm[data-job]').forEach(box => {
+      if (bound.has(box)) return;
+      bound.add(box);
+      const id = box.dataset.job, from = box.dataset.from || '0';
+      const es = new EventSource('/-/job/'+encodeURIComponent(id)+'/stream?from='+from);
+      const atBottom = () => box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+      es.onmessage = (e) => {
+        let o; try { o = JSON.parse(e.data); } catch(_) { return; }
+        const stick = atBottom();
+        if (box.childNodes.length) box.appendChild(document.createTextNode('\\n'));
+        const span = document.createElement('span');
+        if (o.s === 'err') span.className = 'err';
+        span.textContent = o.line || '';
+        box.appendChild(span);
+        if (stick) box.scrollTop = box.scrollHeight;
+      };
+      es.onerror = () => es.close();
+    });
+  }
+  document.addEventListener('DOMContentLoaded', attach);
+  document.addEventListener('htmx:afterSwap', attach);
+})();
+"""
+
+
 # ── Schedule-Detail (Ebene 3, schedule-zentriert) ────────────────────────────
 
 
@@ -840,9 +896,12 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None) -
         bits.append(_e(job.get("reason")))
     tail = (" · " + " · ".join(bits)) if bits else ""
     out = ""
-    if live_output and live_output.get("events"):
+    jid = job.get("id")
+    if job.get("status") == "running" and jid:
+        # Streamende Box (SSE), geseedet mit dem aktuellen Output (Offset → kein Dup).
+        events = (live_output or {}).get("events", [])
         out = ('<div class="liveout">'
-               + output_block(live_output["events"], live_output.get("kind", "job"))
+               + live_output_box(jid, events, kind=(live_output or {}).get("kind", "job"))
                + "</div>")
     return (f'<div class="live"><div class="live-head">'
             f'<span class="st {st}">{st}</span>'
@@ -920,6 +979,7 @@ def schedule_detail_page(
         f"<style>{_CSS}</style></head><body>"
         '<a class="back" href="/-/">← zurück</a>'
         f"{schedule_detail_inner(schedule, runs, job, slug, now, top_output=top_output, live_output=live_output)}"
+        f"<script>{_LIVE_JS}</script>"
         "</body></html>"
     )
 
