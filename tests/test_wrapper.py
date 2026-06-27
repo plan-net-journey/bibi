@@ -72,6 +72,15 @@ def test_claude_argv_bin_override():
     assert argv[0] == "/x/fakeclaude"
 
 
+def test_claude_argv_container_ignores_host_bin():
+    # Im Container liegt claude auf dem Image-PATH; der Host-BIBI_CLAUDE_BIN wäre dort
+    # ungültig (Cannot find module). Also immer ``claude``.
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_CLAUDE_BIN": "/Users/x/.local/bin/claude",
+         "BIBI_EXEC_MODE": "container"})
+    assert argv[0] == "claude"
+
+
 def test_claude_argv_session_resume():
     argv = wrapper.REGISTRY["claude"].build_command(
         {"BIBI_JOB_PROMPT": "hi", "BIBI_JOB_SESSION": "sess-1"})

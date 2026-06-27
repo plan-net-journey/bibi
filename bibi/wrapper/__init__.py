@@ -39,8 +39,11 @@ class TypeHandler:
 
 
 def _claude_argv(env: dict[str, str]) -> list[str]:
-    # BIBI_CLAUDE_BIN überschreibt das Binary (Tests/Stubs); Default ``claude``.
-    binary = env.get("BIBI_CLAUDE_BIN") or "claude"
+    container = (env.get("BIBI_EXEC_MODE") or "").strip().lower() == "container"
+    # Host: BIBI_CLAUDE_BIN überschreibt das Binary (Tests/Stubs, abs. Pfad bei
+    # eingeschränktem PATH). Container: claude liegt im Image auf dem PATH — der
+    # Host-Pfad wäre dort sinnlos (Cannot find module), also immer ``claude``.
+    binary = "claude" if container else (env.get("BIBI_CLAUDE_BIN") or "claude")
     argv = [binary, "-p", env.get("BIBI_JOB_PROMPT", "")]
     argv += ["--model", env.get("BIBI_JOB_MODEL") or DEFAULT_CLAUDE_MODEL]
     # Container ohne ~/.claude-Settings: claude würde bei Tool-Nutzung (Datei
