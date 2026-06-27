@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sys
 import threading
 from datetime import datetime, timezone
@@ -236,13 +237,25 @@ class _BroadcastHandler(logging.Handler):
 
 # ── emit + Setup ─────────────────────────────────────────────────────────────
 
+def _oneline(s: str) -> str:
+    """CR/LF & Mehrfach-Whitespace auf eine physische Zeile zwingen (Projekt-
+    Konvention „Sanitize CR/LF"): unkontrollierter Text (z. B. git-stderr) in einem
+    zeilen-basierten Log darf das Event nicht über mehrere Zeilen zerreißen."""
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def emit(logger: logging.Logger, level: int, event: str, msg: str = "", *,
          role: str | None = None, slug: str | None = None,
          run_id: str | None = None, **fields) -> None:
-    """Ein strukturiertes Aktivitäts-Event loggen (Sinks via ``setup_logging``)."""
-    logger.log(level, msg, extra={"bibi": {
+    """Ein strukturiertes Aktivitäts-Event loggen (Sinks via ``setup_logging``).
+
+    ``msg`` und String-Feldwerte werden auf **eine Zeile** gezwungen — sonst reißt
+    mehrzeiliger Fremdtext (git-stderr in ``detail`` u. ä.) die Log-Zeile auseinander."""
+    clean_fields = {k: (_oneline(v) if isinstance(v, str) else v)
+                    for k, v in fields.items()}
+    logger.log(level, _oneline(msg) if msg else msg, extra={"bibi": {
         "event": event, "role": role, "slug": slug, "run_id": run_id,
-        "fields": fields,
+        "fields": clean_fields,
     }})
 
 

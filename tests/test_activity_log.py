@@ -190,3 +190,30 @@ def test_setup_logging_is_idempotent(tmp_path):
     finally:
         for h in list(logging.getLogger("bibi").handlers):
             logging.getLogger("bibi").removeHandler(h)
+
+
+def test_emit_collapses_multiline_fields_to_one_line():
+    """git-stderr u. ä. mehrzeilige Feldwerte dürfen die Log-Zeile nicht zerreißen
+    (CR/LF-Sanitizing am emit-Chokepoint)."""
+    logger = logging.getLogger("bibi.test.oneline")
+    logger.setLevel(logging.DEBUG)
+    captured: list[logging.LogRecord] = []
+
+    class _Cap(logging.Handler):
+        def emit(self, record): captured.append(record)
+
+    h = _Cap()
+    logger.addHandler(h)
+    try:
+        activity.emit(logger, logging.ERROR, "worker.merge_error",
+                      "Merge-back-Fehler\nzweite Zeile", role="scheduler",
+                      slug="Witz", detail="error: local changes\n\tWitz.md\nAborting")
+    finally:
+        logger.removeHandler(h)
+
+    rec = captured[0]
+    jsonl = activity.JsonlFormatter().format(rec)
+    human = activity.HumanFormatter().format(rec)
+    assert "\n" not in jsonl and "\n" not in human   # je genau eine Zeile
+    assert "error: local changes Witz.md Aborting" in jsonl
+    assert "Merge-back-Fehler zweite Zeile" in human
