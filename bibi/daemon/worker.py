@@ -26,6 +26,7 @@ from pathlib import Path
 
 from bibi import config, repo, state
 from bibi.daemon import activity, job_db, worktree
+from bibi.wrapper import exec_backend
 from bibi.schedule import backoff, discovery
 from bibi.schedule.lifecycle import TERMINAL
 from bibi.schedule.models import Status
@@ -48,24 +49,66 @@ def _last_activity(out_path: Path, default: float) -> float:
 def _monitored_wait(
     proc: subprocess.Popen, *, out_path: Path, started: float,
     wall_time: int | None, silence_timeout: int | None, poll: float = 0.1,
+    job_id: str | None = None,
 ) -> tuple[int, str]:
     """Auf den Child warten und dabei wall_time/silence überwachen (§5.5).
 
     Gibt ``(exit_code, outcome)`` mit ``outcome`` ∈ {``normal``, ``wall_time``,
-    ``silence``}. Bei wall_time/silence wird die Prozessgruppe terminiert."""
+    ``silence``}. Bei wall_time/silence wird der Lauf terminiert (container-aware)."""
     while proc.poll() is None:
         now = time.time()
         if wall_time and now - started > wall_time:
-            _terminate(proc)
+            _terminate(proc, job_id=job_id)
             return proc.wait(), "wall_time"
         if silence_timeout and now - _last_activity(out_path, started) > silence_timeout:
-            _terminate(proc)
+            _terminate(proc, job_id=job_id)
             return proc.wait(), "silence"
         time.sleep(poll)
     return proc.returncode, "normal"
 
 
-def _terminate(proc: subprocess.Popen) -> None:
+# ── Container-Exec-Konfig + Terminierung (PLAN-8 Slice B) ────────────────────
+
+def _exec_config() -> dict[str, str]:
+    """Container-Exec-Env aus Prozess-Env > Knoten-Config (an den Wrapper gereicht).
+    Leer/`host` ⇒ Host-Modus. Inkl. ANTHROPIC_API_KEY für claude-im-Container (D5)."""
+    cfg = config.read_env()
+    out: dict[str, str] = {}
+    for key in ("BIBI_EXEC_MODE", "BIBI_JOB_IMAGE", "BIBI_DOCKER_BIN", "ANTHROPIC_API_KEY"):
+        val = os.environ.get(key) or cfg.get(key)
+        if val:
+            out[key] = val
+    return out
+
+
+def _is_container() -> bool:
+    return (_exec_config().get("BIBI_EXEC_MODE") or "host").strip().lower() == "container"
+
+
+def _docker_env() -> dict[str, str]:
+    # docker-bin-Dir in den PATH (Cred-Helper docker-credential-*).
+    bin_ = exec_backend.resolve_docker_bin({**os.environ, **config.read_env()})
+    env = os.environ.copy()
+    env["PATH"] = str(Path(bin_).parent) + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def _docker(args: list[str]) -> None:
+    """Best-effort docker-Subkommando (stop/kill) — Fehler dürfen nie hochpropagieren."""
+    bin_ = exec_backend.resolve_docker_bin({**os.environ, **config.read_env()})
+    try:
+        subprocess.run([bin_, *args], capture_output=True, env=_docker_env(),
+                       timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _terminate(proc: subprocess.Popen, *, job_id: str | None = None) -> None:
+    """Lauf beenden. Container (D7): ``docker stop bibi-<id>`` gibt dem Job graceful
+    SIGTERM + Frist (eskaliert selbst auf SIGKILL); zusätzlich die Host-Wrapper-Gruppe
+    terminieren. Host: SIGTERM an die Prozessgruppe (Default-Verhalten beendet sie)."""
+    if job_id is not None and _is_container():
+        _docker(["stop", exec_backend.container_name(job_id)])
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
     except (ProcessLookupError, OSError):
@@ -110,6 +153,10 @@ def _run_wrapper(
         if session:
             env["BIBI_JOB_SESSION"] = session
 
+    # Container-Exec-Konfig an den Wrapper reichen (PLAN-8): BIBI_EXEC_MODE/IMAGE/
+    # DOCKER_BIN + ANTHROPIC_API_KEY. Leer ⇒ Host-Modus (unverändert).
+    env.update(_exec_config())
+
     started = time.time()
     # eigene Session ⇒ kill kann die ganze Prozessgruppe (Wrapper + Child) treffen.
     proc = subprocess.Popen(
@@ -120,7 +167,7 @@ def _run_wrapper(
         register(job_id, proc)
     code, outcome = _monitored_wait(
         proc, out_path=out_path, started=started,
-        wall_time=wall_time, silence_timeout=silence_timeout,
+        wall_time=wall_time, silence_timeout=silence_timeout, job_id=job_id,
     )
     if register is not None:
         register(job_id, None)
@@ -379,17 +426,19 @@ class Worker:
             await asyncio.sleep(self.heartbeat_interval)
 
     def kill(self, job_id: str) -> bool:
-        """SIGTERM an die Prozessgruppe des laufenden Wrappers (best-effort)."""
+        """Lauf beenden — container-aware (PLAN-8 D7): ``docker stop`` (graceful) +
+        Host-Wrapper-Gruppe; im Container-Modus auch dann ``docker kill`` als Backstop,
+        wenn der Wrapper schon weg ist (Container könnte verwaist weiterlaufen)."""
         proc = self._procs.get(job_id)
         if proc is None or proc.poll() is not None:
+            if _is_container():  # Wrapper weg, Container evtl. noch da → einsammeln
+                _docker(["kill", exec_backend.container_name(job_id)])
+                return True
             return False
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            activity.emit(log, logging.INFO, "worker.kill", "SIGTERM an Wrapper-Prozessgruppe",
-                          role="worker", run_id=job_id)
-            return True
-        except (ProcessLookupError, OSError):
-            return False
+        _terminate(proc, job_id=job_id)
+        activity.emit(log, logging.INFO, "worker.kill", "Lauf beendet (graceful)",
+                      role="worker", run_id=job_id)
+        return True
 
     async def _loop(self) -> None:
         loop = asyncio.get_event_loop()
