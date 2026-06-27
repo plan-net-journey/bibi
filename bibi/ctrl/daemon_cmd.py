@@ -59,8 +59,6 @@ def run(args: argparse.Namespace) -> int:
 
     worker = None
     if r.worker:
-        import os
-
         from bibi.daemon.worker import Worker
         # --connect ⇒ Remote-Pull beim Scheduler (BIBI_SCHEDULER_URL: env > Config-Datei).
         url = None
@@ -123,9 +121,7 @@ def logs(args: argparse.Namespace) -> int:
     if not path.exists():
         print(f"kein Aktivitätslog: {path} (läuft der Daemon schon?)", file=sys.stderr)
         return 1
-    lines = path.read_text(encoding="utf-8").splitlines()
-    tail = lines[-args.lines:] if args.lines and args.lines > 0 else lines
-    for ln in tail:
+    for ln in activity.tail_lines(path, args.lines):
         print(activity.render_jsonl_line(ln))
     if args.follow:
         import time

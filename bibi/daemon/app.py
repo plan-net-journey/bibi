@@ -389,6 +389,29 @@ def create_app(
         state.set_maintenance(False)
         return {"maintenance": False}
 
+    @app.get("/-/log/stream", tags=["daemon"])
+    def log_stream(n: int = Query(50, ge=0, le=1000), follow: bool = True):
+        """Live-Aktivitätslog als SSE (§5.4 Slice B): Backfill der letzten ``n``
+        JSONL-Zeilen + neue Events. Reine JSON/SSE-API (§1.1) — der Controller/FE
+        ist nur Client. ``follow=false`` = nur Backfill (Snapshot, terminiert)."""
+        path = repo.root() / "data" / "daemon-log" / activity.LOG_FILENAME
+        broadcaster = activity.get_broadcaster()
+
+        async def gen():
+            for line in activity.tail_lines(path, n):
+                yield f"data: {line}\n\n"
+            if not follow:
+                return
+            q = broadcaster.subscribe()
+            try:
+                while True:
+                    line = await q.get()
+                    yield f"data: {line}\n\n"
+            finally:
+                broadcaster.unsubscribe(q)
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
     # ── Scheduler-Rolle: echte DB-Routen (PLAN-3 §3.1) ──────────────────────
     # Zuerst registriert ⇒ gewinnen gegen die 3.0-Contract-Stubs für /-/job.
     if roles.scheduler:

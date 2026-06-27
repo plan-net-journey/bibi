@@ -109,6 +109,52 @@ def test_setup_logging_two_sinks_and_writes_jsonl(tmp_path):
             logging.getLogger("bibi").removeHandler(h)
 
 
+def test_tail_lines(tmp_path):
+    p = tmp_path / "f.jsonl"
+    p.write_text("a\nb\nc\n", encoding="utf-8")
+    assert activity.tail_lines(p, 2) == ["b", "c"]
+    assert activity.tail_lines(p, 0) == ["a", "b", "c"]
+    assert activity.tail_lines(tmp_path / "nope", 5) == []
+
+
+def test_broadcaster_delivers_across_thread():
+    # Publizieren aus einem fremden Thread → Zustellung in den asyncio-Abonnenten.
+    import asyncio
+    import threading
+
+    async def scenario():
+        b = activity.LogBroadcaster()
+        q = b.subscribe()
+        assert b.subscriber_count() == 1
+        t = threading.Thread(target=b.publish, args=('{"event": "x"}',))
+        t.start()
+        t.join()
+        line = await asyncio.wait_for(q.get(), timeout=2)
+        b.unsubscribe(q)
+        assert b.subscriber_count() == 0
+        return line
+
+    assert asyncio.run(scenario()) == '{"event": "x"}'
+
+
+def test_broadcaster_publish_without_subscribers_is_noop():
+    activity.LogBroadcaster().publish("x")  # darf nicht werfen
+
+
+def test_broadcaster_full_queue_drops_not_blocks():
+    import asyncio
+
+    async def scenario():
+        b = activity.LogBroadcaster(maxsize=1)
+        q = b.subscribe()
+        b.publish("a")
+        b.publish("b")  # Queue voll → verworfen, kein Block/Fehler
+        await asyncio.sleep(0)  # call_soon_threadsafe abarbeiten lassen
+        return q.qsize()
+
+    assert asyncio.run(scenario()) == 1
+
+
 def test_resolve_level_precedence_and_tolerance():
     # CLI > env > Default; case-insensitiv; Unbekanntes wird übersprungen.
     assert activity.resolve_level("debug", "error") == logging.DEBUG
@@ -139,7 +185,8 @@ def test_setup_logging_is_idempotent(tmp_path):
     activity.setup_logging(log_dir=tmp_path / "a")
     activity.setup_logging(log_dir=tmp_path / "b")  # darf nicht doppelt verdrahten
     try:
-        assert len(logging.getLogger("bibi").handlers) == 2
+        # file + broadcast + stdout, einmalig (nicht verdoppelt)
+        assert len(logging.getLogger("bibi").handlers) == 3
     finally:
         for h in list(logging.getLogger("bibi").handlers):
             logging.getLogger("bibi").removeHandler(h)

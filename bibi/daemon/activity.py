@@ -18,9 +18,11 @@ Output-Streams (§4.5) — die bleiben getrennt (ein Job = ein Stream).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sys
+import threading
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -148,6 +150,90 @@ def render_jsonl_line(line: str) -> str:
     )
 
 
+def tail_lines(path: Path | str, n: int) -> list[str]:
+    """Die letzten ``n`` Zeilen einer Datei (Backfill/CLI). Fehlt sie: ``[]``.
+
+    ``n <= 0`` → alle Zeilen.
+    """
+    p = Path(path)
+    if not p.exists():
+        return []
+    lines = p.read_text(encoding="utf-8").splitlines()
+    return lines[-n:] if n and n > 0 else lines
+
+
+# ── Live-Broadcast an SSE-Abonnenten (§5.4 Slice B) ──────────────────────────
+
+class LogBroadcaster:
+    """Fan-out der Aktivitäts-Events an verbundene SSE-Abonnenten.
+
+    **Thread-sicher beim Publizieren** (der Handler feuert aus Worker-/Sync-/
+    Sweeper-Threads), **asyncio-freundlich beim Lesen** (SSE-Endpunkt im uvicorn-
+    Loop). Jeder Abonnent hält eine ``asyncio.Queue``; publizierte Zeilen werden
+    via ``loop.call_soon_threadsafe`` eingespeist. Volle Queue (langsamer Consumer)
+    → Zeile wird **verworfen**, blockiert nie den Logging-Pfad.
+    """
+
+    def __init__(self, maxsize: int = 1000) -> None:
+        self._subs: set[tuple] = set()
+        self._lock = threading.Lock()
+        self._maxsize = maxsize
+
+    def subscribe(self) -> asyncio.Queue:
+        loop = asyncio.get_running_loop()
+        q: asyncio.Queue = asyncio.Queue(maxsize=self._maxsize)
+        with self._lock:
+            self._subs.add((loop, q))
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        with self._lock:
+            self._subs = {s for s in self._subs if s[1] is not q}
+
+    def subscriber_count(self) -> int:
+        with self._lock:
+            return len(self._subs)
+
+    def publish(self, line: str) -> None:
+        with self._lock:
+            subs = list(self._subs)
+        for loop, q in subs:
+            try:
+                loop.call_soon_threadsafe(self._offer, q, line)
+            except RuntimeError:
+                pass  # Loop geschlossen → wird beim nächsten unsubscribe entfernt
+
+    @staticmethod
+    def _offer(q: asyncio.Queue, line: str) -> None:
+        try:
+            q.put_nowait(line)
+        except asyncio.QueueFull:
+            pass  # langsamer Consumer: verwerfen statt blockieren
+
+
+_broadcaster = LogBroadcaster()
+
+
+def get_broadcaster() -> LogBroadcaster:
+    """Der prozessweite Broadcaster (vom SSE-Endpunkt abonniert)."""
+    return _broadcaster
+
+
+class _BroadcastHandler(logging.Handler):
+    """Logging-Handler, der jede Zeile (JSONL) an den Broadcaster weiterreicht."""
+
+    def __init__(self, broadcaster: LogBroadcaster) -> None:
+        super().__init__()
+        self._b = broadcaster
+        self.setFormatter(JsonlFormatter())
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._b.publish(self.format(record))
+        except Exception:  # noqa: BLE001 — Logging darf nie den Aufrufer killen
+            self.handleError(record)
+
+
 # ── emit + Setup ─────────────────────────────────────────────────────────────
 
 def emit(logger: logging.Logger, level: int, event: str, msg: str = "", *,
@@ -183,6 +269,9 @@ def setup_logging(*, role_names: list[str] | None = None, log_dir: Path | str,
                              encoding="utf-8")
     fh.setFormatter(JsonlFormatter())
     logger.addHandler(fh)
+
+    # Live-Fan-out an SSE-Abonnenten (§5.4 Slice B) — kostet nichts ohne Abonnenten.
+    logger.addHandler(_BroadcastHandler(_broadcaster))
 
     if to_stdout:
         sh = logging.StreamHandler(sys.stdout)
