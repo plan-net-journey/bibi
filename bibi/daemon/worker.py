@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 from bibi import repo
-from bibi.daemon import job_db, worktree
+from bibi.daemon import activity, job_db, worktree
 from bibi.schedule import backoff, discovery
 from bibi.schedule.lifecycle import TERMINAL
 from bibi.schedule.models import Status
@@ -283,12 +283,19 @@ class Worker:
         if res is None:
             return False
         root, work = self._roots()
+        activity.emit(log, logging.INFO, "worker.pickup", role="worker",
+                      slug=res.get("slug"), run_id=res.get("id"), kind=res.get("kind"))
         try:
             execute_reservation(
                 res, repo_root=root, work_dir=work, client=self.client,
                 worker_name=self.worker_name, host=self.host, register=self._register,
             )
+            activity.emit(log, logging.INFO, "worker.done", role="worker",
+                          slug=res.get("slug"), run_id=res.get("id"))
         except Exception:  # ein kaputter Run darf den Loop nicht killen (§2.7)
+            activity.emit(log, logging.ERROR, "worker.error",
+                          "Job-Ausführung fehlgeschlagen", role="worker",
+                          slug=res.get("slug"), run_id=res.get("id"))
             log.exception("Job-Ausführung fehlgeschlagen: %s", res.get("id"))
         return True
 

@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 import urllib.request
 
-from bibi import config, state
+from bibi import config, repo, state
+from bibi.daemon import activity
 from bibi.daemon import roles as R
 
 
@@ -76,7 +78,13 @@ def run(args: argparse.Namespace) -> int:
     port = args.port or config.daemon_port()
     app = create_app(r, synchronizer=synchronizer, worker=worker,
                      controller_base_url=f"http://{args.host}:{port}")
-    print(f"bibi daemon: rollen={r.active_names() or ['idle']} port={port}", file=sys.stderr)
+    # Aktivitätslog verdrahten (§5.1): JSONL unter gitignored data/ + Klartext auf
+    # stdout → der Vordergrund-Startschirm *ist* der Live-Tail.
+    names = r.active_names() or ["idle"]
+    log_path = activity.setup_logging(role_names=names,
+                                      log_dir=repo.root() / "data" / "daemon-log")
+    activity.emit(logging.getLogger("bibi.daemon"), logging.INFO, "daemon.start",
+                  role="daemon", roles=",".join(names), port=port, log=str(log_path))
     uvicorn.run(app, host=args.host, port=port)
     return 0
 
@@ -105,8 +113,34 @@ def status(args: argparse.Namespace) -> int:
         return 1
 
 
+def logs(args: argparse.Namespace) -> int:
+    """Aktivitätslog (§5.1) als Klartext anzeigen; ``-f`` folgt wie ``tail -f``."""
+    path = repo.root() / "data" / "daemon-log" / activity.LOG_FILENAME
+    if not path.exists():
+        print(f"kein Aktivitätslog: {path} (läuft der Daemon schon?)", file=sys.stderr)
+        return 1
+    lines = path.read_text(encoding="utf-8").splitlines()
+    tail = lines[-args.lines:] if args.lines and args.lines > 0 else lines
+    for ln in tail:
+        print(activity.render_jsonl_line(ln))
+    if args.follow:
+        import time
+        with path.open("r", encoding="utf-8") as f:
+            f.seek(0, 2)
+            try:
+                while True:
+                    ln = f.readline()
+                    if ln:
+                        print(activity.render_jsonl_line(ln), flush=True)
+                    else:
+                        time.sleep(0.3)
+            except KeyboardInterrupt:
+                pass
+    return 0
+
+
 def register(sub: argparse._SubParsersAction) -> None:
-    p = sub.add_parser("daemon", help="Daemon: run/install/uninstall/status (§4.2/§4.10)")
+    p = sub.add_parser("daemon", help="Daemon: run/install/uninstall/status/logs (§4.2/§4.10)")
     dsub = p.add_subparsers(dest="daemon_cmd")
 
     pr = dsub.add_parser("run", help="Daemon im Vordergrund starten")
@@ -130,5 +164,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     ps = dsub.add_parser("status", help="laufenden Daemon abfragen (/-/health)")
     ps.add_argument("--port", type=int, default=0)
     ps.set_defaults(func=status)
+
+    pl = dsub.add_parser("logs", help="Aktivitätslog anzeigen (§5.1); -f folgt live")
+    pl.add_argument("-f", "--follow", action="store_true", help="wie tail -f")
+    pl.add_argument("-n", "--lines", type=int, default=40, help="letzte N Zeilen (0 = alle)")
+    pl.set_defaults(func=logs)
 
     p.set_defaults(func=lambda _a: (p.print_help() or 1))

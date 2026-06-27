@@ -19,6 +19,8 @@ import logging
 import time
 from dataclasses import dataclass
 
+from bibi.daemon import activity
+
 log = logging.getLogger("bibi.daemon.synchronizer")
 
 
@@ -174,6 +176,8 @@ class Synchronizer:
                 kinds.append(kind)
                 self._debounce.reset()
                 did["pushed"] = True
+                activity.emit(log, logging.INFO, "sync.push",
+                              role="synchronizer", ok=ok, kind=kind)
 
         if self._pull and self._pull_due(now):
             ok, kind = self._pull_fn()
@@ -181,6 +185,8 @@ class Synchronizer:
             oks.append(ok)
             kinds.append(kind)
             did["pulled"] = True
+            activity.emit(log, logging.INFO, "sync.pull",
+                          role="synchronizer", ok=ok, kind=kind)
 
         self._resolve_conflict(oks, kinds)
         return did

@@ -21,7 +21,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from bibi import config, repo, state
-from bibi.daemon import job_db, openapi
+from bibi.daemon import activity, job_db, openapi
 from bibi.daemon.openapi import (
     JobReservation, JobView, KillRequest, NextRequest, RunRequest, StatusReport,
     WorkerHeartbeat, WorkerView,
@@ -55,7 +55,11 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry) -> None:
     def rescan():
         conn = job_db.connect()
         try:
-            return job_db.rescan(conn)
+            res = job_db.rescan(conn)
+            activity.emit(log, logging.INFO, "scheduler.rescan", role="scheduler",
+                          inserted=res.get("inserted"), updated=res.get("updated"),
+                          removed=res.get("removed"))
+            return res
         finally:
             conn.close()
 
