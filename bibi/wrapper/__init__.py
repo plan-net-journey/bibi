@@ -43,6 +43,14 @@ def _claude_argv(env: dict[str, str]) -> list[str]:
     binary = env.get("BIBI_CLAUDE_BIN") or "claude"
     argv = [binary, "-p", env.get("BIBI_JOB_PROMPT", "")]
     argv += ["--model", env.get("BIBI_JOB_MODEL") or DEFAULT_CLAUDE_MODEL]
+    # Container ohne ~/.claude-Settings: claude würde bei Tool-Nutzung (Datei
+    # schreiben) nachfragen und headless hängen. ``acceptEdits`` erlaubt Datei-Edits
+    # ohne Prompt und funktioniert als root (``--dangerously-skip-permissions`` ist
+    # als root verboten). Deckt vault-schreibende Jobs. Host-Modus unverändert
+    # (Nutzer-Settings gelten). Volle Autonomie (bash etc.) bräuchte einen non-root
+    # Container — späterer Ausbau (PLAN-8 D9).
+    if (env.get("BIBI_EXEC_MODE") or "").strip().lower() == "container":
+        argv += ["--permission-mode", "acceptEdits"]
     session = env.get("BIBI_JOB_SESSION")
     if session:  # Dialog fortsetzen (§5.3)
         argv += ["--resume", session]

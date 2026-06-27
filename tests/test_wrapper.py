@@ -83,6 +83,16 @@ def test_claude_argv_no_session_no_resume():
     assert "--resume" not in argv
 
 
+def test_claude_argv_permission_mode_only_in_container():
+    # Host (Default): keine Permission-Übersteuerung (Nutzer-Settings gelten).
+    host = wrapper.REGISTRY["claude"].build_command({"BIBI_JOB_PROMPT": "hi"})
+    assert "--permission-mode" not in host
+    # Container: acceptEdits (schreibt headless ohne Prompt, geht als root).
+    cont = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_EXEC_MODE": "container"})
+    assert "--permission-mode" in cont and "acceptEdits" in cont
+
+
 def test_run_job_claude_via_stub(tmp_path: Path):
     # claude-Pfad end-to-end ohne echtes claude — Stub-Binary echot.
     fake = tmp_path / "fakeclaude"

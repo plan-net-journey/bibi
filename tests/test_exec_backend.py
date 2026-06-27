@@ -46,6 +46,16 @@ def test_container_passes_api_key_only_when_set():
     assert with_key.argv[i + 1] == "ANTHROPIC_API_KEY"   # nur Name, Wert vom Host
 
 
+def test_container_passes_oauth_token():
+    # claude-code Abo-Auth via CLAUDE_CODE_OAUTH_TOKEN (sk-ant-oat…), nicht API-Key.
+    spec = exec_backend.build_exec(["claude"], {
+        "BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt", "BIBI_JOB_ID": "j",
+        "BIBI_DOCKER_BIN": "/d/docker", "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-x"})
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in spec.argv
+    i = spec.argv.index("CLAUDE_CODE_OAUTH_TOKEN")
+    assert spec.argv[i - 1] == "-e"   # -e CLAUDE_CODE_OAUTH_TOKEN (Wert vom Host)
+
+
 def test_default_image_when_unset():
     spec = exec_backend.build_exec(
         ["sh"], {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",

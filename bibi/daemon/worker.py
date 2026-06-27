@@ -74,7 +74,8 @@ def _exec_config() -> dict[str, str]:
     Leer/`host` ⇒ Host-Modus. Inkl. ANTHROPIC_API_KEY für claude-im-Container (D5)."""
     cfg = config.read_env()
     out: dict[str, str] = {}
-    for key in ("BIBI_EXEC_MODE", "BIBI_JOB_IMAGE", "BIBI_DOCKER_BIN", "ANTHROPIC_API_KEY"):
+    for key in ("BIBI_EXEC_MODE", "BIBI_JOB_IMAGE", "BIBI_DOCKER_BIN",
+                "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
         val = os.environ.get(key) or cfg.get(key)
         if val:
             out[key] = val

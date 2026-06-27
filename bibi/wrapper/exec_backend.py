@@ -24,7 +24,8 @@ _DOCKER_CANDIDATES = (
 )
 
 #: Env-Variablen, die in den Container durchgereicht werden (claude-Auth u. ä.).
-_CONTAINER_ENV = ("ANTHROPIC_API_KEY",)
+#: ``CLAUDE_CODE_OAUTH_TOKEN`` = Abo-Auth (claude-code), ``ANTHROPIC_API_KEY`` = API-Auth.
+_CONTAINER_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 
 DEFAULT_IMAGE = "bibi-base:dev"
 WORKSPACE = "/workspace"
