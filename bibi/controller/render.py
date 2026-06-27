@@ -97,6 +97,7 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .band-row { padding: .15rem 0; }
 .outscroll { max-height: 72vh; overflow-y: auto; }
 .liveterm { max-height: 24rem; overflow-y: auto; }
+.liveclock { color: #5fb37a; font-size: .8rem; font-family: ui-monospace, monospace; }
 """
 
 
@@ -331,6 +332,27 @@ def _screen_nav(active: str) -> str:
     return '<span class="muted">' + " · ".join(items) + "</span>"
 
 
+def _live_clock() -> str:
+    """Tickende Lebendigkeits-Anzeige (Feedback Z. 2) — von ``_CLOCK_JS`` gesetzt."""
+    return '<span class="liveclock" id="liveclock">● live --:--:--</span>'
+
+
+#: Setzt die Uhr sekündlich (rein client-seitig) — „wir leben noch".
+_CLOCK_JS = """
+(function(){
+  const c = document.getElementById('liveclock');
+  if (!c) return;
+  const tick = () => { c.textContent = '● live ' + new Date().toLocaleTimeString(); };
+  tick(); setInterval(tick, 1000);
+})();
+"""
+
+
+def _header(active: str) -> str:
+    """Gemeinsamer Screen-Header: Titel + Live-Uhr + Tab-Leiste."""
+    return f'<header><h1>bibi</h1>{_live_clock()} {_screen_nav(active)}</header>'
+
+
 def schedules_page(schedules: list[dict], typ: str | None = None,
                    status: str | None = None, now: float | None = None) -> str:
     """Der Schedules-Screen: Nav + Filterleiste + (gefilterte) self-pollende Liste.
@@ -344,9 +366,10 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f'<header><h1>bibi</h1>{_screen_nav("Schedules")}</header>'
+        f"{_header('Schedules')}"
         f"{_filter_bar(typ, status)}"
         f"{schedules_fragment(schedules, now, typ=typ, status=status)}"
+        f"<script>{_CLOCK_JS}</script>"
         "</body></html>"
     )
 
@@ -435,16 +458,22 @@ function passes(o){
   return true;
 }
 function line(o){
-  const known = new Set(['ts','level','role','event','msg','slug','run_id']);
-  let ctx = '';
-  if (o.slug) ctx += ' slug='+o.slug;
-  if (o.run_id) ctx += ' run='+o.run_id;
-  for (const k in o){ if(!known.has(k)) ctx += ' '+k+'='+o[k]; }
   const t = (o.ts||'').slice(11,19);
   const el = document.createElement('div');
   el.className = 'ln ' + (o.level||'').toLowerCase();
-  el.textContent = t+' '+(o.level||'').padEnd(5)+' '+(o.role||'')+' '+(o.event||'')
-                   + (o.msg ? '  '+o.msg : '') + (ctx ? '  '+ctx : '');
+  el.appendChild(document.createTextNode(
+    t+' '+(o.level||'').padEnd(5)+' '+(o.role||'')+' '+(o.event||'')
+    + (o.msg ? '  '+o.msg : '')));
+  if (o.slug){            // Job-ID als Link zum Schedule-Detail (Stufe 6)
+    el.appendChild(document.createTextNode('  '));
+    const a = document.createElement('a'); a.className = 'slug';
+    a.href = '/-/ui/schedule/' + encodeURIComponent(o.slug);
+    a.textContent = 'slug=' + o.slug;
+    el.appendChild(a);
+  }
+  if (o.run_id) el.appendChild(document.createTextNode(' run=' + o.run_id));
+  const extra = new Set(['ts','level','role','event','msg','slug','run_id']);
+  for (const k in o){ if(!extra.has(k)) el.appendChild(document.createTextNode(' '+k+'='+o[k])); }
   return el;
 }
 function autoscroll(){ if(!paused) box.scrollTop = box.scrollHeight; }
@@ -478,8 +507,7 @@ def log_page() -> str:
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Live-Log</title>"
         f"<style>{_CSS}</style></head><body>"
-        '<header><h1>bibi</h1><span class="muted">Live-Log · '
-        '<a class="back" href="/-/">zurück</a></span></header>'
+        f"{_header('Live-Log')}"
         '<div class="logbar">'
         '<label>Level <select id="lvl">'
         '<option value="0">debug</option>'
@@ -592,7 +620,10 @@ def _aktiv_row(j: dict, now: float) -> str:
     if j.get("reason"):
         bits.append(_e(j.get("reason")))
     tail = " · ".join(bits)
-    return (f'<div class="band-row"><span class="st {st}">{st}</span> '
+    # running-Zeilen tragen data-running (job-id) → die Band-JS klappt das aktiv-Band
+    # bei einem **neuen** Lauf automatisch auf (Entscheidung #6).
+    run_attr = f' data-running="{_e(j.get("id"))}"' if j.get("status") == "running" else ""
+    return (f'<div class="band-row"{run_attr}><span class="st {st}">{st}</span> '
             f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a>'
             f'{" · " + tail if tail else ""}</div>')
 
@@ -632,10 +663,12 @@ def bands_fragment(jobs: list[dict], now: float | None = None) -> str:
 
 #: Bänder: Klapp-Zustand aus localStorage (Default aktiv **auf**, wartet **zu** —
 #: Entscheidung #6) bei Load + nach jedem Refresh anwenden; alle 2 s ``/-/ui/feed/bands``
-#: nachladen (Live-State der jobs-Tabelle). Der stdout-Live-Stream im aktiv-Band
-#: folgt in Stufe 5.
+#: nachladen (Live-State der jobs-Tabelle). Bei einem **neuen** running-Job (frische
+#: data-running-ID) klappt das aktiv-Band automatisch auf (respektiert sonst die
+#: manuelle Wahl). stdout-Live-Stream: Schedule-Detail (Stufe 5).
 _BANDS_JS = """
 (function(){
+  let prevRunning = new Set();
   function applyBands(){
     document.querySelectorAll('.band').forEach(b => {
       const k=b.dataset.band, def=(k==='aktiv'?'1':'0');
@@ -645,19 +678,25 @@ _BANDS_JS = """
       if(t) t.classList.toggle('open', open);
     });
   }
+  function autoOpenAktiv(){
+    const cur=new Set([...document.querySelectorAll('[data-running]')].map(e=>e.dataset.running));
+    let fresh=false; cur.forEach(id=>{ if(!prevRunning.has(id)) fresh=true; });
+    prevRunning=cur;
+    if(fresh){ localStorage.setItem('bibiBand.aktiv','1'); applyBands(); }
+  }
   window.bibiToggleBand=function(k){
     const def=(k==='aktiv'?'1':'0');
     const cur=(localStorage.getItem('bibiBand.'+k) ?? def)==='1';
     localStorage.setItem('bibiBand.'+k, cur?'0':'1');
     applyBands();
   };
-  applyBands();
+  applyBands(); autoOpenAktiv();
   setInterval(async () => {
     try{
       const r=await fetch('/-/ui/feed/bands'); if(!r.ok) return;
       const html=await r.text();
       const wrap=document.getElementById('bands');
-      if(wrap){ wrap.outerHTML=html; applyBands(); }
+      if(wrap){ wrap.outerHTML=html; applyBands(); autoOpenAktiv(); }
     }catch(_){}
   }, 2000);
 })();
@@ -680,9 +719,10 @@ def feed_page(rows: list[dict], jobs: list[dict] | None = None,
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Feed</title>"
         f"<style>{_CSS}</style></head><body>"
-        f'<header><h1>bibi</h1>{_feed_nav()}</header>'
+        f"{_header('Feed')}"
         f"{feed_list(rows, now)}"
         f"{bands_fragment(jobs or [], now)}"
+        f"<script>{_CLOCK_JS}</script>"
         f"<script>{_FEED_JS}</script>"
         f"<script>{_BANDS_JS}</script>"
         "</body></html>"
