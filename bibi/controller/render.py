@@ -10,6 +10,10 @@ import time
 
 _HTMX = "https://unpkg.com/htmx.org@1.9.12"
 
+#: Poll-Trigger der self-aktualisierenden Fragmente — 2s, gated durch FOLLOW
+#: (``window.bibiFollow``). Zentral, damit das Intervall an einer Stelle hängt.
+_POLL = "every 2s [window.bibiFollow]"
+
 _CSS = """
 :root { color-scheme: light dark; }
 body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem;
@@ -56,6 +60,11 @@ h2 { font-size: .95rem; color: #888; margin: 1.5rem 0 .4rem; font-weight: 600; }
 button { font: inherit; background: #8882; border: 1px solid #8884;
          border-radius: .35rem; padding: .15rem .5rem; cursor: pointer; color: inherit; }
 .commit { font-family: ui-monospace, monospace; font-size: .8rem; color: #888; }
+.live { margin: .6rem 0 1rem; padding: .5rem .8rem; border: 1px solid #5a9fe066;
+        border-radius: .4rem; background: #5a9fe014; }
+.live-head { display: flex; gap: .6rem; align-items: baseline; }
+.live .st { font-weight: 600; }
+.liveout { margin-top: .5rem; }
 .actions { margin: .6rem 0 1.2rem; display: flex; gap: .5rem; }
 .actions button { padding: .3rem .8rem; font-weight: 600; }
 .logbar { display: flex; gap: .6rem; align-items: center; margin: 1rem 0 .6rem;
@@ -168,8 +177,7 @@ def verdict_fragment(status: dict, now: float | None = None) -> str:
     """Der selbst-pollende Verdikt-Block: Banner + Abweichungs-/Überfällig-Listen.
     ``status`` ist die Antwort von ``GET /-/status``."""
     now = time.time() if now is None else now
-    attrs = ('id="verdict" hx-get="/-/ui/verdict" '
-             'hx-trigger="every 5s [window.bibiFollow]" hx-swap="outerHTML"')
+    attrs = (f'id="verdict" hx-get="/-/ui/verdict" hx-trigger="{_POLL}" hx-swap="outerHTML"')
     v = status.get("verdict")
     if v is None:
         return (f'<div {attrs}><div class="banner">Kein Verdikt — '
@@ -236,8 +244,7 @@ def schedules_fragment(schedules: list[dict], now: float | None = None) -> str:
     """Self-pollender Wrapper um die Schedule-Liste (analog ``verdict_fragment``):
     aktualisiert sich alle 5s — sofern FOLLOW an ist (``window.bibiFollow``)."""
     now = time.time() if now is None else now
-    attrs = ('id="schedules" hx-get="/-/ui/schedules" '
-             'hx-trigger="every 5s [window.bibiFollow]" hx-swap="outerHTML"')
+    attrs = (f'id="schedules" hx-get="/-/ui/schedules" hx-trigger="{_POLL}" hx-swap="outerHTML"')
     return f"<div {attrs}>{schedule_list(schedules, now)}</div>"
 
 
@@ -483,12 +490,23 @@ def _commit_cell(run: dict) -> str:
     return f'<span class="commit" title="{_e(sha)} {branch}">{short}</span>'
 
 
-def _run_rows(runs: list[dict], slug: str, now: float) -> str:
+def _run_rows(runs: list[dict], slug: str, now: float,
+              top_output: dict | None = None) -> str:
     s = _e(slug)
     rows = []
-    for r in runs:
+    for i, r in enumerate(runs):
         rid = r.get("id")
         st = _e(r.get("status"))
+        # Der jüngste Lauf bekommt den Output **default expanded** (server-gerendert,
+        # überlebt den Poll); ältere behalten den Lazy-Toggle (sonst N Fetches/Poll).
+        if i == 0 and top_output is not None:
+            out_cell = '<span class="muted">Output ↓</span>'
+            out_html = output_block(top_output.get("events", []),
+                                    top_output.get("kind", "job"))
+        else:
+            out_cell = (f'<button hx-get="/-/ui/run/{rid}/output" hx-target="#out-{rid}" '
+                        'hx-swap="innerHTML">Output</button>')
+            out_html = ""
         rows.append(
             "<tr>"
             f"<td>{_ago(r.get('finished_at') or r.get('started_at'), now)}</td>"
@@ -496,14 +514,41 @@ def _run_rows(runs: list[dict], slug: str, now: float) -> str:
             f"<td>{_e(r.get('reason'))}</td>"
             f"<td>{_e(r.get('exit_code'))}</td>"
             f"<td>{_commit_cell(r)}</td>"
-            f'<td><button hx-get="/-/ui/run/{rid}/output" hx-target="#out-{rid}" '
-            'hx-swap="innerHTML">Output</button> '
+            f"<td>{out_cell} "
             f'<button hx-delete="/-/ui/schedule/{s}/run/{rid}" hx-target="#detail" '
             'hx-swap="outerHTML" hx-confirm="Lauf-Record löschen?">Löschen</button></td>'
             "</tr>"
-            f'<tr><td colspan="6"><div id="out-{rid}"></div></td></tr>'
+            f'<tr><td colspan="6"><div id="out-{rid}">{out_html}</div></td></tr>'
         )
     return "".join(rows)
+
+
+def _live_panel(job: dict | None, now: float, live_output: dict | None = None) -> str:
+    """Eigener Block für den **aktiven/anstehenden** Lauf, nahe am Header — getrennt
+    vom Journal (das erst beim Terminal-Übergang eine Zeile bekommt). So ist der
+    laufende Job sofort sichtbar (pending → running → …); wird er terminal,
+    verschwindet der Block und der echte Journal-Eintrag erscheint unten. Der
+    Live-Output wird **default expanded** mitgerendert (server-seitig, überlebt Poll)."""
+    if not job or job.get("status") in _TERMINAL_VIEW:
+        return ""
+    st = _e(job.get("status"))
+    started = job.get("started_at")
+    bits = []
+    if started:
+        bits.append(f"seit {_ago(started, now)}")
+    if job.get("status") == "pending" and job.get("next_fire_at"):
+        bits.append(f"nächster Lauf {_until(job.get('next_fire_at'), now)}")
+    if job.get("reason"):
+        bits.append(_e(job.get("reason")))
+    tail = (" · " + " · ".join(bits)) if bits else ""
+    out = ""
+    if live_output and live_output.get("events"):
+        out = ('<div class="liveout">'
+               + output_block(live_output["events"], live_output.get("kind", "job"))
+               + "</div>")
+    return (f'<div class="live"><div class="live-head">'
+            f'<span class="st {st}">{st}</span>'
+            f'<span class="muted">aktiver Lauf{tail}</span></div>{out}</div>')
 
 
 #: §5.6-Verben, die der Controller als Buttons anbietet (Durchsetzung/Scope: 4.6).
@@ -525,31 +570,36 @@ def _action_bar(slug: str, job: dict | None) -> str:
 def schedule_detail_inner(
     schedule: dict | None, runs: list[dict], job: dict | None,
     slug: str = "", now: float | None = None,
+    *, top_output: dict | None = None, live_output: dict | None = None,
 ) -> str:
-    """Der austauschbare Detail-Kern (``#detail``): MD-Anker + Aktions-Leiste
-    (START/RESET/KILL) + Lauf-Liste (Output-Toggle + Löschen je Lauf)."""
+    """Der austauschbare Detail-Kern (``#detail``): Meta + Aktions-Leiste
+    (START/RESET/KILL) + Live-Block (aktiver Lauf, Output default expanded) +
+    Journal (jüngster Lauf-Output default expanded, ältere per Toggle)."""
     now = time.time() if now is None else now
     s = schedule or {}
     name = _e(s.get("slug") or slug)
     kind = _e(s.get("kind") or (runs[0].get("kind") if runs else ""))
     trigger = _e(s.get("trigger"))
-    cur = _e(s.get("last_status"))                      # aktueller Schedule-Zeilen-Zustand
     last_run = _e(runs[0]["status"]) if runs else "—"   # Ergebnis des letzten Laufs (Journal)
     nxt = _until(s.get("next_fire_at"), now)
     meta = (f"Typ <b>{kind}</b> · Trigger <code>{trigger}</code> · "
-            f"letzter Lauf <b>{last_run}</b> · Status <b>{cur}</b> · nächster Lauf {nxt}")
+            f"letzter Lauf <b>{last_run}</b> · nächster Lauf {nxt}")
     runs_html = (
         '<table><thead><tr><th>Zeit</th><th>Status</th><th>Grund</th>'
         '<th>exit</th><th>Commit</th><th>Aktion</th></tr></thead>'
-        f"<tbody>{_run_rows(runs, slug, now)}</tbody></table>"
+        f"<tbody>{_run_rows(runs, slug, now, top_output)}</tbody></table>"
         if runs else '<p class="out-empty">— noch keine Läufe —</p>'
     )
+    # #detail self-pollt (2s, FOLLOW-gated) → Live-Block wechselt pending→running→…
+    attrs = (f'id="detail" hx-get="/-/ui/schedule/{_e(slug)}/detail" '
+             f'hx-trigger="{_POLL}" hx-swap="outerHTML"')
     return (
-        '<div id="detail">'
+        f"<div {attrs}>"
         f"<h1>{name}</h1>"
         f'<div class="meta">{meta}</div>'
         f"{_action_bar(slug, job)}"
-        "<h2>Läufe</h2>"
+        f"{_live_panel(job, now, live_output)}"
+        "<h2>Journal</h2>"
         f"{runs_html}"
         "</div>"
     )
@@ -558,6 +608,7 @@ def schedule_detail_inner(
 def schedule_detail_page(
     schedule: dict | None, runs: list[dict], job: dict | None = None,
     slug: str = "", now: float | None = None,
+    *, top_output: dict | None = None, live_output: dict | None = None,
 ) -> str:
     """Schedule-zentrierte Detail-Sicht (§3 Ebene 3) als volle Seite."""
     name = _e((schedule or {}).get("slug") or slug)
@@ -566,9 +617,10 @@ def schedule_detail_page(
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>bibi · {name}</title>"
+        f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         '<a class="back" href="/-/">← zurück</a>'
-        f"{schedule_detail_inner(schedule, runs, job, slug, now)}"
+        f"{schedule_detail_inner(schedule, runs, job, slug, now, top_output=top_output, live_output=live_output)}"
         "</body></html>"
     )

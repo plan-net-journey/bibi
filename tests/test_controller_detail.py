@@ -166,7 +166,8 @@ def test_schedule_detail_route(app_with):
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/html")
         assert "boom" in r.text and "error" in r.text
-        assert 'hx-get="/-/ui/run/7/output"' in r.text
+        # jüngster Lauf: Output inline (default expanded), kein Toggle-Button mehr
+        assert "Output ↓" in r.text
 
 
 def test_run_output_route_renders(app_with):
@@ -209,12 +210,54 @@ def test_run_delete_route(app_with):
         assert 'id="detail"' in r.text
 
 
-def test_detail_shows_last_run_distinct_from_schedule_status():
-    # „letzter Lauf" = Ergebnis des letzten Laufs (Journal), getrennt vom Zeilen-Status.
+def test_detail_shows_last_run_in_meta_and_live_state_in_panel():
+    # „letzter Lauf" (Journal) in der Meta; der aktuelle/aktive Zustand im Live-Block.
     s = {"slug": "witz", "kind": "claude", "trigger": "*/3 * * * *",
          "last_status": "pending", "next_fire_at": None}
     runs = [{"id": 9, "slug": "witz", "status": "error", "exit_code": 1,
              "started_at": 1.0, "finished_at": 2.0, "kind": "claude"}]
-    html = render.schedule_detail_inner(s, runs, None, slug="witz", now=10.0)
-    assert "letzter Lauf <b>error</b>" in html
-    assert "Status <b>pending</b>" in html
+    job = {"id": "j1", "slug": "witz", "status": "pending", "next_fire_at": None}
+    html = render.schedule_detail_inner(s, runs, job, slug="witz", now=10.0)
+    assert "letzter Lauf <b>error</b>" in html          # Journal-Historie in Meta
+    assert 'class="live"' in html and "aktiver Lauf" in html  # Live-Block
+    assert '<h2>Journal</h2>' in html                    # Journal-Liste bleibt unten
+
+
+def test_detail_live_panel_for_running_job():
+    s = {"slug": "a", "kind": "job", "trigger": "now"}
+    job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0}
+    html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
+    assert 'class="live"' in html and 'class="st running">running' in html
+    assert "noch keine Läufe" in html                    # Journal noch leer
+
+
+def test_detail_no_live_panel_when_terminal():
+    s = {"slug": "a", "kind": "job", "trigger": "now"}
+    job = {"id": "j", "slug": "a", "status": "complete", "finished_at": 2.0}
+    html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
+    assert 'class="live"' not in html                    # terminal → kein Live-Block
+
+
+def test_detail_self_polls_under_follow():
+    html = render.schedule_detail_inner({"slug": "a"}, [], None, slug="a", now=1.0)
+    assert 'hx-get="/-/ui/schedule/a/detail"' in html
+    assert "every 2s [window.bibiFollow]" in html
+
+
+def test_live_panel_shows_output_expanded():
+    job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0}
+    live = {"kind": "job", "events": [{"s": "out", "line": "lebt"}]}
+    html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0,
+                                        live_output=live)
+    assert 'class="liveout"' in html and "lebt" in html   # Live-Output inline
+
+
+def test_top_run_output_inline_older_keep_toggle():
+    runs = [{"id": 2, "status": "complete", "kind": "claude", "finished_at": 9.0},
+            {"id": 1, "status": "complete", "kind": "claude", "finished_at": 5.0}]
+    top = {"kind": "claude", "events": [{"s": "out", "line": "neuester"}]}
+    html = render.schedule_detail_inner({"slug": "a"}, runs, None, slug="a",
+                                        now=10.0, top_output=top)
+    assert "neuester" in html                             # jüngster: inline expanded
+    assert 'hx-get="/-/ui/run/1/output"' in html          # älterer: Toggle bleibt
+    assert 'hx-get="/-/ui/run/2/output"' not in html      # jüngster: kein Toggle

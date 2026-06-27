@@ -107,7 +107,7 @@ def test_schedules_fragment_self_polls_under_follow():
     frag = render.schedules_fragment([_sched("a")], now=1.0)
     assert 'id="schedules"' in frag
     assert 'hx-get="/-/ui/schedules"' in frag
-    assert 'every 5s [window.bibiFollow]' in frag
+    assert 'every 2s [window.bibiFollow]' in frag
 
 
 def test_dashboard_has_all_handles():

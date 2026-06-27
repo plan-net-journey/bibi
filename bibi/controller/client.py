@@ -46,6 +46,10 @@ class ControllerClient:
     def run_output(self, journal_id: int) -> dict:
         return self._get(f"/-/journal/{journal_id}/output") or {}
 
+    def job_output(self, job_id: str) -> dict:
+        # Live-Output eines laufenden Jobs (getypte Events) — /-/job/{id}/output.
+        return self._get(f"/-/job/{job_id}/output") or {}
+
     def job_action(self, job_id: str, verb: str) -> dict:
         # verb ∈ {start, reset, kill} — wirkt auf den Live-Job (§5.6).
         return self._request("POST", f"/-/job/{job_id}/{verb}") or {}

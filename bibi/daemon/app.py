@@ -255,6 +255,19 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
             raw = ""
         return Response(content=raw, media_type="application/x-ndjson")
 
+    @app.get("/-/job/{id}/output", tags=["job"])
+    def job_output(id: str):  # noqa: A002
+        # Getypte Events des **laufenden** Jobs (Analogon zu /-/journal/{jid}/output,
+        # aber per Job-id) — für die Live-Output-Anzeige im Controller (FE).
+        path = worker.output_path(id)
+        events = output.read_events(path) if path.exists() else []
+        conn = job_db.connect(worker.db_path)
+        try:
+            job = job_db.get_job(conn, id)
+        finally:
+            conn.close()
+        return {"events": events, "kind": (job or {}).get("kind", "job")}
+
     @app.get("/-/job/{id}/out", tags=["job"])
     def job_out(id: str, from_: int = Query(0, alias="from")):  # noqa: A002
         return _sse(id, "out", from_)

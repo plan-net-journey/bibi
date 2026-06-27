@@ -77,6 +77,21 @@ def test_out_filters_stream(client):
     assert "hallo" in r.text and "warnung" not in r.text
 
 
+def test_job_output_returns_typed_events_and_kind(client):
+    jid = _seed_complete([("out", "ein witz"), ("err", "hm")])
+    r = client.get(f"/-/job/{jid}/output")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["kind"] == "job"
+    assert [e["line"] for e in data["events"]] == ["ein witz", "hm"]
+
+
+def test_job_output_empty_for_unknown(client):
+    r = client.get("/-/job/deadbeef/output")
+    assert r.status_code == 200
+    assert r.json() == {"events": [], "kind": "job"}
+
+
 def test_err_filters_stream(client):
     jid = _seed_complete([("out", "hallo"), ("err", "warnung")])
     r = client.get(f"/-/job/{jid}/err")

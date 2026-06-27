@@ -95,6 +95,8 @@ def add_controller_routes(
     def logs_page():
         return HTMLResponse(render.log_page())
 
+    _TERMINAL = {"complete", "error", "inactive", "zombie", "killed"}
+
     def _detail_data(slug: str):
         try:
             schedule = next((s for s in client.schedules()
@@ -105,10 +107,35 @@ def add_controller_routes(
             schedule, runs, job = None, [], None
         return schedule, runs, job
 
+    def _detail_outputs(runs: list, job: dict | None):
+        # Output **default expanded** für den jüngsten Lauf + (falls aktiv) den
+        # Live-Job. Bewusst nur diese ein/zwei — sonst N Fetches je 2s-Poll.
+        top_output = live_output = None
+        try:
+            if runs and runs[0].get("id") is not None:
+                top_output = client.run_output(runs[0]["id"])
+            if job and job.get("id") and job.get("status") not in _TERMINAL:
+                live_output = client.job_output(job["id"])
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        return top_output, live_output
+
     @app.get("/-/ui/schedule/{slug}", include_in_schema=False)
     def schedule_detail(slug: str):
         schedule, runs, job = _detail_data(slug)
-        return HTMLResponse(render.schedule_detail_page(schedule, runs, job, slug=slug))
+        top_output, live_output = _detail_outputs(runs, job)
+        return HTMLResponse(render.schedule_detail_page(
+            schedule, runs, job, slug=slug,
+            top_output=top_output, live_output=live_output))
+
+    @app.get("/-/ui/schedule/{slug}/detail", include_in_schema=False)
+    def schedule_detail_fragment(slug: str):
+        # Self-Poll-Ziel von #detail: Live-Block aktualisiert pending→running→…
+        schedule, runs, job = _detail_data(slug)
+        top_output, live_output = _detail_outputs(runs, job)
+        return HTMLResponse(render.schedule_detail_inner(
+            schedule, runs, job, slug=slug,
+            top_output=top_output, live_output=live_output))
 
     @app.get("/-/ui/run/{jid}/output", include_in_schema=False)
     def run_output(jid: int):
