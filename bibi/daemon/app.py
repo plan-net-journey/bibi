@@ -125,6 +125,8 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
     @app.post("/-/scheduler/next", response_model=JobReservation, tags=["scheduler"],
               dependencies=[Depends(_auth)])
     def scheduler_next(req: NextRequest | None = None):
+        if state.get_maintenance():
+            return Response(status_code=204)  # Wartungsmodus: nichts ausgeben
         conn = job_db.connect()
         try:
             res = job_db.reserve_next(conn, worker=req.worker if req else None)
@@ -446,11 +448,15 @@ def create_app(
     @app.post("/-/maintenance")
     def maintenance_on():
         state.set_maintenance(True)
+        activity.emit(log, logging.WARNING, "maintenance.on",
+                      "Wartungsmodus AN — Job-Dispatch pausiert", role="daemon")
         return {"maintenance": True}
 
     @app.delete("/-/maintenance")
     def maintenance_off():
         state.set_maintenance(False)
+        activity.emit(log, logging.INFO, "maintenance.off",
+                      "Wartungsmodus aus — Job-Dispatch wieder aktiv", role="daemon")
         return {"maintenance": False}
 
     @app.get("/-/log/stream", tags=["daemon"])

@@ -101,6 +101,23 @@ def test_tick_empty_returns_false(gitrepo: Path):
     assert _worker(gitrepo).tick_once() is False
 
 
+def test_tick_skips_during_maintenance(gitrepo: Path, monkeypatch):
+    # Wartungsmodus muss respektiert werden: kein Dispatch, Job bleibt pending.
+    _seed(gitrepo, "run1/README.md", '---\nschedule: now\njob: "echo x"\n---\n')
+    monkeypatch.setattr("bibi.state.get_maintenance", lambda: True)
+    w = _worker(gitrepo)
+    assert w.tick_once() is False
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    try:
+        assert conn.execute(
+            "SELECT status FROM jobs WHERE slug='run1'").fetchone()["status"] == "pending"
+    finally:
+        conn.close()
+    # Wartung aus → wieder Dispatch
+    monkeypatch.setattr("bibi.state.get_maintenance", lambda: False)
+    assert w.tick_once() is True
+
+
 def test_wall_time_kills_job(gitrepo: Path):
     jid = _seed(gitrepo, "slow/README.md",
                 '---\nschedule: now\njob: "sleep 30"\nwall_time: 1\n---\n')

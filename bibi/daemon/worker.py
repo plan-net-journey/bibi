@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-from bibi import config, repo
+from bibi import config, repo, state
 from bibi.daemon import activity, job_db, worktree
 from bibi.schedule import backoff, discovery
 from bibi.schedule.lifecycle import TERMINAL
@@ -304,6 +304,7 @@ class Worker:
         self._task: asyncio.Task | None = None
         self._hb_task: asyncio.Task | None = None
         self._running = False
+        self._maint_active = False  # Wartungs-Übergang nur einmal loggen (kein Tick-Spam)
 
     def _roots(self) -> tuple[Path, Path]:
         root = self.repo_root or repo.root()
@@ -321,7 +322,21 @@ class Worker:
             self._procs[job_id] = proc
 
     def tick_once(self) -> bool:
-        """Einen Job über den Client reservieren + ausführen. ``False`` = nichts zu tun."""
+        """Einen Job über den Client reservieren + ausführen. ``False`` = nichts zu tun.
+
+        Wartungsmodus (§ daemon-weit): pausiert das Reservieren neuer Jobs. Der
+        Übergang wird **einmal** geloggt (nicht je Tick → kein Spam)."""
+        if state.get_maintenance():
+            if not self._maint_active:
+                self._maint_active = True
+                activity.emit(log, logging.INFO, "worker.maintenance",
+                              "Wartungsmodus aktiv — keine neuen Jobs reserviert",
+                              role="worker")
+            return False
+        if self._maint_active:
+            self._maint_active = False
+            activity.emit(log, logging.INFO, "worker.resumed",
+                          "Wartungsmodus beendet — Dispatch wieder aktiv", role="worker")
         res = self.client.next(worker=self.worker_name, host=self.host)
         if res is None:
             return False

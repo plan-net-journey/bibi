@@ -90,6 +90,18 @@ def test_scheduler_next_empty_is_204(sched):
     assert client.post("/-/scheduler/next").status_code == 204
 
 
+def test_scheduler_next_paused_in_maintenance(sched, monkeypatch):
+    # Wartungsmodus pausiert auch den Remote-Dispatch (Route gibt 204).
+    client, root = sched
+    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    client.post("/-/rescan")
+    monkeypatch.setattr("bibi.state.get_maintenance", lambda: True)
+    assert client.post("/-/scheduler/next").status_code == 204
+    # ohne Wartung wird derselbe Job reserviert
+    monkeypatch.setattr("bibi.state.get_maintenance", lambda: False)
+    assert client.post("/-/scheduler/next").json()["slug"] == "a"
+
+
 def test_scheduler_status_running_to_complete(sched):
     client, root = sched
     _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
