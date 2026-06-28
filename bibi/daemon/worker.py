@@ -77,7 +77,10 @@ def _monitored_wait(
 
 def _exec_config() -> dict[str, str]:
     """Container-Exec-Env aus Prozess-Env > Knoten-Config (an den Wrapper gereicht).
-    Leer/`host` ⇒ Host-Modus. Inkl. ANTHROPIC_API_KEY für claude-im-Container (D5)."""
+    Leer/`host` ⇒ Host-Modus. Inkl. ANTHROPIC_API_KEY für claude-im-Container (D5).
+    Alle Einträge aus ~/.config/bibi/env mit Prefix ``BIBI_JOB_ENV_`` werden
+    ohne Prefix weitergereicht — damit können beliebige Credentials ohne
+    Engine-Änderung in Jobs verfügbar gemacht werden."""
     cfg = config.read_env()
     out: dict[str, str] = {}
     for key in ("BIBI_EXEC_MODE", "BIBI_JOB_IMAGE", "BIBI_DOCKER_BIN",
@@ -85,6 +88,11 @@ def _exec_config() -> dict[str, str]:
         val = os.environ.get(key) or cfg.get(key)
         if val:
             out[key] = val
+    # Dynamische Job-Env-Vars: BIBI_JOB_ENV_FOO → FOO im Container
+    prefix = "BIBI_JOB_ENV_"
+    for raw_key, val in {**cfg, **os.environ}.items():
+        if raw_key.startswith(prefix) and val:
+            out[raw_key[len(prefix):]] = val
     return out
 
 

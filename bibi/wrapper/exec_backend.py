@@ -23,9 +23,12 @@ _DOCKER_CANDIDATES = (
     "/Applications/Docker.app/Contents/Resources/bin/docker",
 )
 
-#: Env-Variablen, die in den Container durchgereicht werden (claude-Auth u. ä.).
-#: ``CLAUDE_CODE_OAUTH_TOKEN`` = Abo-Auth (claude-code), ``ANTHROPIC_API_KEY`` = API-Auth.
-_CONTAINER_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+#: Statische Env-Variablen, die in den Container durchgereicht werden.
+#: Dynamische Job-Credentials kommen via ``BIBI_JOB_ENV_*``-Prefix in worker._exec_config.
+_CONTAINER_ENV = (
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+)
 
 DEFAULT_IMAGE = "bibi-base:dev"
 WORKSPACE = "/workspace"
@@ -74,9 +77,17 @@ def build_exec(child_argv: list[str], env: dict[str, str]) -> ExecSpec:
     name = container_name(env.get("BIBI_JOB_ID", "job"))
     argv = [docker_bin, "run", "--rm", "--name", name,
             "-v", f"{worktree}:{WORKSPACE}", "-w", WORKSPACE]
-    for key in _CONTAINER_ENV:
+    # Statische Liste + alle dynamisch per BIBI_JOB_ENV_* hinzugefügten Keys.
+    # Jeder Key in env, der nicht mit BIBI_ beginnt und nicht PATH/HOME ist,
+    # wurde von worker._exec_config aus der Knoten-Config entfaltet und soll rein.
+    _INTERNAL = frozenset({"PATH", "HOME", "USER", "SHELL", "TMPDIR"})
+    pass_keys = set(_CONTAINER_ENV)
+    for key in env:
+        if not key.startswith("BIBI_") and key not in _INTERNAL:
+            pass_keys.add(key)
+    for key in sorted(pass_keys):
         if env.get(key):
-            argv += ["-e", key]   # ohne =Wert ⇒ Host-Wert wird durchgereicht
+            argv += ["-e", key]   # ohne =Wert ⇒ Host-Wert (run_env) wird verwendet
     argv += [image, *child_argv]
 
     # PATH um das docker-bin-Dir ergänzen, sonst findet docker den Cred-Helper

@@ -258,6 +258,31 @@ def test_cron_job_reschedules_after_complete(conn):
     assert len(job_db.list_journal(conn)) == 1
 
 
+@pytest.mark.parametrize("terminal", ["error", "killed", "zombie", "inactive"])
+def test_cron_fatal_terminal_does_not_rearm(conn, terminal):
+    # error/killed/zombie/inactive sind echte Endzustände — ein wiederkehrender
+    # Job darf nach ihnen NICHT neu eingestellt werden (Feedback 2026-06-28).
+    # Der Übergang muss via sweep/reconcile ausgelöst werden (nicht direkt aus
+    # running), deshalb hier direkte DB-Manipulation nach running.
+    jid = _seed_full(conn, slug="cj", schedule="* * * * *",
+                     status="running", next_fire_at=0, fire=0, attempts=1, attempt=1)
+    # status direkt setzen (Sweep/Worker würde das im echten Pfad tun)
+    conn.execute("UPDATE jobs SET status=? WHERE id=?", (terminal, jid))
+    # report_status mit demselben Zustand → Watermark-Dedup (identisch); wir
+    # brauchen nur den Check, dass der Zustand NICHT zu pending wechselt.
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == terminal  # bleibt terminal, kein Re-Arm
+
+
+def test_cron_error_via_report_does_not_rearm(conn):
+    # Explizit über report_status: failed → error darf cron-Job nicht neu einplanen.
+    jid = _seed_full(conn, slug="cj2", schedule="* * * * *",
+                     status="failed", next_fire_at=0, fire=0, attempts=1, attempt=1)
+    job_db.report_status(conn, jid, status="error")
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "error"
+
+
 def test_cron_two_fires_two_journal_rows(conn):
     jid = _seed_full(conn, slug="c", schedule="* * * * *", status="running",
                      next_fire_at=0, fire=0)

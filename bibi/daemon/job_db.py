@@ -463,8 +463,10 @@ def report_status(
         _write_journal(conn, job_id, now, commit_sha=commit_sha, branch=branch)
         # … und für wiederkehrende (cron-)Schedules sofort neu einplanen (§5.2):
         # nächster Tick als pending, frischer Zähler, fire++ (eindeutige run_id).
+        # Nur bei `complete` — error/killed/inactive/zombie sind echte Endzustände
+        # und dürfen nicht still neu eingestellt werden.
         sched = conn.execute("SELECT schedule FROM jobs WHERE id=?", (job_id,)).fetchone()
-        if sched is not None and is_recurring(sched["schedule"]):
+        if sched is not None and is_recurring(sched["schedule"]) and target is Status.COMPLETE:
             nf = _next_cron(sched["schedule"], now)
             conn.execute(
                 "UPDATE jobs SET status='pending', next_fire_at=:nf, attempt=0, "
