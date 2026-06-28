@@ -386,6 +386,7 @@ class Worker:
         worker_name: str | None = None, autopoll: bool = True,
         client=None, connect: bool = False, scheduler_url: str | None = None,
         secret: str | None = None, heartbeat_interval: float = 15.0,
+        max_concurrent: int = 4,
     ) -> None:
         self.repo_root = repo_root
         self.work_dir = work_dir
@@ -398,6 +399,7 @@ class Worker:
         self.autopoll = autopoll
         self.connect = connect
         self.heartbeat_interval = heartbeat_interval
+        self.max_concurrent = max_concurrent
         # Scheduler-Client: lokal (Single-Node) oder remote (--connect, §3.6).
         if client is not None:
             self.client = client
@@ -457,22 +459,30 @@ class Worker:
             self._maint_active = False
             activity.emit(log, logging.INFO, "worker.resumed",
                           "Wartungsmodus beendet — Dispatch wieder aktiv", role="worker")
+        if len(self._procs) >= self.max_concurrent:
+            return False  # Slot voll — nächster Tick versucht es erneut
         res = self.client.next(worker=self.worker_name, host=self.host)
         if res is None:
             return False
         root, work = self._roots()
         activity.emit(log, logging.INFO, "worker.pickup", role="worker",
                       slug=res.get("slug"), run_id=res.get("id"), kind=res.get("kind"))
-        try:
-            execute_reservation(
-                res, repo_root=root, work_dir=work, client=self.client,
-                worker_name=self.worker_name, host=self.host, register=self._register,
-            )  # terminales Outcome loggt execute_reservation selbst (worker.report)
-        except Exception:  # ein kaputter Run darf den Loop nicht killen (§2.7)
-            activity.emit(log, logging.ERROR, "worker.error",
-                          "Job-Ausführung fehlgeschlagen", role="worker",
-                          slug=res.get("slug"), run_id=res.get("id"))
-            log.exception("Job-Ausführung fehlgeschlagen: %s", res.get("id"))
+
+        def _run() -> None:
+            try:
+                execute_reservation(
+                    res, repo_root=root, work_dir=work, client=self.client,
+                    worker_name=self.worker_name, host=self.host, register=self._register,
+                )
+            except Exception:
+                activity.emit(log, logging.ERROR, "worker.error",
+                              "Job-Ausführung fehlgeschlagen", role="worker",
+                              slug=res.get("slug"), run_id=res.get("id"))
+                log.exception("Job-Ausführung fehlgeschlagen: %s", res.get("id"))
+
+        import threading as _threading
+        _threading.Thread(target=_run, daemon=True,
+                          name=f"job-{res.get('id', '?')}").start()
         return True
 
     def _git_status(self) -> str:
