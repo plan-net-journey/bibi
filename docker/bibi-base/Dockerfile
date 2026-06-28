@@ -20,19 +20,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install -g @anthropic-ai/claude-code \
     && claude --version
 
-# Non-root User: Claude Code läuft besser ohne root-Warnung; UID 1000 passt
-# zu den meisten Host-Usern sodass gemountete Worktrees schreibbar bleiben.
-RUN useradd -m -u 1000 -s /bin/bash bibi
-
+# Non-root User: node:20-slim hat bereits uid 1000 als "node" — wir nutzen ihn.
+# Claude Code läuft besser ohne root-Warnung.
 # Trust-Dialog für /workspace vorab akzeptieren + volle Permissions (kein interaktives
 # Nachfragen im Container). settings.json aus dem Worktree wird sonst ignoriert weil
 # das Workspace-Trust fehlt.
-RUN mkdir -p /home/bibi/.claude && \
+RUN mkdir -p /home/node/.claude && \
     printf '{"projects":{"/workspace":{"hasTrustDialogAccepted":true}}}\n' \
-        > /home/bibi/.claude.json && \
+        > /home/node/.claude.json && \
     printf '{"permissions":{"allow":["Bash(*)","Read(*)","Write(*)","Edit(*)","WebFetch(*)","WebSearch(*)","mcp__*"],"deny":[]}}\n' \
-        > /home/bibi/.claude/settings.json && \
-    chown -R bibi:bibi /home/bibi/.claude /home/bibi/.claude.json
+        > /home/node/.claude/settings.json && \
+    chown -R node:node /home/node/.claude /home/node/.claude.json
 
-USER bibi
+USER node
 WORKDIR /workspace
