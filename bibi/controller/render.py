@@ -958,8 +958,10 @@ _LIVE_JS = """
       bound.add(box);
       const id = box.dataset.job, from = box.dataset.from || '0';
       const es = new EventSource('/-/job/'+encodeURIComponent(id)+'/stream?from='+from);
+      box._bibiEs = es;
       const atBottom = () => box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
       es.onmessage = (e) => {
+        if (window.bibiFollow === false) return;
         let o; try { o = JSON.parse(e.data); } catch(_) { return; }
         const stick = atBottom();
         if (box.childNodes.length) box.appendChild(document.createTextNode('\\n'));
@@ -979,6 +981,17 @@ _LIVE_JS = """
       es.onerror = () => es.close();
     });
   }
+  // EventSources schließen bevor HTMX das Element entfernt (verhindert Leak).
+  document.addEventListener('htmx:beforeCleanupElement', (ev) => {
+    const el = ev.detail && ev.detail.elt ? ev.detail.elt : ev.target;
+    if (!el || !el.querySelectorAll) return;
+    el.querySelectorAll('.liveterm[data-job]').forEach(box => {
+      if (box._bibiEs) { box._bibiEs.close(); box._bibiEs = null; }
+    });
+    if (el.classList && el.classList.contains('liveterm') && el._bibiEs) {
+      el._bibiEs.close(); el._bibiEs = null;
+    }
+  });
   document.addEventListener('DOMContentLoaded', attach);
   document.addEventListener('htmx:afterSwap', attach);
 })();
@@ -1132,9 +1145,12 @@ def schedule_detail_inner(
         f"<tbody>{_run_rows(runs, slug, now)}</tbody></table>"
         if runs else '<p class="out-empty">— noch keine Läufe —</p>'
     )
-    # #detail self-pollt (2s, FOLLOW-gated) → Live-Block wechselt pending→running→…
+    # #detail self-pollt: awaiting immer (unbedingt), sonst FOLLOW-gated.
+    # Wenn awaiting: HITL-Formular darf nie durch bibiFollow=false einfrieren.
+    _is_awaiting = job.get("status") == "awaiting" if job else False
+    _poll = "every 2s" if _is_awaiting else _POLL
     attrs = (f'id="detail" hx-get="/-/ui/schedule/{_e(slug)}/detail" '
-             f'hx-trigger="{_POLL}" hx-swap="outerHTML"')
+             f'hx-trigger="{_poll}" hx-swap="outerHTML"')
     return (
         f"<div {attrs}>"
         f"<h1>{name}</h1>"
