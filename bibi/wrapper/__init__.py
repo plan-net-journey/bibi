@@ -282,12 +282,14 @@ def run_app(env: dict[str, str]) -> int:
 
     from bibi.wrapper.server import WrapperState, start_server
     scheduler_url = env.get("BIBI_SCHEDULER_URL") or None
+    scheduler_db_path = env.get("BIBI_SCHEDULER_DB_PATH") or None
     app_port_str = env.get("BIBI_APP_PORT")
     app_port = int(app_port_str) if app_port_str else None
     hitl_str = env.get("BIBI_HITL_TIMEOUT")
     hitl_timeout = int(hitl_str) if hitl_str else None
     wrapper_url = env.get("BIBI_WRAPPER_EXTERNAL_URL") or f"http://127.0.0.1:{wrapper_port}"
     state = WrapperState(job_id=job_id, scheduler_url=scheduler_url,
+                         scheduler_db_path=scheduler_db_path,
                          app_port=app_port, hitl_timeout=hitl_timeout,
                          wrapper_url=wrapper_url)
     server = start_server(state, port=wrapper_port)

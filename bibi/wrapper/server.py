@@ -27,11 +27,13 @@ class WrapperState:
 
     def __init__(self, job_id: str, *,
                  scheduler_url: str | None = None,
+                 scheduler_db_path: str | None = None,
                  app_port: int | None = None,
                  hitl_timeout: int | None = None,
                  wrapper_url: str | None = None) -> None:
         self.job_id = job_id
         self.scheduler_url = scheduler_url
+        self.scheduler_db_path = scheduler_db_path
         self.app_port = app_port
         self.hitl_timeout = hitl_timeout
         self.wrapper_url = wrapper_url
@@ -82,10 +84,9 @@ class WrapperState:
 
     def report(self, status: str, *, reason: str | None = None,
                exit_code: int | None = None, output_ref: str | None = None) -> None:
-        """Statuswechsel best-effort beim Scheduler melden (PLAN-9 §8 E2)."""
-        if not self.scheduler_url:
-            return
-        url = f"{self.scheduler_url.rstrip('/')}/-/scheduler/status/{self.job_id}"
+        """Statuswechsel best-effort beim Scheduler melden (PLAN-9 §8 E2).
+
+        Bevorzugt direkten SQLite-Zugriff (scheduler_db_path), sonst HTTP."""
         body: dict = {"status": status}
         if reason is not None:
             body["reason"] = reason
@@ -93,9 +94,30 @@ class WrapperState:
             body["exit_code"] = exit_code
         if output_ref is not None:
             body["output_ref"] = output_ref
-        # Bei awaiting: Wrapper-URL mitschicken → Daemon kann Demand-Proxy aufbauen.
         if status == "awaiting" and self.wrapper_url:
             body["wrapper_url"] = self.wrapper_url
+
+        if self.scheduler_db_path:
+            try:
+                from pathlib import Path as _Path
+                from bibi.daemon import job_db as _jdb
+                conn = _jdb.connect(_Path(self.scheduler_db_path))
+                try:
+                    _jdb.report_status(conn, self.job_id, **{
+                        k: v for k, v in body.items()
+                        if k in ("status", "reason", "exit_code", "output_ref",
+                                 "wrapper_url")
+                    })
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+            return
+
+        if not self.scheduler_url:
+            return
+        url = f"{self.scheduler_url.rstrip('/')}/-/scheduler/status/{self.job_id}"
         payload = json.dumps(body).encode()
         req = urllib.request.Request(
             url, data=payload,
@@ -106,7 +128,7 @@ class WrapperState:
             with urllib.request.urlopen(req, timeout=5.0):  # noqa: S310
                 pass
         except (urllib.error.URLError, OSError):
-            pass  # best-effort: Netzfehler nicht hochpropagieren
+            pass
 
 
 class AwaitingSignal(BaseModel):
