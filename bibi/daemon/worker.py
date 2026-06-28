@@ -182,6 +182,10 @@ def _run_wrapper(
             env["BIBI_APP_PORT"] = str(app_port)
         if app_prefix:
             env["BIBI_APP_PREFIX"] = app_prefix
+        # Wrapper → Scheduler: Statuswechsel (awaiting/running) melden (PLAN-9 §8 E2).
+        # Default: lokaler Daemon. Kann via BIBI_SCHEDULER_URL überschrieben werden.
+        if not env.get("BIBI_SCHEDULER_URL"):
+            env["BIBI_SCHEDULER_URL"] = "http://127.0.0.1:8769"
 
     # Container-Exec-Konfig an den Wrapper reichen (PLAN-8): BIBI_EXEC_MODE/IMAGE/
     # DOCKER_BIN + Auth-Token. Leer ⇒ Host-Modus (unverändert).

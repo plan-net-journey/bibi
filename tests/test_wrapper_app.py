@@ -1,4 +1,4 @@
-"""Wrapper: app-Typ, Wrapper-HTTP-Server, Traefik-Labels (PLAN-9 Slice 9.0)."""
+"""Wrapper: app-Typ, Wrapper-HTTP-Server, Traefik-Labels (PLAN-9 Slice 9.0/9.1)."""
 
 from __future__ import annotations
 
@@ -203,3 +203,162 @@ def test_run_app_complete(tmp_path, free_tcp_port):
     assert code == 0
     from bibi.wrapper.output import lines
     assert "app done" in lines(out_path)
+
+
+# ── Slice 9.1: /-/signal/* + GET /-/job/{id}/input ───────────────────────────
+
+
+def test_signal_awaiting_sets_state():
+    state = WrapperState(job_id="j1")
+    app = make_app(state)
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    r = client.post("/-/signal/awaiting", json={"prompt": "Weitermachen?", "choices": ["ja", "nein"]})
+    assert r.status_code == 200
+    assert state.status == "awaiting"
+    assert state.demand is not None
+    assert state.demand["prompt"] == "Weitermachen?"
+    assert state.demand["choices"] == ["ja", "nein"]
+    assert state.demand["mediated"] is False  # kein input_path → nicht mediated
+
+
+def test_signal_awaiting_with_input_path_is_mediated():
+    state = WrapperState(job_id="j2")
+    app = make_app(state)
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    r = client.post("/-/signal/awaiting", json={"prompt": "Auswahl", "input_path": "/input"})
+    assert r.status_code == 200
+    assert state.demand["mediated"] is True
+    assert state.demand["input_path"] == "/input"
+
+
+def test_signal_running_clears_demand():
+    state = WrapperState(job_id="j3")
+    app = make_app(state)
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    client.post("/-/signal/awaiting", json={"prompt": "Warte"})
+    assert state.status == "awaiting"
+    r = client.post("/-/signal/running")
+    assert r.status_code == 200
+    assert state.status == "running"
+    assert state.demand is None
+
+
+def test_get_input_returns_demand():
+    state = WrapperState(job_id="j4")
+    app = make_app(state)
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    client.post("/-/signal/awaiting", json={"prompt": "Frage", "choices": ["a", "b"]})
+    r = client.get("/-/job/j4/input")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["prompt"] == "Frage"
+    assert data["choices"] == ["a", "b"]
+    assert data["mediated"] is False
+
+
+def test_get_input_not_found_when_not_awaiting():
+    state = WrapperState(job_id="j5")
+    app = make_app(state)
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    r = client.get("/-/job/j5/input")
+    assert r.status_code == 404
+
+
+def test_get_input_wrong_job():
+    state = WrapperState(job_id="j6")
+    app = make_app(state)
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    client.post("/-/signal/awaiting", json={"prompt": "x"})
+    r = client.get("/-/job/other/input")
+    assert r.status_code == 404
+
+
+def test_signal_awaiting_calls_scheduler(free_tcp_port):
+    """POST /-/signal/awaiting meldet 'awaiting' an den Scheduler."""
+    import json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+
+    received: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            received.append({"path": self.path, "body": json.loads(body)})
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"result":"ok"}')
+
+        def log_message(self, *args):
+            pass  # still output unterdrücken
+
+    srv = HTTPServer(("127.0.0.1", free_tcp_port), Handler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        state = WrapperState(job_id="sched1", scheduler_url=f"http://127.0.0.1:{free_tcp_port}")
+        app = make_app(state)
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        client.post("/-/signal/awaiting", json={"prompt": "Warte"})
+        import time
+        deadline = time.monotonic() + 3.0
+        while not received and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert any(r["path"] == "/- /scheduler/status/sched1" or
+                   "scheduler/status/sched1" in r["path"] for r in received), received
+        assert received[0]["body"]["status"] == "awaiting"
+    finally:
+        srv.shutdown()
+
+
+def test_signal_running_calls_scheduler(free_tcp_port):
+    """POST /-/signal/running meldet 'running' an den Scheduler."""
+    import json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+
+    received: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            received.append({"path": self.path, "body": json.loads(body)})
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"result":"ok"}')
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", free_tcp_port), Handler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        state = WrapperState(job_id="sched2", scheduler_url=f"http://127.0.0.1:{free_tcp_port}")
+        app = make_app(state)
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        client.post("/-/signal/running")
+        import time
+        deadline = time.monotonic() + 3.0
+        while not received and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert any("scheduler/status/sched2" in r["path"] for r in received), received
+        assert received[0]["body"]["status"] == "running"
+    finally:
+        srv.shutdown()
+
+
+def test_wrapper_state_no_scheduler_url_no_crash():
+    """Ohne scheduler_url läuft report() ohne Fehler durch."""
+    state = WrapperState(job_id="j7")
+    state.report("awaiting")  # darf nicht werfen
