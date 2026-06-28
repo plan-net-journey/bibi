@@ -264,8 +264,9 @@ def schedule_list(schedules: list[dict], now: float | None = None) -> str:
     body = (_sched_table(active, now) if active
             else '<p class="out-empty">— keine aktiven Schedules —</p>')
     if archived:
-        body += (f'<details class="archive"><summary>Archiv ({len(archived)})'
-                 f"</summary>{_sched_table(archived, now)}</details>")
+        body += (f'<details id="sched-archive" class="archive" hx-preserve="true">'
+                 f'<summary>Archiv ({len(archived)})</summary>'
+                 f"{_sched_table(archived, now)}</details>")
     return head + body
 
 
