@@ -207,6 +207,7 @@ def parse_text(
     soul = fm["soul"].strip() if isinstance(fm.get("soul"), str) and fm["soul"].strip() else None
     session = fm["session"].strip() if isinstance(fm.get("session"), str) and fm["session"].strip() else None
     app_prefix = fm["app_prefix"].strip() if isinstance(fm.get("app_prefix"), str) and fm["app_prefix"].strip() else None
+    exec_mode = fm["exec_mode"].strip().lower() if isinstance(fm.get("exec_mode"), str) and fm["exec_mode"].strip() else None
     image = fm["image"].strip() if isinstance(fm.get("image"), str) and fm["image"].strip() else None
 
     slug, slug_explicit = derive_slug(path, fm)
@@ -218,7 +219,7 @@ def parse_text(
         attempts=attempts, backoff=backoff.lower(),
         silence_timeout=silence_timeout, wall_time=wall_time,
         defer_time=defer_time, defer_max=defer_max, hitl_timeout=hitl_timeout,
-        app_port=app_port, app_prefix=app_prefix, image=image,
+        app_port=app_port, app_prefix=app_prefix, exec_mode=exec_mode, image=image,
     )
     return ParseResult(
         schedule_ref=schedule_ref, spec=spec, slug_explicit=slug_explicit, mtime=mtime
