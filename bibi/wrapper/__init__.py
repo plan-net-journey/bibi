@@ -88,7 +88,9 @@ def run_app(env: dict[str, str]) -> int:
 
     from bibi.wrapper.server import WrapperState, start_server
     scheduler_url = env.get("BIBI_SCHEDULER_URL") or None
-    state = WrapperState(job_id=job_id, scheduler_url=scheduler_url)
+    app_port_str = env.get("BIBI_APP_PORT")
+    app_port = int(app_port_str) if app_port_str else None
+    state = WrapperState(job_id=job_id, scheduler_url=scheduler_url, app_port=app_port)
     server = start_server(state, port=wrapper_port)
 
     spec = exec_backend.build_exec(child_argv, env)

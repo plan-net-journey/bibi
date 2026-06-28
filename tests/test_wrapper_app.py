@@ -362,3 +362,149 @@ def test_wrapper_state_no_scheduler_url_no_crash():
     """Ohne scheduler_url läuft report() ohne Fehler durch."""
     state = WrapperState(job_id="j7")
     state.report("awaiting")  # darf nicht werfen
+
+
+# ── Slice 9.2: POST /-/job/{id}/input (Proxy-Modus) ──────────────────────────
+
+
+def _make_app_server(*, job_id: str, port: int,
+                     response_code: int = 200,
+                     response_body: bytes = b'{"ok":true}') -> tuple:
+    """Startet einen Mini-HTTP-Server, der als App-Stub fungiert.
+    Gibt (server, received_list) zurück."""
+    import json as _json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+
+    received: list[dict] = []
+    _code = response_code
+    _body = response_body
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            data = self.rfile.read(length)
+            received.append({"path": self.path, "body": _json.loads(data or b"null")})
+            self.send_response(_code)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(_body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", port), Handler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    return srv, received
+
+
+def test_proxy_input_transitions_to_running(free_tcp_port):
+    """FE POST → Wrapper → App 200 → state=running, Demand gelöscht."""
+    srv, received = _make_app_server(job_id="px1", port=free_tcp_port)
+    try:
+        state = WrapperState(job_id="px1", app_port=free_tcp_port)
+        state.demand = {"prompt": "Weitermachen?", "choices": ["ja"],
+                        "input_path": "/input", "mediated": True}
+        state.status = "awaiting"
+        app = make_app(state)
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.post("/-/job/px1/input", json={"answer": "ja"})
+        assert r.status_code == 200
+        assert state.status == "running"
+        assert state.demand is None
+        assert len(received) == 1
+        assert received[0]["path"] == "/input"
+        assert received[0]["body"]["answer"] == "ja"
+    finally:
+        srv.shutdown()
+
+
+def test_proxy_input_not_awaiting_returns_409():
+    state = WrapperState(job_id="px2", app_port=9999)
+    state.status = "running"
+    app = make_app(state)
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    r = client.post("/-/job/px2/input", json={"answer": "x"})
+    assert r.status_code == 409
+
+
+def test_proxy_input_not_mediated_returns_409():
+    state = WrapperState(job_id="px3", app_port=9999)
+    state.demand = {"prompt": "x", "choices": None, "input_path": None, "mediated": False}
+    state.status = "awaiting"
+    app = make_app(state)
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    r = client.post("/-/job/px3/input", json={"answer": "x"})
+    assert r.status_code == 409
+
+
+def test_proxy_input_wrong_job_returns_404():
+    state = WrapperState(job_id="px4", app_port=9999)
+    app = make_app(state)
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    r = client.post("/-/job/other/input", json={})
+    assert r.status_code == 404
+
+
+def test_proxy_input_app_error_propagates(free_tcp_port):
+    """App antwortet 422 → Wrapper gibt 422 weiter, state bleibt awaiting."""
+    srv, _ = _make_app_server(job_id="px5", port=free_tcp_port,
+                              response_code=422, response_body=b'{"detail":"invalid"}')
+    try:
+        state = WrapperState(job_id="px5", app_port=free_tcp_port)
+        state.demand = {"prompt": "x", "choices": None,
+                        "input_path": "/input", "mediated": True}
+        state.status = "awaiting"
+        app = make_app(state)
+        from fastapi.testclient import TestClient
+        client = TestClient(app, raise_server_exceptions=False)
+        r = client.post("/-/job/px5/input", json={"answer": "falsch"})
+        assert r.status_code == 422
+        assert state.status == "awaiting"  # kein Übergang bei Fehler
+        assert state.demand is not None
+    finally:
+        srv.shutdown()
+
+
+def test_proxy_input_no_app_port_returns_503():
+    state = WrapperState(job_id="px6")  # kein app_port
+    state.demand = {"prompt": "x", "choices": None,
+                    "input_path": "/input", "mediated": True}
+    state.status = "awaiting"
+    app = make_app(state)
+    from fastapi.testclient import TestClient
+    client = TestClient(app, raise_server_exceptions=False)
+    r = client.post("/-/job/px6/input", json={})
+    assert r.status_code == 503
+
+
+def test_run_app_passes_app_port_to_state(tmp_path, free_tcp_port):
+    """run_app liest BIBI_APP_PORT aus env und reicht es an WrapperState weiter."""
+    out_path = tmp_path / "output.jsonl"
+    app_port = free_tcp_port + 1  # anderer Port, nicht belegt nötig — nur Initialisierung prüfen
+    env = {
+        "BIBI_JOB_TYPE": "app",
+        "BIBI_JOB_ID": "appport1",
+        "BIBI_OUTPUT_PATH": str(out_path),
+        "BIBI_WORKTREE": str(tmp_path),
+        "BIBI_APP_ENTRYPOINT": "echo done",
+        "BIBI_WRAPPER_PORT": str(free_tcp_port),
+        "BIBI_APP_PORT": str(app_port),
+    }
+    captured_states: list = []
+    original_start = __import__("bibi.wrapper.server", fromlist=["start_server"]).start_server
+
+    def mock_start(state, *, port):
+        captured_states.append(state)
+        return original_start(state, port=port)
+
+    with patch("bibi.wrapper.server.start_server", side_effect=mock_start):
+        wrapper.run_app(env)
+
+    assert captured_states, "start_server wurde nicht aufgerufen"
+    assert captured_states[0].app_port == app_port

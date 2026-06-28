@@ -14,18 +14,22 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 
 class WrapperState:
     """In-memory-Zustand des Wrappers. Thread-safe (Lock)."""
 
-    def __init__(self, job_id: str, *, scheduler_url: str | None = None) -> None:
+    def __init__(self, job_id: str, *,
+                 scheduler_url: str | None = None,
+                 app_port: int | None = None) -> None:
         self.job_id = job_id
         self.scheduler_url = scheduler_url
+        self.app_port = app_port
         self._status = "running"
         self._demand: dict | None = None
         self._lock = threading.Lock()
@@ -123,6 +127,49 @@ def make_app(state: WrapperState) -> FastAPI:
         state.status = "running"
         state.report("running")
         return {"ok": True}
+
+    @app.post("/-/job/{job_id}/input")
+    def post_input(job_id: str, body: Any = Body(default=None)):
+        """FE schickt Antwort → Wrapper proxyt an App (Proxy-Modus, PLAN-9 §4.1 / Slice 9.2).
+
+        Nur wenn state = awaiting und mediated = True (input_path gesetzt).
+        App antwortet HTTP 200 → state = running, Demand gelöscht, Scheduler informiert.
+        """
+        if job_id != state.job_id:
+            raise HTTPException(status_code=404, detail="job not found")
+        if state.status != "awaiting":
+            raise HTTPException(status_code=409, detail="job not awaiting")
+        demand = state.demand
+        if demand is None or not demand.get("mediated"):
+            raise HTTPException(status_code=409, detail="not in proxy mode (no input_path)")
+        if not state.app_port:
+            raise HTTPException(status_code=503, detail="app_port not configured")
+
+        input_path = demand["input_path"]
+        url = f"http://localhost:{state.app_port}{input_path}"
+        payload = json.dumps(body).encode() if body is not None else b"{}"
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10.0) as resp:  # noqa: S310
+                status_code = resp.status
+                resp_body = resp.read()
+                content_type = resp.headers.get("Content-Type", "application/json")
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code,
+                                detail=f"app returned {e.code}")
+        except (urllib.error.URLError, OSError) as exc:
+            raise HTTPException(status_code=502,
+                                detail=f"app unreachable: {exc}")
+
+        state.demand = None
+        state.status = "running"
+        state.report("running")
+        return Response(content=resp_body, status_code=status_code,
+                        media_type=content_type)
 
     return app
 
