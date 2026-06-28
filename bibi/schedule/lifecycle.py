@@ -26,7 +26,7 @@ class Event(StrEnum):
     FAIL = "fail"                # running → failed
     DEFER = "defer"              # running → deferred
     AWAIT_INPUT = "await_input"  # running → awaiting   (nur app)
-    KILL = "kill"                # running → killed
+    KILL = "kill"                # running/pending → killed
     SILENCE = "silence"          # running → zombie     (nur job/claude)
     RETRY = "retry"              # failed  → running
     EXHAUST = "exhaust"          # failed  → error
@@ -66,6 +66,7 @@ OWNER: dict[Status, Owner] = {
 
 _TRANSITIONS: dict[tuple[Status, Event], Status] = {
     (Status.PENDING, Event.DISPATCH): Status.RUNNING,
+    (Status.PENDING, Event.KILL): Status.KILLED,      # Stornierung vor Ausführung
     (Status.RUNNING, Event.COMPLETE): Status.COMPLETE,
     (Status.RUNNING, Event.FAIL): Status.FAILED,
     (Status.RUNNING, Event.DEFER): Status.DEFERRED,
