@@ -284,7 +284,12 @@ def execute_reservation(
     attempt = reservation.get("attempt") or 0
     attempts = reservation.get("attempts") or 1
     # Lokaler DB-Pfad (LocalScheduler): Wrapper kann direkt schreiben statt HTTP.
-    scheduler_db_path: str | None = str(client.db_path) if getattr(client, "db_path", None) else None
+    # client.db_path kann None sein (kein expliziter Pfad) → Default auflösen.
+    from bibi.daemon.scheduler_client import LocalScheduler as _LocalScheduler
+    if isinstance(client, _LocalScheduler):
+        scheduler_db_path: str | None = str(job_db.db_path(client.db_path))
+    else:
+        scheduler_db_path = str(client.db_path) if getattr(client, "db_path", None) else None
     try:
         kind = reservation["kind"]
         silence_timeout = None if kind == "app" else reservation.get("silence_timeout")
