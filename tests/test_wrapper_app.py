@@ -693,3 +693,102 @@ def test_worker_sets_bibi_hitl_timeout(tmp_path):
 
     assert captured_env, "Popen wurde nicht aufgerufen"
     assert captured_env[0].get("BIBI_HITL_TIMEOUT") == "3600", captured_env[0]
+
+
+# ── Slice 9.4: wrapper_url in WrapperState + report() ──────────────────────
+
+
+def test_wrapper_state_stores_wrapper_url():
+    """WrapperState speichert wrapper_url für den Daemon-Relay."""
+    s = WrapperState(job_id="w1", wrapper_url="http://localhost:8080")
+    assert s.wrapper_url == "http://localhost:8080"
+
+
+def test_wrapper_state_default_wrapper_url_is_none():
+    s = WrapperState(job_id="w2")
+    assert s.wrapper_url is None
+
+
+def test_signal_awaiting_includes_wrapper_url_in_report(free_tcp_port):
+    """POST /-/signal/awaiting schickt wrapper_url an den Scheduler (Slice 9.4)."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    received: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            received.append(json.loads(body))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{}')
+
+        def log_message(self, *_):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", free_tcp_port), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        state = WrapperState(
+            job_id="wu1",
+            scheduler_url=f"http://127.0.0.1:{free_tcp_port}",
+            wrapper_url="http://127.0.0.1:8080",
+        )
+        app = make_app(state)
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        client.post("/-/signal/awaiting", json={"prompt": "Test?"})
+        import time
+        deadline = time.monotonic() + 3.0
+        while not received and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert received, "Scheduler wurde nicht aufgerufen"
+        assert received[0].get("status") == "awaiting"
+        assert received[0].get("wrapper_url") == "http://127.0.0.1:8080"
+    finally:
+        srv.shutdown()
+
+
+def test_signal_running_does_not_include_wrapper_url(free_tcp_port):
+    """POST /-/signal/running sendet keine wrapper_url (nur awaiting braucht sie)."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    received: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            received.append(json.loads(body))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{}')
+
+        def log_message(self, *_):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", free_tcp_port), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        state = WrapperState(
+            job_id="wu2",
+            scheduler_url=f"http://127.0.0.1:{free_tcp_port}",
+            wrapper_url="http://127.0.0.1:8080",
+        )
+        app = make_app(state)
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        client.post("/-/signal/running")
+        import time
+        deadline = time.monotonic() + 3.0
+        while not received and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert received, "Scheduler wurde nicht aufgerufen"
+        assert "wrapper_url" not in received[0]
+    finally:
+        srv.shutdown()

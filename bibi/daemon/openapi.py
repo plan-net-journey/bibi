@@ -101,6 +101,7 @@ class StatusReport(BaseModel):
     next_fire_at: float | None = None  # Backoff-Zeitpunkt
     commit_sha: str | None = None      # Worktree-Commit des Laufs (v6, F7-Link)
     branch: str | None = None          # agent/<slug> (v6)
+    wrapper_url: str | None = None     # Wrapper-HTTP-URL (app-Typ, Slice 9.4 Relay)
 
 
 class KillRequest(BaseModel):

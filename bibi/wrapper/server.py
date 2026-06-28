@@ -28,11 +28,13 @@ class WrapperState:
     def __init__(self, job_id: str, *,
                  scheduler_url: str | None = None,
                  app_port: int | None = None,
-                 hitl_timeout: int | None = None) -> None:
+                 hitl_timeout: int | None = None,
+                 wrapper_url: str | None = None) -> None:
         self.job_id = job_id
         self.scheduler_url = scheduler_url
         self.app_port = app_port
         self.hitl_timeout = hitl_timeout
+        self.wrapper_url = wrapper_url
         self._status = "running"
         self._demand: dict | None = None
         self._last_activity = time.monotonic()
@@ -86,6 +88,9 @@ class WrapperState:
         body: dict = {"status": status}
         if reason is not None:
             body["reason"] = reason
+        # Bei awaiting: Wrapper-URL mitschicken → Daemon kann Demand-Proxy aufbauen.
+        if status == "awaiting" and self.wrapper_url:
+            body["wrapper_url"] = self.wrapper_url
         payload = json.dumps(body).encode()
         req = urllib.request.Request(
             url, data=payload,

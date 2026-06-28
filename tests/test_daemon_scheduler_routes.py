@@ -134,3 +134,70 @@ def test_non_scheduler_job_is_501_stub(team_repo):
         assert client.get("/-/job").status_code == 501
         assert client.post("/-/scheduler/next").status_code == 501
         assert client.post("/-/rescan").status_code in (404, 405)
+
+
+# ── Slice 9.4: HITL-Relay GET/POST /-/job/{id}/input ─────────────────────────
+
+
+def test_job_input_relay_no_wrapper_url_returns_503(sched):
+    """GET /-/job/{id}/input ohne Wrapper-URL → 503 (kein Relay konfiguriert)."""
+    client, root = sched
+    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    client.post("/-/rescan")
+    jid = client.get("/-/job").json()[0]["id"]
+    # Job ist pending — kein wrapper_url gesetzt → 503
+    r = client.get(f"/-/job/{jid}/input")
+    assert r.status_code == 503
+
+
+def test_job_input_post_relay_no_wrapper_url_returns_503(sched):
+    """POST /-/job/{id}/input ohne Wrapper-URL → 503."""
+    client, root = sched
+    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    client.post("/-/rescan")
+    jid = client.get("/-/job").json()[0]["id"]
+    r = client.post(f"/-/job/{jid}/input", json={"answer": "Ja"})
+    assert r.status_code == 503
+
+
+def test_scheduler_status_awaiting_stores_wrapper_url(sched, free_tcp_port):
+    """POST /-/scheduler/status awaiting + wrapper_url → wrapper_url gespeichert."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    # Mini-Wrapper-Server, der GET /-/job/{id}/input beantwortet
+    demand = {"prompt": "Test?", "choices": ["Ja"], "mediated": True}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(demand).encode())
+
+        def log_message(self, *_):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", free_tcp_port), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        client, root = sched
+        _seed(root, "a/README.md", '---\nschedule: now\napp: echo x\n---\n')
+        client.post("/-/rescan")
+        jid = client.post("/-/scheduler/next").json()["id"]
+        # running → awaiting mit wrapper_url
+        client.post(f"/-/scheduler/status/{jid}", json={"status": "running"})
+        r = client.post(f"/-/scheduler/status/{jid}", json={
+            "status": "awaiting",
+            "wrapper_url": f"http://127.0.0.1:{free_tcp_port}",
+        })
+        assert r.status_code == 200
+
+        # Daemon kann jetzt Relay aufbauen
+        r2 = client.get(f"/-/job/{jid}/input")
+        assert r2.status_code == 200
+        data = r2.json()
+        assert data["prompt"] == "Test?"
+    finally:
+        srv.shutdown()

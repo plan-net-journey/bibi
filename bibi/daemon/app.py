@@ -15,9 +15,11 @@ import asyncio
 import json
 import logging
 import os
+import urllib.error
+import urllib.request
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from bibi import config, repo, state
@@ -65,6 +67,10 @@ def _merge_back(branch: str, *, sync_lock=None, synchronizer=None) -> None:
 
 def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                           *, sync_lock=None, synchronizer=None) -> None:
+    # In-Memory-Registry: job_id → Wrapper-HTTP-URL (app-Typ, Slice 9.4).
+    # Wird beim awaiting-Report befüllt; überlebt Daemon-Restart nicht (Wrapper stirbt
+    # mit dem Container, daher kein Verlust).
+    _wrapper_urls: dict[str, str] = {}
     """Echte DB-gestützte Scheduler-Routen (PLAN-3 §3.1) — nur bei aktiver
     ``scheduler``-Rolle (sie hält die Job-DB, §4.4). Ersetzen die 3.0-Stubs für
     ``/-/job``/``/-/job/{id}`` (zuerst registriert ⇒ gewinnen) und den
@@ -156,6 +162,11 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
             return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
         if outcome == "invalid":
             return JSONResponse(status_code=409, content={"error": "illegal transition", "id": id})
+        # Wrapper-URL für HITL-Relay speichern (app awaiting → Demand-Proxy).
+        if report.wrapper_url and str(report.status) == "awaiting":
+            _wrapper_urls[id] = report.wrapper_url
+        elif str(report.status) not in ("awaiting", "running"):
+            _wrapper_urls.pop(id, None)  # terminal oder killed → aufräumen
         # Erfolgreicher Lauf mit Ergebnis-Branch → Merge-back nach trunk (PLAN-6).
         # Nur ``complete`` + vorhandener Branch (echo/No-op liefert keinen Commit).
         if str(report.status) == "complete" and report.branch:
@@ -249,6 +260,40 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
     @app.get("/-/worker", response_model=list[WorkerView], tags=["worker"])
     def worker_list():
         return registry.list()
+
+    # ── HITL-Relay (Slice 9.4): GET/POST /-/job/{id}/input → Wrapper ──────────
+    def _relay(job_id: str, *, method: str, body: bytes | None = None) -> Response:
+        """Generischer Relay: Daemon proxyt GET/POST /-/job/{id}/input an den Wrapper."""
+        wrapper_url = _wrapper_urls.get(job_id)
+        if not wrapper_url:
+            return JSONResponse(status_code=503,
+                                content={"error": "no wrapper_url — job not awaiting or Traefik not configured"})
+        url = f"{wrapper_url.rstrip('/')}/-/job/{job_id}/input"
+        req = urllib.request.Request(url, method=method,
+                                     headers={"Content-Type": "application/json"} if body else {})
+        if body is not None:
+            req.data = body
+        try:
+            with urllib.request.urlopen(req, timeout=10.0) as resp:  # noqa: S310
+                return Response(content=resp.read(), status_code=resp.status,
+                                media_type=resp.headers.get("Content-Type", "application/json"))
+        except urllib.error.HTTPError as exc:
+            return JSONResponse(status_code=exc.code,
+                                content={"error": f"wrapper returned {exc.code}"})
+        except (urllib.error.URLError, OSError) as exc:
+            return JSONResponse(status_code=502,
+                                content={"error": f"wrapper unreachable: {exc}"})
+
+    @app.get("/-/job/{id}/input", tags=["job"])
+    def job_get_input(id: str):  # noqa: A002
+        """HITL-Demand abrufen (Slice 9.4 Relay): Daemon → Wrapper."""
+        return _relay(id, method="GET")
+
+    @app.post("/-/job/{id}/input", tags=["job"])
+    async def job_post_input(id: str, request: Request):
+        """HITL-Antwort weiterleiten (Slice 9.4 Relay): Daemon → Wrapper → App."""
+        body = await request.body()
+        return _relay(id, method="POST", body=body or b"{}")
 
 
 def _add_worker_routes(app: FastAPI, worker: Worker) -> None:

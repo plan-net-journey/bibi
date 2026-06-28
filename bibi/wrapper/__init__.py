@@ -113,8 +113,12 @@ def run_app(env: dict[str, str]) -> int:
     app_port = int(app_port_str) if app_port_str else None
     hitl_str = env.get("BIBI_HITL_TIMEOUT")
     hitl_timeout = int(hitl_str) if hitl_str else None
+    # BIBI_WRAPPER_EXTERNAL_URL überschreibt (Traefik-URL in Container-Setup);
+    # Default: localhost:{port} (host-Modus, für den Demo-Smoke-Test ausreichend).
+    wrapper_url = env.get("BIBI_WRAPPER_EXTERNAL_URL") or f"http://127.0.0.1:{wrapper_port}"
     state = WrapperState(job_id=job_id, scheduler_url=scheduler_url,
-                         app_port=app_port, hitl_timeout=hitl_timeout)
+                         app_port=app_port, hitl_timeout=hitl_timeout,
+                         wrapper_url=wrapper_url)
     server = start_server(state, port=wrapper_port)
 
     spec = exec_backend.build_exec(child_argv, env)
