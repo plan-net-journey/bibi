@@ -80,7 +80,8 @@ class WrapperState:
                 "demand": self._demand,
             }
 
-    def report(self, status: str, *, reason: str | None = None) -> None:
+    def report(self, status: str, *, reason: str | None = None,
+               exit_code: int | None = None, output_ref: str | None = None) -> None:
         """Statuswechsel best-effort beim Scheduler melden (PLAN-9 §8 E2)."""
         if not self.scheduler_url:
             return
@@ -88,6 +89,10 @@ class WrapperState:
         body: dict = {"status": status}
         if reason is not None:
             body["reason"] = reason
+        if exit_code is not None:
+            body["exit_code"] = exit_code
+        if output_ref is not None:
+            body["output_ref"] = output_ref
         # Bei awaiting: Wrapper-URL mitschicken → Daemon kann Demand-Proxy aufbauen.
         if status == "awaiting" and self.wrapper_url:
             body["wrapper_url"] = self.wrapper_url

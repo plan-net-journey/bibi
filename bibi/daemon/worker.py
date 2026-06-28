@@ -139,18 +139,20 @@ def _run_wrapper(
     hitl_timeout: int | None = None,
     repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
     run_id: str | None = None,
-) -> tuple[int, str, Path, str]:
-    """Der gemeinsame Ausführungs-Kern beider Pfade: Worktree → Wrapper-Subprozess
-    (überwacht) → Commit. Gibt ``(exit_code, commit_sha, output_path, outcome)``.
+    # Detach-Modus: Wrapper-Prozess meldet selbst Terminal-Status + Commit (§9).
+    detach: bool = False,
+    worker_name: str | None = None, host: str | None = None,
+    attempt: int = 0, attempts: int = 1,
+    backoff_type: str | None = None,
+    scheduler_db_path: str | None = None,  # Direkter DB-Zugriff (kein HTTP)
+) -> tuple[int, str | None, Path, str]:
+    """Worktree → Wrapper-Subprozess → Commit/Report.
 
-    ``ephemeral=True`` (für ``/run``) entfernt den Worktree nach dem Lauf wieder.
-    Der Wrapper ist die einzige Ausführungs-Einheit; nur der Aufrufweg
-    unterscheidet disponiert (execute_reservation) von lokal (run_local), §3.3b.
-
-    ``run_id`` bestimmt den ``output.jsonl``-**Pfad** (per-Run-Isolation; disponiert
-    = ``slug:fire``). Default = ``job_id`` (run_local hat schon eine eindeutige
-    Hash-ID). Der **Container-Name** bleibt an ``job_id`` (doppelpunktfreie
-    Docker-Namensregel; der Output ist host-seitig, nur der Worktree wird gemountet)."""
+    ``detach=True`` (disponierte Jobs): Wrapper läuft eigenständig — kein Wait,
+    kein Commit, kein Report im Worker. Wrapper übernimmt alles.
+    ``detach=False`` (``run_local``, ephemeral): bisheriger blockierender Pfad.
+    ``run_id`` bestimmt den ``output.jsonl``-Pfad (pro Run eindeutig).
+    Der Container-Name bleibt an ``job_id`` (Docker-Namensregel, §3.3b)."""
     out_run_id = run_id or job_id
     wt_path = worktree.prepare(repo_root=repo_root, work_dir=work_dir, slug=slug)
     activity.emit(log, logging.DEBUG, "worktree.prepare", role="worker",
@@ -167,8 +169,6 @@ def _run_wrapper(
         env["BIBI_JOB_CMD"] = payload
     elif kind == "claude":
         env["BIBI_JOB_PROMPT"] = payload
-        # claude-Binary konfigurierbar: Prozess-Env > Knoten-Config > Default "claude".
-        # Absoluter Pfad nötig, wenn claude nicht auf dem (Service-)PATH liegt.
         env["BIBI_CLAUDE_BIN"] = (os.environ.get("BIBI_CLAUDE_BIN")
                                   or config.read_env().get("BIBI_CLAUDE_BIN") or "claude")
         if model:
@@ -184,35 +184,54 @@ def _run_wrapper(
             env["BIBI_APP_PORT"] = str(app_port)
         if app_prefix:
             env["BIBI_APP_PREFIX"] = app_prefix
-        # Wrapper → Scheduler: Statuswechsel (awaiting/running/zombie) melden (PLAN-9 §8 E2).
-        # Default: lokaler Daemon. Kann via BIBI_SCHEDULER_URL überschrieben werden.
-        if not env.get("BIBI_SCHEDULER_URL"):
-            env["BIBI_SCHEDULER_URL"] = "http://127.0.0.1:8769"
         if hitl_timeout is not None:
             env["BIBI_HITL_TIMEOUT"] = str(hitl_timeout)
 
-    # Container-Exec-Konfig an den Wrapper reichen (PLAN-8): BIBI_EXEC_MODE/IMAGE/
-    # DOCKER_BIN + Auth-Token. Leer ⇒ Host-Modus (unverändert).
+    # Detach-Modus: Commit + Report im Wrapper-Prozess.
+    if detach:
+        env["BIBI_REPO_ROOT"] = str(repo_root)
+        env["BIBI_JOB_SLUG"] = slug
+        env["BIBI_RUN_ID"] = out_run_id
+        if ephemeral:
+            env["BIBI_EPHEMERAL"] = "1"
+        if wall_time is not None:
+            env["BIBI_WALL_TIME"] = str(wall_time)
+        if silence_timeout is not None:
+            env["BIBI_SILENCE_TIMEOUT"] = str(silence_timeout)
+        if worker_name:
+            env["BIBI_WORKER_NAME"] = worker_name
+        if host:
+            env["BIBI_HOST"] = host
+        env["BIBI_ATTEMPT"] = str(attempt)
+        env["BIBI_ATTEMPTS"] = str(attempts)
+        if backoff_type:
+            env["BIBI_BACKOFF"] = backoff_type
+        # Reporting-Ziel: lokale DB (kein HTTP nötig) oder HTTP-Daemon.
+        # BIBI_SCHEDULER_DB_PATH hat Vorrang (Local-Modus, Tests).
+        if scheduler_db_path:
+            env["BIBI_SCHEDULER_DB_PATH"] = scheduler_db_path
+        elif not env.get("BIBI_SCHEDULER_URL"):
+            env["BIBI_SCHEDULER_URL"] = "http://127.0.0.1:8769"
+
     env.update(_exec_config())
-    # Per-Job exec_mode überschreibt die Knoten-Config (z. B. exec_mode: host für
-    # Host-Modus-Apps wie consent-demo, die keinen Docker-Stack brauchen).
     if exec_mode:
         env["BIBI_EXEC_MODE"] = exec_mode.strip().lower()
-    # Der Container-Name ``bibi-<job_id>`` ist bei wiederkehrenden Jobs stabil; ein
-    # in „Created"/„Exited" steckender Rest (von --rm nicht erfasst) würde den
-    # nächsten ``docker run`` mit „name already in use" sofort scheitern lassen.
-    # Darum vor dem Lauf best-effort freiräumen (idempotent).
     if _is_container():
         _docker(["rm", "-f", exec_backend.container_name(job_id)])
 
     started = time.time()
-    # eigene Session ⇒ kill kann die ganze Prozessgruppe (Wrapper + Child) treffen.
     proc = subprocess.Popen(
         [sys.executable, "-m", "bibi.wrapper"],
         env=env, cwd=str(repo_root), start_new_session=True,
     )
     if register is not None:
         register(job_id, proc)
+
+    if detach:
+        # Wrapper-Prozess läuft eigenständig — sofort zurückkehren.
+        return 0, None, out_path, "detached"
+
+    # Blockierender Pfad (run_local / ephemeral): warten, committen, zurückgeben.
     code, outcome = _monitored_wait(
         proc, out_path=out_path, started=started,
         wall_time=wall_time, silence_timeout=silence_timeout, job_id=job_id,
@@ -260,16 +279,18 @@ def execute_reservation(
     (z. B. ``killed`` per ``/-/job/{id}/kill``), lehnt der Scheduler den Übergang ab
     (``invalid``) und der Worker überschreibt nichts."""
     jid = reservation["id"]
-    # run_id je Lauf eindeutig (fire ist der Pro-Trigger-Zähler, §5.2) → per-Run-
-    # Output-Pfad ``data/job/<slug:fire>/output.jsonl`` (kein Akkumulieren über
-    # cron-Wiederholungen). Identisch zur run_id, die das Journal vergibt.
     run_id = f"{reservation['slug']}:{reservation.get('fire', 0)}"
     host = host or socket.gethostname()
+    attempt = reservation.get("attempt") or 0
+    attempts = reservation.get("attempts") or 1
+    # Lokaler DB-Pfad (LocalScheduler): Wrapper kann direkt schreiben statt HTTP.
+    scheduler_db_path: str | None = str(client.db_path) if getattr(client, "db_path", None) else None
     try:
         kind = reservation["kind"]
-        # App-Typ: kein Silence-Zombie (§5.5 — langlebige Server dürfen idle sein).
         silence_timeout = None if kind == "app" else reservation.get("silence_timeout")
-        code, commit_sha, out_path, outcome = _run_wrapper(
+        # Detach-Modus: Wrapper-Prozess läuft eigenständig (PLAN-9 §9).
+        # Er committed den Worktree, meldet Terminal-Status + output_ref selbst.
+        _, _, out_path, outcome = _run_wrapper(
             job_id=jid, slug=reservation["slug"], kind=kind,
             payload=reservation["payload"], model=reservation.get("model"),
             soul=reservation.get("soul"), session=reservation.get("session"),
@@ -280,16 +301,18 @@ def execute_reservation(
             exec_mode=reservation.get("exec_mode"),
             hitl_timeout=reservation.get("hitl_timeout"),
             repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
-            run_id=run_id,
+            run_id=run_id, detach=True,
+            worker_name=worker_name, host=host,
+            attempt=attempt, attempts=attempts,
+            backoff_type=reservation.get("backoff"),
+            scheduler_db_path=scheduler_db_path,
         )
     except Exception as exc:
-        # Setup/Run-Fehler VOR jeder Statusmeldung (Worktree/Wrapper/Commit, Fund B):
-        # den Job NICHT in `running` hängen lassen. Als Fehlschlag melden
-        # (Backoff/attempt++; Dauerfehler exhaust→error) → sofort als Abweichung sichtbar.
+        # Setup-Fehler vor Wrapper-Start: Job nicht in `running` hängen lassen.
         activity.emit(log, logging.ERROR, "worker.setup_error",
-                      "Setup/Run vor Statusmeldung fehlgeschlagen", role="worker",
+                      "Setup vor Wrapper-Start fehlgeschlagen", role="worker",
                       slug=reservation.get("slug"), run_id=jid, error=str(exc))
-        log.exception("Setup/Run fehlgeschlagen: %s", jid)
+        log.exception("Setup fehlgeschlagen: %s", jid)
         fields = {**_retry_fields(reservation), "exit_code": -1, "output_ref": None,
                   "worker": worker_name, "host": host, "commit_sha": None, "branch": None}
         res = client.report(jid, **fields)
@@ -297,27 +320,11 @@ def execute_reservation(
                 "status": fields["status"] if res == "ok" else None,
                 "outcome": "setup_error"}
 
-    rel = out_path.relative_to(repo_root).as_posix()
-    # Commit-SHA + Branch des Worktrees journalen (v6, §2.3): "" → None.
-    branch = worktree.branch_name(reservation["slug"]) if commit_sha else None
-    common = {"exit_code": code, "output_ref": rel, "worker": worker_name, "host": host,
-              "commit_sha": commit_sha or None, "branch": branch}
-    if outcome == "wall_time":
-        fields = {"status": "killed", "reason": "by_wall_time", **common}
-    elif outcome == "silence":
-        fields = {"status": "zombie", "reason": "silence", **common}
-    elif code == 0:
-        fields = {"status": "complete", **common}
-    else:
-        fields = {**_retry_fields(reservation), **common}
-
-    res = client.report(jid, **fields)
-    activity.emit(log, _report_level(fields["status"]), "worker.report", role="worker",
-                  slug=reservation.get("slug"), run_id=jid, status=fields["status"],
-                  reason=fields.get("reason"), exit_code=code, outcome=outcome,
-                  applied=(res == "ok"))
-    return {"id": jid, "exit_code": code, "commit": commit_sha,
-            "status": fields["status"] if res == "ok" else None, "outcome": outcome}
+    # Detach: Wrapper läuft selbstständig weiter. Worker kehrt sofort zurück.
+    activity.emit(log, logging.INFO, "worker.spawned", role="worker",
+                  slug=reservation.get("slug"), run_id=jid, outcome=outcome)
+    return {"id": jid, "exit_code": None, "commit": None,
+            "status": "running", "outcome": "detached"}
 
 
 def _resolve_spec(repo_root: Path, slug: str):
@@ -459,6 +466,9 @@ class Worker:
             self._maint_active = False
             activity.emit(log, logging.INFO, "worker.resumed",
                           "Wartungsmodus beendet — Dispatch wieder aktiv", role="worker")
+        # Beendete Wrapper-Procs aus _procs entfernen (Slot-Freigabe).
+        for jid in [jid for jid, p in list(self._procs.items()) if p.poll() is not None]:
+            self._procs.pop(jid, None)
         if len(self._procs) >= self.max_concurrent:
             return False  # Slot voll — nächster Tick versucht es erneut
         res = self.client.next(worker=self.worker_name, host=self.host)
@@ -467,22 +477,16 @@ class Worker:
         root, work = self._roots()
         activity.emit(log, logging.INFO, "worker.pickup", role="worker",
                       slug=res.get("slug"), run_id=res.get("id"), kind=res.get("kind"))
-
-        def _run() -> None:
-            try:
-                execute_reservation(
-                    res, repo_root=root, work_dir=work, client=self.client,
-                    worker_name=self.worker_name, host=self.host, register=self._register,
-                )
-            except Exception:
-                activity.emit(log, logging.ERROR, "worker.error",
-                              "Job-Ausführung fehlgeschlagen", role="worker",
-                              slug=res.get("slug"), run_id=res.get("id"))
-                log.exception("Job-Ausführung fehlgeschlagen: %s", res.get("id"))
-
-        import threading as _threading
-        _threading.Thread(target=_run, daemon=True,
-                          name=f"job-{res.get('id', '?')}").start()
+        try:
+            execute_reservation(
+                res, repo_root=root, work_dir=work, client=self.client,
+                worker_name=self.worker_name, host=self.host, register=self._register,
+            )  # Detach: kehrt sofort zurück; Wrapper läuft eigenständig.
+        except Exception:
+            activity.emit(log, logging.ERROR, "worker.error",
+                          "Job-Setup fehlgeschlagen", role="worker",
+                          slug=res.get("slug"), run_id=res.get("id"))
+            log.exception("Job-Setup fehlgeschlagen: %s", res.get("id"))
         return True
 
     def _git_status(self) -> str:

@@ -13,6 +13,7 @@ from bibi.schedule.models import Kind, Owner, Reason, Status
 # Die kanonische §5.4-Tabelle als Wahrheit für den Test (from, event, to).
 EXPECTED_TRANSITIONS = [
     (Status.PENDING, Event.DISPATCH, Status.RUNNING),
+    (Status.PENDING, Event.KILL, Status.KILLED),
     (Status.RUNNING, Event.COMPLETE, Status.COMPLETE),
     (Status.RUNNING, Event.FAIL, Status.FAILED),
     (Status.RUNNING, Event.DEFER, Status.DEFERRED),
@@ -169,5 +170,5 @@ def test_targets_of_running():
 
 
 def test_targets_of_pending_and_terminal():
-    assert lc.targets(Status.PENDING) == {Status.RUNNING}
+    assert lc.targets(Status.PENDING) == {Status.RUNNING, Status.KILLED}
     assert lc.targets(Status.COMPLETE) == {Status.PENDING}

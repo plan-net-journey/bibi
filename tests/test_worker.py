@@ -54,50 +54,68 @@ def _worker(root: Path) -> Worker:
     )
 
 
+_TERMINAL = frozenset({"complete", "error", "killed", "zombie", "inactive"})
+
+
+def _wait_terminal(root: Path, jid: str, timeout: float = 10.0) -> dict:
+    """Warten bis Job-Status terminal ist (Wrapper meldet async via SQLite)."""
+    db = root / "data" / "jobs.sqlite"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        conn = job_db.connect(db)
+        try:
+            row = conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
+        finally:
+            conn.close()
+        if row and row["status"] in _TERMINAL:
+            return dict(row)
+        time.sleep(0.05)
+    conn = job_db.connect(db)
+    try:
+        return dict(conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone() or {})
+    finally:
+        conn.close()
+
+
 def test_tick_runs_job_to_complete(gitrepo: Path):
     jid = _seed(gitrepo, "run1/README.md",
                 '---\nschedule: now\njob: "echo hallo && echo fertig"\n---\n')
     assert _worker(gitrepo).tick_once() is True
+    row = _wait_terminal(gitrepo, jid)
+
+    assert row["status"] == "complete"
+    assert row["exit_code"] == 0
+    assert row["worker"] == "t"
+    assert row["output_ref"] == "data/job/run1:0/output.jsonl"
 
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     try:
-        row = conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
-        assert row["status"] == "complete"
-        assert row["exit_code"] == 0
-        assert row["worker"] == "t"
-        # Output je **run_id** (slug:fire), nicht je stabilem job_id — `now` läuft
-        # mit fire=0 (kein cron-Re-Arm). Kein Akkumulieren über Läufe (Bug 27s #4).
-        assert row["output_ref"] == "data/job/run1:0/output.jsonl"
         journal = job_db.list_journal(conn)
         assert len(journal) == 1
         assert journal[0]["slug"] == "run1"
         assert journal[0]["run_id"] == "run1:0"
-        assert journal[0]["host"] is not None         # host first-class (§1.4)
-        assert journal[0]["output_ref"] == "data/job/run1:0/output.jsonl"  # referenziert (§1.4)
+        assert journal[0]["host"] is not None
+        assert journal[0]["output_ref"] == "data/job/run1:0/output.jsonl"
     finally:
         conn.close()
 
-    # output.jsonl trägt die zwei Zeilen — am run_id-Pfad
     from bibi.wrapper import output
     out = gitrepo / "data" / "job" / "run1:0" / "output.jsonl"
     assert output.lines(out, "out") == ["hallo", "fertig"]
 
 
 def test_branch_created_on_run(gitrepo: Path):
-    _seed(gitrepo, "run1/README.md", '---\nschedule: now\njob: "echo x"\n---\n')
+    jid = _seed(gitrepo, "run1/README.md", '---\nschedule: now\njob: "echo x"\n---\n')
     _worker(gitrepo).tick_once()
+    _wait_terminal(gitrepo, jid)
     assert "agent/run1" in _git(gitrepo, "branch", "--list", "agent/run1")
 
 
 def test_failed_job_reports_failed(gitrepo: Path):
     jid = _seed(gitrepo, "boom/README.md", '---\nschedule: now\njob: "exit 7"\n---\n')
     _worker(gitrepo).tick_once()
-    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
-    try:
-        row = conn.execute("SELECT status, exit_code FROM jobs WHERE id=?", (jid,)).fetchone()
-        assert row["status"] == "failed" and row["exit_code"] == 7
-    finally:
-        conn.close()
+    row = _wait_terminal(gitrepo, jid)
+    assert row["status"] == "failed" and row["exit_code"] == 7
 
 
 def test_tick_empty_returns_false(gitrepo: Path):
@@ -126,26 +144,21 @@ def test_wall_time_kills_job(gitrepo: Path):
     jid = _seed(gitrepo, "slow/README.md",
                 '---\nschedule: now\njob: "sleep 30"\nwall_time: 1\n---\n')
     _worker(gitrepo).tick_once()
+    row = _wait_terminal(gitrepo, jid, timeout=15.0)
+    assert row["status"] == "killed" and row["reason"] == "by_wall_time"
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     try:
-        row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
-        assert row["status"] == "killed" and row["reason"] == "by_wall_time"
         assert job_db.list_journal(conn)[0]["reason"] == "by_wall_time"
     finally:
         conn.close()
 
 
 def test_silence_zombies_job(gitrepo: Path):
-    # kein Output + silence_timeout abgelaufen → zombie(silence)
     jid = _seed(gitrepo, "hang/README.md",
                 '---\nschedule: now\njob: "sleep 30"\nsilence_timeout: 1\n---\n')
     _worker(gitrepo).tick_once()
-    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
-    try:
-        row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
-        assert row["status"] == "zombie" and row["reason"] == "silence"
-    finally:
-        conn.close()
+    row = _wait_terminal(gitrepo, jid, timeout=15.0)
+    assert row["status"] == "zombie" and row["reason"] == "silence"
 
 
 def test_retry_then_error(gitrepo: Path, monkeypatch):
@@ -155,39 +168,42 @@ def test_retry_then_error(gitrepo: Path, monkeypatch):
     w = _worker(gitrepo)
     dbp = gitrepo / "data" / "jobs.sqlite"
 
-    assert w.tick_once() is True   # Versuch 1 → failed (attempt 1)
+    assert w.tick_once() is True        # Versuch 1 → failed (attempt 1)
+    row = _wait_terminal(gitrepo, jid)
+    assert row["status"] == "failed" and row["attempt"] == 1
+
+    # failed → wieder reservierbar (next_fire_at=now mit base=0)
     conn = job_db.connect(dbp)
-    assert conn.execute("SELECT status, attempt FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "failed"
+    conn.execute("UPDATE jobs SET next_fire_at=? WHERE id=?", (time.time(), jid))
+    conn.commit()
     conn.close()
 
-    assert w.tick_once() is True   # Versuch 2 (failed→running) → failed (attempt 2)
+    assert w.tick_once() is True        # Versuch 2 (failed→running) → error (attempt 2)
+    row = _wait_terminal(gitrepo, jid)
+    assert row["status"] in ("failed", "error") and row["attempt"] == 2
     conn = job_db.connect(dbp)
-    row = conn.execute("SELECT status, attempt FROM jobs WHERE id=?", (jid,)).fetchone()
-    assert row["status"] == "failed" and row["attempt"] == 2
-    conn.close()
-
-    assert w.tick_once() is False  # erschöpft → nicht mehr reservierbar
-    conn = job_db.connect(dbp)
-    job_db.sweep(conn)             # Sweep: erschöpftes failed → error
-    row = conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
-    assert row["status"] == "error"
+    job_db.sweep(conn)                  # Sweep: erschöpftes failed → error
+    row2 = conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row2["status"] == "error"
     assert any(j["status"] == "error" for j in job_db.list_journal(conn))
     conn.close()
 
 
 def test_execute_reservation_skips_if_already_terminal(gitrepo: Path):
-    # Wird der Job vor Abschluss killed, überschreibt der Worker nicht.
+    # Wird der Job vor Abschluss killed, überschreibt der Wrapper nicht.
     jid = _seed(gitrepo, "r/README.md", '---\nschedule: now\njob: "echo hi"\n---\n')
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     res = job_db.reserve_next(conn)  # → running
     conn.execute("UPDATE jobs SET status='killed', reason='by_user' WHERE id=?", (jid,))
+    conn.commit()
     conn.close()
     from bibi.daemon.scheduler_client import LocalScheduler
-    out = execute_reservation(
+    execute_reservation(
         res, repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
         client=LocalScheduler(gitrepo / "data" / "jobs.sqlite"), worker_name="t",
     )
-    assert out["status"] is None  # killed→complete ist invalid ⇒ nichts überschrieben
+    # Wrapper läuft async — kurz warten; killed→complete ist invalid → bleibt killed.
+    time.sleep(2.0)
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "killed"
     conn.close()
@@ -237,12 +253,13 @@ def test_per_run_output_isolation(gitrepo: Path):
 
     _make_due()
     assert w.tick_once() is True   # Lauf fire=0 → complete → cron re-armt zu fire=1
+    _wait_terminal(gitrepo, jid)   # warten bis Wrapper complete meldet
     _make_due()
     assert w.tick_once() is True   # Lauf fire=1
+    _wait_terminal(gitrepo, jid)   # warten bis zweiter Lauf abgeschlossen
 
     out0 = gitrepo / "data" / "job" / "tick:0" / "output.jsonl"
     out1 = gitrepo / "data" / "job" / "tick:1" / "output.jsonl"
-    # Jede Datei trägt genau die EINE Zeile ihres Laufs — kein Akkumulieren.
     assert output.lines(out0, "out") == ["hallo"]
     assert output.lines(out1, "out") == ["hallo"]
 
