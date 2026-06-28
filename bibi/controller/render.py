@@ -1104,54 +1104,71 @@ def schedule_detail_page(
 # ── Execution-Detail (Ebene 4, lauf-zentriert; Frontend-Plan §C.4) ───────────
 
 
+_TS_FIELDS = {"started_at", "finished_at", "archived_at"}
+_ATTR_ORDER = [
+    "run_id", "slug", "kind", "domain", "status", "reason", "exit_code",
+    "exec_runtime", "started_at", "finished_at", "host", "worker",
+    "branch", "commit_sha", "snapshot", "output_ref", "archived_at",
+]
+
+
+def _attr_table(e: dict) -> str:
+    import datetime as _dt
+    rows = []
+    seen = set()
+    for key in _ATTR_ORDER:
+        if key not in e:
+            continue
+        seen.add(key)
+        val = e[key]
+        if val is None:
+            continue
+        if key in _TS_FIELDS and isinstance(val, (int, float)):
+            val = _dt.datetime.fromtimestamp(val).strftime("%Y-%m-%d %H:%M:%S")
+        elif key == "exec_runtime" and isinstance(val, (int, float)):
+            val = f"{val:.1f} s"
+        elif key == "commit_sha" and isinstance(val, str) and len(val) > 7:
+            branch = _e(e.get("branch") or "")
+            val = f"{val[:7]} ({branch})" if branch else val[:7]
+        elif key == "snapshot" and isinstance(val, str) and len(val) > 80:
+            val = val[:80] + "…"
+        rows.append(f"<tr><td><b>{_e(key)}</b></td><td>{_e(str(val))}</td></tr>")
+    # Restliche Felder die nicht in _ATTR_ORDER stehen
+    for key, val in sorted(e.items()):
+        if key in seen or val is None:
+            continue
+        rows.append(f"<tr><td><b>{_e(key)}</b></td><td>{_e(str(val))}</td></tr>")
+    return (
+        '<table class="attrtable">'
+        "<thead><tr><th>Attribut</th><th>Wert</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
 def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
                           now: float | None = None) -> str:
-    """Ein **Lauf** (``run_id``): Meta (Status/exit/Dauer/host/worker/Commit) + voller
-    per-Run-Output aus ``output_ref``. Ziel der Feed-/Journal-/Schedule-Links."""
+    """Ein **Lauf** (``run_id``): alle Journal-Attribute + voller Output."""
     now = time.time() if now is None else now
     e = entry or {}
-    run_id = _e(e.get("run_id"))
-    slug = _e(e.get("slug"))
-    st = _e(e.get("status"))
-    k = _e(e.get("kind") or kind)
-    meta = [f'<span class="st {st}">{st}</span>', k]
-    if e.get("exit_code") is not None:
-        meta.append(f"exit {_e(e.get('exit_code'))}")
-    dur = e.get("exec_runtime")
-    if dur is None and e.get("started_at") is not None and e.get("finished_at") is not None:
-        dur = e["finished_at"] - e["started_at"]
-    if dur is not None:
-        meta.append(f"Dauer {int(dur)} s")
-    if e.get("reason"):
-        meta.append(_e(e.get("reason")))
-    times = []
-    if e.get("started_at"):
-        times.append(f"gestartet {_hms(e.get('started_at'))}")
-    if e.get("finished_at"):
-        times.append(f"beendet {_hms(e.get('finished_at'))}")
-    if e.get("host"):
-        times.append(f"host {_e(e.get('host'))}")
-    if e.get("worker"):
-        times.append(f"worker {_e(e.get('worker'))}")
-    commit = ""
-    if e.get("commit_sha"):
-        sha = e["commit_sha"]
-        branch = _e(e.get("branch") or "")
-        commit = (f'<div class="meta">Ergebnis-Commit '
-                  f'<span class="commit" title="{_e(sha)} {branch}">⎘ {_e(sha[:7])}</span></div>')
-    out = output_block(events, e.get("kind") or kind)
+    run_id = _e(e.get("run_id") or "—")
+    slug = _e(e.get("slug") or "")
+    st = _e(e.get("status") or "")
     back = (f'<a class="back" href="/-/ui/schedule/{slug}">← {slug}</a> · '
             f'<a class="back" href="/-/ui/feed">Feed</a>')
+    out = output_block(events, e.get("kind") or kind)
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>bibi · {run_id}</title>"
-        f"<style>{_CSS}</style></head><body>"
-        f'<header><h1>bibi · {run_id}</h1><span class="muted">{back}</span></header>'
-        f'<div class="meta">{" · ".join(meta)}</div>'
-        f'<div class="meta">{" · ".join(times)}</div>'
-        f"{commit}"
+        f"<style>{_CSS}"
+        ".attrtable { width: auto; margin: .75rem 0; font-size: .85rem; }"
+        ".attrtable td:first-child { padding-right: 1.5rem; white-space: nowrap; }"
+        ".attrtable td { padding: .15rem .3rem; vertical-align: top; }"
+        "</style></head><body>"
+        f'<header><h1>bibi · <span class="st {st}">{run_id}</span></h1>'
+        f'<span class="muted">{back}</span></header>'
+        f"{_attr_table(e)}"
         "<h2>Output</h2>"
         f'<div class="outscroll">{out}</div>'
         "</body></html>"
