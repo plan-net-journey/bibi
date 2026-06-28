@@ -567,14 +567,28 @@ def reconcile_startup_orphans(
     conn: sqlite3.Connection, worker_name: str, now: float | None = None
 ) -> int:
     """Beim Start eines lokalen Workers: dessen ``running``-Jobs aus einem früheren
-    (abgestürzten) Daemon sind verwaist → ``killed``/``no_process``. Nur eigene
-    Jobs (``worker=worker_name``) — Remote-Worker bleiben unangetastet."""
+    (abgestürzten) Daemon sind verwaist. Nur eigene Jobs (``worker=worker_name``).
+
+    - **Recurring Cron-Jobs** (``schedule`` gesetzt, ``is_recurring``): Journal-Eintrag
+      als ``killed/no_process`` schreiben, dann direkt auf ``pending/next_fire_at=now``
+      zurücksetzen — der Cron soll beim nächsten Tick weiterlaufen.
+    - **Alle anderen** (One-shots, adhoc): ``killed/no_process`` — terminal, da kein
+      automatischer Rückkehrpfad sinnvoll ist.
+    """
     now = time.time() if now is None else now
     n = 0
     for r in conn.execute(
-        "SELECT id FROM jobs WHERE status='running' AND worker=?", (worker_name,)
+        "SELECT id, schedule FROM jobs WHERE status='running' AND worker=?", (worker_name,)
     ).fetchall():
         report_status(conn, r["id"], status="killed", reason="no_process", now=now)
+        if is_recurring(r["schedule"]):
+            # Journal wurde von report_status geschrieben; jetzt sofort re-armen.
+            conn.execute(
+                "UPDATE jobs SET status='pending', next_fire_at=:now, attempt=0, "
+                "reason=NULL, locked_at=NULL, started_at=NULL, finished_at=NULL, "
+                "exit_code=NULL, output_ref=NULL, updated_at=:now WHERE id=:id",
+                {"now": now, "id": r["id"]},
+            )
         n += 1
     return n
 
