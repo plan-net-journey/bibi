@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from bibi.schedule.models import Kind, Reason, Status
 
@@ -36,6 +36,16 @@ class JobView(BaseModel):
     kind: Kind
     status: Status
     reason: Reason | None = None
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _coerce_reason(cls, v: object) -> Reason | None:
+        if v is None:
+            return None
+        try:
+            return Reason(v)
+        except ValueError:
+            return None
     priority: int = 0
     enqueued_at: float | None = None
     started_at: float | None = None

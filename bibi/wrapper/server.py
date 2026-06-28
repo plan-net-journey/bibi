@@ -105,8 +105,7 @@ class WrapperState:
                 try:
                     _jdb.report_status(conn, self.job_id, **{
                         k: v for k, v in body.items()
-                        if k in ("status", "reason", "exit_code", "output_ref",
-                                 "wrapper_url")
+                        if k in ("status", "reason", "exit_code", "output_ref")
                     })
                     conn.commit()
                 finally:

@@ -145,6 +145,7 @@ def _run_wrapper(
     attempt: int = 0, attempts: int = 1,
     backoff_type: str | None = None,
     scheduler_db_path: str | None = None,  # Direkter DB-Zugriff (kein HTTP)
+    scheduler_url: str | None = None,      # HTTP-Reporting (App-Typ / Remote)
 ) -> tuple[int, str | None, Path, str]:
     """Worktree → Wrapper-Subprozess → Commit/Report.
 
@@ -206,10 +207,11 @@ def _run_wrapper(
         env["BIBI_ATTEMPTS"] = str(attempts)
         if backoff_type:
             env["BIBI_BACKOFF"] = backoff_type
-        # Reporting-Ziel: lokale DB (kein HTTP nötig) oder HTTP-Daemon.
-        # BIBI_SCHEDULER_DB_PATH hat Vorrang (Local-Modus, Tests).
+        # Reporting-Ziel: explizit gesetzt > lokale DB > HTTP-Daemon.
         if scheduler_db_path:
             env["BIBI_SCHEDULER_DB_PATH"] = scheduler_db_path
+        elif scheduler_url:
+            env["BIBI_SCHEDULER_URL"] = scheduler_url
         elif not env.get("BIBI_SCHEDULER_URL"):
             env["BIBI_SCHEDULER_URL"] = "http://127.0.0.1:8769"
 
@@ -285,16 +287,26 @@ def execute_reservation(
     attempts = reservation.get("attempts") or 1
     # Lokaler DB-Pfad (LocalScheduler): Wrapper kann direkt schreiben statt HTTP.
     # client.db_path kann None sein (kein expliziter Pfad) → Default auflösen.
+    # App-Jobs nutzen immer HTTP, damit wrapper_url beim Relay registriert wird.
     from bibi.daemon.scheduler_client import LocalScheduler as _LocalScheduler
     if isinstance(client, _LocalScheduler):
-        scheduler_db_path: str | None = str(job_db.db_path(client.db_path))
+        _resolved_db: str = str(job_db.db_path(client.db_path))
     else:
-        scheduler_db_path = str(client.db_path) if getattr(client, "db_path", None) else None
+        _resolved_db = str(client.db_path) if getattr(client, "db_path", None) else ""
     try:
         kind = reservation["kind"]
         silence_timeout = None if kind == "app" else reservation.get("silence_timeout")
         # Detach-Modus: Wrapper-Prozess läuft eigenständig (PLAN-9 §9).
         # Er committed den Worktree, meldet Terminal-Status + output_ref selbst.
+        # App-Typ: HTTP-Reporting damit wrapper_url im Daemon registriert wird.
+        # Job/Claude: SQLite-Direct (schneller, kein HTTP-Roundtrip).
+        _daemon_port = int(os.environ.get("BIBI_DAEMON_PORT", "8769"))
+        if kind == "app":
+            _sched_db_path: str | None = None
+            _sched_url: str | None = f"http://127.0.0.1:{_daemon_port}"
+        else:
+            _sched_db_path = _resolved_db or None
+            _sched_url = None if _sched_db_path else f"http://127.0.0.1:{_daemon_port}"
         _, _, out_path, outcome = _run_wrapper(
             job_id=jid, slug=reservation["slug"], kind=kind,
             payload=reservation["payload"], model=reservation.get("model"),
@@ -310,7 +322,8 @@ def execute_reservation(
             worker_name=worker_name, host=host,
             attempt=attempt, attempts=attempts,
             backoff_type=reservation.get("backoff"),
-            scheduler_db_path=scheduler_db_path,
+            scheduler_db_path=_sched_db_path,
+            scheduler_url=_sched_url,
         )
     except Exception as exc:
         # Setup-Fehler vor Wrapper-Start: Job nicht in `running` hängen lassen.
