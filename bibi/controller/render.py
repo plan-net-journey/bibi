@@ -21,8 +21,9 @@ body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem;
 header { display: flex; align-items: baseline; gap: .75rem; }
 h1 { font-size: 1.4rem; margin: 0; }
 .muted { color: #888; font-size: .85rem; }
-.banner { margin: 1.25rem 0 .5rem; padding: 1rem 1.25rem; border-radius: .6rem;
-          border: 1px solid #8884; font-size: 1.25rem; font-weight: 600; }
+.banner { margin: 0; padding: .35rem .75rem; border-radius: .35rem;
+          border: 1px solid #8884; font-size: .82rem; font-weight: 500;
+          display: inline-block; }
 .banner.ok  { background: #1a7f3722; }
 .banner.bad { background: #c0392b22; }
 table { width: 100%; border-collapse: collapse; font-size: .9rem; }
@@ -624,7 +625,7 @@ _FEED_JS = """
 #: Band-Zugehörigkeit (Frontend-Plan §C.2, Achse #2 „nicht im Journal"): nur
 #: **nicht-terminale** jobs-Zustände. Terminale (complete/error/killed/zombie/
 #: inactive) stehen im Feed/Journal, nicht in den Bändern.
-_ACTIVE_STATES = ("running", "failed", "deferred")
+_ACTIVE_STATES = ("running", "failed", "deferred", "killed")
 
 
 def _aktiv_row(j: dict, now: float) -> str:
@@ -741,21 +742,21 @@ def _feed_handles(status: dict | None = None) -> str:
     maint = bool((status or {}).get("maintenance"))
     mcls = "handle warn" if maint else "handle"
     mlabel = "MAINT: AN" if maint else "MAINT: aus"
+    on = bool((status or {}).get("maintenance"))
+    hide = "" if on else ' style="display:none"'
     return (
         '<nav class="handles">'
         '<button id="rescan" class="handle">RESCAN</button>'
         f'<button id="maint" class="{mcls}">{mlabel}</button>'
         '<button id="follow" class="handle on" onclick="bibiToggleFollow()">FOLLOW: AN</button>'
+        f'<span id="maintbanner" class="banner bad"{hide}>⚠ Dispatch pausiert</span>'
         "</nav>"
     )
 
 
 def _maint_banner(status: dict | None = None) -> str:
-    """Sichtbarer Wartungs-Hinweis (Feedback fürs MAINT-CTA): nur wenn Wartung an."""
-    on = bool((status or {}).get("maintenance"))
-    hide = "" if on else ' style="display:none"'
-    return (f'<div id="maintbanner" class="banner bad"{hide}>'
-            "⚠ Wartungsmodus aktiv — Job-Dispatch pausiert</div>")
+    """Nicht mehr als eigenes Element gerendert — Banner ist in _feed_handles() inline."""
+    return ""
 
 
 #: RESCAN + MAINT als plain-JS-Buttons gegen die JSON-API (§1.1). RESCAN → POST
