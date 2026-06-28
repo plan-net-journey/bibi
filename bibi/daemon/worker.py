@@ -134,6 +134,7 @@ def _run_wrapper(
     *, job_id: str, slug: str, kind: str, payload: str, model: str | None = None,
     soul: str | None = None, session: str | None = None,
     wall_time: int | None = None, silence_timeout: int | None = None,
+    app_port: int | None = None, app_prefix: str | None = None,
     repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
     run_id: str | None = None,
 ) -> tuple[int, str, Path, str]:
@@ -174,6 +175,13 @@ def _run_wrapper(
             env["BIBI_JOB_SOUL"] = soul
         if session:
             env["BIBI_JOB_SESSION"] = session
+    elif kind == "app":
+        env["BIBI_APP_ENTRYPOINT"] = payload
+        env["BIBI_WRAPPER_PORT"] = "8080"
+        if app_port:
+            env["BIBI_APP_PORT"] = str(app_port)
+        if app_prefix:
+            env["BIBI_APP_PREFIX"] = app_prefix
 
     # Container-Exec-Konfig an den Wrapper reichen (PLAN-8): BIBI_EXEC_MODE/IMAGE/
     # DOCKER_BIN + Auth-Token. Leer ⇒ Host-Modus (unverändert).
@@ -246,12 +254,17 @@ def execute_reservation(
     run_id = f"{reservation['slug']}:{reservation.get('fire', 0)}"
     host = host or socket.gethostname()
     try:
+        kind = reservation["kind"]
+        # App-Typ: kein Silence-Zombie (§5.5 — langlebige Server dürfen idle sein).
+        silence_timeout = None if kind == "app" else reservation.get("silence_timeout")
         code, commit_sha, out_path, outcome = _run_wrapper(
-            job_id=jid, slug=reservation["slug"], kind=reservation["kind"],
+            job_id=jid, slug=reservation["slug"], kind=kind,
             payload=reservation["payload"], model=reservation.get("model"),
             soul=reservation.get("soul"), session=reservation.get("session"),
             wall_time=reservation.get("wall_time"),
-            silence_timeout=reservation.get("silence_timeout"),
+            silence_timeout=silence_timeout,
+            app_port=reservation.get("app_port"),
+            app_prefix=reservation.get("app_prefix"),
             repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
             run_id=run_id,
         )

@@ -131,7 +131,9 @@ def test_reservation_view_shape(conn):
     r = job_db.reserve_next(conn)
     assert set(r) == {
         "id", "slug", "kind", "payload", "model", "soul", "session",
-        "fire", "attempt", "attempts", "backoff", "wall_time", "silence_timeout", "env",
+        "fire", "attempt", "attempts", "backoff", "wall_time", "silence_timeout",
+        "app_port", "app_prefix", "hitl_timeout",
+        "env",
     }
     assert r["kind"] == "job" and r["payload"] == "echo hi"
 

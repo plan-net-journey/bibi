@@ -362,7 +362,10 @@ def reservation_view(row: sqlite3.Row) -> dict:
         # überwachen + Backoff rechnen kann (§3.6).
         "attempt": row["attempt"], "attempts": row["attempts"],
         "backoff": row["backoff"], "wall_time": row["wall_time"],
-        "silence_timeout": row["silence_timeout"], "env": {},
+        "silence_timeout": row["silence_timeout"],
+        "app_port": row["app_port"], "app_prefix": row["app_prefix"],
+        "hitl_timeout": row["hitl_timeout"],
+        "env": {},
     }
 
 

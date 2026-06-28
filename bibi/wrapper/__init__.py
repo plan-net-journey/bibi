@@ -60,12 +60,62 @@ def _claude_argv(env: dict[str, str]) -> list[str]:
     return argv
 
 
-#: Das Registry-Mapping. Frontmatter-Key == Typ == Schlüssel (§1.2). ``app`` folgt
-#: in Phase 6 ohne Umbau (``long_lived``/``supports_hitl`` sind die Achsen).
+def _app_argv(env: dict[str, str]) -> list[str]:
+    return ["bash", "-c", env.get("BIBI_APP_ENTRYPOINT", "")]
+
+
+#: Das Registry-Mapping. Frontmatter-Key == Typ == Schlüssel (§1.2).
 REGISTRY: dict[str, TypeHandler] = {
     "job": TypeHandler(build_command=lambda env: ["bash", "-c", env.get("BIBI_JOB_CMD", "")]),
     "claude": TypeHandler(build_command=_claude_argv),
+    "app": TypeHandler(build_command=_app_argv, long_lived=True, supports_hitl=True),
 }
+
+
+def run_app(env: dict[str, str]) -> int:
+    """App-Typ: Wrapper-HTTP-Server starten + App-Child nebenläufig ausführen.
+
+    Unterschied zu ``run_job``: HTTP-Server auf ``BIBI_WRAPPER_PORT`` (8080)
+    läuft parallel zum Child; kein Silence-Timeout (langlebiger Prozess, §5.5)."""
+    kind = env["BIBI_JOB_TYPE"]
+    handler = REGISTRY.get(kind)
+    if handler is None:
+        raise KeyError(f"unbekannter Job-Typ: {kind!r} (Registry: {sorted(REGISTRY)})")
+    child_argv = handler.build_command(env)
+    out_path = Path(env["BIBI_OUTPUT_PATH"])
+    job_id = env.get("BIBI_JOB_ID", "unknown")
+    wrapper_port = int(env.get("BIBI_WRAPPER_PORT") or "8080")
+
+    from bibi.wrapper.server import WrapperState, start_server
+    state = WrapperState(job_id=job_id)
+    server = start_server(state, port=wrapper_port)
+
+    spec = exec_backend.build_exec(child_argv, env)
+    proc = subprocess.Popen(
+        spec.argv, cwd=spec.cwd, env=spec.env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, bufsize=1,
+    )
+    lock = threading.Lock()
+
+    def pump(pipe, tag: str) -> None:
+        assert pipe is not None
+        for line in pipe:
+            with lock:
+                output.append(out_path, tag, line.rstrip("\n"))
+
+    threads = [
+        threading.Thread(target=pump, args=(proc.stdout, "out")),
+        threading.Thread(target=pump, args=(proc.stderr, "err")),
+    ]
+    for t in threads:
+        t.start()
+    proc.wait()
+    for t in threads:
+        t.join()
+
+    server.should_exit = True
+    return proc.returncode
 
 
 def run_job(env: dict[str, str]) -> int:
@@ -110,8 +160,11 @@ def run_job(env: dict[str, str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     env = dict(os.environ)
-    code = run_job(env)
-    return code
+    kind = env.get("BIBI_JOB_TYPE", "")
+    handler = REGISTRY.get(kind)
+    if handler is not None and handler.long_lived:
+        return run_app(env)
+    return run_job(env)
 
 
 if __name__ == "__main__":
