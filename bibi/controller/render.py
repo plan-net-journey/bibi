@@ -1028,15 +1028,30 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None) -
 #: §5.6-Verben, die der Controller als Buttons anbietet (Durchsetzung/Scope: 4.6).
 _VERBS = ("start", "reset", "kill")
 
+# Welche Verben sind für welchen Status sinnvoll?
+_VERBS_FOR_STATUS: dict[str, tuple[str, ...]] = {
+    "pending":  ("start", "kill"),
+    "running":  ("kill",),
+    "failed":   ("start", "reset", "kill"),
+    "deferred": ("start", "kill"),
+    "killed":   ("reset",),
+    "error":    ("reset",),
+    "zombie":   ("reset",),
+    "inactive": ("reset",),
+    "complete": ("start",),
+}
+
 
 def _action_bar(slug: str, job: dict | None) -> str:
     if not job or not job.get("id"):
-        return ""  # kein Live-Job (z. B. nie gelaufener/entfernter Schedule)
+        return ""
     s = _e(slug)
+    status = job.get("status", "")
+    verbs = _VERBS_FOR_STATUS.get(status, _VERBS)
     btns = "".join(
         f'<button hx-post="/-/ui/schedule/{s}/{v}" hx-target="#detail" '
         f'hx-swap="outerHTML">{v.upper()}</button> '
-        for v in _VERBS
+        for v in verbs
     )
     return f'<div class="actions">{btns}</div>'
 
