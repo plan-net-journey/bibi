@@ -227,7 +227,15 @@ def list_jobs(conn: sqlite3.Connection, status: str | None = None) -> list[dict]
         rows = conn.execute(
             "SELECT * FROM jobs ORDER BY priority DESC, enqueued_at ASC"
         ).fetchall()
-    return [job_view(r) for r in rows]
+    # Letzter abgeschlossener Lauf je Slug (für Bands-Anzeige).
+    last_run_at: dict[str, float] = {}
+    for r in conn.execute(
+        "SELECT slug, MAX(finished_at) AS last_at FROM journal"
+        " WHERE finished_at IS NOT NULL GROUP BY slug"
+    ).fetchall():
+        if r["last_at"] is not None:
+            last_run_at[r["slug"]] = r["last_at"]
+    return [job_view(r, last_run_at=last_run_at.get(r["slug"])) for r in rows]
 
 
 def get_job(conn: sqlite3.Connection, job_id: str) -> dict | None:
@@ -252,7 +260,7 @@ def list_schedules(conn: sqlite3.Connection) -> list[dict]:
 # ── Row → View (JobView/ScheduleView-Form, §3.0-Schemata) ────────────────────
 
 
-def job_view(row: sqlite3.Row) -> dict:
+def job_view(row: sqlite3.Row, *, last_run_at: float | None = None) -> dict:
     return {
         "id": row["id"], "slug": row["slug"], "kind": row["kind"],
         "status": row["status"], "reason": row["reason"], "priority": row["priority"],
@@ -260,6 +268,7 @@ def job_view(row: sqlite3.Row) -> dict:
         "finished_at": row["finished_at"], "exit_code": row["exit_code"],
         "attempt": row["attempt"], "host": row["host"], "worker": row["worker"],
         "output_ref": row["output_ref"], "next_fire_at": row["next_fire_at"],
+        "last_run_at": last_run_at,
     }
 
 

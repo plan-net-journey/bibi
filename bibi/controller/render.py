@@ -133,6 +133,14 @@ def _until(ts: float | None, now: float) -> str:
     return f"in {d // 86400} d"
 
 
+def _abs_time(ts: float | None) -> str:
+    """Absoluter Zeitstempel als HH:MM (Lokalzeit). None → „—"."""
+    if ts is None:
+        return "—"
+    import datetime
+    return datetime.datetime.fromtimestamp(ts).strftime("%H:%M")
+
+
 def _e(v) -> str:
     return html.escape("" if v is None else str(v))
 
@@ -328,7 +336,12 @@ def _screen_nav(active: str) -> str:
     """Screen-Tabs (Feed · Schedules · Live-Log · API-Docs); der aktive ohne Link."""
     tabs = [("Feed", "/-/ui/feed"), ("Schedules", "/-/ui/schedules"),
             ("Live-Log", "/-/ui/logs"), ("API-Docs", "/-/docs")]
-    items = [t if t == active else f'<a class="back" href="{h}">{t}</a>' for t, h in tabs]
+    def _tab(t: str, h: str) -> str:
+        if t == active:
+            return t
+        extra = ' target="_blank" rel="noopener"' if t == "API-Docs" else ""
+        return f'<a class="back" href="{h}"{extra}>{t}</a>'
+    items = [_tab(t, h) for t, h in tabs]
     return '<span class="muted">' + " · ".join(items) + "</span>"
 
 
@@ -392,8 +405,8 @@ def _handles(status: dict) -> str:
         '<button id="follow" class="handle on" onclick="bibiToggleFollow()">FOLLOW: AN</button>'
         f"{maint_handle(status)}"
         '<a href="/-/ui/logs">Live-Log</a>'
-        '<a href="/-/docs">API-Docs</a>'
-        '<a href="/-/redoc">ReDoc</a>'
+        '<a href="/-/docs" target="_blank" rel="noopener">API-Docs</a>'
+        '<a href="/-/redoc" target="_blank" rel="noopener">ReDoc</a>'
         "</nav>"
     )
 
@@ -458,7 +471,7 @@ function passes(o){
   return true;
 }
 function line(o){
-  const t = (o.ts||'').slice(11,19);
+  const t = o.ts ? new Date(o.ts).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '--:--:--';
   const el = document.createElement('div');
   el.className = 'ln ' + (o.level||'').toLowerCase();
   el.appendChild(document.createTextNode(
@@ -482,13 +495,17 @@ function rerender(){
   for (const o of buf){ if(passes(o)) box.appendChild(line(o)); }
   autoscroll();
 }
-const es = new EventSource('/-/log/stream?n=200');
-es.onmessage = (e) => {
-  let o; try { o = JSON.parse(e.data); } catch (_) { return; }
-  buf.push(o);
-  if (buf.length > 2000) buf.shift();
-  if (passes(o)) { box.appendChild(line(o)); autoscroll(); }
-};
+function connect(){
+  const es = new EventSource('/-/log/stream?n=200');
+  es.onmessage = (e) => {
+    let o; try { o = JSON.parse(e.data); } catch (_) { return; }
+    buf.push(o);
+    if (buf.length > 2000) buf.shift();
+    if (passes(o)) { box.appendChild(line(o)); autoscroll(); }
+  };
+  es.onerror = () => { es.close(); setTimeout(connect, 3000); };
+}
+connect();
 box.addEventListener('scroll', () => {
   paused = box.scrollTop + box.clientHeight < box.scrollHeight - 24;
 });
@@ -620,6 +637,8 @@ def _aktiv_row(j: dict, now: float) -> str:
         bits.append(f"retry {_until(j.get('next_fire_at'), now)}")
     if j.get("reason"):
         bits.append(_e(j.get("reason")))
+    if j.get("last_run_at"):
+        bits.append(f"letzter {_abs_time(j.get('last_run_at'))}")
     tail = " · ".join(bits)
     # running-Zeilen tragen data-running (job-id) → die Band-JS klappt das aktiv-Band
     # bei einem **neuen** Lauf automatisch auf (Entscheidung #6).
@@ -631,10 +650,12 @@ def _aktiv_row(j: dict, now: float) -> str:
 
 def _wartet_row(j: dict, now: float) -> str:
     slug = _e(j.get("slug"))
-    nxt = _until(j.get("next_fire_at"), now)
+    nf = j.get("next_fire_at")
+    nxt = f"{_abs_time(nf)} ({_until(nf, now)})" if nf else "—"
+    last = _abs_time(j.get("last_run_at"))
     return (f'<div class="band-row"><span class="st pending">○</span> '
-            f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a> '
-            f'<span class="muted">{nxt}</span></div>')
+            f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a>'
+            f' <span class="muted">nächster {nxt} · letzter {last}</span></div>')
 
 
 def bands_fragment(jobs: list[dict], now: float | None = None) -> str:
@@ -643,7 +664,10 @@ def bands_fragment(jobs: list[dict], now: float | None = None) -> str:
     darum hier nur das Markup mit ``data-band``; die Zähler sind serverseitig frisch."""
     now = time.time() if now is None else now
     active = [j for j in jobs if j.get("status") in _ACTIVE_STATES]
-    waiting = [j for j in jobs if j.get("status") == "pending"]
+    waiting = sorted(
+        [j for j in jobs if j.get("status") == "pending"],
+        key=lambda j: j.get("next_fire_at") or float("inf"),
+    )
     a_body = ("".join(_aktiv_row(j, now) for j in active)
               or '<div class="out-empty">— nichts aktiv —</div>')
     w_body = ("".join(_wartet_row(j, now) for j in waiting)
@@ -946,36 +970,25 @@ def _commit_cell(run: dict) -> str:
     return f'<span class="commit" title="{_e(sha)} {branch}">{short}</span>'
 
 
-def _run_rows(runs: list[dict], slug: str, now: float,
-              top_output: dict | None = None) -> str:
+def _run_rows(runs: list[dict], slug: str, now: float) -> str:
     s = _e(slug)
     rows = []
-    for i, r in enumerate(runs):
+    for r in runs:
         rid = r.get("id")
         st = _e(r.get("status"))
-        # Der jüngste Lauf bekommt den Output **default expanded** (server-gerendert,
-        # überlebt den Poll); ältere behalten den Lazy-Toggle (sonst N Fetches/Poll).
-        if i == 0 and top_output is not None:
-            out_cell = '<span class="muted">Output ↓</span>'
-            out_html = output_block(top_output.get("events", []),
-                                    top_output.get("kind", "job"))
-        else:
-            out_cell = (f'<button hx-get="/-/ui/run/{rid}/output" hx-target="#out-{rid}" '
-                        'hx-swap="innerHTML">Output</button>')
-            out_html = ""
+        t_abs = _abs_time(r.get("finished_at") or r.get("started_at"))
+        t_rel = _ago(r.get("finished_at") or r.get("started_at"), now)
         rows.append(
             "<tr>"
-            f"<td>{_ago(r.get('finished_at') or r.get('started_at'), now)}</td>"
+            f"<td>{t_abs} <span class='muted'>({t_rel})</span></td>"
             f'<td class="st {st}">{st}</td>'
             f"<td>{_e(r.get('reason'))}</td>"
             f"<td>{_e(r.get('exit_code'))}</td>"
             f"<td>{_commit_cell(r)}</td>"
-            f"<td>{out_cell} "
-            f'<a class="back" href="/-/ui/run/{rid}">→ Detail</a> '
+            f'<td><a class="back" href="/-/ui/run/{rid}">→ Detail</a> '
             f'<button hx-delete="/-/ui/schedule/{s}/run/{rid}" hx-target="#detail" '
             'hx-swap="outerHTML" hx-confirm="Lauf-Record löschen?">Löschen</button></td>'
             "</tr>"
-            f'<tr><td colspan="6"><div id="out-{rid}">{out_html}</div></td></tr>'
         )
     return "".join(rows)
 
@@ -1046,8 +1059,8 @@ def schedule_detail_inner(
             f"letzter Lauf <b>{last_run}</b> · nächster Lauf {nxt}")
     runs_html = (
         '<table><thead><tr><th>Zeit</th><th>Status</th><th>Grund</th>'
-        '<th>exit</th><th>Commit</th><th>Aktion</th></tr></thead>'
-        f"<tbody>{_run_rows(runs, slug, now, top_output)}</tbody></table>"
+        '<th>exit</th><th>Commit</th><th></th></tr></thead>'
+        f"<tbody>{_run_rows(runs, slug, now)}</tbody></table>"
         if runs else '<p class="out-empty">— noch keine Läufe —</p>'
     )
     # #detail self-pollt (2s, FOLLOW-gated) → Live-Block wechselt pending→running→…
