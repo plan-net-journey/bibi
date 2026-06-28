@@ -46,6 +46,7 @@ class JobView(BaseModel):
     worker: str | None = None
     output_ref: str | None = None
     next_fire_at: float | None = None  # nächster geplanter Trigger (überfällig-Anzeige)
+    last_run_at: float | None = None   # letzter abgeschlossener Lauf (aus Journal)
 
 
 class ScheduleView(BaseModel):
