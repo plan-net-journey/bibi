@@ -135,6 +135,7 @@ def _run_wrapper(
     soul: str | None = None, session: str | None = None,
     wall_time: int | None = None, silence_timeout: int | None = None,
     app_port: int | None = None, app_prefix: str | None = None,
+    exec_mode: str | None = None,
     hitl_timeout: int | None = None,
     repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
     run_id: str | None = None,
@@ -193,6 +194,10 @@ def _run_wrapper(
     # Container-Exec-Konfig an den Wrapper reichen (PLAN-8): BIBI_EXEC_MODE/IMAGE/
     # DOCKER_BIN + Auth-Token. Leer ⇒ Host-Modus (unverändert).
     env.update(_exec_config())
+    # Per-Job exec_mode überschreibt die Knoten-Config (z. B. exec_mode: host für
+    # Host-Modus-Apps wie consent-demo, die keinen Docker-Stack brauchen).
+    if exec_mode:
+        env["BIBI_EXEC_MODE"] = exec_mode.strip().lower()
     # Der Container-Name ``bibi-<job_id>`` ist bei wiederkehrenden Jobs stabil; ein
     # in „Created"/„Exited" steckender Rest (von --rm nicht erfasst) würde den
     # nächsten ``docker run`` mit „name already in use" sofort scheitern lassen.
@@ -272,6 +277,7 @@ def execute_reservation(
             silence_timeout=silence_timeout,
             app_port=reservation.get("app_port"),
             app_prefix=reservation.get("app_prefix"),
+            exec_mode=reservation.get("exec_mode"),
             hitl_timeout=reservation.get("hitl_timeout"),
             repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
             run_id=run_id,

@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     session         TEXT,
     app_port        INTEGER,
     app_prefix      TEXT,
+    exec_mode       TEXT,
     image           TEXT,
 
     -- Lifecycle-Stellschrauben (§5.5) — vom Worker ausgewertet (Stufe 3.5)

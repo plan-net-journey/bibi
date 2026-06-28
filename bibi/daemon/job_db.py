@@ -25,7 +25,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -66,6 +66,11 @@ def _mig_journal_commit(conn: sqlite3.Connection) -> None:  # v5 → v6
         conn.execute("ALTER TABLE journal ADD COLUMN branch TEXT")
 
 
+def _mig_jobs_exec_mode(conn: sqlite3.Connection) -> None:  # v6 → v7
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "exec_mode"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN exec_mode TEXT")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -75,6 +80,7 @@ _MIGRATIONS: dict[int, list] = {
     3: [_mig_jobs_deferred_at],
     4: [_mig_jobs_fire],
     5: [_mig_journal_commit],
+    6: [_mig_jobs_exec_mode],
 }
 
 
@@ -171,6 +177,7 @@ def _spec_columns(pr: ParseResult, now: float) -> dict:
         "session": s.session,
         "app_port": s.app_port,
         "app_prefix": s.app_prefix,
+        "exec_mode": s.exec_mode,
         "image": s.image,
         "attempts": s.attempts,
         "backoff": s.backoff,
@@ -364,6 +371,7 @@ def reservation_view(row: sqlite3.Row) -> dict:
         "backoff": row["backoff"], "wall_time": row["wall_time"],
         "silence_timeout": row["silence_timeout"],
         "app_port": row["app_port"], "app_prefix": row["app_prefix"],
+        "exec_mode": row["exec_mode"],
         "hitl_timeout": row["hitl_timeout"],
         "env": {},
     }

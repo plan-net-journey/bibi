@@ -102,6 +102,7 @@ class ScheduleSpec:
     # app-spezifisch (§5.3) — Phase 6, hier nur strukturell.
     app_port: int | None = None
     app_prefix: str | None = None
+    exec_mode: str | None = None  # "host"|"container" — überschreibt Knoten-Config
 
     # Optionales Override-Image (§7.6).
     image: str | None = None

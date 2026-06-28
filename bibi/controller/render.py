@@ -107,6 +107,7 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
   font: inherit; background: #8881; border: 1px solid #8884; border-radius: .3rem;
   padding: .4rem; resize: vertical; min-height: 4rem; margin-bottom: .4rem; }
 .liveterm { max-height: 24rem; overflow-y: auto; }
+.liveterm .lts { color: #888; user-select: none; }
 .liveclock { color: #5fb37a; font-size: .8rem; font-family: ui-monospace, monospace; }
 """
 
@@ -536,6 +537,7 @@ def log_page() -> str:
         "<title>bibi · Live-Log</title>"
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Live-Log')}"
+        f"<script>{_CLOCK_JS}</script>"
         '<div class="logbar">'
         '<label>Level <select id="lvl">'
         '<option value="0">debug</option>'
@@ -924,12 +926,19 @@ def live_output_box(job_id: str, events: list[dict] | None = None,
     weitergestreamt (``/-/job/{id}/stream?from=N`` → kein Dup). ``hx-preserve`` hält
     die Box + EventSource über den 2 s-``#detail``-Poll am Leben. Raw-Zeilen (kein
     Markdown — das fließende „Live"-Bild ist roh; Markdown rendert das Execution-Detail)."""
+    import datetime as _dt
     evs = events or []
-    seed = "\n".join(
-        f'<span class="err">{_e(_strip_ansi(e.get("line", "")))}</span>'
-        if e.get("s") == "err" else _e(_strip_ansi(e.get("line", "")))
-        for e in evs
-    )
+
+    def _seed_line(e: dict) -> str:
+        try:
+            ts = _dt.datetime.fromtimestamp(float(e["t"])).strftime("%H:%M:%S")
+        except Exception:
+            ts = "--:--:--"
+        line = _e(_strip_ansi(e.get("line", "")))
+        cls = ' class="err"' if e.get("s") == "err" else ""
+        return f'<span class="lts">{ts}</span> <span{cls}>{line}</span>'
+
+    seed = "\n".join(_seed_line(e) for e in evs)
     jid = _e(job_id)
     return (f'<pre class="term liveterm" id="livebox-{jid}" data-job="{jid}" '
             f'data-from="{len(evs)}" hx-preserve="true">{seed}</pre>')
@@ -954,6 +963,13 @@ _LIVE_JS = """
         let o; try { o = JSON.parse(e.data); } catch(_) { return; }
         const stick = atBottom();
         if (box.childNodes.length) box.appendChild(document.createTextNode('\\n'));
+        const tsSpan = document.createElement('span');
+        tsSpan.className = 'lts';
+        tsSpan.textContent = o.t
+          ? new Date(o.t*1000).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
+          : '--:--:--';
+        box.appendChild(tsSpan);
+        box.appendChild(document.createTextNode(' '));
         const span = document.createElement('span');
         if (o.s === 'err') span.className = 'err';
         span.textContent = o.line || '';
