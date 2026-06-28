@@ -447,9 +447,12 @@ def report_status(
         fields["locked_at"] = None
     if target is Status.PENDING:  # reset = frische Neueinplanung (§5.6)
         fields["attempt"] = 0
-        fields["next_fire_at"] = None
         fields["reason"] = None
         fields["deferred_at"] = None
+        # Reset → sofort dispatchbar: next_fire_at = now damit reserve_next
+        # (next_fire_at IS NOT NULL AND <= now) den Job beim nächsten Tick sieht.
+        # Der Cron-Takt wird nach complete neu berechnet; hier zählt nur "sofort".
+        fields["next_fire_at"] = now
     if attempt is not None:
         fields["attempt"] = attempt
     if next_fire_at is not None:
