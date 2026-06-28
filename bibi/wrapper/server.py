@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -26,13 +27,27 @@ class WrapperState:
 
     def __init__(self, job_id: str, *,
                  scheduler_url: str | None = None,
-                 app_port: int | None = None) -> None:
+                 app_port: int | None = None,
+                 hitl_timeout: int | None = None) -> None:
         self.job_id = job_id
         self.scheduler_url = scheduler_url
         self.app_port = app_port
+        self.hitl_timeout = hitl_timeout
         self._status = "running"
         self._demand: dict | None = None
+        self._last_activity = time.monotonic()
         self._lock = threading.Lock()
+
+    def touch(self) -> None:
+        """Activity-Timer zurücksetzen (stdout/stderr-Zeile, /input, /ping)."""
+        with self._lock:
+            self._last_activity = time.monotonic()
+
+    @property
+    def idle_seconds(self) -> float:
+        """Sekunden seit letzter Activity."""
+        with self._lock:
+            return time.monotonic() - self._last_activity
 
     @property
     def status(self) -> str:
@@ -63,12 +78,15 @@ class WrapperState:
                 "demand": self._demand,
             }
 
-    def report(self, status: str) -> None:
+    def report(self, status: str, *, reason: str | None = None) -> None:
         """Statuswechsel best-effort beim Scheduler melden (PLAN-9 §8 E2)."""
         if not self.scheduler_url:
             return
         url = f"{self.scheduler_url.rstrip('/')}/-/scheduler/status/{self.job_id}"
-        payload = json.dumps({"status": status}).encode()
+        body: dict = {"status": status}
+        if reason is not None:
+            body["reason"] = reason
+        payload = json.dumps(body).encode()
         req = urllib.request.Request(
             url, data=payload,
             headers={"Content-Type": "application/json"},
@@ -167,9 +185,18 @@ def make_app(state: WrapperState) -> FastAPI:
 
         state.demand = None
         state.status = "running"
+        state.touch()
         state.report("running")
         return Response(content=resp_body, status_code=status_code,
                         media_type=content_type)
+
+    @app.post("/-/job/{job_id}/ping")
+    def post_ping(job_id: str):
+        """Explizites Keepalive: Activity-Timer zurücksetzen (PLAN-9 §6, Slice 9.3)."""
+        if job_id != state.job_id:
+            raise HTTPException(status_code=404, detail="job not found")
+        state.touch()
+        return {"ok": True}
 
     return app
 

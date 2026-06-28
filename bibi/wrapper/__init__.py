@@ -72,11 +72,32 @@ REGISTRY: dict[str, TypeHandler] = {
 }
 
 
+def _hitl_monitor(proc: subprocess.Popen, state, *, poll: float = 1.0) -> None:
+    """Hintergrund-Thread: HITL-Zombie-Timeout überwachen (PLAN-9 §6, Slice 9.3).
+
+    Wenn ``state.status == "awaiting"`` und seit der letzten Activity mehr als
+    ``hitl_timeout`` Sekunden vergangen sind → Zombie melden + Child terminieren."""
+    import time as _time
+    while proc.poll() is None:
+        if (state.hitl_timeout is not None
+                and state.status == "awaiting"
+                and state.idle_seconds > state.hitl_timeout):
+            state.report("zombie", reason="activity_timeout")
+            proc.terminate()
+            _time.sleep(2.0)
+            if proc.poll() is None:
+                proc.kill()
+            break
+        _time.sleep(poll)
+
+
 def run_app(env: dict[str, str]) -> int:
     """App-Typ: Wrapper-HTTP-Server starten + App-Child nebenläufig ausführen.
 
     Unterschied zu ``run_job``: HTTP-Server auf ``BIBI_WRAPPER_PORT`` (8080)
-    läuft parallel zum Child; kein Silence-Timeout (langlebiger Prozess, §5.5)."""
+    läuft parallel zum Child; kein Silence-Timeout (langlebiger Prozess, §5.5).
+    HITL-Zombie-Timeout (``BIBI_HITL_TIMEOUT``, Default 48 h) überwacht den
+    ``awaiting``-Zustand (Slice 9.3)."""
     kind = env["BIBI_JOB_TYPE"]
     handler = REGISTRY.get(kind)
     if handler is None:
@@ -90,7 +111,10 @@ def run_app(env: dict[str, str]) -> int:
     scheduler_url = env.get("BIBI_SCHEDULER_URL") or None
     app_port_str = env.get("BIBI_APP_PORT")
     app_port = int(app_port_str) if app_port_str else None
-    state = WrapperState(job_id=job_id, scheduler_url=scheduler_url, app_port=app_port)
+    hitl_str = env.get("BIBI_HITL_TIMEOUT")
+    hitl_timeout = int(hitl_str) if hitl_str else None
+    state = WrapperState(job_id=job_id, scheduler_url=scheduler_url,
+                         app_port=app_port, hitl_timeout=hitl_timeout)
     server = start_server(state, port=wrapper_port)
 
     spec = exec_backend.build_exec(child_argv, env)
@@ -106,15 +130,18 @@ def run_app(env: dict[str, str]) -> int:
         for line in pipe:
             with lock:
                 output.append(out_path, tag, line.rstrip("\n"))
+            state.touch()  # stdout/stderr = Activity (§6)
 
-    threads = [
+    pump_threads = [
         threading.Thread(target=pump, args=(proc.stdout, "out")),
         threading.Thread(target=pump, args=(proc.stderr, "err")),
     ]
-    for t in threads:
+    monitor = threading.Thread(target=_hitl_monitor, args=(proc, state),
+                               kwargs={"poll": 0.5}, daemon=True, name="hitl-monitor")
+    for t in [*pump_threads, monitor]:
         t.start()
     proc.wait()
-    for t in threads:
+    for t in pump_threads:
         t.join()
 
     server.should_exit = True

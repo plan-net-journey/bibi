@@ -135,6 +135,7 @@ def _run_wrapper(
     soul: str | None = None, session: str | None = None,
     wall_time: int | None = None, silence_timeout: int | None = None,
     app_port: int | None = None, app_prefix: str | None = None,
+    hitl_timeout: int | None = None,
     repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
     run_id: str | None = None,
 ) -> tuple[int, str, Path, str]:
@@ -182,10 +183,12 @@ def _run_wrapper(
             env["BIBI_APP_PORT"] = str(app_port)
         if app_prefix:
             env["BIBI_APP_PREFIX"] = app_prefix
-        # Wrapper → Scheduler: Statuswechsel (awaiting/running) melden (PLAN-9 §8 E2).
+        # Wrapper → Scheduler: Statuswechsel (awaiting/running/zombie) melden (PLAN-9 §8 E2).
         # Default: lokaler Daemon. Kann via BIBI_SCHEDULER_URL überschrieben werden.
         if not env.get("BIBI_SCHEDULER_URL"):
             env["BIBI_SCHEDULER_URL"] = "http://127.0.0.1:8769"
+        if hitl_timeout is not None:
+            env["BIBI_HITL_TIMEOUT"] = str(hitl_timeout)
 
     # Container-Exec-Konfig an den Wrapper reichen (PLAN-8): BIBI_EXEC_MODE/IMAGE/
     # DOCKER_BIN + Auth-Token. Leer ⇒ Host-Modus (unverändert).
@@ -269,6 +272,7 @@ def execute_reservation(
             silence_timeout=silence_timeout,
             app_port=reservation.get("app_port"),
             app_prefix=reservation.get("app_prefix"),
+            hitl_timeout=reservation.get("hitl_timeout"),
             repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
             run_id=run_id,
         )

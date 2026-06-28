@@ -508,3 +508,188 @@ def test_run_app_passes_app_port_to_state(tmp_path, free_tcp_port):
 
     assert captured_states, "start_server wurde nicht aufgerufen"
     assert captured_states[0].app_port == app_port
+
+
+# ── Slice 9.3: Zombie-Timeout + /ping + Activity-Tracking ────────────────────
+
+
+def test_wrapper_state_touch_resets_timer():
+    state = WrapperState(job_id="z1", hitl_timeout=10)
+    import time
+    time.sleep(0.05)
+    assert state.idle_seconds > 0.0
+    state.touch()
+    assert state.idle_seconds < 0.05  # frisch resettet
+
+
+def test_wrapper_state_idle_seconds_increases():
+    state = WrapperState(job_id="z2")
+    import time
+    time.sleep(0.05)
+    assert state.idle_seconds >= 0.04
+
+
+def test_ping_endpoint_resets_timer():
+    state = WrapperState(job_id="z3", hitl_timeout=10)
+    import time
+    app = make_app(state)
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    time.sleep(0.05)
+    r = client.post("/-/job/z3/ping")
+    assert r.status_code == 200
+    assert state.idle_seconds < 0.05
+
+
+def test_ping_wrong_job_returns_404():
+    state = WrapperState(job_id="z4")
+    app = make_app(state)
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    r = client.post("/-/job/other/ping")
+    assert r.status_code == 404
+
+
+def test_hitl_monitor_kills_on_timeout(tmp_path, free_tcp_port):
+    """HITL-Monitor terminiert App-Child bei Timeout; Scheduler wird als zombie gemeldet."""
+    import json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+    import time
+
+    received: list[dict] = []
+
+    class SchedHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            received.append(json.loads(body))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"result":"ok"}')
+
+        def log_message(self, *args):
+            pass
+
+    sched_srv = HTTPServer(("127.0.0.1", free_tcp_port), SchedHandler)
+    t = threading.Thread(target=sched_srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        out_path = tmp_path / "output.jsonl"
+        env = {
+            "BIBI_JOB_TYPE": "app",
+            "BIBI_JOB_ID": "zombie1",
+            "BIBI_OUTPUT_PATH": str(out_path),
+            "BIBI_WORKTREE": str(tmp_path),
+            # App läuft 30 s — wird aber durch HITL-Timeout davor beendet
+            "BIBI_APP_ENTRYPOINT": "sleep 30",
+            "BIBI_WRAPPER_PORT": str(free_tcp_port + 1),
+            "BIBI_SCHEDULER_URL": f"http://127.0.0.1:{free_tcp_port}",
+            "BIBI_HITL_TIMEOUT": "1",  # 1 Sekunde Timeout für den Test
+        }
+        # Direkt _hitl_monitor-Funktionalität über run_app testen
+        import time as _time
+        start = _time.monotonic()
+        # Damit der Monitor feuert, muss der State "awaiting" sein.
+        # Wir setzen den State nach dem Start manuell via Patch.
+        from unittest.mock import patch
+        original_start_server = __import__(
+            "bibi.wrapper.server", fromlist=["start_server"]).start_server
+        captured = []
+
+        def mock_start(state, *, port):
+            captured.append(state)
+            return original_start_server(state, port=port)
+
+        with patch("bibi.wrapper.server.start_server", side_effect=mock_start):
+            # run_app in einem Thread starten, damit wir den State manipulieren können
+            result = [None]
+
+            def run():
+                result[0] = wrapper.run_app(env)
+
+            runner = threading.Thread(target=run)
+            runner.start()
+            # Kurz warten bis State-Objekt verfügbar
+            deadline = _time.monotonic() + 3.0
+            while not captured and _time.monotonic() < deadline:
+                _time.sleep(0.05)
+            assert captured, "start_server nicht aufgerufen"
+            state = captured[0]
+            state.status = "awaiting"  # HITL-Timeout-Bedingung aktivieren
+            state._last_activity = state._last_activity - 2.0  # schon abgelaufen
+            runner.join(timeout=10.0)
+
+        elapsed = _time.monotonic() - start
+        assert elapsed < 10.0, f"run_app hat zu lang gedauert: {elapsed:.1f}s"
+        # Zombie-Meldung an Scheduler
+        deadline = _time.monotonic() + 3.0
+        while not received and _time.monotonic() < deadline:
+            _time.sleep(0.05)
+        assert any(r.get("status") == "zombie" for r in received), received
+        assert any(r.get("reason") == "activity_timeout" for r in received), received
+    finally:
+        sched_srv.shutdown()
+
+
+def test_run_app_touches_on_stdout(tmp_path, free_tcp_port):
+    """stdout-Zeilen des Childs rufen state.touch() auf."""
+    import time
+    from unittest.mock import patch
+    original_start_server = __import__(
+        "bibi.wrapper.server", fromlist=["start_server"]).start_server
+    captured = []
+
+    def mock_start(state, *, port):
+        captured.append(state)
+        return original_start_server(state, port=port)
+
+    out_path = tmp_path / "output.jsonl"
+    env = {
+        "BIBI_JOB_TYPE": "app",
+        "BIBI_JOB_ID": "touch1",
+        "BIBI_OUTPUT_PATH": str(out_path),
+        "BIBI_WORKTREE": str(tmp_path),
+        "BIBI_APP_ENTRYPOINT": "echo activity",
+        "BIBI_WRAPPER_PORT": str(free_tcp_port),
+        "BIBI_HITL_TIMEOUT": "60",
+    }
+    with patch("bibi.wrapper.server.start_server", side_effect=mock_start):
+        wrapper.run_app(env)
+    assert captured
+    # idle_seconds nach dem Lauf ist klein — touch() wurde aufgerufen
+    assert captured[0].idle_seconds < 2.0
+
+
+def test_worker_sets_bibi_hitl_timeout(tmp_path):
+    """_run_wrapper setzt BIBI_HITL_TIMEOUT in die Wrapper-Env."""
+    import subprocess as subprocess_mod
+    from bibi.daemon import worker as _worker
+    captured_env: list[dict] = []
+    _orig_popen = subprocess_mod.Popen  # vor dem Patch sichern
+
+    def mock_popen(argv, **kwargs):
+        captured_env.append(kwargs.get("env") or {})
+        return _orig_popen(
+            ["python", "-c", "import sys; sys.exit(0)"],
+            stdin=subprocess_mod.DEVNULL, stdout=subprocess_mod.PIPE,
+            stderr=subprocess_mod.PIPE,
+            env=kwargs.get("env"), cwd=None,
+            start_new_session=False,
+        )
+
+    with (
+        patch("bibi.daemon.worker.subprocess.Popen", side_effect=mock_popen),
+        patch("bibi.daemon.worker.worktree.prepare", return_value=tmp_path),
+        patch("bibi.daemon.worker.worktree.commit", return_value="abc123"),
+    ):
+        out_path = tmp_path / "output.jsonl"
+        out_path.touch()
+        _worker._run_wrapper(
+            job_id="ht1", slug="testslug", kind="app", payload="echo x",
+            app_port=8081, app_prefix="/app", hitl_timeout=3600,
+            repo_root=tmp_path, work_dir=tmp_path / "wt",
+        )
+
+    assert captured_env, "Popen wurde nicht aufgerufen"
+    assert captured_env[0].get("BIBI_HITL_TIMEOUT") == "3600", captured_env[0]
