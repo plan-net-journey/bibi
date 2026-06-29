@@ -637,7 +637,7 @@ _FEED_JS = """
 #: Band-Zugehörigkeit (Frontend-Plan §C.2, Achse #2 „nicht im Journal"): nur
 #: **nicht-terminale** jobs-Zustände. Terminale (complete/error/killed/zombie/
 #: inactive) stehen im Feed/Journal, nicht in den Bändern.
-_ACTIVE_STATES = ("running", "failed", "deferred", "killed", "error", "zombie", "inactive")
+_ACTIVE_STATES = ("running", "awaiting", "failed", "deferred", "killed", "error", "zombie", "inactive")
 
 
 def _aktiv_row(j: dict, now: float) -> str:
