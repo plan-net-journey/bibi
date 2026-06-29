@@ -728,14 +728,26 @@ _BANDS_JS = """
     localStorage.setItem('bibiBand.'+k, cur?'0':'1');
     applyBands();
   };
+  let lastActiveAt = 0;
+  function hasActive(root){
+    return !!(root || document).querySelector('[data-band="aktiv"] .band-row');
+  }
   applyBands(); autoOpenAktiv();
+  if(hasActive()) lastActiveAt = Date.now();
   setInterval(async () => {
     if (window.bibiFollow === false) return;   // FOLLOW aus → Band-Poll pausiert
     try{
       const r=await fetch('/-/ui/feed/bands'); if(!r.ok) return;
       const html=await r.text();
       const wrap=document.getElementById('bands');
-      if(wrap){ wrap.outerHTML=html; applyBands(); autoOpenAktiv(); }
+      if(!wrap) return;
+      const tmp=document.createElement('div'); tmp.innerHTML=html;
+      const incomingActive=hasActive(tmp);
+      // Linger: neuen HTML nicht einspielen wenn das aktiv-Band gerade erst
+      // leer geworden ist — 5 s Schonfrist damit kurze Läufe sichtbar bleiben.
+      if(!incomingActive && Date.now() - lastActiveAt < 5000) return;
+      if(incomingActive) lastActiveAt = Date.now();
+      wrap.outerHTML=html; applyBands(); autoOpenAktiv();
     }catch(_){}
   }, 2000);
 })();
