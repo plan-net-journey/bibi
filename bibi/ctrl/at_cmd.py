@@ -4,8 +4,12 @@ Schreibt eine flache ``at:``-MD ins Case-Verzeichnis, sodass der Scheduler sie a
 einmaligen Lauf erfasst, und triggert (best-effort) einen Rescan. In-Process bis
 auf den Rescan — der trifft den laufenden Daemon per HTTP.
 
-  bibi-ctrl at "<when>" "<payload>"          # claude-Job (AI-Prompt, Default)
-  bibi-ctrl at "<when>" "<cmd>" --job        # job-Typ (Shell-Befehl)
+  bibi-ctrl at "<when>" "<prompt>"           # claude-Job (AI-Prompt, Default)
+  bibi-ctrl at "<when>" "<cmd>" --job        # Shell-Befehl (job-Typ)
+
+Alle Jobs verwenden ``job:`` als einzigen Frontmatter-Key (PLAN-10 §1, Unified Job
+Model). Ohne ``--job`` wird der Prompt als ``claude: <prompt>`` kodiert — der Worker
+erkennt das Prefix und setzt ``BIBI_JOB_TYPE=claude``.
 
 ``<when>``: ISO 8601, relativ (``+30s``/``+5min``/``+2h``/``+1d``) oder
 best-effort natürlichsprachlich (via dateutil).
@@ -69,9 +73,14 @@ def run(args: argparse.Namespace) -> int:
     case.mkdir(parents=True, exist_ok=True)
     path = case / f"{slug}.md"
 
-    type_key = "job" if args.job else "claude"
     # json.dumps liefert einen gültigen (YAML-kompatiblen) Doppelquote-Skalar.
-    md = (f"---\nat: {iso}\n{type_key}: {json.dumps(args.payload)}\n---\n"
+    if args.job:
+        job_value = args.payload
+        typ_display = "job"
+    else:
+        job_value = f"claude: {args.payload}"
+        typ_display = "claude"
+    md = (f"---\nat: {iso}\njob: {json.dumps(job_value)}\n---\n"
           f"One-shot via `/at`, geplant für {iso}.\n")
     path.write_text(md, encoding="utf-8")
 
@@ -83,7 +92,7 @@ def run(args: argparse.Namespace) -> int:
     eta_s = max(0, int(eta.total_seconds()))
     print(f"one-shot erstellt: {slug}")
     print(f"  at:   {iso}  (in {eta_s // 60}m {eta_s % 60}s)")
-    print(f"  typ:  {type_key}")
+    print(f"  typ:  {typ_display}")
     print(f"  pfad: {rel}")
     print(f"  rescan: {'ok' if rescanned else f'Daemon nicht erreichbar (Port {port}) — beim nächsten Rescan/Start erfasst'}")
     print(f"beobachten: bibi-ctrl job list", file=sys.stderr)

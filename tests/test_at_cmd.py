@@ -35,8 +35,8 @@ def test_at_writes_claude_md(team_repo: Path):
     mds = list((team_repo / "vault" / "case").glob("*.at-*.md"))
     assert len(mds) == 1
     fm = frontmatter.read(mds[0])
-    assert "at" in fm and fm["claude"] == "Antworte mit hallo"
-    assert "job" not in fm
+    assert "at" in fm and fm["job"] == "claude: Antworte mit hallo"
+    assert "claude" not in fm
 
 
 def test_at_job_flag(team_repo: Path):
