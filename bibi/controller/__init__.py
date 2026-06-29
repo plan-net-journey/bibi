@@ -203,6 +203,25 @@ def add_controller_routes(
         return HTMLResponse(render.output_block(
             data.get("events", []), data.get("kind", "job")))
 
+    # ── HITL-Input (Slice 9.4) — vor /{verb} registrieren, sonst greift der
+    # generische Wildcard-Handler als erstes (FastAPI matched in Reihenfolge).
+    @app.post("/-/ui/schedule/{slug}/input", include_in_schema=False)
+    async def schedule_input(slug: str, request: Request):
+        """HITL-Antwort vom FE: Formular-POST → Daemon-Relay → Wrapper → App."""
+        _, _, job = _detail_data(slug)
+        if job and job.get("id"):
+            try:
+                form = await request.form()
+                answer = str(form.get("answer") or "")
+                client.job_input(job["id"], answer)
+            except Exception:  # noqa: BLE001 — defensiv
+                pass
+        schedule, runs, job = _detail_data(slug)
+        top_output, live_output, demand = _detail_outputs(runs, job)
+        return HTMLResponse(render.schedule_detail_inner(
+            schedule, runs, job, slug=slug,
+            top_output=top_output, live_output=live_output, demand=demand))
+
     # ── Verben (§5.6) + Löschen (§4.0) — wirken, dann #detail neu rendern ─────
     # Sichtbarkeit/Scope (read-only vs. operator) wird in 4.6 (Traefik) erzwungen.
     @app.post("/-/ui/schedule/{slug}/{verb}", include_in_schema=False)
@@ -226,20 +245,3 @@ def add_controller_routes(
             pass
         schedule, runs, job = _detail_data(slug)
         return HTMLResponse(render.schedule_detail_inner(schedule, runs, job, slug=slug))
-
-    @app.post("/-/ui/schedule/{slug}/input", include_in_schema=False)
-    async def schedule_input(slug: str, request: Request):
-        """HITL-Antwort vom FE: Formular-POST → Daemon-Relay → Wrapper → App."""
-        _, _, job = _detail_data(slug)
-        if job and job.get("id"):
-            try:
-                form = await request.form()
-                answer = str(form.get("answer") or "")
-                client.job_input(job["id"], answer)
-            except Exception:  # noqa: BLE001 — defensiv
-                pass
-        schedule, runs, job = _detail_data(slug)
-        top_output, live_output, demand = _detail_outputs(runs, job)
-        return HTMLResponse(render.schedule_detail_inner(
-            schedule, runs, job, slug=slug,
-            top_output=top_output, live_output=live_output, demand=demand))
