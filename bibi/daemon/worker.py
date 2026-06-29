@@ -151,14 +151,15 @@ def _run_wrapper(
     backoff_type: str | None = None,
     scheduler_db_path: str | None = None,  # Direkter DB-Zugriff (kein HTTP)
     scheduler_url: str | None = None,      # HTTP-Reporting (App-Typ / Remote)
-) -> tuple[int, str | None, Path, str]:
+) -> tuple[int, str | None, Path, str, int | None]:
     """Worktree → Wrapper-Subprozess → Commit/Report.
 
     ``detach=True`` (disponierte Jobs): Wrapper läuft eigenständig — kein Wait,
     kein Commit, kein Report im Worker. Wrapper übernimmt alles.
     ``detach=False`` (``run_local``, ephemeral): bisheriger blockierender Pfad.
     ``run_id`` bestimmt den ``output.jsonl``-Pfad (pro Run eindeutig).
-    Der Container-Name bleibt an ``job_id`` (Docker-Namensregel, §3.3b)."""
+    Der Container-Name bleibt an ``job_id`` (Docker-Namensregel, §3.3b).
+    5. Rückgabewert: Wrapper-PID (detach) oder ``None`` (nicht-detach)."""
     out_run_id = run_id or job_id
     wt_path = worktree.prepare(repo_root=repo_root, work_dir=work_dir, slug=slug)
     activity.emit(log, logging.DEBUG, "worktree.prepare", role="worker",
@@ -243,7 +244,7 @@ def _run_wrapper(
 
     if detach:
         # Wrapper-Prozess läuft eigenständig — sofort zurückkehren.
-        return 0, None, out_path, "detached"
+        return 0, None, out_path, "detached", proc.pid
 
     # Blockierender Pfad (run_local / ephemeral): warten, committen, zurückgeben.
     code, outcome = _monitored_wait(
@@ -260,7 +261,7 @@ def _run_wrapper(
         worktree.remove(repo_root=repo_root, worktree=wt_path)
         activity.emit(log, logging.DEBUG, "worktree.remove", role="worker",
                       slug=slug, run_id=out_run_id)
-    return code, commit_sha, out_path, outcome
+    return code, commit_sha, out_path, outcome, None
 
 
 def _retry_fields(reservation: dict) -> dict:
@@ -312,7 +313,7 @@ def execute_reservation(
         _daemon_port = int(os.environ.get("BIBI_DAEMON_PORT", "8769"))
         _sched_db_path: str | None = _resolved_db or None
         _sched_url: str | None = None if _sched_db_path else f"http://127.0.0.1:{_daemon_port}"
-        _, _, out_path, outcome = _run_wrapper(
+        _, _, out_path, outcome, proc_pid = _run_wrapper(
             job_id=jid, slug=reservation["slug"], kind=kind,
             payload=reservation["payload"], model=reservation.get("model"),
             soul=reservation.get("soul"), session=reservation.get("session"),
@@ -331,6 +332,14 @@ def execute_reservation(
             scheduler_db_path=_sched_db_path,
             scheduler_url=_sched_url,
         )
+        if proc_pid is not None and _sched_db_path:
+            _pid_conn = job_db.connect(Path(_sched_db_path))
+            try:
+                job_db.report_pid(
+                    _pid_conn, jid, proc_pid, job_db.proc_started_at(proc_pid),
+                )
+            finally:
+                _pid_conn.close()
     except Exception as exc:
         # Setup-Fehler vor Wrapper-Start: Job nicht in `running` hängen lassen.
         activity.emit(log, logging.ERROR, "worker.setup_error",
@@ -385,7 +394,7 @@ def run_local(
 
     jid = secrets.token_hex(4)
     started = time.time()
-    code, commit_sha, out_path, outcome = _run_wrapper(
+    code, commit_sha, out_path, outcome, _ = _run_wrapper(
         job_id=jid, slug=eff_slug, kind=eff_kind, payload=payload, model=eff_model,
         soul=eff_soul, session=eff_session,
         repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=True,

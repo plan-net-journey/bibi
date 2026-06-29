@@ -12,9 +12,12 @@ Schema-Versionierung über ``PRAGMA user_version``: die Basis (v1) liegt in
 from __future__ import annotations
 
 import json
+import os
 import secrets
+import signal
 import socket
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
@@ -25,7 +28,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -79,6 +82,15 @@ def _mig_kind_normalize(conn: sqlite3.Connection) -> None:  # v7 → v8
         conn.execute("UPDATE journal SET kind = 'job' WHERE kind IN ('claude', 'app')")
 
 
+def _mig_jobs_pid(conn: sqlite3.Connection) -> None:  # v8 → v9
+    # PLAN-10 Stufe 10.2: PID + Startzeit für Orphan-Erkennung beim Worker-Neustart.
+    if _has_table(conn, "jobs"):
+        if not _has_column(conn, "jobs", "pid"):
+            conn.execute("ALTER TABLE jobs ADD COLUMN pid INTEGER")
+        if not _has_column(conn, "jobs", "pid_started_at"):
+            conn.execute("ALTER TABLE jobs ADD COLUMN pid_started_at TEXT")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -90,6 +102,7 @@ _MIGRATIONS: dict[int, list] = {
     5: [_mig_journal_commit],
     6: [_mig_jobs_exec_mode],
     7: [_mig_kind_normalize],
+    8: [_mig_jobs_pid],
 }
 
 
@@ -585,6 +598,42 @@ def start_now(conn: sqlite3.Connection, job_id: str, now: float | None = None) -
     return "ok"
 
 
+def proc_started_at(pid: int) -> str | None:
+    """Prozess-Startzeit als opaker String für PID-Recycling-Erkennung.
+
+    Linux: liest ``/proc/<pid>/stat`` (Feld 22, clock ticks seit Boot).
+    macOS/Fallback: ``ps -o lstart=``. Gibt ``None`` zurück wenn der Prozess
+    nicht existiert oder die Plattform den Wert nicht liefert."""
+    proc_stat = Path(f"/proc/{pid}/stat")
+    if proc_stat.exists():
+        try:
+            txt = proc_stat.read_text()
+            rest = txt[txt.rfind(")") + 2:]
+            fields = rest.split()
+            return fields[19] if len(fields) > 19 else None
+        except OSError:
+            pass
+    try:
+        r = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        s = r.stdout.strip()
+        return s if s else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def report_pid(
+    conn: sqlite3.Connection, job_id: str, pid: int, pid_started_at: str | None,
+) -> None:
+    """PID + Startzeit unmittelbar nach Wrapper-Spawn in die DB schreiben (§10.2)."""
+    conn.execute(
+        "UPDATE jobs SET pid=:pid, pid_started_at=:ps WHERE id=:id",
+        {"pid": pid, "ps": pid_started_at, "id": job_id},
+    )
+
+
 def reconcile_no_process(
     conn: sqlite3.Connection, stale_workers: set[str], now: float | None = None
 ) -> int:
@@ -605,23 +654,33 @@ def reconcile_no_process(
 def reconcile_startup_orphans(
     conn: sqlite3.Connection, worker_name: str, now: float | None = None
 ) -> int:
-    """Beim Start eines lokalen Workers: dessen ``running``-Jobs aus einem früheren
-    (abgestürzten) Daemon sind verwaist. Nur eigene Jobs (``worker=worker_name``).
+    """Beim Start: RUNNING/AWAITING-Jobs dieses Workers per PID prüfen (§10.2).
 
-    - **Recurring Cron-Jobs** (``schedule`` gesetzt, ``is_recurring``): Journal-Eintrag
-      als ``killed/no_process`` schreiben, dann direkt auf ``pending/next_fire_at=now``
-      zurücksetzen — der Cron soll beim nächsten Tick weiterlaufen.
-    - **Alle anderen** (One-shots, adhoc): ``killed/no_process`` — terminal, da kein
-      automatischer Rückkehrpfad sinnvoll ist.
+    - ``pid`` + ``pid_started_at`` stimmen mit dem laufenden Prozess überein →
+      echter Orphan → ``SIGKILL``, dann ``killed/no_process``.
+    - ``pid`` tot oder PID recycled (Startzeit weicht ab) → nur ``killed/no_process``.
+    - ``pid`` nicht in DB (Altlast ohne Tracking) → ``killed/no_process`` wie bisher.
+    - Recurring Cron-Jobs werden sofort auf ``pending`` zurückgesetzt.
     """
     now = time.time() if now is None else now
     n = 0
-    for r in conn.execute(
-        "SELECT id, schedule FROM jobs WHERE status='running' AND worker=?", (worker_name,)
-    ).fetchall():
+    rows = conn.execute(
+        "SELECT id, schedule, pid, pid_started_at FROM jobs "
+        "WHERE status IN ('running', 'awaiting') AND worker=?",
+        (worker_name,),
+    ).fetchall()
+    for r in rows:
+        pid = r["pid"]
+        if pid is not None:
+            current = proc_started_at(pid)
+            if current is not None and current == r["pid_started_at"]:
+                # Selber Prozess lebt noch — echter Orphan → SIGKILL
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
         report_status(conn, r["id"], status="killed", reason="no_process", now=now)
         if is_recurring(r["schedule"]):
-            # Journal wurde von report_status geschrieben; jetzt sofort re-armen.
             conn.execute(
                 "UPDATE jobs SET status='pending', next_fire_at=:now, attempt=0, "
                 "reason=NULL, locked_at=NULL, started_at=NULL, finished_at=NULL, "

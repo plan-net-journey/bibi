@@ -78,6 +78,7 @@ _TRANSITIONS: dict[tuple[Status, Event], Status] = {
     (Status.DEFERRED, Event.EXPIRE): Status.INACTIVE,
     (Status.AWAITING, Event.INPUT): Status.RUNNING,
     (Status.AWAITING, Event.TIMEOUT): Status.ZOMBIE,
+    (Status.AWAITING, Event.KILL): Status.KILLED,
     # Terminal → pending (reset)
     (Status.COMPLETE, Event.RESET): Status.PENDING,
     (Status.ERROR, Event.RESET): Status.PENDING,

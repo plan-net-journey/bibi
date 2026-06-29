@@ -26,6 +26,7 @@ EXPECTED_TRANSITIONS = [
     (Status.DEFERRED, Event.EXPIRE, Status.INACTIVE),
     (Status.AWAITING, Event.INPUT, Status.RUNNING),
     (Status.AWAITING, Event.TIMEOUT, Status.ZOMBIE),
+    (Status.AWAITING, Event.KILL, Status.KILLED),
     (Status.COMPLETE, Event.RESET, Status.PENDING),
     (Status.ERROR, Event.RESET, Status.PENDING),
     (Status.INACTIVE, Event.RESET, Status.PENDING),

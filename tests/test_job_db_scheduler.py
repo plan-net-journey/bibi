@@ -410,6 +410,88 @@ def test_reconcile_startup_orphans(conn):
     assert conn.execute("SELECT status FROM jobs WHERE id=?", (theirs,)).fetchone()["status"] == "running"
 
 
+def test_reconcile_startup_orphans_awaiting(conn):
+    # AWAITING-Jobs (HITL) werden ebenfalls reconciliert.
+    jid = _seed_full(conn, slug="waiting", status="awaiting", worker="me", next_fire_at=0)
+    assert job_db.reconcile_startup_orphans(conn, "me") == 1
+    row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "killed"
+    assert row["reason"] == "no_process"
+
+
+def test_reconcile_startup_orphans_no_pid_kills_without_signal(conn):
+    # Kein PID in DB (Altlast) → killed, kein Signal-Versuch.
+    jid = _seed_full(conn, slug="legacy", status="running", worker="me", next_fire_at=0)
+    # pid=NULL in DB → keine Ausnahme, trotzdem killed
+    assert job_db.reconcile_startup_orphans(conn, "me") == 1
+    assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "killed"
+
+
+def test_reconcile_startup_orphans_pid_recycled(conn):
+    # PID in DB, aber pid_started_at stimmt nicht überein → PID recycled,
+    # kein SIGKILL, nur killed in DB.
+    jid = _seed_full(conn, slug="recycled", status="running", worker="me",
+                     next_fire_at=0, pid=99999, pid_started_at="stale-ts")
+    # proc_started_at(99999) liefert entweder None (PID tot) oder einen anderen Wert.
+    # In jedem Fall: Status muss killed sein, kein Fehler.
+    n = job_db.reconcile_startup_orphans(conn, "me")
+    assert n == 1
+    assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "killed"
+
+
+def test_reconcile_startup_orphans_live_pid_sends_sigkill(conn, monkeypatch):
+    # Prozess lebt noch (gleiche PID + Startzeit) → SIGKILL.
+    import os, signal
+    killed = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(job_db, "proc_started_at", lambda pid: "ts-42")
+    jid = _seed_full(conn, slug="orphan", status="running", worker="me",
+                     next_fire_at=0, pid=1234, pid_started_at="ts-42")
+    n = job_db.reconcile_startup_orphans(conn, "me")
+    assert n == 1
+    assert (1234, signal.SIGKILL) in killed
+    assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "killed"
+
+
+def test_report_pid_writes_to_db(conn):
+    jid = _seed_full(conn, slug="s", status="running", worker="me", next_fire_at=0)
+    job_db.report_pid(conn, jid, 5678, "boot-ts")
+    row = conn.execute("SELECT pid, pid_started_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["pid"] == 5678
+    assert row["pid_started_at"] == "boot-ts"
+
+
+def test_proc_started_at_current_process():
+    # Der aktuelle Prozess hat eine ermittelbare Startzeit.
+    import os
+    result = job_db.proc_started_at(os.getpid())
+    assert result is not None and len(result) > 0
+
+
+def test_migration_v8_to_v9_adds_pid_columns(tmp_path):
+    import sqlite3
+    p = tmp_path / "jobs.sqlite"
+    # v8-DB simulieren: Schema anlegen ohne pid-Spalten, version=8 setzen.
+    c = sqlite3.connect(p)
+    c.execute("PRAGMA user_version = 8")
+    c.executescript("""
+        CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE,
+            schedule_ref TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+        );
+        CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+    """)
+    c.close()
+    c2 = job_db.connect(p)
+    assert c2.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
+    cols = {r["name"] for r in c2.execute("PRAGMA table_info(jobs)")}
+    assert "pid" in cols
+    assert "pid_started_at" in cols
+    c2.close()
+
+
 def test_concurrent_reserve_disjoint(tmp_path: Path):
     p = tmp_path / "jobs.sqlite"
     seed = job_db.connect(p)
