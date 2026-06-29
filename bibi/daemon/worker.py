@@ -22,6 +22,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -125,13 +126,25 @@ def _docker(args: list[str]) -> None:
 def _terminate(proc: subprocess.Popen, *, job_id: str | None = None) -> None:
     """Lauf beenden. Container (D7): ``docker stop bibi-<id>`` gibt dem Job graceful
     SIGTERM + Frist (eskaliert selbst auf SIGKILL); zusätzlich die Host-Wrapper-Gruppe
-    terminieren. Host: SIGTERM an die Prozessgruppe (Default-Verhalten beendet sie)."""
+    terminieren. Host: SIGTERM → der Wrapper propagiert an den Child (dessen SIGTERM-
+    Handler killt die Child-Prozessgruppe). Backstop nach 5 s: SIGKILL an Wrapper."""
     if job_id is not None and _is_container():
         _docker(["stop", exec_backend.container_name(job_id)])
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
     except (ProcessLookupError, OSError):
         pass
+    # Backstop: wenn Wrapper nach 5 s noch lebt → SIGKILL (Daemon-Thread, kein Blockieren).
+    def _escalate() -> None:
+        import time as _t
+        _t.sleep(5.0)
+        if proc.poll() is not None:
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+    threading.Thread(target=_escalate, daemon=True, name="kill-escalate").start()
 
 
 def _run_wrapper(

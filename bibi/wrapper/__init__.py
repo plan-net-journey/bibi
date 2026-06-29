@@ -306,6 +306,16 @@ def run_app(env: dict[str, str]) -> int:
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, bufsize=1, start_new_session=True,
     )
+    # SIGTERM vom Worker (kill-Verb) propagiert nicht automatisch an den Child,
+    # da dieser eine eigene Session hat (start_new_session=True). Der Wrapper
+    # installiert deshalb einen Handler, der den Child killt, bevor er selbst endet.
+    # Guard: signal.signal() nur im Main-Thread erlaubt (Tests laufen im Thread).
+    if threading.current_thread() is threading.main_thread():
+        def _on_sigterm(signum, frame):
+            _terminate_proc(proc)
+            raise SystemExit(1)
+        signal.signal(signal.SIGTERM, _on_sigterm)
+
     lock = threading.Lock()
 
     def pump(pipe, tag: str) -> None:
@@ -339,6 +349,8 @@ def run_app(env: dict[str, str]) -> int:
     for t in [*pump_threads, *monitors]:
         t.start()
     proc.wait()
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
     for t in pump_threads:
         t.join()
 
@@ -369,6 +381,12 @@ def run_job(env: dict[str, str]) -> int:
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, bufsize=1, start_new_session=True,
     )
+    if threading.current_thread() is threading.main_thread():
+        def _on_sigterm(signum, frame):
+            _terminate_proc(proc)
+            raise SystemExit(1)
+        signal.signal(signal.SIGTERM, _on_sigterm)
+
     lock = threading.Lock()
 
     def pump(pipe, tag: str) -> None:
@@ -401,6 +419,8 @@ def run_job(env: dict[str, str]) -> int:
     for t in threads:
         t.start()
     proc.wait()
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
     for t in threads[:2]:  # pump threads joinen (monitors sind daemon)
         t.join()
 
