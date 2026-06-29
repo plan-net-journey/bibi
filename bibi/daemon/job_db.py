@@ -276,6 +276,7 @@ def job_view(row: sqlite3.Row, *, last_run_at: float | None = None) -> dict:
         "attempt": row["attempt"], "host": row["host"], "worker": row["worker"],
         "output_ref": row["output_ref"], "next_fire_at": row["next_fire_at"],
         "last_run_at": last_run_at, "schedule": row["schedule"],
+        "app_port": row["app_port"],
     }
 
 

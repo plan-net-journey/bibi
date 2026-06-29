@@ -1077,9 +1077,12 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
                + "</div>")
     elif job.get("status") == "awaiting" and demand:
         out = _demand_form(demand, slug)
+    app_port = job.get("app_port") if job else None
+    app_link = (f' <a href="http://127.0.0.1:{app_port}/" target="_blank" '
+                f'style="font-size:.82rem">Zur App →</a>' if app_port else "")
     return (f'<div class="live"><div class="live-head">'
             f'<span class="st {st}">{st}</span>'
-            f'<span class="muted">aktiver Lauf{tail}</span></div>{out}</div>')
+            f'<span class="muted">aktiver Lauf{tail}</span>{app_link}</div>{out}</div>')
 
 
 def _demand_form(demand: dict, slug: str) -> str:
