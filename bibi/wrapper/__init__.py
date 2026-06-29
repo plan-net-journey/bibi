@@ -86,7 +86,7 @@ REGISTRY: dict[str, TypeHandler] = {
 def _last_activity(out_path: Path, started: float) -> float:
     """Zeitpunkt der letzten Output-Aktivität (mtime oder Start)."""
     try:
-        return out_path.stat().st_mtime
+        return max(out_path.stat().st_mtime, started)
     except OSError:
         return started
 
