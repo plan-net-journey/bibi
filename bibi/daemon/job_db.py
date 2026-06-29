@@ -309,6 +309,37 @@ def job_view(row: sqlite3.Row, *, last_run_at: float | None = None) -> dict:
     }
 
 
+def job_full_view(row: sqlite3.Row) -> dict:
+    """Alle DB-Felder eines Jobs — für die Attribute-Ansicht (§10.x)."""
+    return {
+        **job_view(row),
+        "payload": row["payload"],
+        "model": row["model"],
+        "soul": row["soul"],
+        "session": row["session"],
+        "attempts": row["attempts"],
+        "backoff": row["backoff"],
+        "silence_timeout": row["silence_timeout"],
+        "wall_time": row["wall_time"],
+        "defer_time": row["defer_time"],
+        "defer_max": row["defer_max"],
+        "hitl_timeout": row["hitl_timeout"],
+        "app_prefix": row["app_prefix"],
+        "exec_mode": row["exec_mode"],
+        "image": row["image"],
+        "at_iso": row["at_iso"],
+        "fire": row["fire"],
+        "deferred_at": row["deferred_at"],
+        "pid": row["pid"],
+        "schedule_ref": row["schedule_ref"],
+    }
+
+
+def get_job_by_slug(conn: sqlite3.Connection, slug: str) -> dict | None:
+    row = conn.execute("SELECT * FROM jobs WHERE slug=?", (slug,)).fetchone()
+    return job_full_view(row) if row else None
+
+
 def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
     trigger = row["schedule"] if row["schedule"] is not None else row["at_iso"]
     row_status = row["status"]

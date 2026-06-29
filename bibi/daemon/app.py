@@ -102,6 +102,17 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
         finally:
             conn.close()
 
+    @app.get("/-/schedule/{slug}", tags=["scheduler"])
+    def schedule_by_slug(slug: str):
+        conn = job_db.connect()
+        try:
+            data = job_db.get_job_by_slug(conn, slug)
+        finally:
+            conn.close()
+        if data is None:
+            return JSONResponse(status_code=404, content={"error": "not found", "slug": slug})
+        return data
+
     @app.get("/-/job", response_model=list[JobView], tags=["job"])
     def job_list(status: str | None = None):
         conn = job_db.connect()

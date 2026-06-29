@@ -43,6 +43,9 @@ class ControllerClient:
         data = self._get("/-/schedule") or {}
         return data.get("schedules", []) if isinstance(data, dict) else []
 
+    def schedule_config(self, slug: str) -> dict:
+        return self._get(f"/-/schedule/{urllib.parse.quote(slug, safe='')}") or {}
+
     def journal_entry(self, journal_id: int) -> dict:
         # Metadaten einer Journal-Zeile (Execution-Detail, §C.4).
         return self._get(f"/-/journal/{journal_id}") or {}

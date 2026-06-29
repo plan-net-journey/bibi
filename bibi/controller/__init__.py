@@ -181,6 +181,14 @@ def add_controller_routes(
             schedule, runs, job, slug=slug,
             top_output=top_output, live_output=live_output))
 
+    @app.get("/-/ui/schedule/{slug}/attrs", include_in_schema=False)
+    def schedule_attrs(slug: str):
+        try:
+            data = client.schedule_config(slug)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            data = {}
+        return HTMLResponse(render.schedule_attrs_page(slug, data))
+
     @app.get("/-/ui/run/{jid}", include_in_schema=False)
     def run_detail(jid: int):
         # Execution-Detail (§C.4): ein Lauf — Meta (Journal-Zeile) + voller Output.

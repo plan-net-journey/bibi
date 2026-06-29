@@ -1075,7 +1075,11 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
                + live_output_box(jid, events, kind=(live_output or {}).get("kind", "job"))
                + "</div>")
     elif job.get("status") == "awaiting":
-        out = _hitl_panel(job)
+        if live_output and live_output.get("events"):
+            out = ('<div class="liveout">'
+                   + output_block(live_output["events"], live_output.get("kind", "job"))
+                   + "</div>")
+        out += _hitl_panel(job)
     app_port = job.get("app_port") if job else None
     app_link = (f' <a href="http://127.0.0.1:{app_port}/" target="_blank" '
                 f'style="font-size:.82rem">Zur App →</a>' if app_port else "")
@@ -1182,7 +1186,10 @@ def schedule_detail_page(
         f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        '<a class="back" href="/-/">← zurück</a>'
+        f'<div style="display:flex;gap:.75rem;align-items:baseline">'
+        f'<a class="back" href="/-/">← zurück</a>'
+        f'<a class="back" href="/-/ui/schedule/{_e(name)}/attrs">Attribute →</a>'
+        f'</div>'
         f"{schedule_detail_inner(schedule, runs, job, slug, now, top_output=top_output, live_output=live_output)}"
         f"<script>{_LIVE_JS}</script>"
         "</body></html>"
@@ -1259,5 +1266,78 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         f"{_attr_table(e)}"
         "<h2>Output</h2>"
         f'<div class="outscroll">{out}</div>'
+        "</body></html>"
+    )
+
+
+# ── Schedule-Attribute (alle Konfig- + Runtime-Felder; Ebene 3b) ─────────────
+
+_ATTRS_CONFIG_ORDER = [
+    "slug", "kind", "payload", "schedule", "at_iso", "priority",
+    "model", "soul", "session",
+    "attempts", "backoff", "silence_timeout", "wall_time",
+    "defer_time", "defer_max", "hitl_timeout",
+    "app_port", "app_prefix", "exec_mode", "image",
+    "schedule_ref",
+]
+_ATTRS_RUNTIME_ORDER = [
+    "id", "status", "reason", "attempt", "fire",
+    "enqueued_at", "started_at", "finished_at", "exit_code",
+    "next_fire_at", "deferred_at", "host", "worker",
+    "output_ref", "app_url", "app_port", "pid",
+]
+_ATTRS_TS = {"enqueued_at", "started_at", "finished_at", "next_fire_at", "deferred_at"}
+
+
+def _attrs_section(title: str, keys: list[str], data: dict) -> str:
+    import datetime as _dt
+    rows = []
+    seen: set[str] = set()
+    for key in keys:
+        seen.add(key)
+        val = data.get(key)
+        if val is None:
+            cell = '<span class="muted">—</span>'
+        elif key in _ATTRS_TS and isinstance(val, (int, float)):
+            cell = _e(_dt.datetime.fromtimestamp(val).strftime("%Y-%m-%d %H:%M:%S"))
+        elif key == "app_url" and val:
+            cell = f'<a href="{_e(val)}" target="_blank" rel="noopener">{_e(val)}</a>'
+        else:
+            cell = f"<code>{_e(str(val))}</code>"
+        rows.append(f"<tr><td><b>{_e(key)}</b></td><td>{cell}</td></tr>")
+    return (
+        f"<h2>{title}</h2>"
+        '<table class="attrtable">'
+        "<thead><tr><th>Attribut</th><th>Wert</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
+def schedule_attrs_page(slug: str, data: dict, now: float | None = None) -> str:
+    """Alle Konfig- und Runtime-Felder eines Schedules auf einer eigenen Seite."""
+    now = now or time.time()
+    name = _e(slug)
+    st = _e(data.get("status") or "")
+    config_html = _attrs_section("Konfiguration", _ATTRS_CONFIG_ORDER, data)
+    runtime_html = _attrs_section("Runtime", _ATTRS_RUNTIME_ORDER, data)
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>bibi · {name} · Attribute</title>"
+        f"<style>{_CSS}"
+        ".attrtable { width: auto; margin: .4rem 0 1rem; font-size: .85rem; }"
+        ".attrtable td:first-child { padding-right: 1.5rem; white-space: nowrap; }"
+        ".attrtable td { padding: .2rem .3rem; vertical-align: top; }"
+        ".attrtable code { font-family: ui-monospace, monospace; font-size: .85em; }"
+        ".attrtable a { color: inherit; word-break: break-all; }"
+        "</style></head><body>"
+        f'<div style="display:flex;gap:.75rem;align-items:baseline">'
+        f'<a class="back" href="/-/">← zurück</a>'
+        f'<a class="back" href="/-/ui/schedule/{name}">← Detail</a>'
+        f'</div>'
+        f'<h1><span class="st {st}">{name}</span> · Attribute</h1>'
+        f"{config_html}"
+        f"{runtime_html}"
         "</body></html>"
     )
