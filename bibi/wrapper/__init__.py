@@ -124,13 +124,18 @@ def _silence_monitor(proc: subprocess.Popen, silence_timeout: int,
         time.sleep(1.0)
 
 
-def _hitl_monitor(proc: subprocess.Popen, state, *, poll: float = 1.0) -> None:
-    """Hintergrund-Thread: HITL-Zombie-Timeout überwachen (PLAN-9 §6, Slice 9.3)."""
+def _hitl_monitor(proc: subprocess.Popen, state, outcome: list[str],
+                  *, poll: float = 1.0) -> None:
+    """Hintergrund-Thread: HITL-Zombie-Timeout + DEFERRED-Signal überwachen."""
     while proc.poll() is None:
         if (state.hitl_timeout is not None
                 and state.status == "awaiting"
                 and state.idle_seconds > state.hitl_timeout):
             state.report("zombie", reason="activity_timeout")
+            _terminate_proc(proc)
+            return
+        if state.status == "deferred":
+            outcome[0] = "deferred"
             _terminate_proc(proc)
             return
         time.sleep(poll)
@@ -237,6 +242,10 @@ def _finish(env: dict[str, str], exit_code: int, outcome: str) -> None:
         status, reason = "killed", "by_wall_time"
     elif outcome == "silence" or outcome == "zombie_reported":
         status, reason = "zombie", "silence"
+    elif outcome == "deferred":
+        defer_secs = int(env.get("BIBI_DEFER_TIME") or "60")
+        next_fire_at = time.time() + defer_secs
+        status, reason = "deferred", None
     elif exit_code == 0:
         status, reason = "complete", None
     elif attempt_cur < attempts_max:
@@ -310,7 +319,7 @@ def run_app(env: dict[str, str]) -> int:
     started = time.time()
     wall_str = env.get("BIBI_WALL_TIME")
 
-    monitors = [threading.Thread(target=_hitl_monitor, args=(proc, state),
+    monitors = [threading.Thread(target=_hitl_monitor, args=(proc, state, outcome),
                                  kwargs={"poll": 0.5}, daemon=True, name="hitl-monitor")]
     silence_str = env.get("BIBI_SILENCE_TIMEOUT")
     if silence_str:
@@ -335,11 +344,11 @@ def run_app(env: dict[str, str]) -> int:
 
     server.should_exit = True
 
-    # HITL-Monitor setzt outcome nicht — nur wall_time tut es für app.
-    # Zombie wird vom hitl_monitor via state.report("zombie") gemeldet und proc terminiert;
-    # proc.returncode ist dann negativ — als "zombie" klassifizieren.
+    # _hitl_monitor setzt outcome für deferred; zombie meldet state.report direkt.
     if not outcome[0] and state.status == "zombie":
         outcome[0] = "zombie_reported"
+    if not outcome[0] and state.status == "deferred":
+        outcome[0] = "deferred"
 
     _finish(env, proc.returncode or 0, outcome[0])
     return proc.returncode or 0

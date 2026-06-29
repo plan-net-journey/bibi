@@ -141,6 +141,7 @@ def _run_wrapper(
     app_port: int | None = None, app_prefix: str | None = None,
     exec_mode: str | None = None,
     hitl_timeout: int | None = None,
+    defer_time: int | None = None,
     repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
     run_id: str | None = None,
     # Detach-Modus: Wrapper-Prozess meldet selbst Terminal-Status + Commit (§9).
@@ -196,6 +197,8 @@ def _run_wrapper(
             env["BIBI_APP_PREFIX"] = app_prefix
         if hitl_timeout is not None:
             env["BIBI_HITL_TIMEOUT"] = str(hitl_timeout)
+        if defer_time is not None:
+            env["BIBI_DEFER_TIME"] = str(defer_time)
 
     # Detach-Modus: Commit + Report im Wrapper-Prozess.
     if detach:
@@ -319,6 +322,7 @@ def execute_reservation(
             app_prefix=reservation.get("app_prefix"),
             exec_mode=reservation.get("exec_mode"),
             hitl_timeout=reservation.get("hitl_timeout"),
+            defer_time=reservation.get("defer_time"),
             repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
             run_id=run_id, detach=True,
             worker_name=worker_name, host=host,

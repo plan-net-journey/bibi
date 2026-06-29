@@ -189,6 +189,42 @@ def test_retry_then_error(gitrepo: Path, monkeypatch):
     conn.close()
 
 
+def test_retry_exponential_3x_to_error(gitrepo: Path, monkeypatch):
+    """PLAN-10 §10.1: 3 Fehlversuche mit exponentialem Backoff → ERROR; Slot nach FAILED frei."""
+    monkeypatch.setenv("BIBI_RETRY_BASE", "0")  # sofort retribar
+    jid = _seed(gitrepo, "boom3/README.md",
+                '---\nschedule: now\njob: "exit 2"\nattempts: 3\nbackoff: exponential\n---\n')
+    w = _worker(gitrepo)
+    dbp = gitrepo / "data" / "jobs.sqlite"
+
+    for attempt_n in (1, 2, 3):
+        assert w.tick_once() is True
+        row = _wait_terminal(gitrepo, jid)
+        if attempt_n < 3:
+            assert row["status"] == "failed" and row["attempt"] == attempt_n
+            # Slot nach FAILED sofort frei (Wrapper exitiert, _procs wird geleert)
+            import time as _time
+            deadline = _time.time() + 5.0
+            while w._procs.get(jid) and w._procs[jid].poll() is None:
+                _time.sleep(0.1)
+                if _time.time() > deadline:
+                    break
+            assert jid not in w._procs or w._procs[jid].poll() is not None
+            conn = job_db.connect(dbp)
+            conn.execute("UPDATE jobs SET next_fire_at=? WHERE id=?", (_time.time(), jid))
+            conn.commit()
+            conn.close()
+        else:
+            # 3. Versuch erschöpft → failed oder direkt error
+            assert row["attempt"] == 3
+
+    conn = job_db.connect(dbp)
+    job_db.sweep(conn)
+    row_final = conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
+    conn.close()
+    assert row_final["status"] == "error"
+
+
 def test_execute_reservation_skips_if_already_terminal(gitrepo: Path):
     # Wird der Job vor Abschluss killed, überschreibt der Wrapper nicht.
     jid = _seed(gitrepo, "r/README.md", '---\nschedule: now\njob: "echo hi"\n---\n')

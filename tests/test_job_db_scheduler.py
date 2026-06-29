@@ -132,7 +132,7 @@ def test_reservation_view_shape(conn):
     assert set(r) == {
         "id", "slug", "kind", "payload", "model", "soul", "session",
         "fire", "attempt", "attempts", "backoff", "wall_time", "silence_timeout",
-        "app_port", "app_prefix", "hitl_timeout",
+        "app_port", "app_prefix", "exec_mode", "hitl_timeout", "defer_time",
         "env",
     }
     assert r["kind"] == "job" and r["payload"] == "echo hi"
@@ -227,6 +227,62 @@ def test_sweep_deferred_expired_to_inactive(conn):
     assert res["inactivated"] == 1
     row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
     assert row["status"] == "inactive" and row["reason"] == "deferred_expired"
+
+
+def test_failed_retry_via_reserve_next(conn):
+    """PLAN-10 §10.1: FAILED-Job mit next_fire_at in der Vergangenheit → reserve_next dispatcht ihn."""
+    import secrets
+    jid = secrets.token_hex(4)
+    now = time.time()
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempt, "
+        "attempts, next_fire_at, enqueued_at) VALUES (?,?,?,?,?, 'failed', 1, 3, ?, ?)",
+        (jid, "retry", "retry.md", "job", "echo hi", now - 1, now),
+    )
+    res = job_db.reserve_next(conn, worker="w", host="h")
+    assert res is not None and res["id"] == jid
+    row = conn.execute("SELECT status, attempt FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "running"
+    assert row["attempt"] == 1  # attempt unverändert (Reserve inkrementiert nicht)
+
+
+def test_report_status_deferred_sets_deferred_at(conn):
+    """PLAN-10 §10.1: Erster DEFERRED-Report setzt deferred_at automatisch."""
+    import secrets
+    jid = secrets.token_hex(4)
+    now = time.time()
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+        "next_fire_at, enqueued_at) VALUES (?,?,?,?,?, 'running', ?, ?)",
+        (jid, "def", "def.md", "job", "e", now, now),
+    )
+    res = job_db.report_status(conn, jid, status="deferred", next_fire_at=now + 60, now=now)
+    assert res == "ok"
+    row = conn.execute("SELECT status, deferred_at, next_fire_at FROM jobs WHERE id=?",
+                       (jid,)).fetchone()
+    assert row["status"] == "deferred"
+    assert row["deferred_at"] == now
+    assert row["next_fire_at"] == now + 60
+
+
+def test_report_status_deferred_preserves_existing_deferred_at(conn):
+    """Zweiter DEFERRED-Report darf deferred_at nicht überschreiben (defer_max-Basis)."""
+    import secrets
+    jid = secrets.token_hex(4)
+    earlier = time.time() - 200
+    now = time.time()
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, deferred_at, "
+        "next_fire_at, enqueued_at) VALUES (?,?,?,?,?, 'deferred', ?, ?, ?)",
+        (jid, "def2", "def2.md", "job", "e", earlier, now - 60, now),
+    )
+    # Zweiter Defer (DEFERRED → DEFERRED ist gleicher Zustand → kein Transition-Check-Problem)
+    # Wir simulieren via running → deferred nochmals, indem wir status auf running setzen.
+    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (jid,))
+    res = job_db.report_status(conn, jid, status="deferred", next_fire_at=now + 60, now=now)
+    assert res == "ok"
+    row = conn.execute("SELECT deferred_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["deferred_at"] == earlier  # unverändert
 
 
 def _seed_full(conn, **cols):

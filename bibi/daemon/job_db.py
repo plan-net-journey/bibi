@@ -383,6 +383,7 @@ def reservation_view(row: sqlite3.Row) -> dict:
         "app_port": row["app_port"], "app_prefix": row["app_prefix"],
         "exec_mode": row["exec_mode"],
         "hitl_timeout": row["hitl_timeout"],
+        "defer_time": row["defer_time"],
         "env": {},
     }
 
@@ -466,6 +467,11 @@ def report_status(
     # failed/deferred/pending sind wieder dispatchbar ⇒ Lock lösen (reserve braucht NULL).
     if target in (Status.FAILED, Status.DEFERRED, Status.PENDING):
         fields["locked_at"] = None
+    if target is Status.DEFERRED:
+        # deferred_at = Zeitpunkt des ersten Defers (für defer_max-Sweep); nur beim ersten Mal setzen.
+        da_row = conn.execute("SELECT deferred_at FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if da_row and da_row["deferred_at"] is None:
+            fields["deferred_at"] = now
     if target is Status.PENDING:  # reset = frische Neueinplanung (§5.6)
         fields["attempt"] = 0
         fields["reason"] = None

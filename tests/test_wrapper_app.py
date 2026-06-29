@@ -793,3 +793,115 @@ def test_signal_running_does_not_include_wrapper_url(free_tcp_port):
         assert "wrapper_url" not in received[0]
     finally:
         srv.shutdown()
+
+
+# ── PLAN-10 §10.1: /-/signal/deferred ────────────────────────────────────────
+
+
+def test_signal_deferred_sets_state():
+    """POST /-/signal/deferred setzt status auf deferred."""
+    from fastapi.testclient import TestClient
+    state = WrapperState(job_id="j-defer")
+    app = make_app(state)
+    client = TestClient(app)
+    r = client.post("/-/signal/deferred", json={})
+    assert r.status_code == 200
+    assert state.status == "deferred"
+    assert state.deferred_time is None  # keine explizite Zeit → None (Wrapper-Default)
+
+
+def test_signal_deferred_with_custom_time():
+    """POST /-/signal/deferred mit defer_time übergibt den Wert an state."""
+    from fastapi.testclient import TestClient
+    state = WrapperState(job_id="j-defer2")
+    app = make_app(state)
+    client = TestClient(app)
+    r = client.post("/-/signal/deferred", json={"defer_time": 120})
+    assert r.status_code == 200
+    assert state.deferred_time == 120
+
+
+def test_run_app_deferred_exits_and_reports(tmp_path):
+    """App signalisiert DEFERRED → Wrapper killt Child, meldet deferred, exitiert."""
+    import threading
+    import json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import socket as _socket
+
+    received: list[dict] = []
+
+    def _free_port():
+        with _socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    sched_port = _free_port()
+    wrap_port = _free_port()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            received.append(json.loads(body))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+        def log_message(self, *_): pass
+
+    srv = HTTPServer(("127.0.0.1", sched_port), Handler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        out = tmp_path / "output.jsonl"
+        env = {
+            "BIBI_JOB_TYPE": "job",
+            "BIBI_JOB_ID": "defjob",
+            "BIBI_OUTPUT_PATH": str(out),
+            "BIBI_WORKTREE": str(tmp_path),
+            "BIBI_JOB_CMD": "sleep 30",
+            "BIBI_WRAPPER_PORT": str(wrap_port),
+            "BIBI_SCHEDULER_URL": f"http://127.0.0.1:{sched_port}",
+            "BIBI_DEFER_TIME": "5",
+        }
+
+        from unittest.mock import patch as _patch
+        original_ss = __import__("bibi.wrapper.server", fromlist=["start_server"]).start_server
+        captured = []
+
+        def mock_ss(state, *, port):
+            captured.append(state)
+            return original_ss(state, port=port)
+
+        result = [None]
+        def run():
+            result[0] = wrapper.run_app(env)
+
+        with _patch("bibi.wrapper.server.start_server", side_effect=mock_ss):
+            runner = threading.Thread(target=run)
+            runner.start()
+            deadline = time.monotonic() + 5.0
+            while not captured and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert captured, "start_server nicht aufgerufen"
+            state = captured[0]
+            # App signalisiert Defer
+            import httpx2 as _httpx
+            _deadline = time.monotonic() + 3.0
+            while time.monotonic() < _deadline:
+                try:
+                    r = _httpx.post(f"http://127.0.0.1:{wrap_port}/-/signal/deferred", json={})
+                    if r.status_code == 200:
+                        break
+                except Exception:
+                    time.sleep(0.05)
+            runner.join(timeout=10.0)
+            assert not runner.is_alive(), "run_app hat nicht terminiert"
+
+        deadline = time.monotonic() + 3.0
+        while not received and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert received, "Scheduler wurde nicht benachrichtigt"
+        statuses = [r.get("status") for r in received]
+        assert "deferred" in statuses
+    finally:
+        srv.shutdown()

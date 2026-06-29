@@ -41,6 +41,7 @@ class WrapperState:
         self._demand: dict | None = None
         self._last_activity = time.monotonic()
         self._lock = threading.Lock()
+        self.deferred_time: int | None = None  # gesetzt durch /signal/deferred
 
     def touch(self) -> None:
         """Activity-Timer zurücksetzen (stdout/stderr-Zeile, /input, /ping)."""
@@ -136,6 +137,10 @@ class AwaitingSignal(BaseModel):
     input_path: str | None = None
 
 
+class DeferredSignal(BaseModel):
+    defer_time: int | None = None  # Sekunden bis zum nächsten Versuch (None → Wrapper-Default)
+
+
 def make_app(state: WrapperState) -> FastAPI:
     """FastAPI-App für den Wrapper-Server."""
     app = FastAPI(docs_url=None, redoc_url=None)
@@ -175,6 +180,13 @@ def make_app(state: WrapperState) -> FastAPI:
         state.demand = None
         state.status = "running"
         state.report("running")
+        return {"ok": True}
+
+    @app.post("/-/signal/deferred")
+    def signal_deferred(body: DeferredSignal):
+        """App meldet: selbst-defer (PLAN-10 §10.1). Wrapper killt Child + meldet DEFERRED."""
+        state.deferred_time = body.defer_time  # None → _finish nutzt BIBI_DEFER_TIME / Default
+        state.status = "deferred"
         return {"ok": True}
 
     @app.post("/-/job/{job_id}/input")
