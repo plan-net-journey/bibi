@@ -98,14 +98,13 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .band.collapsed { display: none; }
 .band-row { padding: .15rem 0; }
 .outscroll { max-height: 72vh; overflow-y: auto; }
-.demand { margin: .5rem 0 0; padding: .5rem .75rem; border: 1px solid #d6a23e55;
-          border-radius: .35rem; background: #d6a23e0d; }
-.demand-prompt { font-weight: 600; font-size: .9rem; margin-bottom: .45rem; }
-.demand-choices { display: flex; gap: .5rem; flex-wrap: wrap; }
-.demand-choices button { padding: .3rem .9rem; font-weight: 600; }
-.demand-text textarea { display: block; width: 100%; box-sizing: border-box;
-  font: inherit; background: #8881; border: 1px solid #8884; border-radius: .3rem;
-  padding: .4rem; resize: vertical; min-height: 4rem; margin-bottom: .4rem; }
+.hitl { margin: .5rem 0 0; padding: .5rem .75rem; border: 1px solid #d6a23e55;
+        border-radius: .35rem; background: #d6a23e0d; }
+.hitl-label { font-weight: 600; font-size: .9rem; margin-bottom: .45rem; }
+.hitl a { display: inline-block; margin-top: .3rem; padding: .35rem .9rem;
+          font-weight: 600; background: #d6a23e22; border: 1px solid #d6a23e88;
+          border-radius: .3rem; color: inherit; text-decoration: none; }
+.hitl a:hover { background: #d6a23e44; }
 .liveterm { max-height: 24rem; overflow-y: auto; }
 .liveterm .lts { color: #888; user-select: none; }
 .liveclock { color: #5fb37a; font-size: .8rem; font-family: ui-monospace, monospace; }
@@ -1049,7 +1048,7 @@ def _run_rows(runs: list[dict], slug: str, now: float) -> str:
 
 
 def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
-               demand: dict | None = None, slug: str = "") -> str:
+               slug: str = "") -> str:
     """Eigener Block für den **aktiven/anstehenden** Lauf, nahe am Header — getrennt
     vom Journal (das erst beim Terminal-Übergang eine Zeile bekommt). So ist der
     laufende Job sofort sichtbar (pending → running → …); wird er terminal,
@@ -1075,8 +1074,8 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
         out = ('<div class="liveout">'
                + live_output_box(jid, events, kind=(live_output or {}).get("kind", "job"))
                + "</div>")
-    elif job.get("status") == "awaiting" and demand:
-        out = _demand_form(demand, slug)
+    elif job.get("status") == "awaiting":
+        out = _hitl_panel(job)
     app_port = job.get("app_port") if job else None
     app_link = (f' <a href="http://127.0.0.1:{app_port}/" target="_blank" '
                 f'style="font-size:.82rem">Zur App →</a>' if app_port else "")
@@ -1085,26 +1084,14 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
             f'<span class="muted">aktiver Lauf{tail}</span>{app_link}</div>{out}</div>')
 
 
-def _demand_form(demand: dict, slug: str) -> str:
-    """HITL-Demand-Formular (Slice 9.4): Choices als Buttons oder Freitext-Textarea."""
-    s = _e(slug)
-    prompt = _e(demand.get("prompt") or "Eingabe erforderlich")
-    choices = demand.get("choices") or []
-    target = f'hx-target="#detail" hx-swap="outerHTML"'
-    if choices:
-        btns = "".join(
-            f'<button hx-post="/-/ui/schedule/{s}/input" {target} '
-            f'hx-vals=\'{{"answer": "{_e(c)}"}}\'>{_e(c)}</button>'
-            for c in choices
-        )
-        form_html = f'<div class="demand-choices">{btns}</div>'
+def _hitl_panel(job: dict) -> str:
+    """HITL-Panel (§10.4/§10.5): zeigt app_url als direkten Link — FE postet nicht mehr."""
+    app_url = job.get("app_url") or ""
+    if app_url:
+        link = f'<a href="{_e(app_url)}" target="_blank" rel="noopener">Zur App → Eingabe</a>'
     else:
-        form_html = (
-            f'<form hx-post="/-/ui/schedule/{s}/input" {target}>'
-            f'<textarea name="answer" rows="3"></textarea>'
-            f'<button type="submit">Senden</button></form>'
-        )
-    return f'<div class="demand"><div class="demand-prompt">{prompt}</div>{form_html}</div>'
+        link = '<span class="muted">app_url nicht verfügbar</span>'
+    return f'<div class="hitl"><div class="hitl-label">Eingabe erforderlich</div>{link}</div>'
 
 
 #: §5.6-Verben, die der Controller als Buttons anbietet (Durchsetzung/Scope: 4.6).
@@ -1143,7 +1130,6 @@ def schedule_detail_inner(
     schedule: dict | None, runs: list[dict], job: dict | None,
     slug: str = "", now: float | None = None,
     *, top_output: dict | None = None, live_output: dict | None = None,
-    demand: dict | None = None,
 ) -> str:
     """Der austauschbare Detail-Kern (``#detail``): Meta + Aktions-Leiste
     (START/RESET/KILL) + Live-Block (aktiver Lauf, Output default expanded) +
@@ -1174,7 +1160,7 @@ def schedule_detail_inner(
         f"<h1>{name}</h1>"
         f'<div class="meta">{meta}</div>'
         f"{_action_bar(slug, job)}"
-        f"{_live_panel(job, now, live_output, demand=demand, slug=slug)}"
+        f"{_live_panel(job, now, live_output, slug=slug)}"
         "<h2>Journal</h2>"
         f"{runs_html}"
         "</div>"
@@ -1185,7 +1171,6 @@ def schedule_detail_page(
     schedule: dict | None, runs: list[dict], job: dict | None = None,
     slug: str = "", now: float | None = None,
     *, top_output: dict | None = None, live_output: dict | None = None,
-    demand: dict | None = None,
 ) -> str:
     """Schedule-zentrierte Detail-Sicht (§3 Ebene 3) als volle Seite."""
     name = _e((schedule or {}).get("slug") or slug)
@@ -1198,7 +1183,7 @@ def schedule_detail_page(
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         '<a class="back" href="/-/">← zurück</a>'
-        f"{schedule_detail_inner(schedule, runs, job, slug, now, top_output=top_output, live_output=live_output, demand=demand)}"
+        f"{schedule_detail_inner(schedule, runs, job, slug, now, top_output=top_output, live_output=live_output)}"
         f"<script>{_LIVE_JS}</script>"
         "</body></html>"
     )

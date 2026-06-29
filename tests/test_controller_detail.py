@@ -261,3 +261,35 @@ def test_top_run_output_inline_older_keep_toggle():
     assert "neuester" in html                             # jüngster: inline expanded
     assert 'hx-get="/-/ui/run/1/output"' in html          # älterer: Toggle bleibt
     assert 'hx-get="/-/ui/run/2/output"' not in html      # jüngster: kein Toggle
+
+
+# ── PLAN-10 §10.5: HITL-Panel (awaiting + app_url direkt) ────────────────────
+
+
+def test_hitl_panel_shows_app_url_link():
+    """awaiting + app_url → direkter Link im Panel, kein Formular."""
+    job = {"id": "j1", "slug": "a", "status": "awaiting",
+           "app_url": "http://localhost:9100/input"}
+    html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0)
+    assert 'class="hitl"' in html
+    assert 'href="http://localhost:9100/input"' in html
+    assert "Zur App" in html
+    assert "/input" not in html.split('href="http://localhost:9100/input"')[1]  # kein Proxy-POST
+    assert "textarea" not in html
+
+
+def test_hitl_panel_no_app_url_shows_fallback():
+    """awaiting ohne app_url → Fallback-Text."""
+    job = {"id": "j2", "slug": "a", "status": "awaiting", "app_url": None}
+    html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0)
+    assert 'class="hitl"' in html
+    assert "app_url nicht verfügbar" in html
+
+
+def test_hitl_panel_polls_ungated_when_awaiting():
+    """awaiting → #detail-Poll ohne bibiFollow-Gate."""
+    job = {"id": "j3", "slug": "a", "status": "awaiting",
+           "app_url": "http://localhost:9100/input"}
+    html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0)
+    assert "every 2s" in html
+    assert "[window.bibiFollow]" not in html.split("every 2s")[0].split("hx-trigger")[-1]

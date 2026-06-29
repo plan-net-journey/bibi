@@ -58,24 +58,6 @@ class ControllerClient:
         # verb ∈ {start, reset, kill} — wirkt auf den Live-Job (§5.6).
         return self._request("POST", f"/-/job/{job_id}/{verb}") or {}
 
-    def job_demand(self, job_id: str) -> dict | None:
-        """HITL-Demand abrufen (Slice 9.4): GET /-/job/{id}/input → Wrapper-Relay."""
-        try:
-            return self._get(f"/-/job/{job_id}/input") or None
-        except Exception:  # noqa: BLE001
-            return None
-
-    def job_input(self, job_id: str, answer: str) -> dict:
-        """HITL-Antwort senden (Slice 9.4): POST /-/job/{id}/input → Wrapper-Relay → App."""
-        payload = json.dumps({"answer": answer}).encode()
-        url = self.base + f"/-/job/{job_id}/input"
-        req = urllib.request.Request(
-            url, data=payload, method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310
-            body = resp.read()
-            return json.loads(body) if body else {}
 
     def delete_journal(self, journal_id: int) -> dict:
         return self._request("DELETE", f"/-/journal/{journal_id}") or {}
