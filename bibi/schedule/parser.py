@@ -36,7 +36,7 @@ from bibi.schedule.models import (
 )
 
 #: Spezialwerte von ``schedule:`` (§5.2) — keine cron-Ausdrücke.
-SPECIAL_SCHEDULES: frozenset[str] = frozenset({"now", "startup", "never"})
+SPECIAL_SCHEDULES: frozenset[str] = frozenset({"now", "startup", "never", "on_demand"})
 
 #: Dateinamen, bei denen der Ordnername den Slug bestimmt (§6.6).
 SCHEDULE_FILENAMES: frozenset[str] = frozenset({"README.md", "SCHEDULE.md"})

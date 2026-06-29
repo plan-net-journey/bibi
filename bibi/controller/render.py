@@ -664,7 +664,10 @@ def _aktiv_row(j: dict, now: float) -> str:
 def _wartet_row(j: dict, now: float) -> str:
     slug = _e(j.get("slug"))
     nf = j.get("next_fire_at")
-    nxt = f"{_abs_time(nf)} ({_until(nf, now)})" if nf else "—"
+    if j.get("schedule") == "on_demand":
+        nxt = "manuell"
+    else:
+        nxt = f"{_abs_time(nf)} ({_until(nf, now)})" if nf else "—"
     last = _abs_time(j.get("last_run_at"))
     return (f'<div class="band-row"><span class="st pending">○</span> '
             f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a>'

@@ -131,14 +131,14 @@ def compute_next_fire(spec, now: float | None = None) -> float | None:
         except ValueError:
             return None
     sched = spec.schedule
-    if sched is None or sched in ("startup", "never"):
+    if sched is None or sched in ("startup", "never", "on_demand"):
         return None
     if sched == "now":
         return now
     return _next_cron(sched, now)
 
 
-_SPECIAL = ("now", "startup", "never")
+_SPECIAL = ("now", "startup", "never", "on_demand")
 
 
 def is_recurring(schedule: str | None) -> bool:
@@ -275,7 +275,7 @@ def job_view(row: sqlite3.Row, *, last_run_at: float | None = None) -> dict:
         "finished_at": row["finished_at"], "exit_code": row["exit_code"],
         "attempt": row["attempt"], "host": row["host"], "worker": row["worker"],
         "output_ref": row["output_ref"], "next_fire_at": row["next_fire_at"],
-        "last_run_at": last_run_at,
+        "last_run_at": last_run_at, "schedule": row["schedule"],
     }
 
 
@@ -489,15 +489,27 @@ def report_status(
         # Nur bei `complete` — error/killed/inactive/zombie sind echte Endzustände
         # und dürfen nicht still neu eingestellt werden.
         sched = conn.execute("SELECT schedule FROM jobs WHERE id=?", (job_id,)).fetchone()
-        if sched is not None and is_recurring(sched["schedule"]) and target is Status.COMPLETE:
-            nf = _next_cron(sched["schedule"], now)
-            conn.execute(
-                "UPDATE jobs SET status='pending', next_fire_at=:nf, attempt=0, "
-                "reason=NULL, fire=fire+1, locked_at=NULL, started_at=NULL, "
-                "finished_at=NULL, exit_code=NULL, output_ref=NULL, deferred_at=NULL, "
-                "updated_at=:now WHERE id=:id",
-                {"nf": nf, "now": now, "id": job_id},
-            )
+        if sched is not None and target is Status.COMPLETE:
+            schedule_val = sched["schedule"]
+            if is_recurring(schedule_val):
+                nf = _next_cron(schedule_val, now)
+                conn.execute(
+                    "UPDATE jobs SET status='pending', next_fire_at=:nf, attempt=0, "
+                    "reason=NULL, fire=fire+1, locked_at=NULL, started_at=NULL, "
+                    "finished_at=NULL, exit_code=NULL, output_ref=NULL, deferred_at=NULL, "
+                    "updated_at=:now WHERE id=:id",
+                    {"nf": nf, "now": now, "id": job_id},
+                )
+            elif schedule_val == "on_demand":
+                # Manuell startbar: nach complete sofort wieder pending (next_fire_at=NULL
+                # → nie auto-gefeuert), fire++ für eindeutige run_id.
+                conn.execute(
+                    "UPDATE jobs SET status='pending', next_fire_at=NULL, attempt=0, "
+                    "reason=NULL, fire=fire+1, locked_at=NULL, started_at=NULL, "
+                    "finished_at=NULL, exit_code=NULL, output_ref=NULL, deferred_at=NULL, "
+                    "updated_at=:now WHERE id=:id",
+                    {"now": now, "id": job_id},
+                )
     return "ok"
 
 
