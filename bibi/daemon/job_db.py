@@ -28,7 +28,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -91,6 +91,12 @@ def _mig_jobs_pid(conn: sqlite3.Connection) -> None:  # v8 → v9
             conn.execute("ALTER TABLE jobs ADD COLUMN pid_started_at TEXT")
 
 
+def _mig_jobs_app_url(conn: sqlite3.Connection) -> None:  # v9 → v10
+    # PLAN-10 Stufe 10.4: HITL-Eingabe-Endpunkt der App (kein Proxy mehr).
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "app_url"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN app_url TEXT")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -103,6 +109,7 @@ _MIGRATIONS: dict[int, list] = {
     6: [_mig_jobs_exec_mode],
     7: [_mig_kind_normalize],
     8: [_mig_jobs_pid],
+    9: [_mig_jobs_app_url],
 }
 
 
@@ -298,7 +305,7 @@ def job_view(row: sqlite3.Row, *, last_run_at: float | None = None) -> dict:
         "attempt": row["attempt"], "host": row["host"], "worker": row["worker"],
         "output_ref": row["output_ref"], "next_fire_at": row["next_fire_at"],
         "last_run_at": last_run_at, "schedule": row["schedule"],
-        "app_port": row["app_port"],
+        "app_port": row["app_port"], "app_url": row["app_url"],
     }
 
 
@@ -461,7 +468,8 @@ def report_status(
     host: str | None = None, worker: str | None = None,
     output_ref: str | None = None, attempt: int | None = None,
     next_fire_at: float | None = None, commit_sha: str | None = None,
-    branch: str | None = None, now: float | None = None,
+    branch: str | None = None, app_url: str | None = None,
+    now: float | None = None,
 ) -> str:
     """Worker meldet einen Zustandswechsel (§4.4, output-frei). Rückgabe:
     ``ok`` | ``invalid`` (verbotener Übergang, §5.4) | ``not_found``."""
@@ -505,6 +513,11 @@ def report_status(
         fields["worker"] = worker
     if output_ref is not None:  # nur Referenz — der Scheduler bleibt output-frei (§4.4)
         fields["output_ref"] = output_ref
+    if target is Status.AWAITING:
+        if app_url is not None:
+            fields["app_url"] = app_url
+    else:
+        fields["app_url"] = None  # HITL beendet oder Terminal → Endpunkt löschen
 
     assignments = ", ".join(f"{k}=:{k}" for k in fields)
     fields["id"] = job_id

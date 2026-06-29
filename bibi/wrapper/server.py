@@ -15,10 +15,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any
-
 import uvicorn
-from fastapi import Body, FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 
@@ -37,6 +35,7 @@ class WrapperState:
         self.app_port = app_port
         self.hitl_timeout = hitl_timeout
         self.wrapper_url = wrapper_url
+        self.app_url: str | None = None  # HITL-Eingabe-Endpunkt (gesetzt via /signal/awaiting)
         self._status = "running"
         self._demand: dict | None = None
         self._last_activity = time.monotonic()
@@ -95,8 +94,8 @@ class WrapperState:
             body["exit_code"] = exit_code
         if output_ref is not None:
             body["output_ref"] = output_ref
-        if status == "awaiting" and self.wrapper_url:
-            body["wrapper_url"] = self.wrapper_url
+        if status == "awaiting" and self.app_url:
+            body["app_url"] = self.app_url
 
         if self.scheduler_db_path:
             try:
@@ -132,9 +131,9 @@ class WrapperState:
 
 
 class AwaitingSignal(BaseModel):
-    prompt: str
-    choices: list[str] | None = None
-    input_path: str | None = None
+    url: str                         # voller HITL-Eingabe-Endpunkt der App
+    input_request: str               # Beschreibung / Prompt für den User
+    input_format: str = "text"       # "text" | "choices" | …
 
 
 class DeferredSignal(BaseModel):
@@ -163,12 +162,12 @@ def make_app(state: WrapperState) -> FastAPI:
 
     @app.post("/-/signal/awaiting")
     def signal_awaiting(body: AwaitingSignal):
-        """App meldet: warte auf Eingabe (PLAN-9 §3, Slice 9.1)."""
+        """App meldet: warte auf Eingabe (PLAN-10 §10.4). FE postet direkt an body.url."""
+        state.app_url = body.url
         state.demand = {
-            "prompt": body.prompt,
-            "choices": body.choices,
-            "input_path": body.input_path,
-            "mediated": body.input_path is not None,
+            "url": body.url,
+            "input_request": body.input_request,
+            "input_format": body.input_format,
         }
         state.status = "awaiting"
         state.report("awaiting")
@@ -176,7 +175,8 @@ def make_app(state: WrapperState) -> FastAPI:
 
     @app.post("/-/signal/running")
     def signal_running():
-        """App meldet: aktiv (PLAN-9 §3, Slice 9.1). Demand wird gelöscht."""
+        """App meldet: aktiv. Demand + app_url werden gelöscht."""
+        state.app_url = None
         state.demand = None
         state.status = "running"
         state.report("running")
@@ -188,50 +188,6 @@ def make_app(state: WrapperState) -> FastAPI:
         state.deferred_time = body.defer_time  # None → _finish nutzt BIBI_DEFER_TIME / Default
         state.status = "deferred"
         return {"ok": True}
-
-    @app.post("/-/job/{job_id}/input")
-    def post_input(job_id: str, body: Any = Body(default=None)):
-        """FE schickt Antwort → Wrapper proxyt an App (Proxy-Modus, PLAN-9 §4.1 / Slice 9.2).
-
-        Nur wenn state = awaiting und mediated = True (input_path gesetzt).
-        App antwortet HTTP 200 → state = running, Demand gelöscht, Scheduler informiert.
-        """
-        if job_id != state.job_id:
-            raise HTTPException(status_code=404, detail="job not found")
-        if state.status != "awaiting":
-            raise HTTPException(status_code=409, detail="job not awaiting")
-        demand = state.demand
-        if demand is None or not demand.get("mediated"):
-            raise HTTPException(status_code=409, detail="not in proxy mode (no input_path)")
-        if not state.app_port:
-            raise HTTPException(status_code=503, detail="app_port not configured")
-
-        input_path = demand["input_path"]
-        url = f"http://localhost:{state.app_port}{input_path}"
-        payload = json.dumps(body).encode() if body is not None else b"{}"
-        req = urllib.request.Request(
-            url, data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10.0) as resp:  # noqa: S310
-                status_code = resp.status
-                resp_body = resp.read()
-                content_type = resp.headers.get("Content-Type", "application/json")
-        except urllib.error.HTTPError as e:
-            raise HTTPException(status_code=e.code,
-                                detail=f"app returned {e.code}")
-        except (urllib.error.URLError, OSError) as exc:
-            raise HTTPException(status_code=502,
-                                detail=f"app unreachable: {exc}")
-
-        state.demand = None
-        state.status = "running"
-        state.touch()
-        state.report("running")
-        return Response(content=resp_body, status_code=status_code,
-                        media_type=content_type)
 
     @app.post("/-/job/{job_id}/ping")
     def post_ping(job_id: str):

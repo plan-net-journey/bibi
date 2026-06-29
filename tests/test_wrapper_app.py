@@ -214,24 +214,18 @@ def test_signal_awaiting_sets_state():
     app = make_app(state)
     from fastapi.testclient import TestClient
     client = TestClient(app)
-    r = client.post("/-/signal/awaiting", json={"prompt": "Weitermachen?", "choices": ["ja", "nein"]})
+    r = client.post("/-/signal/awaiting", json={
+        "url": "http://localhost:9100/input",
+        "input_request": "Weitermachen?",
+        "input_format": "text",
+    })
     assert r.status_code == 200
     assert state.status == "awaiting"
+    assert state.app_url == "http://localhost:9100/input"
     assert state.demand is not None
-    assert state.demand["prompt"] == "Weitermachen?"
-    assert state.demand["choices"] == ["ja", "nein"]
-    assert state.demand["mediated"] is False  # kein input_path → nicht mediated
-
-
-def test_signal_awaiting_with_input_path_is_mediated():
-    state = WrapperState(job_id="j2")
-    app = make_app(state)
-    from fastapi.testclient import TestClient
-    client = TestClient(app)
-    r = client.post("/-/signal/awaiting", json={"prompt": "Auswahl", "input_path": "/input"})
-    assert r.status_code == 200
-    assert state.demand["mediated"] is True
-    assert state.demand["input_path"] == "/input"
+    assert state.demand["url"] == "http://localhost:9100/input"
+    assert state.demand["input_request"] == "Weitermachen?"
+    assert state.demand["input_format"] == "text"
 
 
 def test_signal_running_clears_demand():
@@ -239,12 +233,13 @@ def test_signal_running_clears_demand():
     app = make_app(state)
     from fastapi.testclient import TestClient
     client = TestClient(app)
-    client.post("/-/signal/awaiting", json={"prompt": "Warte"})
+    client.post("/-/signal/awaiting", json={"url": "http://localhost:9100/input", "input_request": "Warte"})
     assert state.status == "awaiting"
     r = client.post("/-/signal/running")
     assert r.status_code == 200
     assert state.status == "running"
     assert state.demand is None
+    assert state.app_url is None
 
 
 def test_get_input_returns_demand():
@@ -252,13 +247,17 @@ def test_get_input_returns_demand():
     app = make_app(state)
     from fastapi.testclient import TestClient
     client = TestClient(app)
-    client.post("/-/signal/awaiting", json={"prompt": "Frage", "choices": ["a", "b"]})
+    client.post("/-/signal/awaiting", json={
+        "url": "http://localhost:9100/input",
+        "input_request": "Frage",
+        "input_format": "text",
+    })
     r = client.get("/-/job/j4/input")
     assert r.status_code == 200
     data = r.json()
-    assert data["prompt"] == "Frage"
-    assert data["choices"] == ["a", "b"]
-    assert data["mediated"] is False
+    assert data["url"] == "http://localhost:9100/input"
+    assert data["input_request"] == "Frage"
+    assert data["input_format"] == "text"
 
 
 def test_get_input_not_found_when_not_awaiting():
@@ -275,7 +274,7 @@ def test_get_input_wrong_job():
     app = make_app(state)
     from fastapi.testclient import TestClient
     client = TestClient(app)
-    client.post("/-/signal/awaiting", json={"prompt": "x"})
+    client.post("/-/signal/awaiting", json={"url": "http://localhost:9100/input", "input_request": "x"})
     r = client.get("/-/job/other/input")
     assert r.status_code == 404
 
@@ -308,7 +307,10 @@ def test_signal_awaiting_calls_scheduler(free_tcp_port):
         app = make_app(state)
         from fastapi.testclient import TestClient
         client = TestClient(app)
-        client.post("/-/signal/awaiting", json={"prompt": "Warte"})
+        client.post("/-/signal/awaiting", json={
+            "url": "http://localhost:9100/input",
+            "input_request": "Warte",
+        })
         import time
         deadline = time.monotonic() + 3.0
         while not received and time.monotonic() < deadline:
@@ -363,125 +365,6 @@ def test_wrapper_state_no_scheduler_url_no_crash():
     """Ohne scheduler_url läuft report() ohne Fehler durch."""
     state = WrapperState(job_id="j7")
     state.report("awaiting")  # darf nicht werfen
-
-
-# ── Slice 9.2: POST /-/job/{id}/input (Proxy-Modus) ──────────────────────────
-
-
-def _make_app_server(*, job_id: str, port: int,
-                     response_code: int = 200,
-                     response_body: bytes = b'{"ok":true}') -> tuple:
-    """Startet einen Mini-HTTP-Server, der als App-Stub fungiert.
-    Gibt (server, received_list) zurück."""
-    import json as _json
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-    import threading
-
-    received: list[dict] = []
-    _code = response_code
-    _body = response_body
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            length = int(self.headers.get("Content-Length", 0))
-            data = self.rfile.read(length)
-            received.append({"path": self.path, "body": _json.loads(data or b"null")})
-            self.send_response(_code)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(_body)
-
-        def log_message(self, *args):
-            pass
-
-    srv = HTTPServer(("127.0.0.1", port), Handler)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    return srv, received
-
-
-def test_proxy_input_transitions_to_running(free_tcp_port):
-    """FE POST → Wrapper → App 200 → state=running, Demand gelöscht."""
-    srv, received = _make_app_server(job_id="px1", port=free_tcp_port)
-    try:
-        state = WrapperState(job_id="px1", app_port=free_tcp_port)
-        state.demand = {"prompt": "Weitermachen?", "choices": ["ja"],
-                        "input_path": "/input", "mediated": True}
-        state.status = "awaiting"
-        app = make_app(state)
-        from fastapi.testclient import TestClient
-        client = TestClient(app)
-        r = client.post("/-/job/px1/input", json={"answer": "ja"})
-        assert r.status_code == 200
-        assert state.status == "running"
-        assert state.demand is None
-        assert len(received) == 1
-        assert received[0]["path"] == "/input"
-        assert received[0]["body"]["answer"] == "ja"
-    finally:
-        srv.shutdown()
-
-
-def test_proxy_input_not_awaiting_returns_409():
-    state = WrapperState(job_id="px2", app_port=9999)
-    state.status = "running"
-    app = make_app(state)
-    from fastapi.testclient import TestClient
-    client = TestClient(app)
-    r = client.post("/-/job/px2/input", json={"answer": "x"})
-    assert r.status_code == 409
-
-
-def test_proxy_input_not_mediated_returns_409():
-    state = WrapperState(job_id="px3", app_port=9999)
-    state.demand = {"prompt": "x", "choices": None, "input_path": None, "mediated": False}
-    state.status = "awaiting"
-    app = make_app(state)
-    from fastapi.testclient import TestClient
-    client = TestClient(app)
-    r = client.post("/-/job/px3/input", json={"answer": "x"})
-    assert r.status_code == 409
-
-
-def test_proxy_input_wrong_job_returns_404():
-    state = WrapperState(job_id="px4", app_port=9999)
-    app = make_app(state)
-    from fastapi.testclient import TestClient
-    client = TestClient(app)
-    r = client.post("/-/job/other/input", json={})
-    assert r.status_code == 404
-
-
-def test_proxy_input_app_error_propagates(free_tcp_port):
-    """App antwortet 422 → Wrapper gibt 422 weiter, state bleibt awaiting."""
-    srv, _ = _make_app_server(job_id="px5", port=free_tcp_port,
-                              response_code=422, response_body=b'{"detail":"invalid"}')
-    try:
-        state = WrapperState(job_id="px5", app_port=free_tcp_port)
-        state.demand = {"prompt": "x", "choices": None,
-                        "input_path": "/input", "mediated": True}
-        state.status = "awaiting"
-        app = make_app(state)
-        from fastapi.testclient import TestClient
-        client = TestClient(app, raise_server_exceptions=False)
-        r = client.post("/-/job/px5/input", json={"answer": "falsch"})
-        assert r.status_code == 422
-        assert state.status == "awaiting"  # kein Übergang bei Fehler
-        assert state.demand is not None
-    finally:
-        srv.shutdown()
-
-
-def test_proxy_input_no_app_port_returns_503():
-    state = WrapperState(job_id="px6")  # kein app_port
-    state.demand = {"prompt": "x", "choices": None,
-                    "input_path": "/input", "mediated": True}
-    state.status = "awaiting"
-    app = make_app(state)
-    from fastapi.testclient import TestClient
-    client = TestClient(app, raise_server_exceptions=False)
-    r = client.post("/-/job/px6/input", json={})
-    assert r.status_code == 503
 
 
 def test_run_app_passes_app_port_to_state(tmp_path, free_tcp_port):
@@ -696,22 +579,29 @@ def test_worker_sets_bibi_hitl_timeout(tmp_path):
     assert captured_env[0].get("BIBI_HITL_TIMEOUT") == "3600", captured_env[0]
 
 
-# ── Slice 9.4: wrapper_url in WrapperState + report() ──────────────────────
+# ── PLAN-10 §10.4: app_url in WrapperState + report() ───────────────────────
 
 
-def test_wrapper_state_stores_wrapper_url():
-    """WrapperState speichert wrapper_url für den Daemon-Relay."""
-    s = WrapperState(job_id="w1", wrapper_url="http://localhost:8080")
-    assert s.wrapper_url == "http://localhost:8080"
+def test_wrapper_state_default_app_url_is_none():
+    s = WrapperState(job_id="w1")
+    assert s.app_url is None
 
 
-def test_wrapper_state_default_wrapper_url_is_none():
+def test_signal_awaiting_sets_app_url():
+    """POST /-/signal/awaiting setzt state.app_url."""
     s = WrapperState(job_id="w2")
-    assert s.wrapper_url is None
+    app = make_app(s)
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    client.post("/-/signal/awaiting", json={
+        "url": "http://localhost:9100/input",
+        "input_request": "Test?",
+    })
+    assert s.app_url == "http://localhost:9100/input"
 
 
-def test_signal_awaiting_includes_wrapper_url_in_report(free_tcp_port):
-    """POST /-/signal/awaiting schickt wrapper_url an den Scheduler (Slice 9.4)."""
+def test_signal_awaiting_includes_app_url_in_report(free_tcp_port):
+    """POST /-/signal/awaiting schickt app_url an den Scheduler (§10.4)."""
     import json
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -736,25 +626,27 @@ def test_signal_awaiting_includes_wrapper_url_in_report(free_tcp_port):
         state = WrapperState(
             job_id="wu1",
             scheduler_url=f"http://127.0.0.1:{free_tcp_port}",
-            wrapper_url="http://127.0.0.1:8080",
         )
         app = make_app(state)
         from fastapi.testclient import TestClient
         client = TestClient(app)
-        client.post("/-/signal/awaiting", json={"prompt": "Test?"})
+        client.post("/-/signal/awaiting", json={
+            "url": "http://localhost:9100/input",
+            "input_request": "Test?",
+        })
         import time
         deadline = time.monotonic() + 3.0
         while not received and time.monotonic() < deadline:
             time.sleep(0.05)
         assert received, "Scheduler wurde nicht aufgerufen"
         assert received[0].get("status") == "awaiting"
-        assert received[0].get("wrapper_url") == "http://127.0.0.1:8080"
+        assert received[0].get("app_url") == "http://localhost:9100/input"
     finally:
         srv.shutdown()
 
 
-def test_signal_running_does_not_include_wrapper_url(free_tcp_port):
-    """POST /-/signal/running sendet keine wrapper_url (nur awaiting braucht sie)."""
+def test_signal_running_does_not_include_app_url(free_tcp_port):
+    """POST /-/signal/running sendet keine app_url."""
     import json
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -779,7 +671,6 @@ def test_signal_running_does_not_include_wrapper_url(free_tcp_port):
         state = WrapperState(
             job_id="wu2",
             scheduler_url=f"http://127.0.0.1:{free_tcp_port}",
-            wrapper_url="http://127.0.0.1:8080",
         )
         app = make_app(state)
         from fastapi.testclient import TestClient
@@ -790,7 +681,7 @@ def test_signal_running_does_not_include_wrapper_url(free_tcp_port):
         while not received and time.monotonic() < deadline:
             time.sleep(0.05)
         assert received, "Scheduler wurde nicht aufgerufen"
-        assert "wrapper_url" not in received[0]
+        assert "app_url" not in received[0]
     finally:
         srv.shutdown()
 
