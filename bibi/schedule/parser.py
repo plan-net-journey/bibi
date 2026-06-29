@@ -8,9 +8,9 @@ Drei Ausgänge (wie bibi3' Parser, auf das bibi4-Modell übertragen):
 - **ok**    — ``ScheduleSpec`` steht.
 
 Trigger-Syntax (§5.2): ``schedule:`` ist ein croniter-Ausdruck **oder** ein
-Spezialwert (``now``/``startup``/``never``); ``at:`` ein ISO-8601-Zeitpunkt.
-Genau einer von beiden. Typ-Schlüssel (§5.3): genau einer von ``job:``/``claude:``/
-``app:`` (Key == Typ == Registry-Schlüssel, §1.2).
+Spezialwert (``now``/``startup``/``never``/``autostart``); ``at:`` ein ISO-8601-Zeitpunkt.
+Genau einer von beiden. Typ-Schlüssel: nur ``job:`` (PLAN-10 Stufe 10.0).
+``job: claude: <prompt>`` → claude-Prefix-Expansion beim Spawn.
 
 Slug-Ableitung (§6.6/bibi3 §2.5): explizites ``slug:`` gewinnt; sonst bei
 ``README.md``/``SCHEDULE.md`` der Ordnername; sonst der Dateistamm.
@@ -19,6 +19,7 @@ Slug-Ableitung (§6.6/bibi3 §2.5): explizites ``slug:`` gewinnt; sonst bei
 from __future__ import annotations
 
 import datetime as _dt
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,14 +36,16 @@ from bibi.schedule.models import (
     ScheduleSpec,
 )
 
+_CLAUDE_PREFIX_RE = re.compile(r"^\s*claude\s*:\s*(.+)", re.DOTALL)
+
 #: Spezialwerte von ``schedule:`` (§5.2) — keine cron-Ausdrücke.
-SPECIAL_SCHEDULES: frozenset[str] = frozenset({"now", "startup", "never", "on_demand"})
+SPECIAL_SCHEDULES: frozenset[str] = frozenset({"now", "startup", "never", "on_demand", "autostart"})
 
 #: Dateinamen, bei denen der Ordnername den Slug bestimmt (§6.6).
 SCHEDULE_FILENAMES: frozenset[str] = frozenset({"README.md", "SCHEDULE.md"})
 
-#: Frontmatter-Key → Typ (§5.3). Reihenfolge irrelevant; genau einer muss gesetzt sein.
-_TYPE_KEYS: dict[str, Kind] = {"job": Kind.JOB, "claude": Kind.CLAUDE, "app": Kind.APP}
+#: Frontmatter-Key → Typ (§5.3, PLAN-10 Stufe 10.0). Nur noch ``job:``.
+_TYPE_KEYS: dict[str, Kind] = {"job": Kind.JOB}
 
 _VALID_BACKOFF: frozenset[str] = frozenset({"fixed", "linear", "exponential"})
 
@@ -162,7 +165,7 @@ def parse_text(
     if len(present) == 0:
         return ParseResult(
             schedule_ref=schedule_ref,
-            error="Frontmatter braucht genau einen Typ: `job:`, `claude:` oder `app:` (§5.3)",
+            error="Frontmatter braucht `job:` (§5.3); claude-Prefix: `job: claude: <prompt>`",
         )
     if len(present) > 1:
         keys = ", ".join(f"`{k}:`" for k, _ in present)
@@ -200,9 +203,9 @@ def parse_text(
             error=f"backoff: muss eines von {sorted(_VALID_BACKOFF)} sein",
         )
 
-    # ── claude-/app-Felder ───────────────────────────────────────────────────
+    # ── claude-Prefix-Felder (gelten wenn payload mit `claude:` beginnt) ────
     model = DEFAULT_CLAUDE_MODEL
-    if kind is Kind.CLAUDE and isinstance(fm.get("model"), str) and fm["model"].strip():
+    if isinstance(fm.get("model"), str) and fm["model"].strip():
         model = fm["model"].strip()
     soul = fm["soul"].strip() if isinstance(fm.get("soul"), str) and fm["soul"].strip() else None
     session = fm["session"].strip() if isinstance(fm.get("session"), str) and fm["session"].strip() else None

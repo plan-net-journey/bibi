@@ -5,10 +5,9 @@ Herzstück wird isoliert bewiesen, bevor es an DB/Prozesse gekoppelt wird (wie d
 ``PushDebouncer`` der Phase 2). Die Übergänge und Owner-Regeln stammen 1:1 aus der
 §5.4-Tabelle, die Root Causes aus §5.5.
 
-Die Maschine ist **typ-agnostisch im Graphen**, kennt aber die typ-gebundenen
-Kanten (DESIGN §5.4): ``awaiting`` und seine Kanten gelten nur für ``app``, der
-Silence-``zombie`` nur für ``job``/``claude``. ``apply(..., kind=...)`` setzt das
-durch; ohne ``kind`` bleibt die Prüfung aus (reine Graph-Sicht).
+PLAN-10 Stufe 10.0: ein einziger Typ ``JOB`` — keine typ-gebundenen Kanten mehr.
+Alle Events gelten für alle Jobs. ``apply(..., kind=...)`` wird der Rückwärts-
+kompatibilität wegen beibehalten, hat aber keine einschränkende Wirkung mehr.
 """
 
 from __future__ import annotations
@@ -87,16 +86,9 @@ _TRANSITIONS: dict[tuple[Status, Event], Status] = {
     (Status.KILLED, Event.RESET): Status.PENDING,
 }
 
-# ── Typ-gebundene Kanten (§5.4) ─────────────────────────────────────────────
-
-#: Events, die nur für bestimmte Typen gültig sind. Nicht gelistete Events gelten
-#: für alle Typen.
-EVENT_KINDS: dict[Event, frozenset[Kind]] = {
-    Event.AWAIT_INPUT: frozenset({Kind.APP}),
-    Event.INPUT: frozenset({Kind.APP}),
-    Event.TIMEOUT: frozenset({Kind.APP}),
-    Event.SILENCE: frozenset({Kind.JOB, Kind.CLAUDE}),
-}
+# ── Typ-gebundene Kanten ─────────────────────────────────────────────────────
+# PLAN-10 Stufe 10.0: ein Typ (JOB) → keine Einschränkungen.
+EVENT_KINDS: dict[Event, frozenset[Kind]] = {}
 
 # ── Reason-Zuordnung (§5.5) ─────────────────────────────────────────────────
 

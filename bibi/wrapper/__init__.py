@@ -2,13 +2,11 @@
 
 Ein env-konfigurierter Entrypoint, der den Job-Prozess als **Child** spawnt,
 stdout/stderr via Pipe liest und nach ``data/job/{id}/output.jsonl`` appendet.
-Der Typ wird aus einer **Registry** (datengetriebenes ``type → TypeHandler``-
-Mapping, keine if/else-Kette) bestimmt — neue Typen (``app``, ``openai-sdk`` …)
-docken ohne Umbau an.
+PLAN-10 Stufe 10.0: nur noch ``job`` und ``claude`` im REGISTRY.
 
 Aufruf als eigener Prozess: ``python -m bibi.wrapper``. Env (vom Worker gesetzt):
 
-- ``BIBI_JOB_TYPE``   — Registry-Schlüssel (``job``/``claude``/``app``).
+- ``BIBI_JOB_TYPE``   — Registry-Schlüssel (``job`` oder ``claude``).
 - ``BIBI_JOB_ID``     — stabile Job-Hash-ID.
 - ``BIBI_OUTPUT_PATH``— absoluter Pfad der ``output.jsonl``.
 - ``BIBI_WORKTREE``   — Arbeitsverzeichnis des Childs.
@@ -43,8 +41,8 @@ class TypeHandler:
     """Wie ein Typ zu einem Child-Prozess wird (§7.5)."""
 
     build_command: Callable[[dict[str, str]], list[str]]  # env → argv des Childs
-    long_lived: bool = False     # app: kein Silence-Zombie, Wrapper bleibt
-    supports_hitl: bool = False  # nur app
+    long_lived: bool = False     # True → run_app (HITL-fähig, Wrapper-HTTP-Server)
+    supports_hitl: bool = False  # True → App kann AWAIT_INPUT-Signal senden
 
 
 def _claude_argv(env: dict[str, str]) -> list[str]:
@@ -69,15 +67,14 @@ def _claude_argv(env: dict[str, str]) -> list[str]:
     return argv
 
 
-def _app_argv(env: dict[str, str]) -> list[str]:
-    return ["bash", "-c", env.get("BIBI_APP_ENTRYPOINT", "")]
-
-
-#: Das Registry-Mapping. Frontmatter-Key == Typ == Schlüssel (§1.2).
+#: Das Registry-Mapping (PLAN-10 Stufe 10.0: ``job`` und ``claude``).
+#: ``job`` → run_app (HITL-fähig). ``claude`` → run_job (Batch, kein HITL).
 REGISTRY: dict[str, TypeHandler] = {
-    "job": TypeHandler(build_command=lambda env: ["bash", "-c", env.get("BIBI_JOB_CMD", "")]),
+    "job": TypeHandler(
+        build_command=lambda env: ["bash", "-c", env.get("BIBI_JOB_CMD", "")],
+        long_lived=True, supports_hitl=True,
+    ),
     "claude": TypeHandler(build_command=_claude_argv),
-    "app": TypeHandler(build_command=_app_argv, long_lived=True, supports_hitl=True),
 }
 
 
@@ -315,6 +312,12 @@ def run_app(env: dict[str, str]) -> int:
 
     monitors = [threading.Thread(target=_hitl_monitor, args=(proc, state),
                                  kwargs={"poll": 0.5}, daemon=True, name="hitl-monitor")]
+    silence_str = env.get("BIBI_SILENCE_TIMEOUT")
+    if silence_str:
+        monitors.append(threading.Thread(
+            target=_silence_monitor,
+            args=(proc, int(silence_str), out_path, started, outcome),
+            daemon=True, name="silence-monitor"))
     if wall_str:
         monitors.append(threading.Thread(
             target=_wall_monitor, args=(proc, int(wall_str), started, outcome),

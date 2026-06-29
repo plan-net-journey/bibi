@@ -38,7 +38,7 @@ def test_rescan_inserts_and_job_list(sched):
 
 def test_schedule_lists(sched):
     client, root = sched
-    _seed(root, "daily.md", '---\nschedule: "0 9 * * *"\nclaude: "x"\n---\n')
+    _seed(root, "daily.md", '---\nschedule: "0 9 * * *"\njob: "claude: x"\n---\n')
     client.post("/-/rescan")
     items = client.get("/-/schedule").json()["schedules"]
     assert any(s["slug"] == "daily" and s["trigger"] == "0 9 * * *" for s in items)
@@ -183,7 +183,7 @@ def test_scheduler_status_awaiting_stores_wrapper_url(sched, free_tcp_port):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         client, root = sched
-        _seed(root, "a/README.md", '---\nschedule: now\napp: echo x\n---\n')
+        _seed(root, "a/README.md", '---\nschedule: now\njob: echo x\n---\n')
         client.post("/-/rescan")
         jid = client.post("/-/scheduler/next").json()["id"]
         # running → awaiting mit wrapper_url

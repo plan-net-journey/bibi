@@ -134,12 +134,12 @@ def test_list_jobs_status_filter_and_get(conn, tmp_path: Path):
 
 
 def test_schedule_view_trigger_and_status(conn, tmp_path: Path):
-    _write(tmp_path / "case" / "daily.md", '---\nschedule: "0 9 * * *"\nclaude: "x"\n---\n')
+    _write(tmp_path / "case" / "daily.md", '---\nschedule: "0 9 * * *"\njob: "claude: x"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     sched = job_db.list_schedules(conn)
     assert sched[0]["slug"] == "daily"
     assert sched[0]["trigger"] == "0 9 * * *"
-    assert sched[0]["kind"] == "claude"
+    assert sched[0]["kind"] == "job"
     assert sched[0]["last_status"] == "pending"   # nie gelaufen → Zeilen-Status
 
 

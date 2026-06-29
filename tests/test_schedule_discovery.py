@@ -27,7 +27,7 @@ def test_walk_missing_vault_is_empty(tmp_path: Path):
 
 def test_discover_groups_found(tmp_path: Path):
     _write(tmp_path / "case" / "hello" / "README.md", '---\nschedule: now\njob: "echo hi"\n---\n')
-    _write(tmp_path / "case" / "daily.md", '---\nschedule: "0 9 * * *"\nclaude: "x"\n---\n')
+    _write(tmp_path / "case" / "daily.md", '---\nschedule: "0 9 * * *"\njob: "claude: x"\n---\n')
     res = discover(tmp_path)
     assert set(res.found) == {"hello", "daily"}
     assert res.errors == ()

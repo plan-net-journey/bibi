@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import secrets
 import signal
 import socket
@@ -23,6 +24,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+# claude:-Prefix-Erkennung für Payload-Expansion beim Spawn (PLAN-10 Stufe 10.0).
+_CLAUDE_RE = re.compile(r"^\s*claude\s*:\s*(.+)", re.DOTALL)
 
 from bibi import config, repo, state
 from bibi.daemon import activity, job_db, worktree
@@ -162,14 +166,17 @@ def _run_wrapper(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
-    env["BIBI_JOB_TYPE"] = kind
     env["BIBI_JOB_ID"] = job_id
     env["BIBI_OUTPUT_PATH"] = str(out_path)
     env["BIBI_WORKTREE"] = str(wt_path)
-    if kind == "job":
-        env["BIBI_JOB_CMD"] = payload
-    elif kind == "claude":
-        env["BIBI_JOB_PROMPT"] = payload
+
+    # PLAN-10 Stufe 10.0: claude:-Prefix-Expansion beim Spawn.
+    # kind aus DB ist immer "job"; effective_type steuert den Wrapper-Dispatch.
+    _claude_m = _CLAUDE_RE.match(payload.strip()) if payload else None
+    if _claude_m:
+        effective_type = "claude"
+        env["BIBI_JOB_TYPE"] = "claude"
+        env["BIBI_JOB_PROMPT"] = _claude_m.group(1).strip()
         env["BIBI_CLAUDE_BIN"] = (os.environ.get("BIBI_CLAUDE_BIN")
                                   or config.read_env().get("BIBI_CLAUDE_BIN") or "claude")
         if model:
@@ -178,8 +185,10 @@ def _run_wrapper(
             env["BIBI_JOB_SOUL"] = soul
         if session:
             env["BIBI_JOB_SESSION"] = session
-    elif kind == "app":
-        env["BIBI_APP_ENTRYPOINT"] = payload
+    else:
+        effective_type = "job"
+        env["BIBI_JOB_TYPE"] = "job"
+        env["BIBI_JOB_CMD"] = payload
         env["BIBI_WRAPPER_PORT"] = "8080"
         if app_port:
             env["BIBI_APP_PORT"] = str(app_port)
@@ -295,18 +304,11 @@ def execute_reservation(
         _resolved_db = str(client.db_path) if getattr(client, "db_path", None) else ""
     try:
         kind = reservation["kind"]
-        silence_timeout = None if kind == "app" else reservation.get("silence_timeout")
-        # Detach-Modus: Wrapper-Prozess läuft eigenständig (PLAN-9 §9).
-        # Er committed den Worktree, meldet Terminal-Status + output_ref selbst.
-        # App-Typ: HTTP-Reporting damit wrapper_url im Daemon registriert wird.
-        # Job/Claude: SQLite-Direct (schneller, kein HTTP-Roundtrip).
+        silence_timeout = reservation.get("silence_timeout")
+        # PLAN-10 Stufe 10.0: SQLite-Direct wenn verfügbar; sonst HTTP.
         _daemon_port = int(os.environ.get("BIBI_DAEMON_PORT", "8769"))
-        if kind == "app":
-            _sched_db_path: str | None = None
-            _sched_url: str | None = f"http://127.0.0.1:{_daemon_port}"
-        else:
-            _sched_db_path = _resolved_db or None
-            _sched_url = None if _sched_db_path else f"http://127.0.0.1:{_daemon_port}"
+        _sched_db_path: str | None = _resolved_db or None
+        _sched_url: str | None = None if _sched_db_path else f"http://127.0.0.1:{_daemon_port}"
         _, _, out_path, outcome = _run_wrapper(
             job_id=jid, slug=reservation["slug"], kind=kind,
             payload=reservation["payload"], model=reservation.get("model"),

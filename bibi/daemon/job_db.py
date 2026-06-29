@@ -25,7 +25,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -71,6 +71,14 @@ def _mig_jobs_exec_mode(conn: sqlite3.Connection) -> None:  # v6 → v7
         conn.execute("ALTER TABLE jobs ADD COLUMN exec_mode TEXT")
 
 
+def _mig_kind_normalize(conn: sqlite3.Connection) -> None:  # v7 → v8
+    # PLAN-10 Stufe 10.0: `claude`/`app` → `job` (ein einziger Typ).
+    if _has_table(conn, "jobs") and _has_column(conn, "jobs", "kind"):
+        conn.execute("UPDATE jobs SET kind = 'job' WHERE kind IN ('claude', 'app')")
+    if _has_table(conn, "journal") and _has_column(conn, "journal", "kind"):
+        conn.execute("UPDATE journal SET kind = 'job' WHERE kind IN ('claude', 'app')")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -81,6 +89,7 @@ _MIGRATIONS: dict[int, list] = {
     4: [_mig_jobs_fire],
     5: [_mig_journal_commit],
     6: [_mig_jobs_exec_mode],
+    7: [_mig_kind_normalize],
 }
 
 
@@ -172,7 +181,7 @@ def _spec_columns(pr: ParseResult, now: float) -> dict:
         "at_iso": s.at,
         "next_fire_at": compute_next_fire(s, now),
         "priority": s.priority,
-        "model": s.model if s.kind.value == "claude" else None,
+        "model": s.model if s.model else None,
         "soul": s.soul,
         "session": s.session,
         "app_port": s.app_port,

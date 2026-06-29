@@ -145,11 +145,11 @@ def test_reservation_includes_claude_fields(conn):
         "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, priority, status, "
         "enqueued_at, next_fire_at, model, soul, session) "
         "VALUES (?,?,?,?,?,?, 'pending', ?, 0, ?,?,?)",
-        (jid, "k", "k.md", "claude", "prompt", 0, time.time(),
+        (jid, "k", "k.md", "job", "claude: prompt", 0, time.time(),
          "claude-haiku-4-5-20251001", "Data", "sess-9"),
     )
     r = job_db.reserve_next(conn)
-    assert r["kind"] == "claude"
+    assert r["kind"] == "job"
     assert r["model"] == "claude-haiku-4-5-20251001"
     assert r["soul"] == "Data" and r["session"] == "sess-9"
 

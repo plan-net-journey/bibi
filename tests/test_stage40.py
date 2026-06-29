@@ -151,13 +151,13 @@ def test_status_verdict_flags_failing_recurring_job(sched):
     # Wiederkehrender Job re-armt nach Fehlschlag zu `pending` (Zeile harmlos), aber
     # der LETZTE LAUF im Journal ist `error` → Verdikt darf NICHT „alles lief" sein.
     client, root = sched
-    _seed(root, "witzy/README.md", '---\nschedule: "*/3 * * * *"\nclaude: x\n---\n')
+    _seed(root, "witzy/README.md", '---\nschedule: "*/3 * * * *"\njob: "claude: x"\n---\n')
     client.post("/-/rescan")  # jobs-Zeile pending
     c = job_db.connect()
     try:
         c.execute(
             "INSERT INTO journal (run_id, slug, kind, status, finished_at, exit_code, "
-            "archived_at, domain) VALUES ('witzy:0','witzy','claude','error',100.0,1,100.0,'scheduled')"
+            "archived_at, domain) VALUES ('witzy:0','witzy','job','error',100.0,1,100.0,'scheduled')"
         )
         c.commit()
     finally:
@@ -171,7 +171,7 @@ def test_status_verdict_flags_failing_recurring_job(sched):
 def test_status_verdict_running_not_flagged_by_old_failure(sched):
     # Läuft der Job gerade (running), zählt ein alter Fehllauf NICHT als Abweichung.
     client, root = sched
-    _seed(root, "busy/README.md", '---\nschedule: now\nclaude: x\n---\n')
+    _seed(root, "busy/README.md", '---\nschedule: now\njob: "claude: x"\n---\n')
     client.post("/-/rescan")
     jid = client.post("/-/scheduler/next").json()["id"]  # sofort fällig → running
     assert jid
@@ -179,7 +179,7 @@ def test_status_verdict_running_not_flagged_by_old_failure(sched):
     try:
         c.execute(
             "INSERT INTO journal (run_id, slug, kind, status, finished_at, exit_code, "
-            "archived_at, domain) VALUES ('busy:0','busy','claude','error',100.0,1,100.0,'scheduled')"
+            "archived_at, domain) VALUES ('busy:0','busy','job','error',100.0,1,100.0,'scheduled')"
         )
         c.commit()
     finally:

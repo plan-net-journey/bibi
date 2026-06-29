@@ -1,4 +1,4 @@
-"""MD → ScheduleSpec (DESIGN §5.2/§5.3; PLAN-3 §3.1)."""
+"""MD → ScheduleSpec (DESIGN §5.2/§5.3; PLAN-3 §3.1; PLAN-10 Stufe 10.0)."""
 
 from __future__ import annotations
 
@@ -28,21 +28,32 @@ def test_job_with_cron():
     assert r.spec.at is None
 
 
-def test_claude_with_model_and_now():
-    r = _parse('---\nschedule: now\nclaude: "Antworte hallo"\nmodel: claude-haiku-4-5-20251001\n---\n')
+def test_job_claude_prefix_with_model():
+    # `job: claude: <prompt>` — Prefix-Expansion, Kind bleibt JOB.
+    r = _parse('---\nschedule: now\njob: "claude: Antworte hallo"\nmodel: claude-haiku-4-5-20251001\n---\n')
     assert r.is_ok
-    assert r.spec.kind is Kind.CLAUDE
+    assert r.spec.kind is Kind.JOB
+    assert r.spec.payload == "claude: Antworte hallo"
     assert r.spec.schedule == "now"
     assert r.spec.model == "claude-haiku-4-5-20251001"
 
 
-def test_claude_default_model():
-    r = _parse('---\nschedule: never\nclaude: "x"\n---\n')
+def test_job_claude_prefix_default_model():
+    r = _parse('---\nschedule: never\njob: "claude: x"\n---\n')
+    assert r.is_ok
+    assert r.spec.kind is Kind.JOB
     assert r.spec.model == "claude-sonnet-4-6"
 
 
+def test_old_claude_key_rejected():
+    # `claude:` als eigener Frontmatter-Key ist nicht mehr gültig.
+    r = _parse('---\nschedule: now\nclaude: "Antworte hallo"\n---\n')
+    assert r.is_error
+    assert "job:" in r.error
+
+
 def test_special_schedules_not_cron_validated():
-    for val in ("now", "startup", "never"):
+    for val in ("now", "startup", "never", "autostart"):
         r = _parse(f'---\nschedule: {val}\njob: "echo hi"\n---\n')
         assert r.is_ok, val
         assert r.spec.schedule == val
@@ -72,12 +83,14 @@ def test_error_bad_at():
 
 def test_error_no_type():
     r = _parse('---\nschedule: now\n---\n')
-    assert r.is_error and "genau einen Typ" in r.error
+    assert r.is_error and "job:" in r.error
 
 
-def test_error_multiple_types():
-    r = _parse('---\nschedule: now\njob: "x"\nclaude: "y"\n---\n')
-    assert r.is_error and "mehrere Typen" in r.error
+def test_error_multiple_types_now_impossible():
+    # Mit nur noch `job:` als Key sind mehrere Typen unmöglich.
+    # `claude:` als Key ist kein Typ mehr → kein Error über multiple types, sondern kein Typ.
+    r = _parse('---\nschedule: now\nclaude: "y"\n---\n')
+    assert r.is_error  # kein job: → kein Typ
 
 
 def test_error_bad_priority_type():

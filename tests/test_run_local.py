@@ -114,12 +114,12 @@ def test_run_local_claude_via_stub(gitrepo: Path, monkeypatch):
     md = gitrepo / "vault" / "case" / "ki1" / "README.md"
     md.parent.mkdir(parents=True, exist_ok=True)
     md.write_text(
-        '---\nschedule: now\nclaude: "Antworte hallo"\nmodel: claude-haiku-4-5-20251001\n---\n',
+        '---\nschedule: now\njob: "claude: Antworte hallo"\nmodel: claude-haiku-4-5-20251001\n---\n',
         encoding="utf-8")
     res = run_local(slug="ki1", repo_root=gitrepo,
                     work_dir=gitrepo / "data" / "worktrees",
                     db_path=gitrepo / "data" / "jobs.sqlite")
-    assert res["kind"] == "claude" and res["status"] == "complete"
+    assert res["kind"] == "job" and res["status"] == "complete"
     out = gitrepo / "data" / "job" / res["id"] / "output.jsonl"
     assert output.lines(out, "out") == ["claude-says-hi"]
 

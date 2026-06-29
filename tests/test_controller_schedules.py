@@ -27,9 +27,9 @@ def _sched(slug: str, *, kind="job", last_status="complete", row_status=None,
 
 
 def test_filter_by_typ():
-    s = [_sched("a", kind="job"), _sched("b", kind="claude")]
-    out = render.filter_schedules(s, typ="claude", now=1000.0)
-    assert [x["slug"] for x in out] == ["b"]
+    s = [_sched("a", kind="job"), _sched("b", kind="job")]
+    out = render.filter_schedules(s, typ="job", now=1000.0)
+    assert [x["slug"] for x in out] == ["a", "b"]
 
 
 def test_filter_by_status():

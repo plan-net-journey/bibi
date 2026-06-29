@@ -46,7 +46,7 @@ def test_rescanner_tick_picks_up_new_schedule(gitrepo: Path):
     # Frisch abgelegte MD wird vom Tick erfasst (genau die „witz"-Lücke).
     md = gitrepo / "vault" / "case" / "joke" / "README.md"
     md.parent.mkdir(parents=True)
-    md.write_text('---\nschedule: "*/3 * * * *"\nclaude: erzähl einen Witz\n---\n',
+    md.write_text('---\nschedule: "*/3 * * * *"\njob: "claude: erzähl einen Witz"\n---\n',
                   encoding="utf-8")
     res = rescanner.Rescanner(autorun=False).tick_once()
     assert res["inserted"] == 1
@@ -55,4 +55,4 @@ def test_rescanner_tick_picks_up_new_schedule(gitrepo: Path):
         row = conn.execute("SELECT slug, kind FROM jobs WHERE slug='joke'").fetchone()
     finally:
         conn.close()
-    assert row["kind"] == "claude"
+    assert row["kind"] == "job"

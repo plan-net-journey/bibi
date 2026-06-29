@@ -23,11 +23,9 @@ def test_status_values_match_design_5_4():
     }
 
 
-def test_kind_uses_renamed_types():
-    # PLAN-3 §1.2: exec→job, prompt→claude; app fürs Modell vorhanden.
-    assert {k.value for k in Kind} == {"job", "claude", "app"}
-    assert "exec" not in {k.value for k in Kind}
-    assert "prompt" not in {k.value for k in Kind}
+def test_kind_unified_job_only():
+    # PLAN-10 Stufe 10.0: ein einziger Typ.
+    assert {k.value for k in Kind} == {"job"}
 
 
 def test_reason_root_causes_match_design_5_5():
@@ -45,11 +43,11 @@ def test_strenum_is_json_and_str_friendly():
     # StrEnum: Werte landen ohne Konvertierung in JSON/SQLite.
     assert str(Status.PENDING) == "pending"
     assert json.dumps({"status": Status.RUNNING}) == '{"status": "running"}'
-    assert Kind.CLAUDE == "claude"
+    assert Kind.JOB == "job"
 
 
 def test_schedule_spec_defaults():
-    s = ScheduleSpec(slug="hello", kind=Kind.CLAUDE, payload="Hallo?")
+    s = ScheduleSpec(slug="hello", kind=Kind.JOB, payload="claude: Hallo?")
     assert s.priority == 0
     assert s.model == DEFAULT_CLAUDE_MODEL == "claude-sonnet-4-6"
     assert s.attempts == 1
@@ -83,7 +81,7 @@ def test_job_row_minimal_and_output_ref():
 
 def test_journal_entry_run_id_and_host_first_class():
     e = JournalEntry(
-        run_id="hello:1", slug="hello", kind=Kind.CLAUDE, status=Status.COMPLETE,
+        run_id="hello:1", slug="hello", kind=Kind.JOB, status=Status.COMPLETE,
         host="air2024", worker="w1", output_ref="data/job/ab12/output.jsonl",
     )
     assert e.run_id == "hello:1"

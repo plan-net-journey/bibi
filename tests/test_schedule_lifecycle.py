@@ -95,43 +95,29 @@ def test_owner_matches_design_5_4():
     assert set(lc.OWNER) == set(Status)
 
 
-# ── Typ-gebundene Kanten (§5.4) ─────────────────────────────────────────────
+# ── Typ-gebundene Kanten (PLAN-10 Stufe 10.0: ein Typ, keine Einschränkungen) ─
 
 
-def test_awaiting_edges_are_app_only():
-    # app erreicht awaiting; job/claude nie.
-    assert lc.apply(Status.RUNNING, Event.AWAIT_INPUT, kind=Kind.APP) == Status.AWAITING
-    for k in (Kind.JOB, Kind.CLAUDE):
-        with pytest.raises(IllegalTransition):
-            lc.apply(Status.RUNNING, Event.AWAIT_INPUT, kind=k)
-        assert not lc.can(Status.RUNNING, Event.AWAIT_INPUT, kind=k)
-    # auch die Ausgänge aus awaiting sind app-only
-    assert lc.apply(Status.AWAITING, Event.INPUT, kind=Kind.APP) == Status.RUNNING
-    assert lc.apply(Status.AWAITING, Event.TIMEOUT, kind=Kind.APP) == Status.ZOMBIE
+def test_all_events_valid_for_job():
+    # Ein Typ JOB — alle Kanten gelten für ihn.
+    assert lc.apply(Status.RUNNING, Event.AWAIT_INPUT, kind=Kind.JOB) == Status.AWAITING
+    assert lc.apply(Status.AWAITING, Event.INPUT, kind=Kind.JOB) == Status.RUNNING
+    assert lc.apply(Status.AWAITING, Event.TIMEOUT, kind=Kind.JOB) == Status.ZOMBIE
+    assert lc.apply(Status.RUNNING, Event.SILENCE, kind=Kind.JOB) == Status.ZOMBIE
 
 
-def test_silence_zombie_is_job_claude_only():
-    for k in (Kind.JOB, Kind.CLAUDE):
-        assert lc.apply(Status.RUNNING, Event.SILENCE, kind=k) == Status.ZOMBIE
-    with pytest.raises(IllegalTransition):
-        lc.apply(Status.RUNNING, Event.SILENCE, kind=Kind.APP)
-    assert not lc.can(Status.RUNNING, Event.SILENCE, kind=Kind.APP)
-
-
-def test_kind_agnostic_edges_allow_any_kind():
-    # Nicht typ-gebundene Kanten gelten für jeden Typ.
+def test_all_edges_allow_kind_job():
+    # Kein Event ist für Kind.JOB gesperrt.
     for k in Kind:
         assert lc.apply(Status.PENDING, Event.DISPATCH, kind=k) == Status.RUNNING
         assert lc.apply(Status.RUNNING, Event.COMPLETE, kind=k) == Status.COMPLETE
 
 
-def test_events_from_filters_by_kind():
+def test_events_from_with_kind_job():
+    # Alle Kanten aus RUNNING erreichbar.
     job_events = lc.events_from(Status.RUNNING, kind=Kind.JOB)
     assert Event.SILENCE in job_events
-    assert Event.AWAIT_INPUT not in job_events
-    app_events = lc.events_from(Status.RUNNING, kind=Kind.APP)
-    assert Event.AWAIT_INPUT in app_events
-    assert Event.SILENCE not in app_events
+    assert Event.AWAIT_INPUT in job_events
 
 
 # ── Reason-Zuordnung (§5.5) ─────────────────────────────────────────────────
@@ -163,10 +149,10 @@ def test_kill_reasons_set():
 
 def test_targets_of_running():
     t = lc.targets(Status.RUNNING, kind=Kind.JOB)
-    assert t == {Status.COMPLETE, Status.FAILED, Status.DEFERRED, Status.KILLED, Status.ZOMBIE}
-    # app: awaiting statt silence-zombie
-    ta = lc.targets(Status.RUNNING, kind=Kind.APP)
-    assert Status.AWAITING in ta and Status.ZOMBIE not in ta
+    assert t == {
+        Status.COMPLETE, Status.FAILED, Status.DEFERRED,
+        Status.KILLED, Status.ZOMBIE, Status.AWAITING,
+    }
 
 
 def test_targets_of_pending_and_terminal():

@@ -17,22 +17,23 @@ from bibi.wrapper.server import WrapperState, make_app, start_server
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 
-def test_app_in_registry():
-    assert "app" in wrapper.REGISTRY
-    h = wrapper.REGISTRY["app"]
+def test_job_in_registry_is_hitl_capable():
+    # PLAN-10 Stufe 10.0: "job" ersetzt "app" — HITL-fähig via run_app.
+    assert "job" in wrapper.REGISTRY
+    h = wrapper.REGISTRY["job"]
     assert h.long_lived is True
     assert h.supports_hitl is True
 
 
-def test_app_argv_uses_entrypoint():
-    argv = wrapper.REGISTRY["app"].build_command(
-        {"BIBI_APP_ENTRYPOINT": "uvicorn myapp:app --port 8081"}
+def test_job_argv_uses_cmd():
+    argv = wrapper.REGISTRY["job"].build_command(
+        {"BIBI_JOB_CMD": "uvicorn myapp:app --port 8081"}
     )
     assert argv == ["bash", "-c", "uvicorn myapp:app --port 8081"]
 
 
-def test_app_argv_empty_entrypoint():
-    argv = wrapper.REGISTRY["app"].build_command({})
+def test_job_argv_empty_cmd():
+    argv = wrapper.REGISTRY["job"].build_command({})
     assert argv == ["bash", "-c", ""]
 
 
@@ -192,11 +193,11 @@ def test_run_app_complete(tmp_path, free_tcp_port):
     """App-Typ startet, HTTP-Server antwortet, Prozess endet → exit 0."""
     out_path = tmp_path / "output.jsonl"
     env = {
-        "BIBI_JOB_TYPE": "app",
+        "BIBI_JOB_TYPE": "job",
         "BIBI_JOB_ID": "testjob",
         "BIBI_OUTPUT_PATH": str(out_path),
         "BIBI_WORKTREE": str(tmp_path),
-        "BIBI_APP_ENTRYPOINT": "echo 'app done'",
+        "BIBI_JOB_CMD": "echo 'app done'",
         "BIBI_WRAPPER_PORT": str(free_tcp_port),
     }
     code = wrapper.run_app(env)
@@ -488,11 +489,11 @@ def test_run_app_passes_app_port_to_state(tmp_path, free_tcp_port):
     out_path = tmp_path / "output.jsonl"
     app_port = free_tcp_port + 1  # anderer Port, nicht belegt nötig — nur Initialisierung prüfen
     env = {
-        "BIBI_JOB_TYPE": "app",
+        "BIBI_JOB_TYPE": "job",
         "BIBI_JOB_ID": "appport1",
         "BIBI_OUTPUT_PATH": str(out_path),
         "BIBI_WORKTREE": str(tmp_path),
-        "BIBI_APP_ENTRYPOINT": "echo done",
+        "BIBI_JOB_CMD": "echo done",
         "BIBI_WRAPPER_PORT": str(free_tcp_port),
         "BIBI_APP_PORT": str(app_port),
     }
@@ -577,12 +578,12 @@ def test_hitl_monitor_kills_on_timeout(tmp_path, free_tcp_port):
     try:
         out_path = tmp_path / "output.jsonl"
         env = {
-            "BIBI_JOB_TYPE": "app",
+            "BIBI_JOB_TYPE": "job",
             "BIBI_JOB_ID": "zombie1",
             "BIBI_OUTPUT_PATH": str(out_path),
             "BIBI_WORKTREE": str(tmp_path),
-            # App läuft 30 s — wird aber durch HITL-Timeout davor beendet
-            "BIBI_APP_ENTRYPOINT": "sleep 30",
+            # Job läuft 30 s — wird aber durch HITL-Timeout davor beendet
+            "BIBI_JOB_CMD": "sleep 30",
             "BIBI_WRAPPER_PORT": str(free_tcp_port + 1),
             "BIBI_SCHEDULER_URL": f"http://127.0.0.1:{free_tcp_port}",
             "BIBI_HITL_TIMEOUT": "1",  # 1 Sekunde Timeout für den Test
@@ -646,11 +647,11 @@ def test_run_app_touches_on_stdout(tmp_path, free_tcp_port):
 
     out_path = tmp_path / "output.jsonl"
     env = {
-        "BIBI_JOB_TYPE": "app",
+        "BIBI_JOB_TYPE": "job",
         "BIBI_JOB_ID": "touch1",
         "BIBI_OUTPUT_PATH": str(out_path),
         "BIBI_WORKTREE": str(tmp_path),
-        "BIBI_APP_ENTRYPOINT": "echo activity",
+        "BIBI_JOB_CMD": "echo activity",
         "BIBI_WRAPPER_PORT": str(free_tcp_port),
         "BIBI_HITL_TIMEOUT": "60",
     }
@@ -686,7 +687,7 @@ def test_worker_sets_bibi_hitl_timeout(tmp_path):
         out_path = tmp_path / "output.jsonl"
         out_path.touch()
         _worker._run_wrapper(
-            job_id="ht1", slug="testslug", kind="app", payload="echo x",
+            job_id="ht1", slug="testslug", kind="job", payload="echo x",
             app_port=8081, app_prefix="/app", hitl_timeout=3600,
             repo_root=tmp_path, work_dir=tmp_path / "wt",
         )

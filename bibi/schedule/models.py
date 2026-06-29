@@ -4,9 +4,9 @@ Reine Typen — keine DB, kein HTTP. Die Enums sind ``StrEnum``, damit ihre Wert
 ohne Konvertierung in JSON/OpenAPI und SQLite landen (``Status.PENDING ==
 "pending"``).
 
-Namensangleichung gegenüber bibi3 (PLAN-3 §1.2): der Shell-Typ heißt **``job``**
-(früher ``exec``), der AI-Typ heißt **``claude``** (früher ``prompt``) — der Typ
-benennt das Tool/den Dispatch-Mechanismus, nicht das abstrakte Konzept.
+Unified Job Model (PLAN-10 §3 Stufe 10.0): ein einziger Typ ``JOB``. Frühere
+``CLAUDE``- und ``APP``-Typen wurden aufgelöst — ``claude:``-Prefix-Expansion
+passiert beim Spawn im Worker, App-Verhalten ist reine Laufzeit-Konvention.
 """
 
 from __future__ import annotations
@@ -31,18 +31,16 @@ class Status(StrEnum):
 
 
 class Kind(StrEnum):
-    """Ausführungstypen (DESIGN §5.3/§7.5). Frontmatter-Key == Typ == Registry-Key."""
+    """Ausführungstypen. Nur noch ``JOB`` (PLAN-10 Stufe 10.0)."""
 
-    JOB = "job"          # Shell-Befehl im Worktree (früher `exec`)
-    CLAUDE = "claude"    # `claude -p` (früher `prompt`)
-    APP = "app"          # langlebiger App-Prozess (Phase 6) — hier nur fürs Modell
+    JOB = "job"
 
 
 class Reason(StrEnum):
     """Root Causes für Terminal-/Sonderzustände (DESIGN §5.5)."""
 
-    SILENCE = "silence"                    # zombie: kein stdout/stderr (job/claude)
-    ACTIVITY_TIMEOUT = "activity_timeout"  # zombie: app in awaiting, keine Activity
+    SILENCE = "silence"                    # zombie: kein stdout/stderr
+    ACTIVITY_TIMEOUT = "activity_timeout"  # zombie: job in awaiting, keine Activity
     DEFERRED_EXPIRED = "deferred_expired"  # inactive: Deferred-Periode abgelaufen
     NO_PROCESS = "no_process"              # killed: Prozess weg ohne Exit-Code
     BY_USER = "by_user"                    # killed: manuelles kill
@@ -56,12 +54,12 @@ class Owner(StrEnum):
     WORKER = "worker"
 
 
-# Default-Modell für `claude`-Jobs (DESIGN §7.5; überschreibbar via `model:`).
+# Default-Modell für claude:-Prefix-Jobs (überschreibbar via `model:`).
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
 
-# Default-Silence-Timeout für job/claude in Sekunden (DESIGN §5.5: 1 h).
+# Default-Silence-Timeout in Sekunden (DESIGN §5.5: 1 h).
 DEFAULT_SILENCE_TIMEOUT = 3600
-# Default-HITL-Activity-Timeout für app in Sekunden (DESIGN §5.5: 48 h).
+# Default-HITL-Activity-Timeout in Sekunden (DESIGN §5.5: 48 h).
 DEFAULT_HITL_TIMEOUT = 48 * 3600
 
 
@@ -76,7 +74,7 @@ class ScheduleSpec:
 
     slug: str
     kind: Kind
-    payload: str  # job: Shell-Cmd | claude: Prompt | app: Entrypoint
+    payload: str  # Shell-Cmd; mit `claude: <prompt>` Prefix → claude-Expansion beim Spawn
 
     # Trigger (§5.2) — croniter-Ausdruck | now | startup | never  bzw. ISO-8601.
     schedule: str | None = None
@@ -85,7 +83,7 @@ class ScheduleSpec:
     # Scheduler-Auswahl (§4.4).
     priority: int = 0
 
-    # claude-spezifisch (§5.3/§7.5).
+    # claude:-Prefix-Felder (nur bei claude:-Payload ausgewertet).
     model: str = DEFAULT_CLAUDE_MODEL
     soul: str | None = None
     session: str | None = None
@@ -99,7 +97,6 @@ class ScheduleSpec:
     defer_max: int | None = None
     hitl_timeout: int = DEFAULT_HITL_TIMEOUT
 
-    # app-spezifisch (§5.3) — Phase 6, hier nur strukturell.
     app_port: int | None = None
     app_prefix: str | None = None
     exec_mode: str | None = None  # "host"|"container" — überschreibt Knoten-Config
