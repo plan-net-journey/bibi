@@ -35,7 +35,6 @@ from bibi import config, repo, state
 from bibi.daemon import activity, job_db, worktree
 from bibi.wrapper import exec_backend
 from bibi.schedule import backoff, discovery
-from bibi.schedule.lifecycle import TERMINAL
 from bibi.schedule.models import Status
 
 log = logging.getLogger("bibi.worker")
@@ -533,7 +532,9 @@ class Worker:
         """``app_port``-Änderungen aktiver Jobs in Traefik-Routen übersetzen
         (PLAN-11.4, §7.5/§7.7) — Gegenstück zum stdout-``app_register``-Signal
         (``bibi.job``, von ``_handle_signal`` in ``job_db.app_port`` geschrieben).
-        Terminale/verschwundene Jobs deregistrieren ihre Route wieder."""
+        „Aktiv" = hat einen laufenden Prozess (``running``/``awaiting``), nicht
+        bloß „nicht terminal" (``pending``/``failed``/``deferred`` haben keinen).
+        Jobs ohne laufenden Prozess deregistrieren ihre Route wieder."""
         conn = job_db.connect(self.db_path)
         try:
             rows = conn.execute(
@@ -541,8 +542,11 @@ class Worker:
             ).fetchall()
         finally:
             conn.close()
+        # Nicht terminal ≠ hat einen laufenden Prozess: pending (noch nicht
+        # gestartet) und failed/deferred (Prozess schon beendet, wartet auf
+        # Retry) sind ebenfalls nicht-terminal, haben aber keinen App-Server.
         live = {row["id"]: row["app_port"] for row in rows
-                if Status(row["status"]) not in TERMINAL}
+                if Status(row["status"]) in (Status.RUNNING, Status.AWAITING)}
         for jid, port in live.items():
             if self._app_routes.get(jid) != port:
                 _register_app_route(jid, port)

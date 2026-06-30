@@ -355,7 +355,7 @@ def _seed_app_job(status: str, app_port: int | None) -> str:
         conn.execute(
             "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, app_port, "
             "enqueued_at) VALUES (?,?,?,?,?,?,?,?)",
-            (jid, "s", "s.md", "job", "true", status, app_port, time.time()),
+            (jid, jid, f"{jid}.md", "job", "true", status, app_port, time.time()),
         )
     finally:
         conn.close()
@@ -396,6 +396,29 @@ def test_poll_app_routes_skips_unchanged_port(team_repo: Path, monkeypatch):
     w._poll_app_routes()
     w._poll_app_routes()
     assert calls == [(jid, 9100)]  # zweiter Tick: Port unverändert ⇒ kein erneuter Call
+
+
+def test_poll_app_routes_skips_pending_job(team_repo: Path, monkeypatch):
+    # app_port steht schon ab Schedule-Erfassung in der DB (Frontmatter-Feld) —
+    # ein `pending`-Job hat aber noch keinen laufenden Prozess. Nicht terminal
+    # ist nicht dasselbe wie "hat einen Prozess" (auch failed/deferred betroffen).
+    import bibi.daemon.worker as W
+    calls = []
+    monkeypatch.setattr(W, "_register_app_route", lambda jid, port: calls.append((jid, port)))
+    _seed_app_job("pending", 9100)
+    _seed_app_job("failed", 9101)
+    _seed_app_job("deferred", 9102)
+    W.Worker(autopoll=False, worker_name="w1")._poll_app_routes()
+    assert calls == []
+
+
+def test_poll_app_routes_registers_awaiting(team_repo: Path, monkeypatch):
+    import bibi.daemon.worker as W
+    calls = []
+    monkeypatch.setattr(W, "_register_app_route", lambda jid, port: calls.append((jid, port)))
+    jid = _seed_app_job("awaiting", 9100)
+    W.Worker(autopoll=False, worker_name="w1")._poll_app_routes()
+    assert calls == [(jid, 9100)]
 
 
 def test_poll_app_routes_deregisters_on_terminal(team_repo: Path, monkeypatch):
