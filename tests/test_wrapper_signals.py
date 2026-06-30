@@ -93,6 +93,38 @@ def test_handle_app_register_sets_app_port(conn):
     assert row["app_port"] == 9100
 
 
+def test_handle_awaiting_with_port_sets_app_url(conn):
+    # bibi.job.awaiting(..., port=9100) muss die FE-HITL-Verlinkung (app_url)
+    # versorgen — sonst zeigt das Panel "app_url nicht verfügbar" (render.py).
+    _insert_job(conn)
+    sig = {"name": "awaiting", "input_request": "Wie viele?", "input_format": "number", "port": 9100}
+    _handle_signal(conn, "j1", sig)
+    row = conn.execute("SELECT app_url FROM jobs WHERE id='j1'").fetchone()
+    assert row["app_url"] == "http://127.0.0.1:9100/"
+
+
+def test_handle_awaiting_falls_back_to_job_app_port(conn):
+    # Steht app_port schon aus dem Frontmatter in der DB (app_port:-Feld), muss
+    # awaiting ohne explizites port-Feld im Signal trotzdem app_url setzen.
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, app_port) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("j2", "j2", "j2.md", "job", "echo hi", "running", 9200),
+    )
+    sig = {"name": "awaiting", "input_request": "?", "input_format": "text"}
+    _handle_signal(conn, "j2", sig)
+    row = conn.execute("SELECT app_url FROM jobs WHERE id='j2'").fetchone()
+    assert row["app_url"] == "http://127.0.0.1:9200/"
+
+
+def test_handle_awaiting_without_any_port_leaves_app_url_unset(conn):
+    _insert_job(conn)  # kein app_port in der DB, kein port im Signal
+    sig = {"name": "awaiting", "input_request": "?", "input_format": "text"}
+    _handle_signal(conn, "j1", sig)
+    row = conn.execute("SELECT app_url FROM jobs WHERE id='j1'").fetchone()
+    assert row["app_url"] is None
+
+
 def test_handle_unknown_name_is_noop(conn):
     _insert_job(conn)
     conn.execute("UPDATE jobs SET status='running' WHERE id='j1'")

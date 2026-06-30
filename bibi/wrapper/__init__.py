@@ -62,7 +62,12 @@ def _handle_signal(conn, job_id: str, sig: dict) -> None:
     if name == "running":
         _jdb.report_status(conn, job_id, status="running")
     elif name == "awaiting":
-        _jdb.report_status(conn, job_id, status="awaiting")
+        port = sig.get("port")
+        if port is None:
+            row = conn.execute("SELECT app_port FROM jobs WHERE id=?", (job_id,)).fetchone()
+            port = row["app_port"] if row else None
+        app_url = f"http://127.0.0.1:{port}/" if port else None
+        _jdb.report_status(conn, job_id, status="awaiting", app_url=app_url)
         _jdb.set_demand(conn, job_id, sig)
     elif name == "app_register":
         _jdb.set_app_port(conn, job_id, sig["port"])
