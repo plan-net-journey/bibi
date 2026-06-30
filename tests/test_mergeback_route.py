@@ -17,6 +17,8 @@ from bibi import state
 from bibi.daemon import roles, worktree as wt
 from bibi.daemon.app import create_app
 
+pytestmark = pytest.mark.slow
+
 
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True,

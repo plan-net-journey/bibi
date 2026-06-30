@@ -65,7 +65,6 @@ OWNER: dict[Status, Owner] = {
 
 _TRANSITIONS: dict[tuple[Status, Event], Status] = {
     (Status.PENDING, Event.DISPATCH): Status.RUNNING,
-    (Status.PENDING, Event.KILL): Status.KILLED,      # Stornierung vor Ausführung
     (Status.RUNNING, Event.COMPLETE): Status.COMPLETE,
     (Status.RUNNING, Event.FAIL): Status.FAILED,
     (Status.RUNNING, Event.DEFER): Status.DEFERRED,

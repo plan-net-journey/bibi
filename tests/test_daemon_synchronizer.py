@@ -7,6 +7,8 @@ import pytest
 from bibi import state
 from bibi.daemon.synchronizer import PushDebouncer, Synchronizer, params_for
 
+pytestmark = pytest.mark.slow
+
 
 # ── reine Debounce-Logik ────────────────────────────────────────────────────
 

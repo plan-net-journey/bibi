@@ -8,6 +8,9 @@ from pathlib import Path
 from bibi import git_ops, state
 from bibi.ctrl import main
 
+import pytest
+pytestmark = pytest.mark.slow
+
 
 def _sh(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True,

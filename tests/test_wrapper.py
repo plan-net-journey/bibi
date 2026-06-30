@@ -9,6 +9,8 @@ import pytest
 from bibi import wrapper
 from bibi.wrapper import output
 
+pytestmark = pytest.mark.slow
+
 
 # ── output.py ────────────────────────────────────────────────────────────────
 

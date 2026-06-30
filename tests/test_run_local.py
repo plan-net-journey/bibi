@@ -13,6 +13,8 @@ from bibi.daemon import job_db
 from bibi.daemon.worker import run_local
 from bibi.wrapper import output
 
+pytestmark = pytest.mark.slow
+
 
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True,

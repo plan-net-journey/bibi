@@ -10,6 +10,8 @@ import pytest
 
 from bibi.wrapper import exec_backend, output, run_job
 
+pytestmark = pytest.mark.slow
+
 
 # ── reine argv-Konstruktion (kein Docker) ────────────────────────────────────
 

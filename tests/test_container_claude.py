@@ -37,6 +37,7 @@ needs = pytest.mark.skipif(not _docker_and_image(),
 
 
 @needs
+@pytest.mark.slow
 def test_claude_runs_in_container_output_captured(tmp_path: Path):
     wt = tmp_path / "wt"
     wt.mkdir()

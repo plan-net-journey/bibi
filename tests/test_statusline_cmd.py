@@ -15,6 +15,8 @@ import pytest
 from bibi import case_store, frontmatter, repo, state
 from bibi.ctrl import main, statusline_cmd
 
+pytestmark = pytest.mark.slow
+
 
 def _render(**payload):
     return statusline_cmd.render(payload)

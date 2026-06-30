@@ -10,6 +10,8 @@ import pytest
 
 from bibi.daemon import mergeback, worktree as wt
 
+pytestmark = pytest.mark.slow
+
 
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True,

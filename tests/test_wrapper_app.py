@@ -13,6 +13,8 @@ from bibi import wrapper
 from bibi.wrapper import exec_backend
 from bibi.wrapper.server import WrapperState, make_app, start_server
 
+pytestmark = pytest.mark.slow
+
 
 # ── Registry ─────────────────────────────────────────────────────────────────
 

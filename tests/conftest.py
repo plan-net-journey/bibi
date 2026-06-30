@@ -15,6 +15,19 @@ import pytest
 from bibi import repo
 
 
+def pytest_addoption(parser):
+    parser.addoption("--slow", action="store_true", default=False,
+                     help="run slow tests (subprocess/Docker)")
+
+
+def pytest_collection_modifyitems(config, items):
+    if not config.getoption("--slow"):
+        skip = pytest.mark.skip(reason="use --slow to run")
+        for item in items:
+            if "slow" in item.keywords:
+                item.add_marker(skip)
+
+
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True,
                           capture_output=True, text=True).stdout

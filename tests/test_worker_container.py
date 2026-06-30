@@ -12,6 +12,8 @@ from bibi.daemon import worker
 from bibi.daemon.worker import Worker
 from bibi.wrapper import exec_backend
 
+pytestmark = pytest.mark.slow
+
 
 # ── Exec-Konfig (Env > Config) ───────────────────────────────────────────────
 

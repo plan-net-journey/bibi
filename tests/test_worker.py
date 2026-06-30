@@ -77,6 +77,7 @@ def _wait_terminal(root: Path, jid: str, timeout: float = 10.0) -> dict:
         conn.close()
 
 
+@pytest.mark.slow
 def test_tick_runs_job_to_complete(gitrepo: Path):
     jid = _seed(gitrepo, "run1/README.md",
                 '---\nschedule: now\njob: "echo hallo && echo fertig"\n---\n')
@@ -104,6 +105,7 @@ def test_tick_runs_job_to_complete(gitrepo: Path):
     assert output.lines(out, "out") == ["hallo", "fertig"]
 
 
+@pytest.mark.slow
 def test_branch_created_on_run(gitrepo: Path):
     jid = _seed(gitrepo, "run1/README.md", '---\nschedule: now\njob: "echo x"\n---\n')
     _worker(gitrepo).tick_once()
@@ -111,6 +113,7 @@ def test_branch_created_on_run(gitrepo: Path):
     assert "agent/run1" in _git(gitrepo, "branch", "--list", "agent/run1")
 
 
+@pytest.mark.slow
 def test_failed_job_reports_failed(gitrepo: Path):
     jid = _seed(gitrepo, "boom/README.md", '---\nschedule: now\njob: "exit 7"\n---\n')
     _worker(gitrepo).tick_once()
@@ -118,11 +121,13 @@ def test_failed_job_reports_failed(gitrepo: Path):
     assert row["status"] == "failed" and row["exit_code"] == 7
 
 
+@pytest.mark.slow
 def test_tick_empty_returns_false(gitrepo: Path):
     job_db.connect(gitrepo / "data" / "jobs.sqlite").close()
     assert _worker(gitrepo).tick_once() is False
 
 
+@pytest.mark.slow
 def test_tick_skips_during_maintenance(gitrepo: Path, monkeypatch):
     # Wartungsmodus muss respektiert werden: kein Dispatch, Job bleibt pending.
     _seed(gitrepo, "run1/README.md", '---\nschedule: now\njob: "echo x"\n---\n')
@@ -140,6 +145,7 @@ def test_tick_skips_during_maintenance(gitrepo: Path, monkeypatch):
     assert w.tick_once() is True
 
 
+@pytest.mark.slow
 def test_wall_time_kills_job(gitrepo: Path):
     jid = _seed(gitrepo, "slow/README.md",
                 '---\nschedule: now\njob: "sleep 30"\nwall_time: 1\n---\n')
@@ -153,6 +159,7 @@ def test_wall_time_kills_job(gitrepo: Path):
         conn.close()
 
 
+@pytest.mark.slow
 def test_silence_zombies_job(gitrepo: Path):
     jid = _seed(gitrepo, "hang/README.md",
                 '---\nschedule: now\njob: "sleep 30"\nsilence_timeout: 1\n---\n')
@@ -161,6 +168,7 @@ def test_silence_zombies_job(gitrepo: Path):
     assert row["status"] == "zombie" and row["reason"] == "silence"
 
 
+@pytest.mark.slow
 def test_retry_then_error(gitrepo: Path, monkeypatch):
     monkeypatch.setenv("BIBI_RETRY_BASE", "0")  # kein Warten zwischen Versuchen
     jid = _seed(gitrepo, "boom/README.md",
@@ -189,6 +197,7 @@ def test_retry_then_error(gitrepo: Path, monkeypatch):
     conn.close()
 
 
+@pytest.mark.slow
 def test_retry_exponential_3x_to_error(gitrepo: Path, monkeypatch):
     """PLAN-10 §10.1: 3 Fehlversuche mit exponentialem Backoff → ERROR; Slot nach FAILED frei."""
     monkeypatch.setenv("BIBI_RETRY_BASE", "0")  # sofort retribar
@@ -225,6 +234,7 @@ def test_retry_exponential_3x_to_error(gitrepo: Path, monkeypatch):
     assert row_final["status"] == "error"
 
 
+@pytest.mark.slow
 def test_execute_reservation_skips_if_already_terminal(gitrepo: Path):
     # Wird der Job vor Abschluss killed, überschreibt der Wrapper nicht.
     jid = _seed(gitrepo, "r/README.md", '---\nschedule: now\njob: "echo hi"\n---\n')
@@ -245,6 +255,7 @@ def test_execute_reservation_skips_if_already_terminal(gitrepo: Path):
     conn.close()
 
 
+@pytest.mark.slow
 def test_execute_reservation_setup_failure_does_not_hang_running(gitrepo: Path, monkeypatch):
     # Härtung Fund B (PLAN-5 §5.3): schlägt Setup/Run VOR der Statusmeldung fehl,
     # darf der Job nicht in `running` hängen — er wird als `failed` gemeldet.
@@ -272,6 +283,7 @@ def test_execute_reservation_setup_failure_does_not_hang_running(gitrepo: Path, 
     assert row["exit_code"] == -1 and row["attempt"] == 1
 
 
+@pytest.mark.slow
 def test_per_run_output_isolation(gitrepo: Path):
     # Wiederkehrender Job läuft zweimal (fire 0, dann 1) → **getrennte** Output-
     # Dateien je run_id, kein Anhängen an eine geteilte job_id-Datei (Bug 27s #4).
@@ -310,6 +322,7 @@ def test_per_run_output_isolation(gitrepo: Path):
         conn.close()
 
 
+@pytest.mark.slow
 def test_output_path_resolves_current_run(gitrepo: Path):
     # Die Live-Route fragt worker.output_path(job_id) — das muss den AKTUELLEN
     # Lauf (slug:fire) treffen, nicht die stabile job_id.
@@ -318,6 +331,7 @@ def test_output_path_resolves_current_run(gitrepo: Path):
     assert w.output_path(jid) == gitrepo / "data" / "job" / "r:0" / "output.jsonl"
 
 
+@pytest.mark.slow
 def test_report_level_by_status():
     import logging
 

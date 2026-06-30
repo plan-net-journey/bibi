@@ -636,7 +636,7 @@ _FEED_JS = """
 #: Band-Zugehörigkeit (Frontend-Plan §C.2, Achse #2 „nicht im Journal"): nur
 #: **nicht-terminale** jobs-Zustände. Terminale (complete/error/killed/zombie/
 #: inactive) stehen im Feed/Journal, nicht in den Bändern.
-_ACTIVE_STATES = ("running", "awaiting", "failed", "deferred", "killed", "error", "zombie", "inactive")
+_ACTIVE_STATES = ("running", "awaiting", "failed", "deferred")
 
 
 def _aktiv_row(j: dict, now: float) -> str:
@@ -775,7 +775,7 @@ def _feed_handles(status: dict | None = None) -> str:
         '<button id="rescan" class="handle">RESCAN</button>'
         f'<button id="maint" class="{mcls}">{mlabel}</button>'
         '<button id="follow" class="handle on" onclick="bibiToggleFollow()">FOLLOW: AN</button>'
-        f'<span id="maintbanner" class="banner bad"{hide}>⚠ Dispatch pausiert</span>'
+        f'<span id="maintbanner" class="banner bad"{hide}>Wartungsmodus aktiv</span>'
         "</nav>"
     )
 
@@ -1024,7 +1024,8 @@ def _commit_cell(run: dict) -> str:
     return f'<span class="commit" title="{_e(sha)} {branch}">{short}</span>'
 
 
-def _run_rows(runs: list[dict], slug: str, now: float) -> str:
+def _run_rows(runs: list[dict], slug: str, now: float,
+              top_id: int | None = None) -> str:
     s = _e(slug)
     rows = []
     for r in runs:
@@ -1032,6 +1033,11 @@ def _run_rows(runs: list[dict], slug: str, now: float) -> str:
         st = _e(r.get("status"))
         t_abs = _abs_time(r.get("finished_at") or r.get("started_at"))
         t_rel = _ago(r.get("finished_at") or r.get("started_at"), now)
+        if rid is not None and rid != top_id:
+            toggle = (f' <button hx-get="/-/ui/run/{rid}/output" '
+                      f'hx-swap="afterend" hx-target="this">Output ↓</button>')
+        else:
+            toggle = ""
         rows.append(
             "<tr>"
             f"<td>{t_abs} <span class='muted'>({t_rel})</span></td>"
@@ -1041,7 +1047,8 @@ def _run_rows(runs: list[dict], slug: str, now: float) -> str:
             f"<td>{_commit_cell(r)}</td>"
             f'<td><a class="back" href="/-/ui/run/{rid}">→ Detail</a> '
             f'<button hx-delete="/-/ui/schedule/{s}/run/{rid}" hx-target="#detail" '
-            'hx-swap="outerHTML" hx-confirm="Lauf-Record löschen?">Löschen</button></td>'
+            f'hx-swap="outerHTML" hx-confirm="Lauf-Record löschen?">Löschen</button>'
+            f'{toggle}</td>'
             "</tr>"
         )
     return "".join(rows)
@@ -1109,7 +1116,7 @@ _VERBS_FOR_STATUS: dict[str, tuple[str, ...]] = {
     "failed":   ("start", "reset", "kill"),
     "deferred": ("start", "kill"),
     "killed":   ("reset",),
-    "error":    ("reset",),
+    "error":    ("start", "reset", "kill"),
     "zombie":   ("reset",),
     "inactive": ("reset",),
     "complete": ("start",),
@@ -1156,10 +1163,14 @@ def schedule_detail_inner(
     nxt = _until(s.get("next_fire_at"), now)
     meta = (f"Typ <b>{kind}</b> · Trigger <code>{trigger}</code> · "
             f"letzter Lauf <b>{last_run}</b> · nächster Lauf {nxt}")
+    top_id = runs[0]["id"] if runs and top_output and top_output.get("events") else None
+    inline_out = (output_block(top_output["events"], top_output.get("kind", "job"))
+                  if top_id is not None else "")
     runs_html = (
         '<table><thead><tr><th>Zeit</th><th>Status</th><th>Grund</th>'
         '<th>exit</th><th>Commit</th><th></th></tr></thead>'
-        f"<tbody>{_run_rows(runs, slug, now)}</tbody></table>"
+        f"<tbody>{_run_rows(runs, slug, now, top_id=top_id)}</tbody></table>"
+        + inline_out
         if runs else '<p class="out-empty">— noch keine Läufe —</p>'
     )
     # #detail self-pollt: awaiting immer (unbedingt), sonst FOLLOW-gated.
@@ -1249,6 +1260,25 @@ def _attr_table(e: dict) -> str:
     )
 
 
+def _exec_summary(e: dict) -> str:
+    """Kompakte Zeile: exit N · Dauer X s · host H · worker W."""
+    parts = []
+    ec = e.get("exit_code")
+    if ec is not None:
+        parts.append(f"exit {ec}")
+    rt = e.get("exec_runtime")
+    s, f = e.get("started_at"), e.get("finished_at")
+    if rt is not None:
+        parts.append(f"Dauer {round(rt)} s")
+    elif s is not None and f is not None:
+        parts.append(f"Dauer {round(f - s)} s")
+    if e.get("host"):
+        parts.append(f"host {_e(str(e['host']))}")
+    if e.get("worker"):
+        parts.append(f"worker {_e(str(e['worker']))}")
+    return f'<p class="muted">{"  ·  ".join(parts)}</p>' if parts else ""
+
+
 def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
                           now: float | None = None) -> str:
     """Ein **Lauf** (``run_id``): alle Journal-Attribute + voller Output."""
@@ -1272,6 +1302,7 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         "</style></head><body>"
         f'<header><h1>bibi · <span class="st {st}">{run_id}</span></h1>'
         f'<span class="muted">{back}</span></header>'
+        f"{_exec_summary(e)}"
         f"{_attr_table(e)}"
         "<h2>Output</h2>"
         f'<div class="outscroll">{out}</div>'
