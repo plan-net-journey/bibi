@@ -49,7 +49,6 @@ def _base_env(tmp_path: Path, job_type: str = "app") -> dict:
         "BIBI_WORKTREE": str(tmp_path),
         "BIBI_APP_PORT": "8081",
         "BIBI_APP_PREFIX": "/myapp",
-        "BIBI_WRAPPER_PORT": "8080",
     }
 
 
@@ -73,14 +72,27 @@ def test_app_container_adds_traefik_labels(tmp_path):
             k, _, v = args[i + 1].partition("=")
             labels[k] = v
     assert labels.get("traefik.enable") == "true"
-    assert "PathPrefix(`/-/job/deadbeef/`)" in labels.get(
-        "traefik.http.routers.bibi-deadbeef-wrapper.rule", "")
-    assert labels.get(
-        "traefik.http.services.bibi-deadbeef-wrapper.loadbalancer.server.port") == "8080"
     assert "PathPrefix(`/myapp/`)" in labels.get(
         "traefik.http.routers.bibi-deadbeef-app.rule", "")
     assert labels.get(
         "traefik.http.services.bibi-deadbeef-app.loadbalancer.server.port") == "8081"
+
+
+def test_app_container_has_no_wrapper_route_label(tmp_path):
+    # PLAN-11.5: der Wrapper hat seit 11.3 keinen HTTP-Server mehr — die
+    # /-/job/{id}/…-Route gehört nicht mehr ins Image, der Worker-Daemon
+    # serviert sie direkt.
+    env = _base_env(tmp_path)
+    with patch.object(exec_backend, "resolve_docker_bin", return_value="docker"):
+        spec = exec_backend.build_exec(["uvicorn", "app:app"], env)
+    labels = {}
+    args = spec.argv
+    for i, a in enumerate(args):
+        if a == "-l" and i + 1 < len(args):
+            k, _, v = args[i + 1].partition("=")
+            labels[k] = v
+    assert not any("wrapper" in k for k in labels)
+    assert not any("/-/job/" in v for v in labels.values())
 
 
 def test_job_container_no_traefik_labels(tmp_path):

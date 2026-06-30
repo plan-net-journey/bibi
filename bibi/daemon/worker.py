@@ -237,7 +237,6 @@ def _run_wrapper(
         effective_type = "job"
         env["BIBI_JOB_TYPE"] = "job"
         env["BIBI_JOB_CMD"] = payload
-        env["BIBI_WRAPPER_PORT"] = "8080"
         if app_port:
             env["BIBI_APP_PORT"] = str(app_port)
         if app_prefix:

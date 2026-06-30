@@ -35,8 +35,6 @@ WORKSPACE = "/workspace"
 
 #: Docker-Network, in dem Traefik und alle App-Container laufen (PLAN-9 §2).
 BIBI_NETWORK = "bibi-net"
-#: Wrapper-Port (intern im Container; Traefik routet dorthin für /-/job/{id}/*).
-WRAPPER_PORT = 8080
 
 
 def resolve_docker_bin(env: dict[str, str]) -> str:
@@ -64,31 +62,25 @@ class ExecSpec:
     env: dict[str, str]
 
 
-def _traefik_labels(job_id: str, *, app_port: int | None, app_prefix: str | None,
-                    wrapper_port: int = WRAPPER_PORT) -> list[str]:
-    """Docker ``-l``-Argumente für Traefik-Routing (PLAN-9 §2, Slice 9.0).
+def _traefik_labels(job_id: str, *, app_port: int | None, app_prefix: str | None) -> list[str]:
+    """Docker ``-l``-Argumente für Traefik-Routing (PLAN-9 §2, Slice 9.0; bereinigt
+    PLAN-11.5): nur noch der App-Content-Router ``bibi-<id>-app``. Der frühere
+    ``bibi-<id>-wrapper``-Router (``/-/job/<id>/*`` → Port 8080) entfällt — der
+    Wrapper hat seit 11.3 keinen HTTP-Server mehr, die ``/-/job/{id}/…``-Endpunkte
+    serviert der Worker-Daemon direkt (kein per-Container-Routing nötig).
 
-    Zwei Router je App-Container:
-    - ``bibi-<id>-wrapper``: ``/-/job/<id>/*`` → Wrapper Port (8080)
-    - ``bibi-<id>-app``:     ``<prefix>/*``    → App-Port (z. B. 8081)
-    """
+    Statisch nur, solange ``app_port``/``app_prefix`` schon beim Spawn feststehen;
+    der allgemeine Fall (Port erst zur Laufzeit bekannt) läuft über
+    ``_register_app_route`` (dynamisch, File-Provider, PLAN-11.4)."""
+    if not (app_port and app_prefix):
+        return []
     n = f"bibi-{job_id}"
     pairs: list[tuple[str, str]] = [
         ("traefik.enable", "true"),
-        (f"traefik.http.routers.{n}-wrapper.rule",
-         f"PathPrefix(`/-/job/{job_id}/`)"),
-        (f"traefik.http.routers.{n}-wrapper.service", f"{n}-wrapper"),
-        (f"traefik.http.services.{n}-wrapper.loadbalancer.server.port",
-         str(wrapper_port)),
+        (f"traefik.http.routers.{n}-app.rule", f"PathPrefix(`{app_prefix}/`)"),
+        (f"traefik.http.routers.{n}-app.service", f"{n}-app"),
+        (f"traefik.http.services.{n}-app.loadbalancer.server.port", str(app_port)),
     ]
-    if app_port and app_prefix:
-        pairs += [
-            (f"traefik.http.routers.{n}-app.rule",
-             f"PathPrefix(`{app_prefix}/`)"),
-            (f"traefik.http.routers.{n}-app.service", f"{n}-app"),
-            (f"traefik.http.services.{n}-app.loadbalancer.server.port",
-             str(app_port)),
-        ]
     result: list[str] = []
     for k, v in pairs:
         result += ["-l", f"{k}={v}"]
@@ -102,8 +94,10 @@ def build_exec(child_argv: list[str], env: dict[str, str]) -> ExecSpec:
     - ``container``: ``docker run --rm --name bibi-<id> -v <worktree>:/workspace
       -w /workspace [-e KEY…] <image> <child-argv>``; PATH um das docker-bin-Dir
       ergänzt (Cred-Helper).
-    - ``container`` + ``app``-Typ: zusätzlich ``--network bibi-net`` + Traefik-Labels
-      (PLAN-9 §2, Slice 9.0)."""
+    - ``container`` + ``app``-Typ: zusätzlich ``--network bibi-net`` + statisches
+      App-Content-Traefik-Label, falls ``app_port``/``app_prefix`` beim Spawn schon
+      feststehen (PLAN-9 §2, Slice 9.0; bereinigt PLAN-11.5 — kein Wrapper-Routing
+      mehr, der Wrapper hat keinen HTTP-Server)."""
     mode = (env.get("BIBI_EXEC_MODE") or "host").strip().lower()
     if mode != "container":
         return ExecSpec(argv=list(child_argv), cwd=env.get("BIBI_WORKTREE") or None,
@@ -127,12 +121,10 @@ def build_exec(child_argv: list[str], env: dict[str, str]) -> ExecSpec:
 
     job_type = (env.get("BIBI_JOB_TYPE") or "").strip().lower()
     if job_type == "app":
-        wrapper_port = int(env.get("BIBI_WRAPPER_PORT") or str(WRAPPER_PORT))
         app_port = int(app_port_str) if app_port_str else None
         app_prefix = env.get("BIBI_APP_PREFIX") or None
         argv += ["--network", BIBI_NETWORK]
-        argv += _traefik_labels(job_id, app_port=app_port, app_prefix=app_prefix,
-                                wrapper_port=wrapper_port)
+        argv += _traefik_labels(job_id, app_port=app_port, app_prefix=app_prefix)
 
     # Statische Liste + alle dynamisch per BIBI_JOB_ENV_* hinzugefügten Keys.
     # Jeder Key in env, der nicht mit BIBI_ beginnt und nicht PATH/HOME ist,
