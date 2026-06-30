@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     pid             INTEGER,                   -- Wrapper-PID (v9, Orphan-Erkennung §10.2)
     pid_started_at  TEXT,                      -- Prozess-Startzeit opak (PID-Recycling-Guard)
     app_url         TEXT,                      -- HITL-Eingabe-Endpunkt der App (v10, §10.4)
+    last_ping_at    REAL,                      -- letzter Ping-Timestamp (v11, Zombie-Timeout §2.5)
+    demand          TEXT,                      -- HITL-Demand JSON (v11, §11.2)
 
     created_at      REAL,
     updated_at      REAL

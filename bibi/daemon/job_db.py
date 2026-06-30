@@ -28,7 +28,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -97,6 +97,15 @@ def _mig_jobs_app_url(conn: sqlite3.Connection) -> None:  # v9 → v10
         conn.execute("ALTER TABLE jobs ADD COLUMN app_url TEXT")
 
 
+def _mig_jobs_ping_demand(conn: sqlite3.Connection) -> None:  # v10 → v11
+    # PLAN-11.2: Ping-Timestamp (Zombie-Timeout §2.5) + HITL-Demand JSON.
+    if _has_table(conn, "jobs"):
+        if not _has_column(conn, "jobs", "last_ping_at"):
+            conn.execute("ALTER TABLE jobs ADD COLUMN last_ping_at REAL")
+        if not _has_column(conn, "jobs", "demand"):
+            conn.execute("ALTER TABLE jobs ADD COLUMN demand TEXT")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -110,6 +119,7 @@ _MIGRATIONS: dict[int, list] = {
     7: [_mig_kind_normalize],
     8: [_mig_jobs_pid],
     9: [_mig_jobs_app_url],
+    10: [_mig_jobs_ping_demand],
 }
 
 
@@ -943,3 +953,29 @@ def write_local_journal(
         },
     )
     _notify_journal(conn, cur.lastrowid)  # Feed-Push (Frontend-Plan §C.0)
+
+
+# ── PLAN-11.2: Ping + Demand ──────────────────────────────────────────────────
+
+
+def touch_ping(conn: sqlite3.Connection, job_id: str) -> bool:
+    """Setzt last_ping_at = now. Gibt False zurück wenn Job nicht existiert."""
+    cur = conn.execute(
+        "UPDATE jobs SET last_ping_at=? WHERE id=?", (time.time(), job_id)
+    )
+    return cur.rowcount > 0
+
+
+def set_demand(conn: sqlite3.Connection, job_id: str, demand: dict) -> None:
+    """Schreibt aktuellen HITL-Demand (überschreibt)."""
+    conn.execute(
+        "UPDATE jobs SET demand=? WHERE id=?", (json.dumps(demand, ensure_ascii=False), job_id)
+    )
+
+
+def get_demand(conn: sqlite3.Connection, job_id: str) -> dict | None:
+    """Liest aktuellen HITL-Demand; None wenn nicht gesetzt."""
+    row = conn.execute("SELECT demand FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if row is None or row["demand"] is None:
+        return None
+    return json.loads(row["demand"])

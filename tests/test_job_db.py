@@ -190,3 +190,91 @@ def test_reset_increments_fire_and_allows_new_journal_entry(conn, tmp_path: Path
     scheds = job_db.list_schedules(conn)
     s = next(x for x in scheds if x["slug"] == "once")
     assert s["last_status"] == "error"
+
+
+# ── PLAN-11.2: last_ping_at + demand ─────────────────────────────────────────
+
+
+def _insert_job(conn, slug: str = "j") -> str:
+    """Minimalen Job-Eintrag direkt einfügen; gibt die ID zurück."""
+    import secrets
+    job_id = secrets.token_hex(4)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (job_id, slug, f"{slug}.md", "job", "echo hi", "running"),
+    )
+    return job_id
+
+
+def test_schema_v11_columns(conn):
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)")}
+    assert "last_ping_at" in cols
+    assert "demand" in cols
+
+
+def test_touch_ping_updates_timestamp(conn):
+    jid = _insert_job(conn)
+    before = time.time()
+    result = job_db.touch_ping(conn, jid)
+    after = time.time()
+    assert result is True
+    ts = conn.execute("SELECT last_ping_at FROM jobs WHERE id=?", (jid,)).fetchone()["last_ping_at"]
+    assert before <= ts <= after
+
+
+def test_touch_ping_returns_false_for_unknown(conn):
+    assert job_db.touch_ping(conn, "does-not-exist") is False
+
+
+def test_set_and_get_demand(conn):
+    jid = _insert_job(conn)
+    demand = {"input_request": "Wie viele?", "input_format": "number"}
+    job_db.set_demand(conn, jid, demand)
+    result = job_db.get_demand(conn, jid)
+    assert result == demand
+
+
+def test_get_demand_returns_none_if_not_set(conn):
+    jid = _insert_job(conn)
+    assert job_db.get_demand(conn, jid) is None
+
+
+def test_set_demand_overwrites(conn):
+    jid = _insert_job(conn)
+    job_db.set_demand(conn, jid, {"input_request": "alt", "input_format": "text"})
+    job_db.set_demand(conn, jid, {"input_request": "neu", "input_format": "number"})
+    assert job_db.get_demand(conn, jid)["input_request"] == "neu"
+
+
+def test_migration_v10_to_v11(tmp_path: Path):
+    """Bestehende v10-DB bekommt last_ping_at + demand per Migration."""
+    import sqlite3 as _sqlite3
+    p = tmp_path / "old.sqlite"
+
+    # v10-DB manuell aufbauen (ohne die neuen Felder)
+    c = _sqlite3.connect(p)
+    c.row_factory = _sqlite3.Row
+    c.execute("PRAGMA journal_mode = WAL")
+    c.execute("""
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE,
+            schedule_ref TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', app_url TEXT
+        )
+    """)
+    c.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    c.execute("CREATE TABLE journal (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, "
+              "slug TEXT, kind TEXT, status TEXT, archived_at REAL NOT NULL, "
+              "snapshot TEXT NOT NULL DEFAULT '{}', domain TEXT NOT NULL DEFAULT 'scheduled')")
+    c.execute("PRAGMA user_version = 10")
+    c.commit()
+    c.close()
+
+    # connect() soll migrieren
+    conn2 = job_db.connect(p)
+    cols = {r["name"] for r in conn2.execute("PRAGMA table_info(jobs)")}
+    assert "last_ping_at" in cols
+    assert "demand" in cols
+    assert conn2.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
+    conn2.close()
