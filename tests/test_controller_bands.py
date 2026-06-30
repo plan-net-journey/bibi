@@ -1,9 +1,12 @@
 """Stufe 2 — Bänder „aktiv"/„wartet" + Headline-Zähler + Klapp-Toggle (§C.2).
 
 Quelle = ``jobs``-Tabelle (Live-State). Achse #2: **nicht im Journal** → Band.
-- aktiv = nicht-terminal „in Bewegung/ungelöst": running / failed·retry / deferred
+- aktiv = alles außer ``pending`` und ``complete``: running/awaiting/failed/
+  deferred ("in Bewegung") UND error/inactive/zombie/killed ("Problem, braucht
+  Aufmerksamkeit") — sonst verschwindet ein gekillter one-shot/app-Job (kein
+  Retry, kein nächster Termin) spurlos aus jeder Übersicht (nur ``complete``
+  ist „erledigt, nichts zu tun").
 - wartet = pending
-Terminale (complete/error/killed/zombie/inactive) sind im Feed, NICHT in den Bändern.
 Bänder in der Kopfzeile gezählt, per Klick auf-/zuklappbar (localStorage)."""
 
 from __future__ import annotations
@@ -29,14 +32,24 @@ def _job(slug: str, status: str, *, jid=None, started_at=900.0,
 # ── pure Renderer ─────────────────────────────────────────────────────────────
 
 
-def test_bands_membership_terminal_excluded():
+def test_bands_membership_only_pending_and_complete_excluded():
     jobs = [_job("run1", "running"), _job("retry1", "failed", next_fire_at=2000.0),
             _job("def1", "deferred"), _job("wait1", "pending", next_fire_at=3000.0),
-            _job("done1", "complete"), _job("dead1", "killed")]
+            _job("done1", "complete"), _job("dead1", "killed"),
+            _job("await1", "awaiting"), _job("err1", "error"),
+            _job("zomb1", "zombie"), _job("inact1", "inactive")]
     html = render.bands_fragment(jobs, now=1000.0)
-    for s in ("run1", "retry1", "def1", "wait1"):  # nicht-terminal → Band
+    for s in ("run1", "retry1", "def1", "wait1", "dead1", "await1", "err1", "zomb1", "inact1"):
         assert s in html
-    assert "done1" not in html and "dead1" not in html  # terminal → Feed, nicht Band
+    assert "done1" not in html  # complete = erledigt, einzig kein Handlungsbedarf
+
+
+def test_bands_problem_states_in_aktiv_not_just_wartet():
+    # Ein gekillter one-shot-Job (schedule: never) hat kein next_fire_at und
+    # damit auch keinen Platz im "wartet"-Band — er muss in "aktiv" auftauchen,
+    # sonst ist er nach einem Kill aus beiden Bändern verschwunden.
+    html = render.bands_fragment([_job("hitl", "killed", next_fire_at=None)], now=1.0)
+    assert "hitl" in html and "1 aktiv" in html
 
 
 def test_bands_counts_in_headline():

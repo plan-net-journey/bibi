@@ -646,10 +646,15 @@ _FEED_JS = """
 """
 
 
-#: Band-Zugehörigkeit (Frontend-Plan §C.2, Achse #2 „nicht im Journal"): nur
-#: **nicht-terminale** jobs-Zustände. Terminale (complete/error/killed/zombie/
-#: inactive) stehen im Feed/Journal, nicht in den Bändern.
-_ACTIVE_STATES = ("running", "awaiting", "failed", "deferred")
+#: Band-Zugehörigkeit (Frontend-Plan §C.2): alles außer ``pending`` (eigenes
+#: Band „wartet") und ``complete`` (einzig erledigter Zustand ohne Handlungs-
+#: bedarf). Terminale Problem-Zustände (error/inactive/zombie/killed) bleiben
+#: im „aktiv"-Band sichtbar — sonst verschwindet ein gekillter one-shot-/
+#: App-Job (kein Retry, kein nächster Termin) spurlos aus jeder Übersicht.
+_ACTIVE_STATES = (
+    "running", "awaiting", "failed", "deferred",
+    "error", "inactive", "zombie", "killed",
+)
 
 
 def _aktiv_row(j: dict, now: float) -> str:
