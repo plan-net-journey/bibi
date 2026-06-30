@@ -1042,8 +1042,7 @@ def _commit_cell(run: dict) -> str:
     return f'<span class="commit" title="{_e(sha)} {branch}">{short}</span>'
 
 
-def _run_rows(runs: list[dict], slug: str, now: float,
-              top_id: int | None = None) -> str:
+def _run_rows(runs: list[dict], slug: str, now: float) -> str:
     s = _e(slug)
     rows = []
     for r in runs:
@@ -1051,11 +1050,9 @@ def _run_rows(runs: list[dict], slug: str, now: float,
         st = _e(r.get("status"))
         t_abs = _abs_time(r.get("finished_at") or r.get("started_at"))
         t_rel = _ago(r.get("finished_at") or r.get("started_at"), now)
-        if rid is not None and rid != top_id:
-            toggle = (f' <button hx-get="/-/ui/run/{rid}/output" '
-                      f'hx-swap="afterend" hx-target="this">Output ↓</button>')
-        else:
-            toggle = ""
+        toggle = (f' <button hx-get="/-/ui/run/{rid}/output" '
+                  f'hx-swap="afterend" hx-target="this">Output ↓</button>'
+                  if rid is not None else "")
         rows.append(
             "<tr>"
             f"<td>{t_abs} <span class='muted'>({t_rel})</span></td>"
@@ -1158,11 +1155,12 @@ def _action_bar(slug: str, job: dict | None) -> str:
 def schedule_detail_inner(
     schedule: dict | None, runs: list[dict], job: dict | None,
     slug: str = "", now: float | None = None,
-    *, top_output: dict | None = None, live_output: dict | None = None,
+    *, live_output: dict | None = None,
 ) -> str:
     """Der austauschbare Detail-Kern (``#detail``): Meta + Aktions-Leiste
     (START/RESET/KILL) + Live-Block (aktiver Lauf, Output default expanded) +
-    Journal (jüngster Lauf-Output default expanded, ältere per Toggle)."""
+    Journal (jeder Lauf per Toggle — kein Auto-Expand, User-Feedback: stand
+    sonst kontextlos nach der ganzen Tabelle statt bei seiner Zeile)."""
     now = time.time() if now is None else now
     s = schedule or {}
     name = _e(s.get("slug") or slug)
@@ -1181,14 +1179,10 @@ def schedule_detail_inner(
     nxt = _until(s.get("next_fire_at"), now)
     meta = (f"Typ <b>{kind}</b> · Trigger <code>{trigger}</code> · "
             f"letzter Lauf <b>{last_run}</b> · nächster Lauf {nxt}")
-    top_id = runs[0]["id"] if runs and top_output and top_output.get("events") else None
-    inline_out = (output_block(top_output["events"], top_output.get("kind", "job"))
-                  if top_id is not None else "")
     runs_html = (
         '<table><thead><tr><th>Zeit</th><th>Status</th><th>Grund</th>'
         '<th>exit</th><th>Commit</th><th></th></tr></thead>'
-        f"<tbody>{_run_rows(runs, slug, now, top_id=top_id)}</tbody></table>"
-        + inline_out
+        f"<tbody>{_run_rows(runs, slug, now)}</tbody></table>"
         if runs else '<p class="out-empty">— noch keine Läufe —</p>'
     )
     # #detail self-pollt: awaiting immer (unbedingt), sonst FOLLOW-gated.
@@ -1212,7 +1206,7 @@ def schedule_detail_inner(
 def schedule_detail_page(
     schedule: dict | None, runs: list[dict], job: dict | None = None,
     slug: str = "", now: float | None = None,
-    *, top_output: dict | None = None, live_output: dict | None = None,
+    *, live_output: dict | None = None,
 ) -> str:
     """Schedule-zentrierte Detail-Sicht (§3 Ebene 3) als volle Seite."""
     name = _e((schedule or {}).get("slug") or slug)
@@ -1228,7 +1222,7 @@ def schedule_detail_page(
         f'<a class="back" href="/-/">← zurück</a>'
         f'<a class="back" href="/-/ui/schedule/{_e(name)}/attrs">Attribute →</a>'
         f'</div>'
-        f"{schedule_detail_inner(schedule, runs, job, slug, now, top_output=top_output, live_output=live_output)}"
+        f"{schedule_detail_inner(schedule, runs, job, slug, now, live_output=live_output)}"
         f"<script>{_LIVE_JS}</script>"
         "</body></html>"
     )

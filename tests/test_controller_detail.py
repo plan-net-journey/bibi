@@ -166,8 +166,7 @@ def test_schedule_detail_route(app_with):
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/html")
         assert "boom" in r.text and "error" in r.text
-        # jüngster Lauf: Output inline (default expanded), kein Toggle-Button mehr
-        assert "Output ↓" in r.text
+        assert "Output ↓" in r.text  # jeder Lauf, auch der jüngste: Toggle-Button
 
 
 def test_run_output_route_renders(app_with):
@@ -252,15 +251,16 @@ def test_live_panel_shows_output_expanded():
     assert 'class="liveout"' in html and "lebt" in html   # Live-Output inline
 
 
-def test_top_run_output_inline_older_keep_toggle():
+def test_run_rows_all_get_toggle_no_auto_inline():
+    # User-Feedback: kein Auto-Expand mehr für den jüngsten Lauf — der Output
+    # landete optisch nach der kompletten (oft langen) Tabelle, ganz ohne
+    # Bezug zur Zeile ("was soll das hier am Ende?"). Jede Zeile bekommt jetzt
+    # einheitlich ihren eigenen Toggle, nichts wird automatisch aufgeklappt.
     runs = [{"id": 2, "status": "complete", "kind": "claude", "finished_at": 9.0},
             {"id": 1, "status": "complete", "kind": "claude", "finished_at": 5.0}]
-    top = {"kind": "claude", "events": [{"s": "out", "line": "neuester"}]}
-    html = render.schedule_detail_inner({"slug": "a"}, runs, None, slug="a",
-                                        now=10.0, top_output=top)
-    assert "neuester" in html                             # jüngster: inline expanded
-    assert 'hx-get="/-/ui/run/1/output"' in html          # älterer: Toggle bleibt
-    assert 'hx-get="/-/ui/run/2/output"' not in html      # jüngster: kein Toggle
+    html = render.schedule_detail_inner({"slug": "a"}, runs, None, slug="a", now=10.0)
+    assert 'hx-get="/-/ui/run/1/output"' in html
+    assert 'hx-get="/-/ui/run/2/output"' in html
 
 
 # ── PLAN-10 §10.5: HITL-Panel (awaiting + app_url direkt) ────────────────────
