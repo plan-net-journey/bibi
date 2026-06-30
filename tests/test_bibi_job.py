@@ -56,23 +56,31 @@ def test_app_register_without_prefix_omits_key(capsys):
     assert "prefix" not in payload
 
 
-def test_deferred_is_exception():
+def test_deferred_is_exception(capsys):
     d = bibi.job.Deferred(seconds=120)
     assert d.seconds == 120
     assert isinstance(d, Exception)
+    # Deferred emittiert automatisch ein BIBI-Signal (für den Wrapper)
+    out = capsys.readouterr().out
+    payload = json.loads(out.split("BIBI:", 1)[1])
+    assert payload == {"name": "deferred", "seconds": 120}
 
 
-def test_deferred_default_seconds():
+def test_deferred_default_seconds(capsys):
     d = bibi.job.Deferred()
     assert d.seconds == 60
+    payload = json.loads(capsys.readouterr().out.split("BIBI:", 1)[1])
+    assert payload["seconds"] == 60
 
 
-def test_deferred_str_representation():
+def test_deferred_str_representation(capsys):
     d = bibi.job.Deferred(seconds=300)
+    capsys.readouterr()  # stdout verwerfen
     assert "300" in str(d)
 
 
-def test_deferred_is_raisable():
+def test_deferred_is_raisable(capsys):
     with pytest.raises(bibi.job.Deferred) as exc_info:
         raise bibi.job.Deferred(seconds=42)
+    capsys.readouterr()  # stdout verwerfen
     assert exc_info.value.seconds == 42

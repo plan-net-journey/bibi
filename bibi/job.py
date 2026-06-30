@@ -36,9 +36,13 @@ def app_register(port: int, prefix: str | None = None) -> None:
 class Deferred(Exception):
     """Wirft der Job diese Exception, gilt er als zurückgestellt (nicht gescheitert).
 
+    Beim Instanziieren wird automatisch ein BIBI-Signal emittiert, damit der
+    Wrapper den Defer erkennt — auch wenn die Exception unbehandelt bleibt.
+
     Beispiel:
         raise bibi.job.Deferred(seconds=300)   # in 5 min neu starten
     """
     def __init__(self, seconds: int = 60) -> None:
         self.seconds = seconds
+        _emit({"name": "deferred", "seconds": seconds})
         super().__init__(f"deferred for {seconds}s")

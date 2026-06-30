@@ -979,3 +979,8 @@ def get_demand(conn: sqlite3.Connection, job_id: str) -> dict | None:
     if row is None or row["demand"] is None:
         return None
     return json.loads(row["demand"])
+
+
+def set_app_port(conn: sqlite3.Connection, job_id: str, port: int) -> None:
+    """Setzt app_port (PLAN-11.3: app_register-Signal vom Job)."""
+    conn.execute("UPDATE jobs SET app_port=? WHERE id=?", (port, job_id))

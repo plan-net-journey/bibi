@@ -3,6 +3,7 @@
 Ein env-konfigurierter Entrypoint, der den Job-Prozess als **Child** spawnt,
 stdout/stderr via Pipe liest und nach ``data/job/{id}/output.jsonl`` appendet.
 PLAN-10 Stufe 10.0: nur noch ``job`` und ``claude`` im REGISTRY.
+PLAN-11.3: Signale kommen via stdout ``BIBI:{...}`` statt HTTP ``/-/signal/*``.
 
 Aufruf als eigener Prozess: ``python -m bibi.wrapper``. Env (vom Worker gesetzt):
 
@@ -10,7 +11,8 @@ Aufruf als eigener Prozess: ``python -m bibi.wrapper``. Env (vom Worker gesetzt)
 - ``BIBI_JOB_ID``     — stabile Job-Hash-ID.
 - ``BIBI_OUTPUT_PATH``— absoluter Pfad der ``output.jsonl``.
 - ``BIBI_WORKTREE``   — Arbeitsverzeichnis des Childs.
-- ``BIBI_SCHEDULER_URL`` — für Terminal-Status-Meldung (optional).
+- ``BIBI_SCHEDULER_URL`` — für Terminal-Status-Meldung (optional, Fallback).
+- ``BIBI_SCHEDULER_DB_PATH`` — direkter SQLite-Zugriff für Signal-Handling.
 - ``BIBI_REPO_ROOT``, ``BIBI_JOB_SLUG``, ``BIBI_RUN_ID`` — für Worktree-Commit.
 - ``BIBI_WALL_TIME``, ``BIBI_SILENCE_TIMEOUT`` — Timeout-Überwachung.
 - ``BIBI_ATTEMPT``, ``BIBI_ATTEMPTS`` — Retry-Zähler für failed/error.
@@ -34,6 +36,36 @@ from pathlib import Path
 
 from bibi.schedule.models import DEFAULT_CLAUDE_MODEL
 from bibi.wrapper import exec_backend, output
+
+
+# ── PLAN-11.3: stdout-Signalprotokoll ────────────────────────────────────────
+
+
+def _parse_bibi_line(line: str) -> dict | None:
+    """Parst eine BIBI:{...}-Zeile; gibt None zurück wenn kein gültiges Signal."""
+    if not line.startswith("BIBI:"):
+        return None
+    try:
+        return json.loads(line[5:])
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _handle_signal(conn, job_id: str, sig: dict) -> None:
+    """Verarbeitet ein geparsten BIBI-Signal direkt in job_db.
+
+    ``deferred`` wird nicht hier behandelt — der Pump-Thread setzt ``outcome``
+    direkt, da kein DB-Schreiben nötig (nur ``_finish`` ändert den Status).
+    """
+    from bibi.daemon import job_db as _jdb
+    name = sig.get("name")
+    if name == "running":
+        _jdb.report_status(conn, job_id, status="running")
+    elif name == "awaiting":
+        _jdb.report_status(conn, job_id, status="awaiting")
+        _jdb.set_demand(conn, job_id, sig)
+    elif name == "app_register":
+        _jdb.set_app_port(conn, job_id, sig["port"])
 
 
 @dataclass(frozen=True)
@@ -276,7 +308,10 @@ def _finish(env: dict[str, str], exit_code: int, outcome: str) -> None:
 # ── Ausführungs-Hauptfunktionen ───────────────────────────────────────────────
 
 def run_app(env: dict[str, str]) -> int:
-    """App-Typ: Wrapper-HTTP-Server starten + App-Child nebenläufig ausführen."""
+    """App-Typ: Child spawnen, stdout-Signale parsen, HITL überwachen.
+
+    PLAN-11.3: kein HTTP-Server mehr — Signale kommen via stdout ``BIBI:{...}``.
+    """
     kind = env["BIBI_JOB_TYPE"]
     handler = REGISTRY.get(kind)
     if handler is None:
@@ -284,21 +319,9 @@ def run_app(env: dict[str, str]) -> int:
     child_argv = handler.build_command(env)
     out_path = Path(env["BIBI_OUTPUT_PATH"])
     job_id = env.get("BIBI_JOB_ID", "unknown")
-    wrapper_port = int(env.get("BIBI_WRAPPER_PORT") or "8080")
-
-    from bibi.wrapper.server import WrapperState, start_server
-    scheduler_url = env.get("BIBI_SCHEDULER_URL") or None
-    scheduler_db_path = env.get("BIBI_SCHEDULER_DB_PATH") or None
-    app_port_str = env.get("BIBI_APP_PORT")
-    app_port = int(app_port_str) if app_port_str else None
+    db_path_str = env.get("BIBI_SCHEDULER_DB_PATH") or None
     hitl_str = env.get("BIBI_HITL_TIMEOUT")
     hitl_timeout = int(hitl_str) if hitl_str else None
-    wrapper_url = env.get("BIBI_WRAPPER_EXTERNAL_URL") or f"http://127.0.0.1:{wrapper_port}"
-    state = WrapperState(job_id=job_id, scheduler_url=scheduler_url,
-                         scheduler_db_path=scheduler_db_path,
-                         app_port=app_port, hitl_timeout=hitl_timeout,
-                         wrapper_url=wrapper_url)
-    server = start_server(state, port=wrapper_port)
 
     spec = exec_backend.build_exec(child_argv, env)
     proc = subprocess.Popen(
@@ -306,10 +329,6 @@ def run_app(env: dict[str, str]) -> int:
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, bufsize=1, start_new_session=True,
     )
-    # SIGTERM vom Worker (kill-Verb) propagiert nicht automatisch an den Child,
-    # da dieser eine eigene Session hat (start_new_session=True). Der Wrapper
-    # installiert deshalb einen Handler, der den Child killt, bevor er selbst endet.
-    # Guard: signal.signal() nur im Main-Thread erlaubt (Tests laufen im Thread).
     if threading.current_thread() is threading.main_thread():
         def _on_sigterm(signum, frame):
             _terminate_proc(proc)
@@ -317,21 +336,80 @@ def run_app(env: dict[str, str]) -> int:
         signal.signal(signal.SIGTERM, _on_sigterm)
 
     lock = threading.Lock()
+    outcome: list[str] = [""]
+    current_status: list[str] = ["running"]  # shared with hitl_monitor
+    last_activity_ts: list[float] = [time.time()]
 
     def pump(pipe, tag: str) -> None:
         assert pipe is not None
         for line in pipe:
-            with lock:
-                output.append(out_path, tag, line.rstrip("\n"))
-            state.touch()
+            stripped = line.rstrip("\n")
+            sig = _parse_bibi_line(stripped)
+            if sig:
+                name = sig.get("name")
+                if name == "deferred":
+                    if "seconds" in sig:
+                        env["BIBI_DEFER_TIME"] = str(sig["seconds"])
+                    with lock:
+                        current_status[0] = "deferred"
+                        if not outcome[0]:
+                            outcome[0] = "deferred"
+                elif db_path_str:
+                    try:
+                        from bibi.daemon import job_db as _jdb
+                        conn = _jdb.connect(Path(db_path_str))
+                        try:
+                            _handle_signal(conn, job_id, sig)
+                            if sig.get("name") in ("running", "awaiting"):
+                                current_status[0] = sig["name"]
+                        finally:
+                            conn.close()
+                    except Exception:
+                        pass
+            else:
+                with lock:
+                    output.append(out_path, tag, stripped)
+            last_activity_ts[0] = time.time()
 
-    outcome: list[str] = [""]
+    def _local_hitl_monitor() -> None:
+        while proc.poll() is None:
+            with lock:
+                cs = current_status[0]
+                oc = outcome[0]
+            if cs == "deferred" and not oc:
+                with lock:
+                    outcome[0] = "deferred"
+                _terminate_proc(proc)
+                return
+            if (hitl_timeout is not None
+                    and cs == "awaiting"
+                    and time.time() - last_activity_ts[0] > hitl_timeout):
+                if db_path_str:
+                    try:
+                        from bibi.daemon import job_db as _jdb
+                        conn = _jdb.connect(Path(db_path_str))
+                        try:
+                            _jdb.report_status(conn, job_id, status="zombie",
+                                               reason="activity_timeout")
+                        finally:
+                            conn.close()
+                    except Exception:
+                        pass
+                else:
+                    _report_terminal(env, status="zombie", reason="activity_timeout")
+                with lock:
+                    current_status[0] = "zombie"
+                    if not outcome[0]:
+                        outcome[0] = "zombie_reported"
+                _terminate_proc(proc)
+                return
+            time.sleep(0.5)
+
     started = time.time()
     wall_str = env.get("BIBI_WALL_TIME")
-
-    monitors = [threading.Thread(target=_hitl_monitor, args=(proc, state, outcome),
-                                 kwargs={"poll": 0.5}, daemon=True, name="hitl-monitor")]
     silence_str = env.get("BIBI_SILENCE_TIMEOUT")
+
+    monitors = [threading.Thread(target=_local_hitl_monitor, daemon=True, name="hitl-monitor")]
     if silence_str:
         monitors.append(threading.Thread(
             target=_silence_monitor,
@@ -354,12 +432,12 @@ def run_app(env: dict[str, str]) -> int:
     for t in pump_threads:
         t.join()
 
-    server.should_exit = True
-
-    # _hitl_monitor setzt outcome für deferred; zombie meldet state.report direkt.
-    if not outcome[0] and state.status == "zombie":
+    with lock:
+        cs = current_status[0]
+        oc = outcome[0]
+    if not oc and cs == "zombie":
         outcome[0] = "zombie_reported"
-    if not outcome[0] and state.status == "deferred":
+    if not oc and cs == "deferred":
         outcome[0] = "deferred"
 
     _finish(env, proc.returncode or 0, outcome[0])
