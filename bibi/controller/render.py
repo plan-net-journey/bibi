@@ -1143,7 +1143,16 @@ def schedule_detail_inner(
     name = _e(s.get("slug") or slug)
     kind = _e(s.get("kind") or (runs[0].get("kind") if runs else ""))
     trigger = _e(s.get("trigger"))
-    last_run = _e(runs[0]["status"]) if runs else "—"   # Ergebnis des letzten Laufs (Journal)
+    # schedule_view.last_status gewinnt, wenn er TERMINAL ist — dann ist er das korrekte
+    # Lauf-Ergebnis auch wenn der Journal-MAX-Eintrag (Dedup-Skip) veraltet ist.
+    # Nicht-terminale Werte (pending, failed, …) bedeuten Re-arm oder Retry → Journal gewinnt.
+    sv_last = s.get("last_status")
+    if sv_last in _TERMINAL_VIEW:
+        last_run = _e(sv_last)
+    elif runs:
+        last_run = _e(runs[0]["status"])
+    else:
+        last_run = "—"
     nxt = _until(s.get("next_fire_at"), now)
     meta = (f"Typ <b>{kind}</b> · Trigger <code>{trigger}</code> · "
             f"letzter Lauf <b>{last_run}</b> · nächster Lauf {nxt}")

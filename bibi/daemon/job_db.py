@@ -348,7 +348,16 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
     if row_status == "running":
         last_status, last_run_at = "running", row["finished_at"]
     elif last_run is not None:
-        last_status, last_run_at = last_run["status"], last_run["finished_at"]
+        # Wenn die Jobs-Zeile einen neueren Terminal-Zustand hat (finished_at aktueller),
+        # gewinnt sie — der Journal-MAX-Eintrag kann durch den Dedup-Skip veraltet sein.
+        row_ft = row["finished_at"]
+        last_ft = last_run["finished_at"]
+        if (lifecycle.is_terminal(Status(row_status))
+                and row_ft is not None
+                and (last_ft is None or row_ft > last_ft)):
+            last_status, last_run_at = row_status, row_ft
+        else:
+            last_status, last_run_at = last_run["status"], last_ft
     else:
         last_status, last_run_at = row_status, row["finished_at"]
     return {
@@ -551,6 +560,12 @@ def report_status(
         fields["app_url"] = None  # HITL beendet oder Terminal → Endpunkt löschen
 
     assignments = ", ".join(f"{k}=:{k}" for k in fields)
+    # RESET → neuer Lauf-Zähler, damit run_id = slug:fire in `_write_journal` eindeutig bleibt.
+    # Ohne fire++ würde der Dedup-Check (run_id, status) spätere Fehler-Journal-Einträge
+    # stillschweigend unterdrücken, wenn ein Status aus einem früheren Reset-Zyklus schon
+    # im Journal steht.
+    if target is Status.PENDING:
+        assignments += ", fire=fire+1"
     fields["id"] = job_id
     conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
 

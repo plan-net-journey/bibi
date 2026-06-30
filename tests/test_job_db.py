@@ -156,3 +156,37 @@ def test_schedule_list_status_is_last_run_not_rearmed_pending(conn, tmp_path: Pa
     assert sched["row_status"] == "pending"      # re-armt
     assert sched["last_status"] == "complete"    # aber letzter Lauf: complete
     assert sched["last_run_at"] is not None
+
+
+def test_reset_increments_fire_and_allows_new_journal_entry(conn, tmp_path: Path):
+    # Regression: ohne fire++ beim RESET blockiert der Dedup-Check (run_id, status) den
+    # Journal-Eintrag des zweiten Laufs, wenn er denselben Terminal-Status hat.
+    _write(tmp_path / "case" / "once.md", '---\nschedule: never\njob: "echo x"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jid = conn.execute("SELECT id FROM jobs WHERE slug='once'").fetchone()["id"]
+
+    # Erster Lauf → error
+    job_db.report_status(conn, jid, status="running")
+    job_db.report_status(conn, jid, status="failed")
+    job_db.report_status(conn, jid, status="error")
+    fire1 = conn.execute("SELECT fire FROM jobs WHERE id=?", (jid,)).fetchone()["fire"]
+    j1 = conn.execute("SELECT run_id, status FROM journal WHERE slug='once' ORDER BY id").fetchall()
+    assert len(j1) == 1 and j1[0]["status"] == "error"
+
+    # RESET muss fire++ (neue run_id für den nächsten Lauf)
+    job_db.report_status(conn, jid, status="pending")
+    fire2 = conn.execute("SELECT fire FROM jobs WHERE id=?", (jid,)).fetchone()["fire"]
+    assert fire2 == fire1 + 1, "fire muss beim RESET erhöht werden"
+
+    # Zweiter Lauf → gleicher Terminal-Status (error), muss trotzdem in den Journal
+    job_db.report_status(conn, jid, status="running")
+    job_db.report_status(conn, jid, status="failed")
+    job_db.report_status(conn, jid, status="error")
+    j2 = conn.execute("SELECT run_id, status FROM journal WHERE slug='once' ORDER BY id").fetchall()
+    assert len(j2) == 2, "zweiter Lauf muss eigenen Journal-Eintrag bekommen"
+    assert j2[0]["run_id"] != j2[1]["run_id"], "run_id muss sich zwischen den Läufen unterscheiden"
+
+    # schedule_view: last_status soll den letzten Lauf zeigen (error, neuere finished_at)
+    scheds = job_db.list_schedules(conn)
+    s = next(x for x in scheds if x["slug"] == "once")
+    assert s["last_status"] == "error"
