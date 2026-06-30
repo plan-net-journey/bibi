@@ -1,7 +1,8 @@
 """``bibi-ctrl doctor`` — Repo-/Vault-Hygiene-Check (PLAN-5 §5.2).
 
 Meldet (a) fehlendes git-lfs, (b) große, nicht-LFS-getrackte Dateien (würden die
-History aufblähen, §3.5), (c) committete Sammeldaten unter ``vault/.../data/``.
+History aufblähen, §3.5), (c) committete Sammeldaten unter ``vault/.../data/``,
+(d) fehlende ``vault/CONVENTIONS.md`` (Repo-Invariant jedes bibi-team-Repos).
 Exit 1 bei Befunden (pre-commit/CI-tauglich), sonst 0. Reine Prüflogik: ``hygiene``.
 """
 
@@ -47,6 +48,7 @@ def run(args: argparse.Namespace) -> int:
 
     findings = (
         hygiene.git_lfs_finding(hygiene.git_lfs_installed())
+        + hygiene.conventions_finding(hygiene.CONVENTIONS_PATH in paths)
         + hygiene.check_large_unmanaged(files)
         + hygiene.check_data_committed(paths)
     )

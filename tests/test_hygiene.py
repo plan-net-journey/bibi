@@ -39,6 +39,13 @@ def test_lfs_finding():
     assert hygiene.git_lfs_finding(False)[0].kind == "lfs-missing"
 
 
+def test_conventions_finding():
+    assert hygiene.conventions_finding(True) == []
+    f = hygiene.conventions_finding(False)
+    assert f and f[0].kind == "conventions-missing"
+    assert f[0].path == "vault/CONVENTIONS.md"
+
+
 # ── doctor-CLI gegen ein echtes Mini-Repo ─────────────────────────────────────
 
 def _git(cwd: Path, *args: str) -> None:
@@ -53,6 +60,9 @@ def gitrepo(tmp_path: Path, monkeypatch):
     _git(root, "config", "user.email", "t@e.x")
     _git(root, "config", "user.name", "t")
     (root / "README.md").write_text("hi\n", encoding="utf-8")
+    # Repo-Invariant: jedes bibi-team-Repo führt vault/CONVENTIONS.md (sonst Befund).
+    (root / "vault").mkdir()
+    (root / "vault" / "CONVENTIONS.md").write_text("# conventions\n", encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "init")
     monkeypatch.chdir(root)
@@ -75,13 +85,22 @@ def test_doctor_clean_repo(gitrepo: Path, capsys, monkeypatch):
 def test_doctor_flags_large_unmanaged_blob(gitrepo: Path, capsys, monkeypatch):
     monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
     big = gitrepo / "vault" / "huge.bin"
-    big.parent.mkdir(parents=True)
+    big.parent.mkdir(parents=True, exist_ok=True)
     big.write_bytes(b"x" * (600 * 1024))  # 600 KiB, kein LFS (kein .gitattributes)
     _git(gitrepo, "add", "-A")
     _git(gitrepo, "commit", "-q", "-m", "big")
     rc = doctor_cmd.run(_args())
     out = capsys.readouterr().out
     assert rc == 1 and "large-unmanaged" in out and "vault/huge.bin" in out
+
+
+def test_doctor_flags_missing_conventions(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    _git(gitrepo, "rm", "-q", "vault/CONVENTIONS.md")
+    _git(gitrepo, "commit", "-q", "-m", "drop conventions")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1 and "conventions-missing" in out and "vault/CONVENTIONS.md" in out
 
 
 def test_doctor_flags_committed_data(gitrepo: Path, capsys, monkeypatch):
