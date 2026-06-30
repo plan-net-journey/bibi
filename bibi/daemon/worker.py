@@ -26,6 +26,8 @@ import threading
 import time
 from pathlib import Path
 
+import yaml
+
 # claude:-Prefix-Erkennung für Payload-Expansion beim Spawn (PLAN-10 Stufe 10.0).
 _CLAUDE_RE = re.compile(r"^\s*claude\s*:\s*(.+)", re.DOTALL)
 
@@ -121,6 +123,37 @@ def _docker(args: list[str]) -> None:
                        timeout=30, check=False)
     except (OSError, subprocess.SubprocessError):
         pass
+
+
+def _traefik_dynamic_dir(repo_root: Path) -> Path:
+    return repo_root / "data" / "traefik" / "dynamic"
+
+
+def _register_app_route(job_id: str, port: int) -> None:
+    """Traefik-Route für die App eines Jobs registrieren (PLAN-11.4, §7.5/§7.7).
+
+    File-Provider statt Docker-Labels: der App-Port ist erst zur Laufzeit bekannt
+    (``app_register``-Signal, ``bibi.job``), Docker-Labels lassen sich an einem
+    laufenden Container nicht mehr nachträglich setzen. Host-Modus: Ziel ist der
+    lokale Loopback (Worker und App teilen den Host). Container-Modus: Ziel ist
+    der Container selbst (``bibi-<id>``), da Traefik im selben Docker-Netz läuft
+    (``bibi-net``, PLAN-9 §2)."""
+    target = f"bibi-{job_id}:{port}" if _is_container() else f"127.0.0.1:{port}"
+    name = f"job-{job_id}-app"
+    cfg = {
+        "http": {
+            "routers": {name: {"rule": f"PathPrefix(`/-/job/{job_id}/app`)", "service": name}},
+            "services": {name: {"loadBalancer": {"servers": [{"url": f"http://{target}"}]}}},
+        },
+    }
+    path = _traefik_dynamic_dir(repo.root()) / f"{job_id}.yml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+
+
+def _deregister_app_route(job_id: str) -> None:
+    """Traefik-Route beim Job-Ende entfernen (Gegenstück zu ``_register_app_route``)."""
+    (_traefik_dynamic_dir(repo.root()) / f"{job_id}.yml").unlink(missing_ok=True)
 
 
 def _terminate(proc: subprocess.Popen, *, job_id: str | None = None) -> None:
@@ -463,6 +496,7 @@ class Worker:
             from bibi.daemon.scheduler_client import LocalScheduler
             self.client = LocalScheduler(db_path)
         self._procs: dict[str, subprocess.Popen] = {}
+        self._app_routes: dict[str, int] = {}  # job_id → zuletzt registrierter app_port
         self._task: asyncio.Task | None = None
         self._hb_task: asyncio.Task | None = None
         self._running = False
@@ -496,11 +530,34 @@ class Worker:
         else:
             self._procs[job_id] = proc
 
+    def _poll_app_routes(self) -> None:
+        """``app_port``-Änderungen aktiver Jobs in Traefik-Routen übersetzen
+        (PLAN-11.4, §7.5/§7.7) — Gegenstück zum stdout-``app_register``-Signal
+        (``bibi.job``, von ``_handle_signal`` in ``job_db.app_port`` geschrieben).
+        Terminale/verschwundene Jobs deregistrieren ihre Route wieder."""
+        conn = job_db.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT id, app_port, status FROM jobs WHERE app_port IS NOT NULL"
+            ).fetchall()
+        finally:
+            conn.close()
+        live = {row["id"]: row["app_port"] for row in rows
+                if Status(row["status"]) not in TERMINAL}
+        for jid, port in live.items():
+            if self._app_routes.get(jid) != port:
+                _register_app_route(jid, port)
+                self._app_routes[jid] = port
+        for jid in [j for j in self._app_routes if j not in live]:
+            _deregister_app_route(jid)
+            self._app_routes.pop(jid, None)
+
     def tick_once(self) -> bool:
         """Einen Job über den Client reservieren + ausführen. ``False`` = nichts zu tun.
 
         Wartungsmodus (§ daemon-weit): pausiert das Reservieren neuer Jobs. Der
         Übergang wird **einmal** geloggt (nicht je Tick → kein Spam)."""
+        self._poll_app_routes()
         if state.get_maintenance():
             if not self._maint_active:
                 self._maint_active = True

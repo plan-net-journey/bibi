@@ -155,6 +155,25 @@ def test_start_missing_is_404(client):
     assert client.post("/-/job/deadbeef/start").status_code == 404
 
 
+def test_ping_writes_last_ping_at(client):
+    jid = _seed_status("running")
+    r = client.post(f"/-/job/{jid}/ping")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    conn = job_db.connect()
+    try:
+        assert conn.execute(
+            "SELECT last_ping_at FROM jobs WHERE id=?", (jid,)).fetchone()["last_ping_at"] is not None
+    finally:
+        conn.close()
+
+
+def test_ping_missing_job_returns_ok_false(client):
+    r = client.post("/-/job/deadbeef/ping")
+    assert r.status_code == 200
+    assert r.json() == {"ok": False}
+
+
 def test_journal_lists_terminal_runs(client):
     # Einen Lauf simulieren: running → complete schreibt eine Journal-Zeile.
     jid = _seed_status("running")

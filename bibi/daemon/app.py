@@ -301,6 +301,17 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
             return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
         return job
 
+    @app.post("/-/job/{id}/ping", tags=["job"])
+    def job_ping(id: str):  # noqa: A002
+        # last_ping_at in der DB statt In-Memory-Timer im Wrapper (§2.5/PLAN-11.4) —
+        # der Job meldet sich selbst lebendig, der Worker liest es fürs Zombie-Timeout.
+        conn = job_db.connect(worker.db_path)
+        try:
+            ok = job_db.touch_ping(conn, id)
+        finally:
+            conn.close()
+        return {"ok": ok}
+
     @app.get("/-/job/{id}/log", tags=["job"])
     def job_log(id: str):  # noqa: A002
         path = worker.output_path(id)

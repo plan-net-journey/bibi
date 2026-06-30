@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import subprocess
 import time
 from pathlib import Path
@@ -341,3 +342,74 @@ def test_report_level_by_status():
     assert _report_level("killed") == logging.WARNING
     assert _report_level("zombie") == logging.WARNING
     assert _report_level("error") == logging.ERROR
+
+
+# ── PLAN-11.4: app_register-Signal → Traefik-Route (File-Provider, §7.5/§7.7) ─
+# Kein echter Prozess/Docker nötig ⇒ nicht @pytest.mark.slow.
+
+
+def _seed_app_job(status: str, app_port: int | None) -> str:
+    jid = secrets.token_hex(4)
+    conn = job_db.connect()
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, app_port, "
+            "enqueued_at) VALUES (?,?,?,?,?,?,?,?)",
+            (jid, "s", "s.md", "job", "true", status, app_port, time.time()),
+        )
+    finally:
+        conn.close()
+    return jid
+
+
+def test_register_app_route_writes_traefik_file(team_repo: Path):
+    from bibi.daemon.worker import _deregister_app_route, _register_app_route
+    _register_app_route("abc123", 9100)
+    path = team_repo / "data" / "traefik" / "dynamic" / "abc123.yml"
+    assert path.exists()
+    content = path.read_text(encoding="utf-8")
+    assert "9100" in content and "abc123" in content and "127.0.0.1" in content
+    _deregister_app_route("abc123")
+    assert not path.exists()
+
+
+def test_deregister_app_route_missing_file_is_noop(team_repo: Path):
+    from bibi.daemon.worker import _deregister_app_route
+    _deregister_app_route("never-registered")  # darf nicht werfen
+
+
+def test_poll_app_routes_registers_new_port(team_repo: Path, monkeypatch):
+    import bibi.daemon.worker as W
+    calls = []
+    monkeypatch.setattr(W, "_register_app_route", lambda jid, port: calls.append((jid, port)))
+    jid = _seed_app_job("running", 9100)
+    W.Worker(autopoll=False, worker_name="w1")._poll_app_routes()
+    assert calls == [(jid, 9100)]
+
+
+def test_poll_app_routes_skips_unchanged_port(team_repo: Path, monkeypatch):
+    import bibi.daemon.worker as W
+    calls = []
+    monkeypatch.setattr(W, "_register_app_route", lambda jid, port: calls.append((jid, port)))
+    jid = _seed_app_job("running", 9100)
+    w = W.Worker(autopoll=False, worker_name="w1")
+    w._poll_app_routes()
+    w._poll_app_routes()
+    assert calls == [(jid, 9100)]  # zweiter Tick: Port unverändert ⇒ kein erneuter Call
+
+
+def test_poll_app_routes_deregisters_on_terminal(team_repo: Path, monkeypatch):
+    import bibi.daemon.worker as W
+    registered, deregistered = [], []
+    monkeypatch.setattr(W, "_register_app_route", lambda jid, port: registered.append((jid, port)))
+    monkeypatch.setattr(W, "_deregister_app_route", lambda jid: deregistered.append(jid))
+    jid = _seed_app_job("running", 9100)
+    w = W.Worker(autopoll=False, worker_name="w1")
+    w._poll_app_routes()
+    conn = job_db.connect()
+    conn.execute("UPDATE jobs SET status='complete' WHERE id=?", (jid,))
+    conn.commit()
+    conn.close()
+    w._poll_app_routes()
+    assert registered == [(jid, 9100)]
+    assert deregistered == [jid]
