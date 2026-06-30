@@ -117,10 +117,17 @@ def build_exec(child_argv: list[str], env: dict[str, str]) -> ExecSpec:
     argv = [docker_bin, "run", "--rm", "--name", name,
             "-v", f"{worktree}:{WORKSPACE}", "-w", WORKSPACE]
 
+    app_port_str = env.get("BIBI_APP_PORT")
+    if app_port_str:
+        argv += ["-p", f"{app_port_str}:{app_port_str}"]
+        # host.docker.internal → Host-Loopback vom Container aus erreichbar.
+        # Docker Desktop (Mac/Win) liefert das automatisch; auf Linux braucht es --add-host.
+        argv += ["--add-host=host.docker.internal:host-gateway",
+                 "-e", "BIBI_WRAPPER_HOST=host.docker.internal"]
+
     job_type = (env.get("BIBI_JOB_TYPE") or "").strip().lower()
     if job_type == "app":
         wrapper_port = int(env.get("BIBI_WRAPPER_PORT") or str(WRAPPER_PORT))
-        app_port_str = env.get("BIBI_APP_PORT")
         app_port = int(app_port_str) if app_port_str else None
         app_prefix = env.get("BIBI_APP_PREFIX") or None
         argv += ["--network", BIBI_NETWORK]
