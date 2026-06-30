@@ -239,7 +239,7 @@ def _is_archived(s: dict) -> bool:
 def _sched_row(s: dict, now: float) -> str:
     slug = _e(s.get("slug"))
     st = _e(s.get("last_status"))
-    kind = _e(s.get("kind"))
+    kind = _e(_effective_sched_type(s))
     nxt = _until(s.get("next_fire_at"), now)
     return (
         "<tr>"
@@ -309,6 +309,19 @@ def _sched_is_problem(s: dict, now: float) -> bool:
     return s.get("row_status") == "pending" and nf is not None and nf < now
 
 
+def _effective_sched_type(s: dict) -> str:
+    """Anzeige-/Filter-Typ ableiten — ``kind`` ist seit PLAN-10 (Unified Job
+    Model) immer ``"job"`` und trägt keine Information mehr (§5.3). ``claude:``-
+    Prefix im Payload ⇒ ``claude``; gesetzter ``app_port`` (auch ohne Prefix)
+    ⇒ ``app``; sonst der Default ``job``."""
+    payload = (s.get("payload") or "").strip().lower()
+    if payload.startswith("claude:"):
+        return "claude"
+    if s.get("app_port"):
+        return "app"
+    return "job"
+
+
 def filter_schedules(schedules: list[dict], *, typ: str | None = None,
                      status: str | None = None, now: float | None = None) -> list[dict]:
     """Schedules nach Typ und Status filtern (rein). ``alle``/leer = kein Filter;
@@ -316,7 +329,7 @@ def filter_schedules(schedules: list[dict], *, typ: str | None = None,
     now = time.time() if now is None else now
     out = list(schedules)
     if typ and typ != "alle":
-        out = [s for s in out if s.get("kind") == typ]
+        out = [s for s in out if _effective_sched_type(s) == typ]
     if status and status != "alle":
         if status == "problem":
             out = [s for s in out if _sched_is_problem(s, now)]

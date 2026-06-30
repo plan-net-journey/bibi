@@ -376,6 +376,10 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
         "last_run_at": last_run_at, "row_status": row_status,
         # One-shot (at:) hat kein wiederkehrendes schedule — Basis fürs Archiv (§4.4).
         "oneshot": row["schedule"] is None,
+        # kind ist seit PLAN-10 (Unified Job Model) immer "job" — payload/app_port
+        # sind die einzige Quelle, um claude-/app-artige Schedules zu unterscheiden
+        # (FE-Typ-Filter, render.py _effective_sched_type).
+        "payload": row["payload"], "app_port": row["app_port"],
     }
 
 

@@ -16,10 +16,12 @@ from bibi.daemon.app import create_app
 
 
 def _sched(slug, *, kind="job", trigger="now", last_status="pending",
-           last_run_at=None, next_fire_at=None, oneshot=False) -> dict:
+           last_run_at=None, next_fire_at=None, oneshot=False,
+           payload="echo hi", app_port=None) -> dict:
     return {"slug": slug, "kind": kind, "trigger": trigger,
             "last_status": last_status, "last_run_at": last_run_at,
-            "next_fire_at": next_fire_at, "oneshot": oneshot}
+            "next_fire_at": next_fire_at, "oneshot": oneshot,
+            "payload": payload, "app_port": app_port}
 
 
 def test_schedule_list_empty():
@@ -95,7 +97,9 @@ def test_dashboard_page_includes_schedule_list():
 
 
 def test_sched_row_has_kind_and_last_status():
-    items = [_sched("nightly", kind="claude", last_status="complete",
+    # kind ist seit PLAN-10 (Unified Job Model) immer "job" — die "Art"-Spalte
+    # leitet den Typ aus payload/app_port ab (render._effective_sched_type).
+    items = [_sched("nightly", payload="claude: tu was", last_status="complete",
                     last_run_at=100.0, next_fire_at=200.0)]
     html = render.schedule_list(items, now=300.0)
     assert '<th>Art</th>' in html

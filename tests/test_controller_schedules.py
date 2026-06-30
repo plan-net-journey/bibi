@@ -16,11 +16,12 @@ from bibi.daemon.app import create_app
 
 
 def _sched(slug: str, *, kind="job", last_status="complete", row_status=None,
-           next_fire_at=None, last_run_at=100.0, trigger="now", oneshot=False) -> dict:
+           next_fire_at=None, last_run_at=100.0, trigger="now", oneshot=False,
+           payload="echo hi", app_port=None) -> dict:
     return {"slug": slug, "kind": kind, "trigger": trigger,
             "next_fire_at": next_fire_at, "last_status": last_status,
             "last_run_at": last_run_at, "row_status": row_status or last_status,
-            "oneshot": oneshot}
+            "oneshot": oneshot, "payload": payload, "app_port": app_port}
 
 
 # ── Filter (pure) ─────────────────────────────────────────────────────────────
@@ -30,6 +31,18 @@ def test_filter_by_typ():
     s = [_sched("a", kind="job"), _sched("b", kind="job")]
     out = render.filter_schedules(s, typ="job", now=1000.0)
     assert [x["slug"] for x in out] == ["a", "b"]
+
+
+def test_filter_by_typ_app_uses_app_port_not_dead_kind_column():
+    # kind ist seit PLAN-10 (Unified Job Model) immer "job" — Typ "app"/"claude"
+    # muss aus payload/app_port abgeleitet werden, sonst verschwindet jede
+    # App/Claude-Schedule aus der gefilterten Liste (kind matcht nie).
+    s = [_sched("plain", payload="echo hi"),
+         _sched("hitl", payload="python3 hitl_test_app.py", app_port=9100),
+         _sched("ai", payload="claude: tu was")]
+    assert [x["slug"] for x in render.filter_schedules(s, typ="app", now=1.0)] == ["hitl"]
+    assert [x["slug"] for x in render.filter_schedules(s, typ="claude", now=1.0)] == ["ai"]
+    assert [x["slug"] for x in render.filter_schedules(s, typ="job", now=1.0)] == ["plain"]
 
 
 def test_filter_by_status():

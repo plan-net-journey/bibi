@@ -143,6 +143,18 @@ def test_schedule_view_trigger_and_status(conn, tmp_path: Path):
     assert sched[0]["last_status"] == "pending"   # nie gelaufen → Zeilen-Status
 
 
+def test_schedule_view_exposes_payload_and_app_port(conn, tmp_path: Path):
+    # kind ist seit PLAN-10 immer "job" (Unified Job Model) — payload/app_port
+    # sind die einzige Quelle, um claude-/app-artige Schedules zu unterscheiden
+    # (FE-Typ-Filter, §C.3).
+    _write(tmp_path / "case" / "app.md",
+          '---\nschedule: never\njob: "python3 app.py"\napp_port: 9100\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    sched = next(s for s in job_db.list_schedules(conn) if s["slug"] == "app")
+    assert sched["payload"] == "python3 app.py"
+    assert sched["app_port"] == 9100
+
+
 def test_schedule_list_status_is_last_run_not_rearmed_pending(conn, tmp_path: Path):
     # Ein wiederkehrender Job re-armt nach `complete` sofort zu `pending`. Die Liste
     # soll dennoch den **letzten Lauf** (complete) zeigen, nicht den Zeilen-Status.
