@@ -90,6 +90,14 @@ def _claude_argv(env: dict[str, str]) -> list[str]:
     binary = "claude" if container else (env.get("BIBI_CLAUDE_BIN") or "claude")
     argv = [binary, "-p", env.get("BIBI_JOB_PROMPT", "")]
     argv += ["--model", env.get("BIBI_JOB_MODEL") or DEFAULT_CLAUDE_MODEL]
+    # Unconditional (Registry-Default, PLAN-12 Stufe 12.2) — `claude -p` puffert
+    # sonst den kompletten Output bis Turn-Ende (live gemessen). `--verbose` ist bei
+    # `--print --output-format stream-json` PFLICHT (die CLI bricht sonst sofort mit
+    # "requires --verbose" ab, live in test_container_claude.py aufgedeckt) — liefert
+    # aber weiterhin Event-Granularität pro Turn/Tool-Call, kein Token-Level-Streaming
+    # (das bräuchte zusätzlich --include-partial-messages, bewusst nicht gesetzt, damit
+    # der Ausgabefilter keine Markdown-Fragmente reassemblen muss).
+    argv += ["--output-format", "stream-json", "--verbose"]
     # Container ohne ~/.claude-Settings: claude würde bei Tool-Nutzung (Datei
     # schreiben) nachfragen und headless hängen. ``acceptEdits`` erlaubt Datei-Edits
     # ohne Prompt und funktioniert als root (``--dangerously-skip-permissions`` ist

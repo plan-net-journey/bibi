@@ -104,6 +104,27 @@ def test_claude_argv_permission_mode_only_in_container():
     assert "--permission-mode" in cont and "acceptEdits" in cont
 
 
+# ── PLAN-12 Stufe 12.2 — Streaming-Default ──────────────────────────────────
+
+
+def test_claude_argv_streams_by_default():
+    argv = wrapper.REGISTRY["claude"].build_command({"BIBI_JOB_PROMPT": "hi"})
+    i = argv.index("--output-format")
+    assert argv[i + 1] == "stream-json"
+    # PFLICHT bei --print --output-format stream-json (live verifiziert,
+    # test_container_claude.py) — die CLI bricht sonst mit "requires --verbose" ab.
+    assert "--verbose" in argv
+
+
+def test_claude_argv_stream_json_coexists_with_resume_and_permission_mode():
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_JOB_SESSION": "sess-1",
+         "BIBI_EXEC_MODE": "container"})
+    assert "--output-format" in argv and "stream-json" in argv and "--verbose" in argv
+    assert "--resume" in argv and "sess-1" in argv
+    assert "--permission-mode" in argv and "acceptEdits" in argv
+
+
 def test_run_job_claude_via_stub(tmp_path: Path):
     # claude-Pfad end-to-end ohne echtes claude — Stub-Binary echot.
     fake = tmp_path / "fakeclaude"
