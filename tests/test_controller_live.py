@@ -63,3 +63,11 @@ def test_schedule_detail_page_wires_live_stream():
     job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0}
     html = render.schedule_detail_page({"slug": "a", "kind": "job"}, [], job, slug="a")
     assert "EventSource" in html and "/-/job/" in html and "/stream" in html
+
+
+def test_live_js_connects_to_formatted_output_stream_not_raw_stream():
+    # Follow-up zu PLAN-14: die Live-Box hing an /stream (roh) — für Claude-Jobs
+    # sah man dort rohes stream-json statt formatiertem Text. Jetzt /output/stream
+    # (formatiert, gleiche Offset-Einheit wie der /output-Seed).
+    assert "/output/stream?from=" in render._LIVE_JS
+    assert "'/stream?from='" not in render._LIVE_JS

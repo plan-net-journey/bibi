@@ -372,6 +372,40 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
         kind = models.effective_kind((job or {}).get("payload"))
         return {"events": output_format.format_events(raw, kind), "kind": kind}
 
+    def _formatted_sse(job_id: str, from_offset: int) -> StreamingResponse:
+        # Formatierte Live-Variante von /out|/err|/stream (Follow-up zu PLAN-14):
+        # dieselbe Poll-/Terminierungslogik wie _sse(), aber jeder Poll formatiert
+        # die volle Roh-Historie neu (format_events ist über die Gesamtliste
+        # deterministisch) und sendet nur die seit dem letzten Poll neu
+        # hinzugekommenen FORMATIERTEN Events. `from` zählt hier in denselben
+        # formatierten Einheiten wie der /output-Seed (Live-Box) — kein
+        # Offset-Mismatch wie bei /stream, das roh zählt.
+        conn = job_db.connect(worker.db_path)
+        try:
+            job = job_db.get_job(conn, job_id)
+        finally:
+            conn.close()
+        kind = models.effective_kind((job or {}).get("payload"))
+        path = worker.output_path(job_id)
+
+        async def gen():
+            sent = from_offset
+            while True:
+                formatted = output_format.format_events(output.read_events(path), kind)
+                for e in formatted[sent:]:
+                    yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n"
+                sent = len(formatted)
+                st = _job_status(job_id)
+                if (st is not None and Status(st) in TERMINAL
+                        and sent >= len(output_format.format_events(output.read_events(path), kind))):
+                    break
+                await asyncio.sleep(0.2)
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.get("/-/job/{id}/output/stream", tags=["job"])
+    def job_output_stream(id: str, from_: int = Query(0, alias="from")):  # noqa: A002
+        return _formatted_sse(id, from_)
+
     @app.get("/-/job/{id}/out", tags=["job"])
     def job_out(id: str, from_: int = Query(0, alias="from")):  # noqa: A002
         return _sse(id, "out", from_)

@@ -155,6 +155,44 @@ def test_err_filters_stream(client):
     assert "warnung" in r.text and "hallo" not in r.text
 
 
+# ── Formatierter Live-Stream: /-/job/{id}/output/stream (Follow-up PLAN-14) ──
+# Die Live-Box hing bislang an /stream (roh) — für Claude-Jobs sah man dort
+# rohes stream-json statt formatiertem Text. Neuer Endpoint liefert dieselbe
+# Formatierung wie /output, aber als SSE inkrementell (from=N zählt in
+# FORMATIERTEN Einheiten, passend zum /output-Seed — kein Offset-Mismatch
+# wie bei /stream, das roh zählt).
+
+
+def test_output_stream_formats_claude_events(client):
+    import json as _json
+    raw_line = _json.dumps({"type": "assistant",
+                            "message": {"content": [{"type": "text", "text": "Hallo!"}]}})
+    jid = _seed_claude_complete([raw_line])
+    r = client.get(f"/-/job/{jid}/output/stream")
+    assert r.status_code == 200
+    assert "Hallo!" in r.text
+    assert "assistant" not in r.text  # kein rohes JSON mehr, wie bei /output
+
+
+def test_output_stream_respects_from_offset(client):
+    import json as _json
+    lines = [
+        _json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Eins"}]}}),
+        _json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Zwei"}]}}),
+    ]
+    jid = _seed_claude_complete(lines)
+    full = client.get(f"/-/job/{jid}/output/stream")
+    assert "Eins" in full.text and "Zwei" in full.text
+    partial = client.get(f"/-/job/{jid}/output/stream?from=1")
+    assert "Zwei" in partial.text and "Eins" not in partial.text
+
+
+def test_output_stream_stays_raw_passthrough_for_plain_job(client):
+    jid = _seed_complete([("out", "hallo"), ("err", "warnung")])
+    r = client.get(f"/-/job/{jid}/output/stream")
+    assert "hallo" in r.text and "warnung" in r.text
+
+
 def test_status_endpoint(client):
     jid = _seed_complete([("out", "x")])
     r = client.get(f"/-/job/{jid}/status")

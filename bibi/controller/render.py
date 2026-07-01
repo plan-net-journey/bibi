@@ -958,10 +958,11 @@ def output_block(events: list[dict], kind: str) -> str:
 def live_output_box(job_id: str, events: list[dict] | None = None,
                     *, kind: str = "job") -> str:
     """Eine **streamende** stdout/stderr-Box für einen laufenden Job. Server-seitig
-    mit dem aktuellen Output geseedet (no-JS-Paint), per ``_LIVE_JS`` ab ``data-from``
-    weitergestreamt (``/-/job/{id}/stream?from=N`` → kein Dup). ``hx-preserve`` hält
-    die Box + EventSource über den 2 s-``#detail``-Poll am Leben. Raw-Zeilen (kein
-    Markdown — das fließende „Live"-Bild ist roh; Markdown rendert das Execution-Detail)."""
+    mit dem aktuellen (bereits formatierten) Output geseedet (no-JS-Paint), per
+    ``_LIVE_JS`` ab ``data-from`` weitergestreamt (``/-/job/{id}/output/stream?from=N``
+    — formatiert, zählt in denselben Einheiten wie der Seed, kein Offset-Mismatch;
+    Follow-up zu PLAN-14). ``hx-preserve`` hält die Box + EventSource über den
+    2 s-``#detail``-Poll am Leben."""
     import datetime as _dt
     evs = events or []
 
@@ -993,7 +994,7 @@ _LIVE_JS = """
       if (bound.has(box)) return;
       bound.add(box);
       const id = box.dataset.job, from = box.dataset.from || '0';
-      const es = new EventSource('/-/job/'+encodeURIComponent(id)+'/stream?from='+from);
+      const es = new EventSource('/-/job/'+encodeURIComponent(id)+'/output/stream?from='+from);
       box._bibiEs = es;
       const atBottom = () => box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
       es.onmessage = (e) => {
