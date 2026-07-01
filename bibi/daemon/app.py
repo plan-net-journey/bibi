@@ -197,22 +197,56 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                                 content={"error": "journal entry not found", "id": jid})
         return entry
 
-    @app.get("/-/journal/{jid}/output", tags=["journal"])
-    def journal_output(jid: int):
-        # Replay-Quelle (§4.2): die output.jsonl des Laufs als getypte Events.
+    def _journal_events(jid: int) -> tuple[dict | None, list[dict]]:
         conn = job_db.connect()
         try:
             entry = job_db.get_journal(conn, jid)
         finally:
             conn.close()
         if entry is None:
+            return None, []
+        ref = entry.get("output_ref")
+        events = output.read_events(repo.root() / ref) if ref else []
+        return entry, events
+
+    @app.get("/-/journal/{jid}/output", tags=["journal"])
+    def journal_output(jid: int):
+        # Replay-Quelle (§4.2): die output.jsonl des Laufs als getypte Events.
+        entry, raw = _journal_events(jid)
+        if entry is None:
             return JSONResponse(status_code=404,
                                 content={"error": "journal entry not found", "id": jid})
-        ref = entry.get("output_ref")
-        raw = output.read_events(repo.root() / ref) if ref else []
         kind = models.effective_kind(entry.get("payload"))
         return {"id": jid, "kind": kind, "events": output_format.format_events(raw, kind),
-                "output_ref": ref}
+                "output_ref": entry.get("output_ref")}
+
+    def _journal_sse(jid: int, stream: str | None) -> StreamingResponse | JSONResponse:
+        # Roher Zugriff (PLAN-14 Stufe 14.0) — Analogon zu /-/job/{id}/out|err|
+        # stream, aber für archivierte Läufe über journal.output_ref aufgelöst.
+        # Kein Live-Poll nötig: ein archivierter Lauf ändert sich nie mehr, ein
+        # einmaliger Replay der vollständig geladenen Events reicht.
+        entry, events = _journal_events(jid)
+        if entry is None:
+            return JSONResponse(status_code=404,
+                                content={"error": "journal entry not found", "id": jid})
+
+        def gen():
+            for e in events:
+                if stream is None or e.get("s") == stream:
+                    yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n"
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.get("/-/journal/{jid}/out", tags=["journal"])
+    def journal_out(jid: int):
+        return _journal_sse(jid, "out")
+
+    @app.get("/-/journal/{jid}/err", tags=["journal"])
+    def journal_err(jid: int):
+        return _journal_sse(jid, "err")
+
+    @app.get("/-/journal/{jid}/stream", tags=["journal"])
+    def journal_stream(jid: int):
+        return _journal_sse(jid, None)
 
     @app.get("/-/feed/stream", tags=["feed"])
     def feed_stream(n: int = Query(50, ge=0, le=1000), follow: bool = True):

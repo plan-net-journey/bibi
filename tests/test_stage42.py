@@ -92,3 +92,65 @@ def test_journal_output_empty_when_no_ref(sched):
     r = client.get(f"/-/journal/{jid}/output")
     assert r.status_code == 200
     assert r.json()["events"] == []
+
+
+# ── PLAN-14 Stufe 14.0 — rohe out/err/stream-Routen für archivierte Läufe ────
+# Analog zu /-/job/{id}/out|err|stream (worker-gated, nur laufender Job), aber
+# über journal.output_ref aufgelöst — deckt die Lücke: bislang gab es für
+# archivierte Läufe nur den formatierten /output-Endpunkt, keinen rohen Zugriff.
+
+
+def test_journal_out_raw_replays_out_events_only(sched):
+    client, root = sched
+    _seed_run(root, slug="x", kind="job", out_rel="data/job/abcd/output.jsonl",
+              lines=[("out", "hallo"), ("err", "warnung")])
+    jid = client.get("/-/journal").json()[0]["id"]
+    r = client.get(f"/-/journal/{jid}/out")
+    assert r.status_code == 200
+    assert "hallo" in r.text
+    assert "warnung" not in r.text
+
+
+def test_journal_err_raw_replays_err_events_only(sched):
+    client, root = sched
+    _seed_run(root, slug="x", kind="job", out_rel="data/job/abcd/output.jsonl",
+              lines=[("out", "hallo"), ("err", "warnung")])
+    jid = client.get("/-/journal").json()[0]["id"]
+    r = client.get(f"/-/journal/{jid}/err")
+    assert r.status_code == 200
+    assert "warnung" in r.text
+    assert "hallo" not in r.text
+
+
+def test_journal_stream_raw_combines_both_sources(sched):
+    client, root = sched
+    _seed_run(root, slug="x", kind="job", out_rel="data/job/abcd/output.jsonl",
+              lines=[("out", "hallo"), ("err", "warnung")])
+    jid = client.get("/-/journal").json()[0]["id"]
+    r = client.get(f"/-/journal/{jid}/stream")
+    assert r.status_code == 200
+    assert "hallo" in r.text
+    assert "warnung" in r.text
+
+
+def test_journal_out_404_for_unknown_id(sched):
+    client, _ = sched
+    assert client.get("/-/journal/99999/out").status_code == 404
+    assert client.get("/-/journal/99999/err").status_code == 404
+    assert client.get("/-/journal/99999/stream").status_code == 404
+
+
+def test_journal_out_empty_when_no_ref(sched):
+    client, root = sched
+    conn = job_db.connect()
+    try:
+        job_db.write_local_journal(
+            conn, run_id="z:1", slug="z", kind="job", status="complete",
+            exit_code=0, output_ref=None, host="h", worker="w",
+            started_at=1.0, finished_at=2.0)
+    finally:
+        conn.close()
+    jid = client.get("/-/journal").json()[0]["id"]
+    r = client.get(f"/-/journal/{jid}/out")
+    assert r.status_code == 200
+    assert r.text.strip() == ""
