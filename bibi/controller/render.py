@@ -1129,10 +1129,10 @@ _VERBS_FOR_STATUS: dict[str, tuple[str, ...]] = {
     "awaiting": ("kill",),
     "failed":   ("start", "kill"),
     "deferred": ("start", "kill"),
-    "killed":   ("reset", "kill"),
+    "killed":   ("start", "reset", "kill"),
     "error":    ("start", "reset"),
-    "zombie":   ("reset",),
-    "inactive": ("reset",),
+    "zombie":   ("start", "reset"),
+    "inactive": ("start", "reset"),
     "complete": ("start",),
 }
 

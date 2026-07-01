@@ -226,6 +226,22 @@ def test_start_missing_is_404(client):
     assert client.post("/-/job/deadbeef/start").status_code == 404
 
 
+def test_start_error_archives_to_pending(client):
+    # PLAN-14 Stufe 14.2: der START-Button bei error war schon vorher sichtbar,
+    # scheiterte aber immer mit 409 — jetzt archiviert er (→ pending).
+    jid = _seed_status("error")
+    r = client.post(f"/-/job/{jid}/start")
+    assert r.status_code == 200
+    assert client.get(f"/-/job/{jid}/status").json()["status"] == "pending"
+
+
+def test_start_failed_stays_409(client):
+    # Bewusste Grenze (Stufe 14.2): failed bräuchte attempts-1-Logik, nicht
+    # Teil dieser Stufe.
+    jid = _seed_status("failed")
+    assert client.post(f"/-/job/{jid}/start").status_code == 409
+
+
 def test_ping_writes_last_ping_at(client):
     jid = _seed_status("running")
     r = client.post(f"/-/job/{jid}/ping")

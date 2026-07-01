@@ -673,18 +673,29 @@ def fire_startup(conn: sqlite3.Connection, now: float | None = None) -> int:
     return cur.rowcount
 
 
+#: Terminalzustände, die ``start`` archiviert (= report_status→pending) statt
+#: nur fällig zu machen (PLAN-14 Stufe 14.2). failed/deferred bewusst nicht
+#: dabei — bräuchten eine eigene attempts-1-Logik statt einfachem Archivieren.
+_ARCHIVE_AND_START = (Status.ERROR, Status.INACTIVE, Status.ZOMBIE, Status.KILLED, Status.COMPLETE)
+
+
 def start_now(conn: sqlite3.Connection, job_id: str, now: float | None = None) -> str:
     """User-Verb ``start`` (§5.6): einen ``pending``-Job **sofort** fällig machen
-    (``next_fire_at=now``), ohne auf den Trigger zu warten. ``ok`` | ``invalid``
-    (nicht pending) | ``not_found``."""
+    (``next_fire_at=now``), ohne auf den Trigger zu warten. Bei archivierbaren
+    Terminalzuständen (``_ARCHIVE_AND_START``) identisch zu ``reset`` — archiviert
+    den alten Lauf und macht den Job sofort wieder fällig (PLAN-14 14.2).
+    ``ok`` | ``invalid`` (running/awaiting/failed/deferred) | ``not_found``."""
     now = time.time() if now is None else now
     row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return "not_found"
-    if row["status"] != "pending":
-        return "invalid"
-    conn.execute("UPDATE jobs SET next_fire_at=?, updated_at=? WHERE id=?", (now, now, job_id))
-    return "ok"
+    status = Status(row["status"])
+    if status is Status.PENDING:
+        conn.execute("UPDATE jobs SET next_fire_at=?, updated_at=? WHERE id=?", (now, now, job_id))
+        return "ok"
+    if status in _ARCHIVE_AND_START:
+        return report_status(conn, job_id, status="pending", now=now)
+    return "invalid"
 
 
 def proc_started_at(pid: int) -> str | None:

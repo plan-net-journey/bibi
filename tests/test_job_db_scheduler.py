@@ -407,6 +407,27 @@ def test_start_now_invalid_and_missing(conn):
     assert job_db.start_now(conn, "deadbeef") == "not_found"
 
 
+@pytest.mark.parametrize("status", ["error", "inactive", "zombie", "killed", "complete"])
+def test_start_now_archives_terminal_status_to_pending(conn, status):
+    # PLAN-14 Stufe 14.2: START auf error/inactive/zombie/killed/complete
+    # archiviert (= report_status(status="pending"), identisch zu RESET) und
+    # macht den Job sofort wieder fällig.
+    jid = _seed_full(conn, slug="x", status=status, next_fire_at=None)
+    assert job_db.start_now(conn, jid) == "ok"
+    row = conn.execute("SELECT status, next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "pending"
+    assert row["next_fire_at"] is not None
+
+
+@pytest.mark.parametrize("status", ["running", "awaiting", "failed", "deferred"])
+def test_start_now_stays_invalid_for_non_archivable_status(conn, status):
+    # Bewusste Grenze (PLAN-14 Stufe 14.2): failed/deferred bräuchten eine
+    # eigene attempts-1-Logik statt einfachem Archivieren — nicht Teil dieser
+    # Stufe. running/awaiting sind keine Terminalzustände.
+    jid = _seed_full(conn, slug="x", status=status, next_fire_at=0)
+    assert job_db.start_now(conn, jid) == "invalid"
+
+
 # ── #4 no_process-Reconcile ──────────────────────────────────────────────────
 
 

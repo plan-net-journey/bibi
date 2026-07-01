@@ -135,6 +135,21 @@ def test_action_bar_no_reset_button_for_failed_job():
     assert 'hx-post="/-/ui/schedule/x/kill"' in html
 
 
+# ── PLAN-14 Stufe 14.2 — START für inactive/zombie/killed (+ error/complete) ──
+
+
+def test_verbs_start_enabled_for_inactive_zombie_killed():
+    for st in ("inactive", "zombie", "killed"):
+        assert "start" in render._VERBS_FOR_STATUS[st]
+
+
+def test_action_bar_has_start_button_for_inactive_job():
+    job = {"id": "j1", "slug": "x", "status": "inactive"}
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
+    assert 'hx-post="/-/ui/schedule/x/start"' in html
+
+
 def test_run_row_has_delete_button():
     runs = [{"id": 9, "status": "complete", "exit_code": 0, "kind": "job"}]
     html = render.schedule_detail_page(
