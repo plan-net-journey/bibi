@@ -44,6 +44,25 @@ def _seed_complete(lines: list[tuple[str, str]]) -> str:
     return jid
 
 
+def _seed_claude_complete(stream_json_lines: list[str]) -> str:
+    jid = secrets.token_hex(4)
+    run_id = "claude1:0"
+    conn = job_db.connect()
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, host, "
+            "worker, output_ref, enqueued_at) VALUES (?,?,?,?,?, 'complete', 'h','w1',?,?)",
+            (jid, "claude1", "claude1.md", "job", "claude: tu was",
+             f"data/job/{run_id}/output.jsonl", time.time()),
+        )
+    finally:
+        conn.close()
+    out = repo.data() / "job" / run_id / "output.jsonl"
+    for line in stream_json_lines:
+        output.append(out, "out", line)
+    return jid
+
+
 def _seed_status(status: str) -> str:
     jid = secrets.token_hex(4)
     conn = job_db.connect()
@@ -92,6 +111,42 @@ def test_job_output_empty_for_unknown(client):
     r = client.get("/-/job/deadbeef/output")
     assert r.status_code == 200
     assert r.json() == {"events": [], "kind": "job"}
+
+
+def test_job_output_formats_claude_stream_json(client):
+    # PLAN-12 Stufe 12.5: claude:-Payload → effektiver kind="claude", die
+    # rohen stream-json-Zeilen werden zu Klartext/Tool-Use-Summaries formatiert.
+    import json as _json
+    lines = [
+        _json.dumps({"type": "assistant",
+                     "message": {"content": [{"type": "text", "text": "Hallo!"}]}}),
+        _json.dumps({"type": "assistant",
+                     "message": {"content": [
+                         {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}}),
+    ]
+    jid = _seed_claude_complete(lines)
+    r = client.get(f"/-/job/{jid}/output")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["kind"] == "claude"
+    text = [e["line"] for e in data["events"]]
+    assert "Hallo!" in text
+    assert "→ Bash: ls" in text
+    # die rohe JSON-Zeile darf nicht mehr auftauchen
+    assert not any(ln.startswith("{") for ln in text)
+
+
+def test_job_log_and_stream_stay_raw_for_claude_jobs(client):
+    # Raw-Routen (User-bestätigt) — unberührt vom Ausgabefilter: die rohe
+    # stream-json-Zeile bleibt unformatiert (kein extrahiertes "Hallo!" allein).
+    import json as _json
+    raw_line = _json.dumps({"type": "assistant",
+                            "message": {"content": [{"type": "text", "text": "Hallo!"}]}})
+    jid = _seed_claude_complete([raw_line])
+    log = client.get(f"/-/job/{jid}/log")
+    assert "assistant" in log.text and "Hallo!" in log.text
+    stream = client.get(f"/-/job/{jid}/stream")
+    assert "assistant" in stream.text and "Hallo!" in stream.text
 
 
 def test_err_filters_stream(client):

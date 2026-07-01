@@ -21,7 +21,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from bibi import config, repo, state
-from bibi.daemon import activity, job_db, mergeback, openapi
+from bibi.daemon import activity, job_db, mergeback, openapi, output_format
+from bibi.schedule import models
 from bibi.daemon.openapi import (
     JobReservation, JobView, KillRequest, NextRequest, RunRequest, StatusReport,
     WorkerHeartbeat, WorkerView,
@@ -208,8 +209,10 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
             return JSONResponse(status_code=404,
                                 content={"error": "journal entry not found", "id": jid})
         ref = entry.get("output_ref")
-        events = output.read_events(repo.root() / ref) if ref else []
-        return {"id": jid, "kind": entry["kind"], "events": events, "output_ref": ref}
+        raw = output.read_events(repo.root() / ref) if ref else []
+        kind = models.effective_kind(entry.get("payload"))
+        return {"id": jid, "kind": kind, "events": output_format.format_events(raw, kind),
+                "output_ref": ref}
 
     @app.get("/-/feed/stream", tags=["feed"])
     def feed_stream(n: int = Query(50, ge=0, le=1000), follow: bool = True):
@@ -326,13 +329,14 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
         # Getypte Events des **laufenden** Jobs (Analogon zu /-/journal/{jid}/output,
         # aber per Job-id) — für die Live-Output-Anzeige im Controller (FE).
         path = worker.output_path(id)
-        events = output.read_events(path) if path.exists() else []
+        raw = output.read_events(path) if path.exists() else []
         conn = job_db.connect(worker.db_path)
         try:
             job = job_db.get_job(conn, id)
         finally:
             conn.close()
-        return {"events": events, "kind": (job or {}).get("kind", "job")}
+        kind = models.effective_kind((job or {}).get("payload"))
+        return {"events": output_format.format_events(raw, kind), "kind": kind}
 
     @app.get("/-/job/{id}/out", tags=["job"])
     def job_out(id: str, from_: int = Query(0, alias="from")):  # noqa: A002

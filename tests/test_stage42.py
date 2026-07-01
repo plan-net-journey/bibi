@@ -21,17 +21,22 @@ def sched(team_repo: Path):
         yield client, team_repo
 
 
-def _seed_run(root: Path, *, slug: str, kind: str, out_rel: str) -> None:
+def _seed_run(root: Path, *, slug: str, kind: str, out_rel: str,
+              payload: str | None = None, lines: list[tuple[str, str]] | None = None) -> None:
     p = root / out_rel
     p.parent.mkdir(parents=True, exist_ok=True)
-    output.append(p, "out", "hallo welt", t=1.0)
-    output.append(p, "err", "ein fehler", t=1.5)
+    if lines is None:
+        output.append(p, "out", "hallo welt", t=1.0)
+        output.append(p, "err", "ein fehler", t=1.5)
+    else:
+        for stream, line in lines:
+            output.append(p, stream, line)
     conn = job_db.connect()
     try:
         job_db.write_local_journal(
             conn, run_id=f"{slug}:1", slug=slug, kind=kind, status="complete",
             exit_code=0, output_ref=out_rel, host="h", worker="w",
-            started_at=1.0, finished_at=2.0)
+            started_at=1.0, finished_at=2.0, payload=payload)
     finally:
         conn.close()
 
@@ -52,6 +57,25 @@ def test_journal_output_replays_typed_events(sched):
 def test_journal_output_404(sched):
     client, _ = sched
     assert client.get("/-/journal/99999/output").status_code == 404
+
+
+def test_journal_output_formats_claude_stream_json(sched):
+    # PLAN-12 Stufe 12.5: claude:-Payload → effektiver kind="claude", der
+    # Ausgabefilter formatiert die rohen stream-json-Zeilen zu Klartext.
+    import json as _json
+    client, root = sched
+    raw = _json.dumps({"type": "assistant",
+                       "message": {"content": [{"type": "text", "text": "Hallo!"}]}})
+    _seed_run(root, slug="c", kind="job", out_rel="data/job/c1/output.jsonl",
+             payload="claude: tu was", lines=[("out", raw)])
+    jid = client.get("/-/journal").json()[0]["id"]
+    r = client.get(f"/-/journal/{jid}/output")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["kind"] == "claude"
+    text = [e["line"] for e in body["events"]]
+    assert "Hallo!" in text
+    assert not any(ln.startswith("{") for ln in text)
 
 
 def test_journal_output_empty_when_no_ref(sched):

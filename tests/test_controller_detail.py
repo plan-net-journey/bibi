@@ -179,6 +179,24 @@ def test_run_output_route_renders(app_with):
         assert 'class="err"' in r.text and "fehler" in r.text
 
 
+def test_run_output_route_renders_claude_tool_use_as_own_paragraph(app_with):
+    # PLAN-12 Stufe 12.6 (Verifikation): bereits formatierte Events (Text +
+    # gepolsterte Tool-Use-Zeile, wie sie output_format.format_events liefert)
+    # rendern über die bestehende Markdown-Kette ohne Änderung an output_block —
+    # die Leerzeilen um die Summary lassen _markdown() sie als eigenen <p> setzen.
+    client = FakeClient(output={"id": 7, "kind": "claude", "events": [
+        {"s": "out", "line": "Ein **fetter** Satz."},
+        {"s": "out", "line": ""},
+        {"s": "out", "line": "→ Bash: ls -la"},
+        {"s": "out", "line": ""},
+    ]})
+    with TestClient(app_with(client)) as c:
+        r = c.get("/-/ui/run/7/output")
+        assert r.status_code == 200
+        assert "<p>Ein <strong>fetter</strong> Satz.</p>" in r.text
+        assert "<p>→ Bash: ls -la</p>" in r.text
+
+
 def test_action_route_calls_verb_and_rerenders(app_with):
     client = FakeClient(
         schedules=[{"slug": "boom", "kind": "job", "trigger": "now",
