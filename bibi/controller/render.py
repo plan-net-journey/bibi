@@ -56,6 +56,7 @@ h2 { font-size: .95rem; color: #888; margin: 1.5rem 0 .4rem; font-weight: 600; }
         padding: .6rem .8rem; overflow-x: auto; font-family: ui-monospace, monospace;
         font-size: .82rem; line-height: 1.45; white-space: pre-wrap; }
 .term .err { color: #e06c5a; }
+.term .thinking { color: #888; font-style: italic; }
 .md { font-size: .92rem; }
 .md pre { background: #0008; border: 1px solid #8883; border-radius: .4rem;
           padding: .6rem .8rem; overflow-x: auto; }
@@ -966,16 +967,27 @@ def live_output_box(job_id: str, events: list[dict] | None = None,
     import datetime as _dt
     evs = events or []
 
+    # Token-Deltas (Follow-up PLAN-14) zu ganzen Zeilen zusammenführen, bevor
+    # der no-JS-Seed gebaut wird — sonst zerfällt der erste Paint in viele
+    # winzige Timestamp-Zeilen, bis die Live-JS übernimmt.
+    merged: list[dict] = []
+    for e in evs:
+        if e.get("delta") and merged:
+            merged[-1] = {**merged[-1], "line": merged[-1]["line"] + e.get("line", "")}
+        else:
+            merged.append(dict(e))
+
     def _seed_line(e: dict) -> str:
         try:
             ts = _dt.datetime.fromtimestamp(float(e["t"])).strftime("%H:%M:%S")
         except Exception:
             ts = "--:--:--"
         line = _e(_strip_ansi(e.get("line", "")))
-        cls = ' class="err"' if e.get("s") == "err" else ""
+        s = e.get("s")
+        cls = ' class="err"' if s == "err" else (' class="thinking"' if s == "thinking" else "")
         return f'<span class="lts">{ts}</span> <span{cls}>{line}</span>'
 
-    seed = "\n".join(_seed_line(e) for e in evs)
+    seed = "\n".join(_seed_line(e) for e in merged)
     jid = _e(job_id)
     return (f'<pre class="term liveterm" id="livebox-{jid}" data-job="{jid}" '
             f'data-from="{len(evs)}" hx-preserve="true">{seed}</pre>')
@@ -1001,6 +1013,13 @@ _LIVE_JS = """
         if (window.bibiFollow === false) return;
         let o; try { o = JSON.parse(e.data); } catch(_) { return; }
         const stick = atBottom();
+        // Token-Delta (Follow-up PLAN-14): an die zuletzt gerenderte Zeile
+        // anhängen statt eine neue Timestamp-Zeile zu erzeugen.
+        if (o.delta && box._bibiLastSpan) {
+          box._bibiLastSpan.textContent += (o.line || '');
+          if (stick) box.scrollTop = box.scrollHeight;
+          return;
+        }
         if (box.childNodes.length) box.appendChild(document.createTextNode('\\n'));
         const tsSpan = document.createElement('span');
         tsSpan.className = 'lts';
@@ -1011,8 +1030,10 @@ _LIVE_JS = """
         box.appendChild(document.createTextNode(' '));
         const span = document.createElement('span');
         if (o.s === 'err') span.className = 'err';
+        else if (o.s === 'thinking') span.className = 'thinking';
         span.textContent = o.line || '';
         box.appendChild(span);
+        box._bibiLastSpan = span;
         if (stick) box.scrollTop = box.scrollHeight;
       };
       es.onerror = () => es.close();

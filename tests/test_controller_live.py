@@ -35,6 +35,24 @@ def test_live_output_box_escapes():
     assert "&lt;script&gt;x" in html
 
 
+def test_live_output_box_thinking_gets_own_class():
+    html = render.live_output_box("j", [{"s": "thinking", "line": "hmm", "t": 1.0}], kind="claude")
+    assert 'class="thinking"' in html and "hmm" in html
+
+
+def test_live_output_box_merges_delta_events_into_one_line():
+    # Follow-up PLAN-14 (Token-Level-Deltas): delta=True hängt an die vorherige
+    # Zeile an statt eine neue mit eigenem Timestamp zu erzeugen.
+    events = [
+        {"s": "out", "line": "Hal", "t": 1.0, "delta": False},
+        {"s": "out", "line": "lo!", "t": 1.0, "delta": True},
+    ]
+    html = render.live_output_box("j", events, kind="claude")
+    assert html.count('class="lts"') == 1
+    assert "Hal" in html and "lo!" in html
+    assert html.index("Hal") < html.index("lo!")
+
+
 # ── _live_panel: streamende Box statt 2s-Snapshot ─────────────────────────────
 
 
@@ -71,3 +89,14 @@ def test_live_js_connects_to_formatted_output_stream_not_raw_stream():
     # (formatiert, gleiche Offset-Einheit wie der /output-Seed).
     assert "/output/stream?from=" in render._LIVE_JS
     assert "'/stream?from='" not in render._LIVE_JS
+
+
+def test_live_js_appends_delta_events_to_last_span():
+    # o.delta === true ⇒ an die zuletzt gerenderte Zeile anhängen statt neue
+    # Timestamp-Zeile zu erzeugen (Token-Level-Deltas).
+    assert "o.delta" in render._LIVE_JS
+    assert "_bibiLastSpan" in render._LIVE_JS
+
+
+def test_live_js_marks_thinking_stream_with_own_class():
+    assert "'thinking'" in render._LIVE_JS
