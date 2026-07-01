@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     defer_max       INTEGER,
     hitl_timeout    INTEGER NOT NULL DEFAULT 172800,
 
+    -- Registrierung (PLAN-14 Stufe 14.5): ist die MD noch im Vault entdeckt?
+    -- Orthogonal zum Lifecycle-Status — ein `error`-Job kann sein MD genauso
+    -- verlieren wie ein `pending`-Job. rescan() markiert verschwundene Slugs
+    -- als inactive statt die Zeile zu löschen (Journal-Historie bleibt erreichbar).
+    active          INTEGER NOT NULL DEFAULT 1,
+
     -- Live-Zustand (§5.4/§5.5)
     status          TEXT NOT NULL DEFAULT 'pending',
     reason          TEXT,

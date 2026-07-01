@@ -28,7 +28,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -113,6 +113,14 @@ def _mig_journal_payload(conn: sqlite3.Connection) -> None:  # v11 → v12
         conn.execute("ALTER TABLE journal ADD COLUMN payload TEXT")
 
 
+def _mig_jobs_active(conn: sqlite3.Connection) -> None:  # v12 → v13
+    # PLAN-14 Stufe 14.5: Registrierungs-Flag — ist die MD noch im Vault
+    # entdeckt? Bestehende Zeilen gelten als aktiv (waren beim letzten Rescan
+    # entdeckt), Default 1 deckt das ab.
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "active"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -128,6 +136,7 @@ _MIGRATIONS: dict[int, list] = {
     9: [_mig_jobs_app_url],
     10: [_mig_jobs_ping_demand],
     11: [_mig_journal_payload],
+    12: [_mig_jobs_active],
 }
 
 
@@ -246,6 +255,8 @@ def upsert_schedule(conn: sqlite3.Connection, pr: ParseResult, now: float) -> st
     nur die aus der MD abgeleiteten Felder werden neu geschrieben.
     """
     cols = _spec_columns(pr, now)
+    cols["active"] = 1  # jeder erfolgreiche Upsert kommt von einer entdeckten MD
+    # (PLAN-14 Stufe 14.5) — reaktiviert einen zuvor deaktivierten Slug automatisch.
     existing = conn.execute("SELECT id FROM jobs WHERE slug=?", (cols["slug"],)).fetchone()
     if existing is None:
         job_id = secrets.token_hex(4)
@@ -263,23 +274,31 @@ def upsert_schedule(conn: sqlite3.Connection, pr: ParseResult, now: float) -> st
     return existing["id"]
 
 
-def remove_slugs(conn: sqlite3.Connection, slugs: set[str]) -> int:
+def deactivate_slugs(conn: sqlite3.Connection, slugs: set[str]) -> int:
+    """MDs, die beim Rescan nicht mehr gefunden wurden, als inaktiv markieren
+    statt zu löschen (PLAN-14 Stufe 14.5) — die Journal-Historie bleibt über
+    die Zeile per Slug erreichbar (Schedules-Übersicht „Inaktiv"-Gruppe)."""
     n = 0
     for slug in slugs:
-        cur = conn.execute("DELETE FROM jobs WHERE slug=?", (slug,))
+        cur = conn.execute(
+            "UPDATE jobs SET active=0 WHERE slug=? AND active=1", (slug,))
         n += cur.rowcount
     return n
 
 
 def list_jobs(conn: sqlite3.Connection, status: str | None = None) -> list[dict]:
+    # active=1 (PLAN-14 Stufe 14.5): dies speist die Root-Bänder (Live-Betrieb) —
+    # ein deaktivierter Schedule (MD entfernt) gehört dort nicht mehr hin, nur
+    # noch in die Schedules-Übersicht „Inaktiv"-Gruppe (list_schedules()).
     if status:
         rows = conn.execute(
-            "SELECT * FROM jobs WHERE status=? ORDER BY priority DESC, enqueued_at ASC",
+            "SELECT * FROM jobs WHERE status=? AND active=1 "
+            "ORDER BY priority DESC, enqueued_at ASC",
             (status,),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM jobs ORDER BY priority DESC, enqueued_at ASC"
+            "SELECT * FROM jobs WHERE active=1 ORDER BY priority DESC, enqueued_at ASC"
         ).fetchall()
     # Letzter abgeschlossener Lauf je Slug (für Bands-Anzeige).
     last_run_at: dict[str, float] = {}
@@ -324,6 +343,7 @@ def job_view(row: sqlite3.Row, *, last_run_at: float | None = None) -> dict:
         "output_ref": row["output_ref"], "next_fire_at": row["next_fire_at"],
         "last_run_at": last_run_at, "schedule": row["schedule"],
         "app_port": row["app_port"], "app_url": row["app_url"],
+        "active": bool(row["active"]),
         # nur intern genutzt (Ausgabefilter, PLAN-12 Stufe 12.4/12.5) — response_model=JobView
         # deklariert dieses Feld nicht, FastAPI/Pydantic filtert es beim Serialisieren heraus.
         "payload": row["payload"],
@@ -416,7 +436,10 @@ def rescan(conn: sqlite3.Connection, vault_root: Path | None = None) -> dict:
         else:
             upsert_schedule(conn, pr, now)
             inserted += 1
-    removed = remove_slugs(conn, existing - discovered)
+    # "removed" heißt seit PLAN-14 Stufe 14.5 "deaktiviert" (Zeile bleibt,
+    # active=0) — Feldname aus Kompatibilität zu bibi/ctrl/job_cmd.py,
+    # bibi/daemon/rescanner.py unverändert belassen (nur Logging, kein Branch).
+    removed = deactivate_slugs(conn, existing - discovered)
     conn.commit()
 
     return {
@@ -495,7 +518,7 @@ def reserve_next(
         # fällig, Versuche übrig) und fällige deferred (resume), §5.4.
         rows = conn.execute(
             "SELECT id, priority, enqueued_at, rowid AS seq FROM jobs "
-            "WHERE locked_at IS NULL AND ("
+            "WHERE active=1 AND locked_at IS NULL AND ("
             "  (status='pending' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='failed' AND attempt < attempts "
             "      AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"

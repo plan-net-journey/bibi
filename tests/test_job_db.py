@@ -104,14 +104,31 @@ def test_rescan_update_preserves_id_and_status(conn, tmp_path: Path):
     assert job_db.list_jobs(conn)[0]["id"] == jid  # gleiche ID
 
 
-def test_rescan_removes_vanished(conn, tmp_path: Path):
+def test_rescan_deactivates_vanished_instead_of_deleting(conn, tmp_path: Path):
+    # PLAN-14 Stufe 14.5: die Zeile bleibt (Journal-Historie erreichbar), nur
+    # active=0 statt DELETE — ersetzt den früheren test_rescan_removes_vanished.
+    md = tmp_path / "case" / "hello" / "README.md"
+    _write(md, '---\nschedule: now\njob: "x"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jid = conn.execute("SELECT id FROM jobs WHERE slug='hello'").fetchone()["id"]
+    md.unlink()
+    res = job_db.rescan(conn, vault_root=tmp_path / "case")
+    assert res["removed"] == 1
+    row = conn.execute("SELECT active FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row is not None and row["active"] == 0
+    assert job_db.list_jobs(conn) == []  # list_jobs blendet inaktive aus (Root-Bänder)
+
+
+def test_rescan_reactivates_rediscovered_slug(conn, tmp_path: Path):
     md = tmp_path / "case" / "hello" / "README.md"
     _write(md, '---\nschedule: now\njob: "x"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     md.unlink()
-    res = job_db.rescan(conn, vault_root=tmp_path / "case")
-    assert res["removed"] == 1
-    assert job_db.list_jobs(conn) == []
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    _write(md, '---\nschedule: now\njob: "x"\n---\n')  # MD kommt zurück
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jobs = job_db.list_jobs(conn)
+    assert len(jobs) == 1 and jobs[0]["slug"] == "hello"
 
 
 def test_rescan_reports_errors_and_collisions(conn, tmp_path: Path):
@@ -288,6 +305,37 @@ def test_migration_v10_to_v11(tmp_path: Path):
     cols = {r["name"] for r in conn2.execute("PRAGMA table_info(jobs)")}
     assert "last_ping_at" in cols
     assert "demand" in cols
+    assert conn2.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
+    conn2.close()
+
+
+def test_migration_v12_to_v13_adds_jobs_active(tmp_path: Path):
+    """PLAN-14 Stufe 14.5: bestehende v12-DB bekommt jobs.active per Migration."""
+    import sqlite3 as _sqlite3
+    p = tmp_path / "old.sqlite"
+    c = _sqlite3.connect(p)
+    c.row_factory = _sqlite3.Row
+    c.execute("PRAGMA journal_mode = WAL")
+    c.execute("""
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE,
+            schedule_ref TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', app_url TEXT,
+            last_ping_at REAL, demand TEXT
+        )
+    """)
+    c.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    c.execute("CREATE TABLE journal (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, "
+              "slug TEXT, kind TEXT, status TEXT, archived_at REAL NOT NULL, "
+              "snapshot TEXT NOT NULL DEFAULT '{}', domain TEXT NOT NULL DEFAULT 'scheduled', "
+              "payload TEXT)")
+    c.execute("PRAGMA user_version = 12")
+    c.commit()
+    c.close()
+
+    conn2 = job_db.connect(p)
+    cols = {r["name"] for r in conn2.execute("PRAGMA table_info(jobs)")}
+    assert "active" in cols
     assert conn2.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
     conn2.close()
 

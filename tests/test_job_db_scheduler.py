@@ -428,6 +428,15 @@ def test_start_now_stays_invalid_for_non_archivable_status(conn, status):
     assert job_db.start_now(conn, jid) == "invalid"
 
 
+# ── PLAN-14 Stufe 14.5 — active-Flag ──────────────────────────────────────────
+
+
+def test_reserve_next_skips_inactive_jobs(conn):
+    jid = _seed_full(conn, slug="gone", next_fire_at=0)
+    conn.execute("UPDATE jobs SET active=0 WHERE id=?", (jid,))
+    assert job_db.reserve_next(conn) is None
+
+
 # ── #4 no_process-Reconcile ──────────────────────────────────────────────────
 
 
