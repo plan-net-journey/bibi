@@ -543,6 +543,12 @@ def report_status(
         return "not_found"
     current = Status(row["status"])
     target = Status(status)
+    if target is current and target in lifecycle.TERMINAL:
+        # Idempotenter Wiederholungs-Report (z. B. doppelter Kill-Klick, PLAN-14
+        # 14.1b): echtes No-Op statt finished_at/reason erneut zu setzen —
+        # _write_journal dedupliziert zwar über (run_id, status), die jobs-Zeile
+        # driftete aber trotzdem bei jedem Wiederholungs-Report nach vorn.
+        return "ok"
     if target != current and target not in lifecycle.targets(current, kind=Kind(row["kind"])):
         return "invalid"
 

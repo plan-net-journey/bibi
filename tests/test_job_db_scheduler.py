@@ -185,6 +185,23 @@ def test_report_output_ref_only_no_blob(conn):
     assert row["output_ref"] == "data/job/x/output.jsonl"
 
 
+def test_report_status_same_terminal_status_is_noop(conn):
+    # PLAN-14 Stufe 14.1b: target == current bei Terminal-Status (z. B.
+    # wiederholter Kill-Klick) darf finished_at/reason nicht erneut setzen
+    # und keinen zweiten Journal-Write auslösen.
+    jid = _insert(conn, "a", 0, time.time())
+    job_db.reserve_next(conn)  # → running
+    assert job_db.report_status(conn, jid, status="killed", reason="by_user", now=100.0) == "ok"
+    before = conn.execute(
+        "SELECT finished_at, updated_at, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert job_db.report_status(conn, jid, status="killed", reason="by_user", now=200.0) == "ok"
+    after = conn.execute(
+        "SELECT finished_at, updated_at, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert after["finished_at"] == before["finished_at"] == 100.0
+    assert after["updated_at"] == before["updated_at"] == 100.0
+    assert len(job_db.list_journal(conn)) == 1
+
+
 # ── Concurrency: n parallele /next → disjunkt (§3.2/§3.8) ─────────────────────
 
 
