@@ -1120,14 +1120,17 @@ def _hitl_panel(job: dict) -> str:
 _VERBS = ("start", "reset", "kill")
 
 # Welche Verben sind für welchen Status sinnvoll?
+# PLAN-14 Stufe 14.1: an den Lifecycle angeglichen (bibi.schedule.lifecycle) —
+# error hat kein (ERROR, KILL) und failed kein (FAILED, RESET), beide Buttons
+# waren tote Attrappen (409). killed→killed ist idempotent erlaubt (KILL bleibt).
 _VERBS_FOR_STATUS: dict[str, tuple[str, ...]] = {
     "pending":  ("start", "kill"),
     "running":  ("kill",),
     "awaiting": ("kill",),
-    "failed":   ("start", "reset", "kill"),
+    "failed":   ("start", "kill"),
     "deferred": ("start", "kill"),
-    "killed":   ("reset",),
-    "error":    ("start", "reset", "kill"),
+    "killed":   ("reset", "kill"),
+    "error":    ("start", "reset"),
     "zombie":   ("reset",),
     "inactive": ("reset",),
     "complete": ("start",),

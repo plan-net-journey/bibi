@@ -180,6 +180,22 @@ def test_kill_missing_is_404(client):
     assert client.post("/-/job/deadbeef/kill").status_code == 404
 
 
+def test_kill_already_killed_job_ok(client):
+    # PLAN-14 Stufe 14.1: erneutes Kill auf einem bereits `killed`-Job ist
+    # idempotent erlaubt (target == current, report_status kurzschließt).
+    jid = _seed_status("killed")
+    r = client.post(f"/-/job/{jid}/kill")
+    assert r.status_code == 200
+    assert r.json()["status"] == "killed"
+
+
+def test_kill_error_is_409(client):
+    # PLAN-14 Stufe 14.1 Bug #1: (ERROR, KILL) existiert nicht in der
+    # Übergangstabelle — schon vor dem Fix so, hier als Vertrag verankert.
+    jid = _seed_status("error")
+    assert client.post(f"/-/job/{jid}/kill").status_code == 409
+
+
 def test_reset_complete_to_pending(client):
     jid = _seed_complete([("out", "x")])
     r = client.post(f"/-/job/{jid}/reset")

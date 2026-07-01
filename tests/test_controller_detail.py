@@ -92,8 +92,9 @@ def test_schedule_detail_action_bar_with_job():
     sched = {"slug": "boom", "kind": "job", "trigger": "now", "last_status": "error"}
     job = {"id": "abc123", "slug": "boom", "status": "error"}
     html = render.schedule_detail_page(sched, [], job, slug="boom")
-    for verb in ("start", "reset", "kill"):
+    for verb in ("start", "reset"):  # PLAN-14 14.1: kill entfernt für error (Bug #1)
         assert f'hx-post="/-/ui/schedule/boom/{verb}"' in html
+    assert 'hx-post="/-/ui/schedule/boom/kill"' not in html
     assert "#detail" in html
 
 
@@ -101,6 +102,37 @@ def test_schedule_detail_no_action_bar_without_job():
     sched = {"slug": "boom", "kind": "job", "trigger": "now", "last_status": "error"}
     html = render.schedule_detail_page(sched, [], None, slug="boom")
     assert "hx-post=" not in html  # keine Verben ohne Live-Job
+
+
+# ── PLAN-14 Stufe 14.1 — _VERBS_FOR_STATUS-Matrix-Fixes ──────────────────────
+
+
+def test_verbs_kill_disabled_for_error():
+    assert "kill" not in render._VERBS_FOR_STATUS["error"]
+
+
+def test_verbs_kill_enabled_for_killed():
+    assert "kill" in render._VERBS_FOR_STATUS["killed"]
+
+
+def test_verbs_reset_disabled_for_failed():
+    assert "reset" not in render._VERBS_FOR_STATUS["failed"]
+
+
+def test_action_bar_has_kill_button_for_killed_job():
+    job = {"id": "j1", "slug": "x", "status": "killed"}
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
+    assert 'hx-post="/-/ui/schedule/x/kill"' in html
+
+
+def test_action_bar_no_reset_button_for_failed_job():
+    job = {"id": "j1", "slug": "x", "status": "failed"}
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
+    assert 'hx-post="/-/ui/schedule/x/reset"' not in html
+    assert 'hx-post="/-/ui/schedule/x/start"' in html
+    assert 'hx-post="/-/ui/schedule/x/kill"' in html
 
 
 def test_run_row_has_delete_button():
