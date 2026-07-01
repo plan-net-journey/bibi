@@ -727,17 +727,20 @@ _ARCHIVE_AND_START = (Status.ERROR, Status.INACTIVE, Status.ZOMBIE, Status.KILLE
 
 
 def start_now(conn: sqlite3.Connection, job_id: str, now: float | None = None) -> str:
-    """User-Verb ``start`` (§5.6): einen ``pending``-Job **sofort** fällig machen
-    (``next_fire_at=now``), ohne auf den Trigger zu warten. Bei archivierbaren
-    Terminalzuständen (``_ARCHIVE_AND_START``) identisch zu ``reset`` — archiviert
-    den alten Lauf und macht den Job sofort wieder fällig (PLAN-14 14.2).
-    ``ok`` | ``invalid`` (running/awaiting/failed/deferred) | ``not_found``."""
+    """User-Verb ``start`` (§5.6): einen ``pending``- oder ``deferred``-Job
+    **sofort** fällig machen (``next_fire_at=now``), ohne auf den Trigger zu
+    warten. Bei archivierbaren Terminalzuständen (``_ARCHIVE_AND_START``)
+    identisch zu ``reset`` — archiviert den alten Lauf und macht den Job sofort
+    wieder fällig (PLAN-14 14.2). ``ok`` | ``invalid`` (running/awaiting/failed)
+    | ``not_found``."""
     now = time.time() if now is None else now
     row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return "not_found"
     status = Status(row["status"])
-    if status is Status.PENDING:
+    if status in (Status.PENDING, Status.DEFERRED):
+        # deferred braucht keine attempts-1-Logik — "sofortiger Start" reicht,
+        # der Job ist schon dispatchbar sobald next_fire_at fällig ist (Follow-up).
         conn.execute("UPDATE jobs SET next_fire_at=?, updated_at=? WHERE id=?", (now, now, job_id))
         return "ok"
     if status in _ARCHIVE_AND_START:

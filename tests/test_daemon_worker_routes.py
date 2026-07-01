@@ -280,6 +280,13 @@ def test_start_failed_stays_409(client):
     assert client.post(f"/-/job/{jid}/start").status_code == 409
 
 
+def test_start_deferred_dispatches_immediately(client):
+    # Follow-up: deferred braucht keine attempts-1-Logik, war fälschlich mit
+    # failed zusammen ausgeschlossen worden.
+    jid = _seed_status("deferred")
+    assert client.post(f"/-/job/{jid}/start").status_code == 200
+
+
 def test_ping_writes_last_ping_at(client):
     jid = _seed_status("running")
     r = client.post(f"/-/job/{jid}/ping")

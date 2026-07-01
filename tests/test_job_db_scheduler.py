@@ -419,13 +419,24 @@ def test_start_now_archives_terminal_status_to_pending(conn, status):
     assert row["next_fire_at"] is not None
 
 
-@pytest.mark.parametrize("status", ["running", "awaiting", "failed", "deferred"])
+@pytest.mark.parametrize("status", ["running", "awaiting", "failed"])
 def test_start_now_stays_invalid_for_non_archivable_status(conn, status):
-    # Bewusste Grenze (PLAN-14 Stufe 14.2): failed/deferred bräuchten eine
-    # eigene attempts-1-Logik statt einfachem Archivieren — nicht Teil dieser
-    # Stufe. running/awaiting sind keine Terminalzustände.
+    # Bewusste Grenze (PLAN-14 Stufe 14.2): failed bräuchte eine eigene
+    # attempts-1-Logik statt einfachem Archivieren — nicht Teil dieser Stufe.
+    # running/awaiting sind keine Terminalzustände.
     jid = _seed_full(conn, slug="x", status=status, next_fire_at=0)
     assert job_db.start_now(conn, jid) == "invalid"
+
+
+def test_start_now_deferred_dispatches_immediately_like_pending(conn):
+    # Follow-up: deferred braucht KEINE attempts-1-Logik ("sofortiger Start"
+    # laut Feedback-Tabelle) — war fälschlich mit failed in einen Topf
+    # geworfen und blieb daher bislang mit 409 kaputt.
+    jid = _seed_full(conn, slug="x", status="deferred", next_fire_at=time.time() + 9999)
+    assert job_db.start_now(conn, jid) == "ok"
+    row = conn.execute("SELECT status, next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "deferred"
+    assert row["next_fire_at"] <= time.time()
 
 
 # ── PLAN-14 Stufe 14.5 — active-Flag ──────────────────────────────────────────

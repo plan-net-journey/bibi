@@ -119,6 +119,13 @@ def test_verbs_reset_disabled_for_failed():
     assert "reset" not in render._VERBS_FOR_STATUS["failed"]
 
 
+def test_verbs_start_hidden_for_failed():
+    # Follow-up: start_now() akzeptiert failed nicht (bräuchte attempts-1-
+    # Logik) — der Button blieb bislang sichtbar, aber klickte immer auf 409.
+    # Lieber ausblenden als kaputt zeigen.
+    assert "start" not in render._VERBS_FOR_STATUS["failed"]
+
+
 def test_action_bar_has_kill_button_for_killed_job():
     job = {"id": "j1", "slug": "x", "status": "killed"}
     html = render.schedule_detail_page(
@@ -126,12 +133,12 @@ def test_action_bar_has_kill_button_for_killed_job():
     assert 'hx-post="/-/ui/schedule/x/kill"' in html
 
 
-def test_action_bar_no_reset_button_for_failed_job():
+def test_action_bar_no_reset_no_start_button_for_failed_job():
     job = {"id": "j1", "slug": "x", "status": "failed"}
     html = render.schedule_detail_page(
         {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
     assert 'hx-post="/-/ui/schedule/x/reset"' not in html
-    assert 'hx-post="/-/ui/schedule/x/start"' in html
+    assert 'hx-post="/-/ui/schedule/x/start"' not in html
     assert 'hx-post="/-/ui/schedule/x/kill"' in html
 
 
