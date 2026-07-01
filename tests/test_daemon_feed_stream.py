@@ -20,10 +20,14 @@ def _seed_journal(*run_ids: str) -> None:
     try:
         for i, rid in enumerate(run_ids):
             slug = rid.split(":")[0]
+            # finished_at == archived_at (wie in der Realität — report_status()
+            # setzt beide im selben Terminal-Übergang auf denselben `now`-Wert,
+            # PLAN-14 Stufe 14.3 sortiert list_journal() jetzt nach finished_at).
+            t = time.time() + i
             conn.execute(
-                "INSERT INTO journal (run_id, slug, kind, status, archived_at, output_ref) "
-                "VALUES (?,?,?,?,?,?)",
-                (rid, slug, "job", "complete", time.time() + i,
+                "INSERT INTO journal (run_id, slug, kind, status, finished_at, "
+                "archived_at, output_ref) VALUES (?,?,?,?,?,?,?)",
+                (rid, slug, "job", "complete", t, t,
                  f"data/job/{rid}/output.jsonl"),
             )
     finally:

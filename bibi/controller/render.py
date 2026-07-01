@@ -1035,6 +1035,11 @@ def _commit_cell(run: dict) -> str:
     return f'<span class="commit" title="{_e(sha)} {branch}">{short}</span>'
 
 
+def _duration_cell(r: dict) -> str:
+    rt = r.get("exec_runtime")
+    return f"{round(rt)} s" if rt is not None else "—"
+
+
 def _run_rows(runs: list[dict], slug: str, now: float) -> str:
     s = _e(slug)
     rows = []
@@ -1052,6 +1057,7 @@ def _run_rows(runs: list[dict], slug: str, now: float) -> str:
             f'<td class="st {st}">{st}</td>'
             f"<td>{_e(r.get('reason'))}</td>"
             f"<td>{_e(r.get('exit_code'))}</td>"
+            f"<td>{_duration_cell(r)}</td>"
             f"<td>{_commit_cell(r)}</td>"
             f'<td><a class="back" href="/-/ui/run/{rid}">→ Detail</a> '
             f'<button hx-delete="/-/ui/schedule/{s}/run/{rid}" hx-target="#detail" '
@@ -1180,7 +1186,7 @@ def schedule_detail_inner(
             f"letzter Lauf <b>{last_run}</b> · nächster Lauf {nxt}")
     runs_html = (
         '<table><thead><tr><th>Zeit</th><th>Status</th><th>Grund</th>'
-        '<th>exit</th><th>Commit</th><th></th></tr></thead>'
+        '<th>exit</th><th>Dauer</th><th>Commit</th><th></th></tr></thead>'
         f"<tbody>{_run_rows(runs, slug, now)}</tbody></table>"
         if runs else '<p class="out-empty">— noch keine Läufe —</p>'
     )

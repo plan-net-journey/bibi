@@ -904,7 +904,7 @@ def list_journal(
         clauses.append("domain=?"); params.append(domain)
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
-    sql += " ORDER BY archived_at DESC"
+    sql += " ORDER BY finished_at DESC"  # PLAN-14 Stufe 14.3 (war archived_at)
     return [journal_view(r) for r in conn.execute(sql, params).fetchall()]
 
 

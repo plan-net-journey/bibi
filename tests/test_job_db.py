@@ -361,3 +361,19 @@ def test_migration_v11_to_v12_adds_journal_payload(tmp_path: Path):
     assert "payload" in cols
     assert conn2.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
     conn2.close()
+
+
+# ── PLAN-14 Stufe 14.3 — Journal sortiert nach finished_at, nicht archived_at ─
+
+
+def test_list_journal_orders_by_finished_at_not_archived_at(conn):
+    # archived_at bewusst gegenläufig zu finished_at, um die Umstellung
+    # sichtbar zu machen (in echten Läufen liegen beide fast identisch).
+    conn.execute(
+        "INSERT INTO journal (run_id, slug, kind, status, finished_at, archived_at) "
+        "VALUES ('a:1','a','job','complete', 100, 50)")
+    conn.execute(
+        "INSERT INTO journal (run_id, slug, kind, status, finished_at, archived_at) "
+        "VALUES ('b:1','b','job','complete', 50, 100)")
+    rows = job_db.list_journal(conn)
+    assert [r["run_id"] for r in rows] == ["a:1", "b:1"]

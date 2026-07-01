@@ -157,6 +157,25 @@ def test_run_row_has_delete_button():
     assert 'hx-delete="/-/ui/schedule/x/run/9"' in html
 
 
+# ── PLAN-14 Stufe 14.3 — Dauer-Spalte in der Journal-Historie ────────────────
+
+
+def test_run_rows_show_duration_column():
+    runs = [{"id": 1, "status": "complete", "exec_runtime": 61.4, "kind": "job"}]
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now"}, runs, slug="x")
+    assert "Dauer" in html
+    assert "61 s" in html
+
+
+def test_run_rows_duration_dash_when_missing():
+    runs = [{"id": 1, "status": "running", "kind": "job"}]
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now"}, runs, slug="x")
+    assert "Dauer" in html
+    assert "—" in html
+
+
 # ── Routen mit gefaktem Client ───────────────────────────────────────────────
 
 
