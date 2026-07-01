@@ -28,7 +28,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -106,6 +106,13 @@ def _mig_jobs_ping_demand(conn: sqlite3.Connection) -> None:  # v10 → v11
             conn.execute("ALTER TABLE jobs ADD COLUMN demand TEXT")
 
 
+def _mig_journal_payload(conn: sqlite3.Connection) -> None:  # v11 → v12
+    # PLAN-12 Stufe 12.1: journal.payload für den Ausgabefilter (effective_kind
+    # braucht den Payload auch rückwirkend für archivierte Läufe).
+    if not _has_column(conn, "journal", "payload"):
+        conn.execute("ALTER TABLE journal ADD COLUMN payload TEXT")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -120,6 +127,7 @@ _MIGRATIONS: dict[int, list] = {
     8: [_mig_jobs_pid],
     9: [_mig_jobs_app_url],
     10: [_mig_jobs_ping_demand],
+    11: [_mig_journal_payload],
 }
 
 
@@ -316,6 +324,9 @@ def job_view(row: sqlite3.Row, *, last_run_at: float | None = None) -> dict:
         "output_ref": row["output_ref"], "next_fire_at": row["next_fire_at"],
         "last_run_at": last_run_at, "schedule": row["schedule"],
         "app_port": row["app_port"], "app_url": row["app_url"],
+        # nur intern genutzt (Ausgabefilter, PLAN-12 Stufe 12.4/12.5) — response_model=JobView
+        # deklariert dieses Feld nicht, FastAPI/Pydantic filtert es beim Serialisieren heraus.
+        "payload": row["payload"],
     }
 
 
@@ -323,7 +334,6 @@ def job_full_view(row: sqlite3.Row) -> dict:
     """Alle DB-Felder eines Jobs — für die Attribute-Ansicht (§10.x)."""
     return {
         **job_view(row),
-        "payload": row["payload"],
         "model": row["model"],
         "soul": row["soul"],
         "session": row["session"],
@@ -819,16 +829,16 @@ def _write_journal(
     cur = conn.execute(
         "INSERT INTO journal (run_id, slug, kind, status, reason, started_at, "
         "finished_at, exit_code, exec_runtime, host, worker, output_ref, commit_sha, "
-        "branch, snapshot, archived_at) VALUES (:run_id,:slug,:kind,:status,:reason,"
+        "branch, payload, snapshot, archived_at) VALUES (:run_id,:slug,:kind,:status,:reason,"
         ":started_at,:finished_at,:exit_code,:exec_runtime,:host,:worker,:output_ref,"
-        ":commit_sha,:branch,:snapshot,:archived_at)",
+        ":commit_sha,:branch,:payload,:snapshot,:archived_at)",
         {
             "run_id": run_id, "slug": row["slug"], "kind": row["kind"],
             "status": row["status"], "reason": row["reason"],
             "started_at": row["started_at"], "finished_at": row["finished_at"],
             "exit_code": row["exit_code"], "exec_runtime": exec_runtime,
             "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
-            "commit_sha": commit_sha, "branch": branch,
+            "commit_sha": commit_sha, "branch": branch, "payload": row["payload"],
             "snapshot": json.dumps(job_view(row), ensure_ascii=False),
             "archived_at": archived_at,
         },
@@ -845,6 +855,8 @@ def journal_view(row: sqlite3.Row) -> dict:
         "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
         "commit_sha": row["commit_sha"], "branch": row["branch"],
         "domain": row["domain"],
+        # nur intern genutzt (Ausgabefilter, PLAN-12 Stufe 12.4/12.5).
+        "payload": row["payload"],
     }
 
 
@@ -936,21 +948,21 @@ def write_local_journal(
     conn: sqlite3.Connection, *, run_id: str, slug: str, kind: str, status: str,
     exit_code: int | None, output_ref: str | None, host: str | None,
     worker: str | None, started_at: float, finished_at: float,
-    reason: str | None = None,
+    reason: str | None = None, payload: str | None = None,
 ) -> None:
     """Journal-Zeile der **lokalen** Domäne (§1.4) — von ``/run``. Bewusst **ohne**
     ``jobs``-Eintrag: die zentrale Queue sieht den Lauf nie. ``domain='local'``."""
     cur = conn.execute(
         "INSERT INTO journal (run_id, slug, kind, status, reason, started_at, "
-        "finished_at, exit_code, exec_runtime, host, worker, output_ref, snapshot, "
+        "finished_at, exit_code, exec_runtime, host, worker, output_ref, payload, snapshot, "
         "archived_at, domain) VALUES (:run_id,:slug,:kind,:status,:reason,:started_at,"
-        ":finished_at,:exit_code,:exec_runtime,:host,:worker,:output_ref,:snapshot,"
+        ":finished_at,:exit_code,:exec_runtime,:host,:worker,:output_ref,:payload,:snapshot,"
         ":archived_at,'local')",
         {
             "run_id": run_id, "slug": slug, "kind": kind, "status": status,
             "reason": reason, "started_at": started_at, "finished_at": finished_at,
             "exit_code": exit_code, "exec_runtime": finished_at - started_at,
-            "host": host, "worker": worker, "output_ref": output_ref,
+            "host": host, "worker": worker, "output_ref": output_ref, "payload": payload,
             "snapshot": json.dumps({"slug": slug, "kind": kind, "status": status,
                                     "exit_code": exit_code}, ensure_ascii=False),
             "archived_at": finished_at,

@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS journal (
     output_ref    TEXT,                        -- referenziert, enthält nicht (§1.4)
     commit_sha    TEXT,                        -- Worktree-Commit des Laufs (v6, F7-Link)
     branch        TEXT,                        -- agent/<slug> (v6)
+    payload       TEXT,                        -- Shell-Cmd | Prompt (v12, Ausgabefilter PLAN-12)
     snapshot      TEXT NOT NULL DEFAULT '{}',
     archived_at   REAL NOT NULL,
     -- Ausführungs-Domäne (§1.4): 'scheduled' (disponiert, über den Scheduler) vs.

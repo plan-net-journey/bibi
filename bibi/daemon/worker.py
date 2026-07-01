@@ -450,7 +450,7 @@ def run_local(
             conn, run_id=f"{eff_slug}:{jid}", slug=eff_slug, kind=eff_kind,
             status=status, exit_code=code, output_ref=rel,
             host=socket.gethostname(), worker=worker_name,
-            started_at=started, finished_at=finished,
+            started_at=started, finished_at=finished, payload=payload,
         )
     finally:
         conn.close()

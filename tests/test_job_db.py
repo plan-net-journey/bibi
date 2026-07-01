@@ -290,3 +290,74 @@ def test_migration_v10_to_v11(tmp_path: Path):
     assert "demand" in cols
     assert conn2.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
     conn2.close()
+
+
+# ── PLAN-12 Stufe 12.1: payload auf job_view/journal_view ───────────────────
+
+
+def test_job_view_exposes_payload(conn):
+    jid = _insert_job(conn)
+    assert job_db.get_job(conn, jid)["payload"] == "echo hi"
+
+
+def test_journal_view_exposes_payload_after_real_run(conn, tmp_path: Path):
+    _write(tmp_path / "case" / "once.md", '---\nschedule: never\njob: "claude: tu was"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jid = conn.execute("SELECT id FROM jobs WHERE slug='once'").fetchone()["id"]
+    job_db.report_status(conn, jid, status="running")
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    entry = conn.execute("SELECT id FROM journal WHERE slug='once'").fetchone()
+    assert job_db.journal_view(
+        conn.execute("SELECT * FROM journal WHERE id=?", (entry["id"],)).fetchone()
+    )["payload"] == "claude: tu was"
+
+
+def test_write_local_journal_accepts_payload(conn):
+    job_db.write_local_journal(
+        conn, run_id="adhoc:1", slug="adhoc", kind="job", status="complete",
+        exit_code=0, output_ref=None, host="h", worker="w",
+        started_at=1.0, finished_at=2.0, payload="echo local",
+    )
+    row = conn.execute("SELECT * FROM journal WHERE run_id='adhoc:1'").fetchone()
+    assert job_db.journal_view(row)["payload"] == "echo local"
+
+
+def test_write_local_journal_payload_defaults_to_none(conn):
+    job_db.write_local_journal(
+        conn, run_id="adhoc:2", slug="adhoc", kind="job", status="complete",
+        exit_code=0, output_ref=None, host="h", worker="w",
+        started_at=1.0, finished_at=2.0,
+    )
+    row = conn.execute("SELECT * FROM journal WHERE run_id='adhoc:2'").fetchone()
+    assert job_db.journal_view(row)["payload"] is None
+
+
+def test_migration_v11_to_v12_adds_journal_payload(tmp_path: Path):
+    """Bestehende v11-DB (journal ohne payload-Spalte) bekommt sie per Migration."""
+    import sqlite3 as _sqlite3
+    p = tmp_path / "old.sqlite"
+
+    c = _sqlite3.connect(p)
+    c.row_factory = _sqlite3.Row
+    c.execute("PRAGMA journal_mode = WAL")
+    c.execute("""
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE,
+            schedule_ref TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', app_url TEXT,
+            last_ping_at REAL, demand TEXT
+        )
+    """)
+    c.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    c.execute("CREATE TABLE journal (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, "
+              "slug TEXT, kind TEXT, status TEXT, archived_at REAL NOT NULL, "
+              "snapshot TEXT NOT NULL DEFAULT '{}', domain TEXT NOT NULL DEFAULT 'scheduled')")
+    c.execute("PRAGMA user_version = 11")
+    c.commit()
+    c.close()
+
+    conn2 = job_db.connect(p)
+    cols = {r["name"] for r in conn2.execute("PRAGMA table_info(journal)")}
+    assert "payload" in cols
+    assert conn2.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
+    conn2.close()
