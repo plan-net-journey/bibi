@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 import secrets
 import signal
 import socket
@@ -28,13 +27,11 @@ from pathlib import Path
 
 import yaml
 
-# claude:-Prefix-Erkennung für Payload-Expansion beim Spawn (PLAN-10 Stufe 10.0).
-_CLAUDE_RE = re.compile(r"^\s*claude\s*:\s*(.+)", re.DOTALL)
-
 from bibi import config, repo, state
 from bibi.daemon import activity, job_db, worktree
 from bibi.wrapper import exec_backend
 from bibi.schedule import backoff, discovery
+from bibi.schedule.models import CLAUDE_PAYLOAD_RE as _CLAUDE_RE
 from bibi.schedule.models import Status
 
 log = logging.getLogger("bibi.worker")

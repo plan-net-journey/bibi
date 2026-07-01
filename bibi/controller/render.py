@@ -8,6 +8,8 @@ import html
 import re
 import time
 
+from bibi.schedule import models
+
 _HTMX = "https://unpkg.com/htmx.org@1.9.12"
 
 #: Poll-Trigger der self-aktualisierenden Fragmente — 2s, gated durch FOLLOW
@@ -308,15 +310,9 @@ def _sched_is_problem(s: dict, now: float) -> bool:
 
 def _effective_sched_type(s: dict) -> str:
     """Anzeige-/Filter-Typ ableiten — ``kind`` ist seit PLAN-10 (Unified Job
-    Model) immer ``"job"`` und trägt keine Information mehr (§5.3). ``claude:``-
-    Prefix im Payload ⇒ ``claude``; gesetzter ``app_port`` (auch ohne Prefix)
-    ⇒ ``app``; sonst der Default ``job``."""
-    payload = (s.get("payload") or "").strip().lower()
-    if payload.startswith("claude:"):
-        return "claude"
-    if s.get("app_port"):
-        return "app"
-    return "job"
+    Model) immer ``"job"`` und trägt keine Information mehr (§5.3). Delegiert an
+    ``models.effective_kind`` (PLAN-12 Stufe 12.0 — einzige Quelle für alle Aufrufer)."""
+    return models.effective_kind(s.get("payload"), s.get("app_port"))
 
 
 def filter_schedules(schedules: list[dict], *, typ: str | None = None,

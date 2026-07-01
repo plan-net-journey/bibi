@@ -13,6 +13,8 @@ from bibi.schedule.models import (
     Reason,
     ScheduleSpec,
     Status,
+    effective_kind,
+    is_claude_payload,
 )
 
 
@@ -87,3 +89,30 @@ def test_journal_entry_run_id_and_host_first_class():
     assert e.run_id == "hello:1"
     assert e.host == "air2024"
     assert e.output_ref is not None  # referenziert, enthält nicht (§1.4)
+
+
+# ── Stufe 12.0 — gemeinsamer Helper: „ist das ein claude-Job" ────────────────
+
+
+def test_is_claude_payload_true_for_claude_prefix():
+    assert is_claude_payload("claude: tu was")
+    assert is_claude_payload("  claude:   mehrzeilig\nweiter")
+
+
+def test_is_claude_payload_false_for_none_and_other():
+    assert not is_claude_payload(None)
+    assert not is_claude_payload("")
+    assert not is_claude_payload("echo hi")
+
+
+def test_effective_kind_claude_prefix_wins_over_app_port():
+    assert effective_kind("claude: tu was", app_port=8080) == "claude"
+
+
+def test_effective_kind_app_port_without_claude_prefix():
+    assert effective_kind("echo hi", app_port=8080) == "app"
+
+
+def test_effective_kind_default_job():
+    assert effective_kind("echo hi") == "job"
+    assert effective_kind(None) == "job"

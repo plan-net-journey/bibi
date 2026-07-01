@@ -11,6 +11,7 @@ passiert beim Spawn im Worker, App-Verhalten ist reine Laufzeit-Konvention.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -34,6 +35,26 @@ class Kind(StrEnum):
     """Ausführungstypen. Nur noch ``JOB`` (PLAN-10 Stufe 10.0)."""
 
     JOB = "job"
+
+
+# claude:-Prefix-Erkennung für Payload-Expansion (PLAN-10 Stufe 10.0; PLAN-12
+# Stufe 12.0: konsolidiert aus worker.py::_CLAUDE_RE + render.py::_effective_sched_type).
+CLAUDE_PAYLOAD_RE = re.compile(r"^\s*claude\s*:\s*(.+)", re.DOTALL)
+
+
+def is_claude_payload(payload: str | None) -> bool:
+    return bool(payload and CLAUDE_PAYLOAD_RE.match(payload.strip()))
+
+
+def effective_kind(payload: str | None, app_port: int | None = None) -> str:
+    """Anzeige-/Dispatch-Typ: ``claude:``-Prefix ⇒ ``"claude"``; sonst ``app_port``
+    gesetzt ⇒ ``"app"``; sonst ``"job"``. Einzige Quelle für alle Aufrufer — DB-
+    ``kind`` ist seit PLAN-10 immer ``"job"``."""
+    if is_claude_payload(payload):
+        return "claude"
+    if app_port:
+        return "app"
+    return "job"
 
 
 class Reason(StrEnum):
