@@ -1082,6 +1082,9 @@ def _duration_cell(r: dict) -> str:
 
 
 def _run_rows(runs: list[dict], slug: str, now: float) -> str:
+    # Follow-up (User-Feedback): "Output entfällt" für Journal-Zeilen — kein
+    # Inline-Toggle mehr, nur Detail/Löschen. Der Output (formatiert + roh)
+    # lebt auf der Execution-Detail-Seite ("→ Detail").
     s = _e(slug)
     rows = []
     for r in runs:
@@ -1089,9 +1092,6 @@ def _run_rows(runs: list[dict], slug: str, now: float) -> str:
         st = _e(r.get("status"))
         t_abs = _abs_time(r.get("finished_at") or r.get("started_at"))
         t_rel = _ago(r.get("finished_at") or r.get("started_at"), now)
-        toggle = (f' <button hx-get="/-/ui/run/{rid}/output" '
-                  f'hx-swap="afterend" hx-target="this">Output ↓</button>'
-                  if rid is not None else "")
         rows.append(
             "<tr>"
             f"<td>{t_abs} <span class='muted'>({t_rel})</span></td>"
@@ -1102,8 +1102,7 @@ def _run_rows(runs: list[dict], slug: str, now: float) -> str:
             f"<td>{_commit_cell(r)}</td>"
             f'<td><a class="back" href="/-/ui/run/{rid}">→ Detail</a> '
             f'<button hx-delete="/-/ui/schedule/{s}/run/{rid}" hx-target="#detail" '
-            f'hx-swap="outerHTML" hx-confirm="Lauf-Record löschen?">Löschen</button>'
-            f'{toggle}</td>'
+            f'hx-swap="outerHTML" hx-confirm="Lauf-Record löschen?">Löschen</button></td>'
             "</tr>"
         )
     return "".join(rows)
@@ -1133,7 +1132,12 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
     if job.get("status") == "running" and jid:
         # Streamende Box (SSE), geseedet mit dem aktuellen Output (Offset → kein Dup).
         events = (live_output or {}).get("events", [])
-        out = ('<div class="liveout">'
+        # Follow-up (User-Feedback): "Es braucht auch den Zugriff/Ansicht des
+        # originalen Streams (/stream)" — die Box zeigt nur noch formatiert.
+        raw_link = (f'<span class="muted">'
+                    f'<a class="back" href="/-/job/{_e(jid)}/stream">roher Stream →</a>'
+                    f'</span>')
+        out = (f'<div class="liveout">{raw_link}'
                + live_output_box(jid, events, kind=(live_output or {}).get("kind", "job"))
                + "</div>")
     elif job.get("status") == "awaiting":
@@ -1353,6 +1357,17 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
     back = (f'<a class="back" href="/-/ui/schedule/{slug}">← {slug}</a> · '
             f'<a class="back" href="/-/ui/feed">Feed</a>')
     out = output_block(events, e.get("kind") or kind)
+    jid = e.get("id")
+    # Follow-up (User-Feedback): "auch bei archivierten Jobs im Journal eine
+    # Möglichkeit, den Original Output zu sehen" — roher Zugriff neben dem
+    # formatierten Output (/-/journal/{jid}/out|err|stream, PLAN-14 Stufe 14.0).
+    raw_links = (
+        f' <span class="muted">roh: '
+        f'<a class="back" href="/-/journal/{jid}/out">out</a> · '
+        f'<a class="back" href="/-/journal/{jid}/err">err</a> · '
+        f'<a class="back" href="/-/journal/{jid}/stream">stream</a></span>'
+        if jid is not None else ""
+    )
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'
@@ -1369,7 +1384,7 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         f'<span class="muted">{back}</span></header>'
         f"{_exec_summary(e)}"
         f"{_attr_table(e)}"
-        "<h2>Output</h2>"
+        f"<h2>Output</h2>{raw_links}"
         f'<div class="outscroll">{out}</div>'
         f"<script>{_CLOCK_JS}</script>"
         "</body></html>"

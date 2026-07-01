@@ -42,6 +42,14 @@ def test_execution_detail_meta():
     assert 'href="/-/ui/feed"' in html               # zurück zum Feed
 
 
+def test_execution_detail_links_to_raw_journal_stream():
+    # Follow-up (User-Feedback): "auch bei archivierten Jobs im Journal eine
+    # Möglichkeit, den Original Output zu sehen" — bislang existierte die
+    # Route (/-/journal/{jid}/out|err|stream), aber nirgends verlinkt.
+    html = render.execution_detail_page(_entry(jid=7), events=[], kind="claude")
+    assert 'href="/-/journal/7/stream"' in html
+
+
 def test_execution_detail_output_job_preformatted():
     events = [{"t": 1, "s": "out", "line": "hallo"}, {"t": 2, "s": "err", "line": "warn"}]
     html = render.execution_detail_page(_entry(kind="job"), events=events, kind="job")

@@ -62,6 +62,14 @@ def test_live_panel_running_renders_stream_box():
     assert "liveterm" in html and 'data-job="jX"' in html
 
 
+def test_live_panel_links_to_raw_stream_for_running_job():
+    # Follow-up (User-Feedback): "Es braucht auch den Zugriff/Ansicht des
+    # originalen Streams (/stream)" — die Live-Box zeigt nur noch formatiert.
+    job = {"id": "jX", "slug": "a", "status": "running", "started_at": 1.0}
+    html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0)
+    assert 'href="/-/job/jX/stream"' in html
+
+
 def test_live_panel_terminal_no_stream_box():
     job = {"id": "jX", "slug": "a", "status": "complete", "finished_at": 2.0}
     html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0)

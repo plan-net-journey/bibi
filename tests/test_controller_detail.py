@@ -78,7 +78,6 @@ def test_schedule_detail_page_renders_runs():
     assert "boom" in html
     assert "error" in html
     assert "abc1234" in html and "abc1234deadbeef" not in html.split("title=")[0]
-    assert 'hx-get="/-/ui/run/7/output"' in html
     assert 'href="/-/ui/feed"' in html  # zurück-Link (Follow-up: war stales "/-/")
 
 
@@ -239,7 +238,7 @@ def test_schedule_detail_route(app_with):
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/html")
         assert "boom" in r.text and "error" in r.text
-        assert "Output ↓" in r.text  # jeder Lauf, auch der jüngste: Toggle-Button
+        assert "Output ↓" not in r.text  # Follow-up: "Output entfällt" für Journal-Zeilen
 
 
 def test_run_output_route_renders(app_with):
@@ -342,16 +341,17 @@ def test_live_panel_shows_output_expanded():
     assert 'class="liveout"' in html and "lebt" in html   # Live-Output inline
 
 
-def test_run_rows_all_get_toggle_no_auto_inline():
-    # User-Feedback: kein Auto-Expand mehr für den jüngsten Lauf — der Output
-    # landete optisch nach der kompletten (oft langen) Tabelle, ganz ohne
-    # Bezug zur Zeile ("was soll das hier am Ende?"). Jede Zeile bekommt jetzt
-    # einheitlich ihren eigenen Toggle, nichts wird automatisch aufgeklappt.
+def test_run_rows_no_output_toggle():
+    # Follow-up (User-Feedback): "Output entfällt" für Journal-Zeilen — kein
+    # Inline-Toggle mehr, nur noch Detail/Löschen. Wer den Output sehen will,
+    # geht über "→ Detail" auf die Execution-Detail-Seite (die ihn jetzt roh
+    # und formatiert anbietet).
     runs = [{"id": 2, "status": "complete", "kind": "claude", "finished_at": 9.0},
             {"id": 1, "status": "complete", "kind": "claude", "finished_at": 5.0}]
     html = render.schedule_detail_inner({"slug": "a"}, runs, None, slug="a", now=10.0)
-    assert 'hx-get="/-/ui/run/1/output"' in html
-    assert 'hx-get="/-/ui/run/2/output"' in html
+    assert "Output ↓" not in html
+    assert 'href="/-/ui/run/1">→ Detail</a>' in html
+    assert 'href="/-/ui/run/2">→ Detail</a>' in html
 
 
 # ── PLAN-10 §10.5: HITL-Panel (awaiting + app_url direkt) ────────────────────
