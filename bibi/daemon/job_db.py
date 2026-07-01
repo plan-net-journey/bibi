@@ -248,16 +248,28 @@ def _spec_columns(pr: ParseResult, now: float) -> dict:
 # ── CRUD ─────────────────────────────────────────────────────────────────────
 
 
+#: Status, deren next_fire_at ein laufender Retry-/Resume-Timer von Worker/Sweep
+#: ist (§5.5) — kein aus dem Schedule ableitbares Datum. Ein Rescan-Overwrite auf
+#: den nächsten Cron-Tick verhindert sonst sowohl den Backoff-Retry als auch das
+#: spätere Eskalieren zu ``error`` (User-Feedback 2026-07-01: ein `failed`-Job mit
+#: 2h-Cron blieb dadurch bis zu 1h "hängen" statt nach 30s Backoff zu retryn/
+#: zu eskalieren).
+_PRESERVE_NEXT_FIRE_AT = {"failed", "deferred"}
+
+
 def upsert_schedule(conn: sqlite3.Connection, pr: ParseResult, now: float) -> str:
     """Schedule einfügen (status pending, neue ID) oder Spec-Spalten aktualisieren.
 
     Schlüssel ist der Slug. Bei Update bleiben ``id`` und Live-Status erhalten —
-    nur die aus der MD abgeleiteten Felder werden neu geschrieben.
+    nur die aus der MD abgeleiteten Felder werden neu geschrieben. Ausnahme:
+    ``next_fire_at`` bleibt unangetastet, wenn der Job gerade in
+    ``_PRESERVE_NEXT_FIRE_AT`` steckt (s.o.).
     """
     cols = _spec_columns(pr, now)
     cols["active"] = 1  # jeder erfolgreiche Upsert kommt von einer entdeckten MD
     # (PLAN-14 Stufe 14.5) — reaktiviert einen zuvor deaktivierten Slug automatisch.
-    existing = conn.execute("SELECT id FROM jobs WHERE slug=?", (cols["slug"],)).fetchone()
+    existing = conn.execute(
+        "SELECT id, status FROM jobs WHERE slug=?", (cols["slug"],)).fetchone()
     if existing is None:
         job_id = secrets.token_hex(4)
         fields = {
@@ -268,6 +280,8 @@ def upsert_schedule(conn: sqlite3.Connection, pr: ParseResult, now: float) -> st
         placeholders = ", ".join(f":{k}" for k in fields)
         conn.execute(f"INSERT INTO jobs ({names}) VALUES ({placeholders})", fields)
         return job_id
+    if existing["status"] in _PRESERVE_NEXT_FIRE_AT:
+        cols.pop("next_fire_at", None)
     cols["updated_at"] = now
     assignments = ", ".join(f"{k}=:{k}" for k in cols)
     conn.execute(f"UPDATE jobs SET {assignments} WHERE slug=:slug", cols)

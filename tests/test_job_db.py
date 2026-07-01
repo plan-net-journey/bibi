@@ -104,6 +104,24 @@ def test_rescan_update_preserves_id_and_status(conn, tmp_path: Path):
     assert job_db.list_jobs(conn)[0]["id"] == jid  # gleiche ID
 
 
+def test_rescan_preserves_next_fire_at_while_failed(conn, tmp_path: Path):
+    # User-Feedback 2026-07-01: next_fire_at bei `failed` ist der 30s-Backoff-
+    # Timer von Worker/Sweep, kein aus dem Schedule ableitbares Datum. Rescan
+    # (z.B. periodischer Sync) darf ihn nicht auf den nächsten (fernen) Cron-Tick
+    # überschreiben — sonst retryt/eskaliert der Job nie.
+    md = tmp_path / "case" / "hello" / "README.md"
+    _write(md, '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jid = job_db.list_jobs(conn)[0]["id"]
+    backoff_deadline = time.time() + 30
+    conn.execute("UPDATE jobs SET status='failed', next_fire_at=? WHERE id=?",
+                (backoff_deadline, jid))
+    conn.commit()
+    job_db.rescan(conn, vault_root=tmp_path / "case")  # z.B. periodischer Sync
+    row = conn.execute("SELECT next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["next_fire_at"] == backoff_deadline
+
+
 def test_rescan_deactivates_vanished_instead_of_deleting(conn, tmp_path: Path):
     # PLAN-14 Stufe 14.5: die Zeile bleibt (Journal-Historie erreichbar), nur
     # active=0 statt DELETE — ersetzt den früheren test_rescan_removes_vanished.
