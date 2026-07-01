@@ -321,11 +321,11 @@ def list_schedules(conn: sqlite3.Connection) -> list[dict]:
     # nicht der nach Cron-Re-Arm harmlose Zeilen-Status `pending`).
     last: dict[str, dict] = {}
     for r in conn.execute(
-        "SELECT j.slug, j.status, j.finished_at FROM journal j JOIN ("
+        "SELECT j.id, j.slug, j.status, j.finished_at FROM journal j JOIN ("
         "  SELECT slug, MAX(id) AS mx FROM journal WHERE domain='scheduled' GROUP BY slug"
         ") m ON j.id = m.mx"
     ).fetchall():
-        last[r["slug"]] = {"status": r["status"], "finished_at": r["finished_at"]}
+        last[r["slug"]] = {"id": r["id"], "status": r["status"], "finished_at": r["finished_at"]}
     rows = conn.execute("SELECT * FROM jobs ORDER BY slug").fetchall()
     out = [schedule_view(r, last_run=last.get(r["slug"])) for r in rows]
 
@@ -336,7 +336,7 @@ def list_schedules(conn: sqlite3.Connection) -> list[dict]:
     # active=None markiert die dritte Gruppe (Schedules-Übersicht „Journal").
     known = {r["slug"] for r in rows}
     for r in conn.execute(
-        "SELECT j.slug, j.status, j.finished_at, j.kind, j.payload FROM journal j JOIN ("
+        "SELECT j.id, j.slug, j.status, j.finished_at, j.kind, j.payload FROM journal j JOIN ("
         "  SELECT slug, MAX(id) AS mx FROM journal WHERE domain='scheduled' GROUP BY slug"
         ") m ON j.id = m.mx"
     ).fetchall():
@@ -345,7 +345,8 @@ def list_schedules(conn: sqlite3.Connection) -> list[dict]:
         out.append({
             "slug": r["slug"], "kind": r["kind"], "trigger": "",
             "next_fire_at": None, "last_status": r["status"],
-            "last_run_at": r["finished_at"], "row_status": r["status"],
+            "last_run_at": r["finished_at"], "last_run_id": r["id"],
+            "row_status": r["status"],
             "oneshot": True, "payload": r["payload"], "app_port": None,
             "active": None,
         })
@@ -402,13 +403,26 @@ def get_job_by_slug(conn: sqlite3.Connection, slug: str) -> dict | None:
     return job_full_view(row) if row else None
 
 
+#: Nicht-terminale Zeilen-Status, die gerade **aktiv** etwas Neues passieren
+#: (nicht bloß ein routinemäßiger Cron-Re-Arm wie `pending`) — die STATUS-Spalte
+#: zeigt sie direkt statt des letzten Journal-Ergebnisses (User-Feedback
+#: 2026-07-01: ein `failed`-Retry zeigte 40+s lang noch `error` vom vorherigen
+#: Zyklus, weil nur `running` als "live" galt — dieselbe Lücke hätte `awaiting`/
+#: `deferred` genauso getroffen).
+_LIVE_ROW_STATUSES = {"running", "failed", "awaiting", "deferred"}
+
+
 def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
     trigger = row["schedule"] if row["schedule"] is not None else row["at_iso"]
     row_status = row["status"]
-    # STATUS-Spalte: läuft gerade → running; sonst Ergebnis des letzten Laufs
-    # (Journal); sonst der Zeilen-Status (nie gelaufen → pending).
-    if row_status == "running":
-        last_status, last_run_at = "running", row["finished_at"]
+    # STATUS-Spalte: gerade aktiv (_LIVE_ROW_STATUSES) → Zeilen-Status direkt;
+    # sonst Ergebnis des letzten Laufs (Journal); sonst der Zeilen-Status (nie
+    # gelaufen → pending). Bei running/failed/awaiting/deferred ist finished_at
+    # entweder noch NULL oder veraltet (der laufende/wartende Zyklus ist ja noch
+    # nicht fertig) — last_run_at zeigt hier stattdessen started_at, damit die
+    # "seit"-Spalte die Laufzeit anzeigt statt "—" (User-Feedback).
+    if row_status in _LIVE_ROW_STATUSES:
+        last_status, last_run_at = row_status, row["started_at"]
     elif last_run is not None:
         # Wenn die Jobs-Zeile einen neueren Terminal-Zustand hat (finished_at aktueller),
         # gewinnt sie — der Journal-MAX-Eintrag kann durch den Dedup-Skip veraltet sein.
@@ -422,10 +436,14 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
             last_status, last_run_at = last_run["status"], last_ft
     else:
         last_status, last_run_at = row_status, row["finished_at"]
+    # Journal-ID des letzten abgeschlossenen Laufs — Ziel für den "Lauf Details"-
+    # Link (User-Feedback 2026-07-01); unabhängig vom aktuellen Live-Status, da
+    # ein laufender Job noch keine eigene Journal-Zeile hat.
+    last_run_id = last_run["id"] if last_run is not None else None
     return {
         "slug": row["slug"], "kind": row["kind"], "trigger": trigger or "",
         "next_fire_at": row["next_fire_at"], "last_status": last_status,
-        "last_run_at": last_run_at, "row_status": row_status,
+        "last_run_at": last_run_at, "last_run_id": last_run_id, "row_status": row_status,
         # One-shot (at:) hat kein wiederkehrendes schedule — Basis fürs Archiv (§4.4).
         "oneshot": row["schedule"] is None,
         # kind ist seit PLAN-10 (Unified Job Model) immer "job" — payload/app_port
@@ -585,7 +603,7 @@ def report_status(
     """Worker meldet einen Zustandswechsel (§4.4, output-frei). Rückgabe:
     ``ok`` | ``invalid`` (verbotener Übergang, §5.4) | ``not_found``."""
     now = time.time() if now is None else now
-    row = conn.execute("SELECT status, kind FROM jobs WHERE id=?", (job_id,)).fetchone()
+    row = conn.execute("SELECT status, kind, schedule FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return "not_found"
     current = Status(row["status"])
@@ -610,14 +628,20 @@ def report_status(
         da_row = conn.execute("SELECT deferred_at FROM jobs WHERE id=?", (job_id,)).fetchone()
         if da_row and da_row["deferred_at"] is None:
             fields["deferred_at"] = now
-    if target is Status.PENDING:  # reset = frische Neueinplanung (§5.6)
+    if target is Status.PENDING:  # reset = archivieren + Trigger neu auswerten (§5.6)
         fields["attempt"] = 0
         fields["reason"] = None
         fields["deferred_at"] = None
-        # Reset → sofort dispatchbar: next_fire_at = now damit reserve_next
-        # (next_fire_at IS NOT NULL AND <= now) den Job beim nächsten Tick sieht.
-        # Der Cron-Takt wird nach complete neu berechnet; hier zählt nur "sofort".
-        fields["next_fire_at"] = now
+        # Reset respektiert den Trigger, statt blind sofort zu feuern (User-
+        # Feedback: RESET reihte bei `schedule: never` fälschlich einen neuen
+        # Lauf ein — "steht ja auf never"). Wiederkehrende Schedules bekommen
+        # den nächsten regulären Cron-Tick, alles andere (never/on_demand/
+        # startup/at:) bleibt unfällig (next_fire_at=None) bis zu einem
+        # expliziten START — der erzwingt "sofort" via next_fire_at=now
+        # (siehe start_now()).
+        fields["next_fire_at"] = (
+            _next_cron(row["schedule"], now) if is_recurring(row["schedule"]) else None
+        )
     if attempt is not None:
         fields["attempt"] = attempt
     if next_fire_at is not None:
@@ -730,9 +754,10 @@ def start_now(conn: sqlite3.Connection, job_id: str, now: float | None = None) -
     """User-Verb ``start`` (§5.6): einen ``pending``- oder ``deferred``-Job
     **sofort** fällig machen (``next_fire_at=now``), ohne auf den Trigger zu
     warten. Bei archivierbaren Terminalzuständen (``_ARCHIVE_AND_START``)
-    identisch zu ``reset`` — archiviert den alten Lauf und macht den Job sofort
-    wieder fällig (PLAN-14 14.2). ``ok`` | ``invalid`` (running/awaiting/failed)
-    | ``not_found``."""
+    archiviert es wie ``reset`` den alten Lauf, erzwingt aber zusätzlich die
+    sofortige Fälligkeit (``next_fire_at=now``) — ``reset`` allein respektiert
+    den Trigger und lässt z. B. ``never``-Jobs bewusst unfällig (User-Feedback,
+    PLAN-14 14.2). ``ok`` | ``invalid`` (running/awaiting/failed) | ``not_found``."""
     now = time.time() if now is None else now
     row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
@@ -744,7 +769,8 @@ def start_now(conn: sqlite3.Connection, job_id: str, now: float | None = None) -
         conn.execute("UPDATE jobs SET next_fire_at=?, updated_at=? WHERE id=?", (now, now, job_id))
         return "ok"
     if status in _ARCHIVE_AND_START:
-        return report_status(conn, job_id, status="pending", now=now)
+        # anders als reset: START erzwingt sofortige Fälligkeit, unabhängig vom Trigger.
+        return report_status(conn, job_id, status="pending", next_fire_at=now, now=now)
     return "invalid"
 
 

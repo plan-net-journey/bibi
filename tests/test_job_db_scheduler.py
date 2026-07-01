@@ -410,8 +410,8 @@ def test_start_now_invalid_and_missing(conn):
 @pytest.mark.parametrize("status", ["error", "inactive", "zombie", "killed", "complete"])
 def test_start_now_archives_terminal_status_to_pending(conn, status):
     # PLAN-14 Stufe 14.2: START auf error/inactive/zombie/killed/complete
-    # archiviert (= report_status(status="pending"), identisch zu RESET) und
-    # macht den Job sofort wieder fällig.
+    # archiviert wie RESET, erzwingt aber zusätzlich next_fire_at=now — RESET
+    # allein respektiert stattdessen den Trigger (Follow-up-Fix, 2026-07-01).
     jid = _seed_full(conn, slug="x", status=status, next_fire_at=None)
     assert job_db.start_now(conn, jid) == "ok"
     row = conn.execute("SELECT status, next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
@@ -426,6 +426,26 @@ def test_start_now_stays_invalid_for_non_archivable_status(conn, status):
     # running/awaiting sind keine Terminalzustände.
     jid = _seed_full(conn, slug="x", status=status, next_fire_at=0)
     assert job_db.start_now(conn, jid) == "invalid"
+
+
+def test_reset_never_schedule_leaves_unfired(conn):
+    # User-Feedback 2026-07-01: RESET auf `schedule: never` darf keinen neuen
+    # Lauf einreihen — next_fire_at bleibt None, erst ein explizites START
+    # (next_fire_at=now) macht den Job wieder fällig.
+    jid = _seed_full(conn, slug="x", schedule="never", status="killed", next_fire_at=None)
+    assert job_db.report_status(conn, jid, status="pending") == "ok"
+    row = conn.execute("SELECT next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["next_fire_at"] is None
+
+
+def test_reset_recurring_schedule_uses_next_cron_tick_not_now(conn):
+    # RESET respektiert den Trigger (nächster regulärer Cron-Tick) statt
+    # sofort zu feuern — anders als START (next_fire_at=now).
+    jid = _seed_full(conn, slug="x", schedule="0 9 * * *", status="killed", next_fire_at=None)
+    assert job_db.report_status(conn, jid, status="pending") == "ok"
+    row = conn.execute("SELECT next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["next_fire_at"] is not None
+    assert row["next_fire_at"] > time.time()
 
 
 def test_start_now_deferred_dispatches_immediately_like_pending(conn):

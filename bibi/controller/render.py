@@ -49,6 +49,9 @@ td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
 .handles .handle.warn { background: #d6a23e33; border-color: #d6a23e88; }
 a.slug { font-weight: 600; text-decoration: none; }
 a.slug:hover { text-decoration: underline; }
+.sched a { text-decoration: none; }
+.sched a:hover { text-decoration: underline; }
+.sched a.rowlink { color: inherit; }
 h2 { font-size: .95rem; color: #888; margin: 1.5rem 0 .4rem; font-weight: 600; }
 .back { color: #888; text-decoration: none; font-size: .85rem; }
 .meta { color: #aaa; font-size: .9rem; margin: .2rem 0 1rem; }
@@ -244,20 +247,29 @@ def _sched_row(s: dict, now: float) -> str:
     st = _e(s.get("last_status"))
     kind = _e(_effective_sched_type(s))
     nxt = _until(s.get("next_fire_at"), now)
+    ago = _ago(s.get("last_run_at"), now)
+    run_id = s.get("last_run_id")
+    # Status/letzter-seit -> Lauf-Details (die konkrete Ausführung); Schedule/
+    # nächster -> Job-Details (der Schedule selbst) — User-Feedback 2026-07-01.
+    # Ohne abgeschlossenen Lauf (run_id None) gibt es keine Lauf-Details zum Verlinken.
+    status_cell = (f'<a class="st {st}" href="/-/ui/run/{run_id}">{st}</a>'
+                   if run_id is not None else f'<span class="st {st}">{st}</span>')
+    ago_cell = (f'<a class="rowlink" href="/-/ui/run/{run_id}">{ago}</a>'
+                if run_id is not None else ago)
     return (
         "<tr>"
         f'<td><a class="slug" href="/-/ui/schedule/{slug}">{slug}</a></td>'
         f'<td class="kind">{kind}</td>'
-        f'<td class="st {st}">{st}</td>'
-        f"<td>{_ago(s.get('last_run_at'), now)}</td>"
-        f"<td>{nxt}</td>"
+        f"<td>{status_cell}</td>"
+        f"<td>{ago_cell}</td>"
+        f'<td><a class="rowlink" href="/-/ui/schedule/{slug}">{nxt}</a></td>'
         "</tr>"
     )
 
 
 def _sched_table(items: list[dict], now: float) -> str:
     rows = "".join(_sched_row(s, now) for s in items)
-    return ('<table><thead><tr><th>Schedule</th><th>Art</th><th>Status</th>'
+    return ('<table class="sched"><thead><tr><th>Schedule</th><th>Art</th><th>Status</th>'
             f'<th>letzter / seit</th><th>nächster</th></tr></thead><tbody>{rows}'
             "</tbody></table>")
 
@@ -883,82 +895,44 @@ def _strip_ansi(s: str) -> str:
     return _ANSI.sub("", s)
 
 
-def _md_inline(s: str) -> str:
-    # s ist bereits HTML-escaped. Inline-Spans: code zuerst (kein Markup darin).
-    s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
-    s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
-    return s
+def _merge_deltas(events: list[dict]) -> list[dict]:
+    """Token-Deltas (Follow-up PLAN-14) zu ganzen Zeilen zusammenführen — sonst
+    zerfällt eine Zeile in viele winzige Timestamp-Fragmente."""
+    merged: list[dict] = []
+    for e in events:
+        if e.get("delta") and merged:
+            merged[-1] = {**merged[-1], "line": merged[-1]["line"] + e.get("line", "")}
+        else:
+            merged.append(dict(e))
+    return merged
 
 
-def _markdown(text: str) -> str:
-    """Minimaler, sicherer Markdown→HTML-Renderer (Überschriften, Fett, Inline-/
-    Block-Code, Listen, Absätze). Bewusst klein; deckt typische ``claude``-Ausgabe
-    ab und degradiert sonst zu Absätzen. Voll-Markdown ist eine spätere Ausbaustufe."""
-    lines = text.split("\n")
-    out: list[str] = []
-    i = 0
-    while i < len(lines):
-        ln = lines[i]
-        if ln.startswith("```"):  # Fenced Code: roh (escaped), kein Inline
-            i += 1
-            buf = []
-            while i < len(lines) and not lines[i].startswith("```"):
-                buf.append(html.escape(lines[i]))
-                i += 1
-            i += 1  # schließendes Fence
-            out.append("<pre><code>" + "\n".join(buf) + "</code></pre>")
-            continue
-        m = re.match(r"(#{1,3})\s+(.*)", ln)
-        if m:
-            lvl = len(m.group(1))
-            out.append(f"<h{lvl}>{_md_inline(html.escape(m.group(2)))}</h{lvl}>")
-            i += 1
-            continue
-        if ln.startswith("- "):
-            items = []
-            while i < len(lines) and lines[i].startswith("- "):
-                items.append(f"<li>{_md_inline(html.escape(lines[i][2:]))}</li>")
-                i += 1
-            out.append("<ul>" + "".join(items) + "</ul>")
-            continue
-        if ln.strip() == "":
-            i += 1
-            continue
-        # Absatz: zusammenhängende Nicht-Spezial-Zeilen
-        para = []
-        while i < len(lines) and lines[i].strip() != "" \
-                and not lines[i].startswith(("```", "- ")) \
-                and not re.match(r"#{1,3}\s+", lines[i]):
-            para.append(_md_inline(html.escape(lines[i])))
-            i += 1
-        out.append("<p>" + "<br>".join(para) + "</p>")
-    return "".join(out)
+def _event_line(e: dict) -> str:
+    """Eine Output-Zeile: Uhrzeit-Präfix + Status-Klasse (err/thinking). **Eine**
+    Formatierung für live *und* archiviert (User-Feedback 2026-07-01: der Output
+    eines abgeschlossenen Laufs sah über einen zweiten, Markdown-basierten
+    Renderer anders aus als während RUNNING — verwirrend, jetzt vereinheitlicht)."""
+    import datetime as _dt
+    try:
+        ts = _dt.datetime.fromtimestamp(float(e["t"])).strftime("%H:%M:%S")
+    except Exception:
+        ts = "--:--:--"
+    line = _e(_strip_ansi(e.get("line", "")))
+    s = e.get("s")
+    cls = ' class="err"' if s == "err" else (' class="thinking"' if s == "thinking" else "")
+    return f'<span class="lts">{ts}</span> <span{cls}>{line}</span>'
 
 
 def output_block(events: list[dict], kind: str) -> str:
-    """Output eines Laufs rendern. **Dispatch nach Event-Typ** (``s``): heute
-    ``out``/``err``; Steuer-/Fortschritts-/HITL-Events (Phase 6) docken ohne Umbau
-    an. Render je **Job-Typ**: ``claude`` → Markdown flüssig, ``job``/sonst →
-    Terminal/preformatted (ANSI bereinigt). Top-Prio F4."""
+    """Output eines abgeschlossenen Laufs rendern — dieselbe Zeilen-Formatierung
+    wie :func:`live_output_box` (Uhrzeit-Präfix, err/thinking-Styling), nur
+    eingefroren (kein SSE/JS-Hook). ``kind`` ist nur noch für die Signatur
+    relevant (Aufrufer reichen ihn weiterhin durch); die Darstellung selbst
+    unterscheidet nicht mehr nach Job-Typ."""
     if not events:
         return '<div class="out-empty">— kein Output —</div>'
-    if kind == "claude":
-        # stdout als Markdown-Blob; stderr als Terminal-Block darunter.
-        out_text = "\n".join(_strip_ansi(e["line"]) for e in events if e.get("s") == "out")
-        err_evts = [e for e in events if e.get("s") == "err"]
-        html_parts = []
-        if out_text.strip():
-            html_parts.append(f'<div class="md">{_markdown(out_text)}</div>')
-        if err_evts:
-            errs = "\n".join(_e(_strip_ansi(e["line"])) for e in err_evts)
-            html_parts.append(f'<pre class="term"><span class="err">{errs}</span></pre>')
-        return "".join(html_parts) or '<div class="out-empty">— kein Output —</div>'
-    # job/app: preformatted, stderr-Zeilen rot.
-    rows = []
-    for e in events:
-        line = _e(_strip_ansi(e.get("line", "")))
-        rows.append(f'<span class="err">{line}</span>' if e.get("s") == "err" else line)
-    return f'<pre class="term">{chr(10).join(rows)}</pre>'
+    lines = "\n".join(_event_line(e) for e in _merge_deltas(events))
+    return f'<pre class="term">{lines}</pre>'
 
 
 # ── Live-Output (SSE; Frontend-Plan §C.5) ────────────────────────────────────
@@ -972,30 +946,8 @@ def live_output_box(job_id: str, events: list[dict] | None = None,
     — formatiert, zählt in denselben Einheiten wie der Seed, kein Offset-Mismatch;
     Follow-up zu PLAN-14). ``hx-preserve`` hält die Box + EventSource über den
     2 s-``#detail``-Poll am Leben."""
-    import datetime as _dt
     evs = events or []
-
-    # Token-Deltas (Follow-up PLAN-14) zu ganzen Zeilen zusammenführen, bevor
-    # der no-JS-Seed gebaut wird — sonst zerfällt der erste Paint in viele
-    # winzige Timestamp-Zeilen, bis die Live-JS übernimmt.
-    merged: list[dict] = []
-    for e in evs:
-        if e.get("delta") and merged:
-            merged[-1] = {**merged[-1], "line": merged[-1]["line"] + e.get("line", "")}
-        else:
-            merged.append(dict(e))
-
-    def _seed_line(e: dict) -> str:
-        try:
-            ts = _dt.datetime.fromtimestamp(float(e["t"])).strftime("%H:%M:%S")
-        except Exception:
-            ts = "--:--:--"
-        line = _e(_strip_ansi(e.get("line", "")))
-        s = e.get("s")
-        cls = ' class="err"' if s == "err" else (' class="thinking"' if s == "thinking" else "")
-        return f'<span class="lts">{ts}</span> <span{cls}>{line}</span>'
-
-    seed = "\n".join(_seed_line(e) for e in merged)
+    seed = "\n".join(_event_line(e) for e in _merge_deltas(evs))
     jid = _e(job_id)
     return (f'<pre class="term liveterm" id="livebox-{jid}" data-job="{jid}" '
             f'data-from="{len(evs)}" hx-preserve="true">{seed}</pre>')
@@ -1288,16 +1240,20 @@ def schedule_detail_page(
 
 _TS_FIELDS = {"started_at", "finished_at", "archived_at"}
 _ATTR_ORDER = [
-    "run_id", "slug", "kind", "domain", "status", "reason", "exit_code",
-    "exec_runtime", "started_at", "finished_at", "host", "worker",
-    "branch", "commit_sha", "snapshot", "output_ref", "archived_at",
+    "run_id", "slug", "domain", "reason", "exit_code",
+    "host", "worker", "branch", "commit_sha", "snapshot", "output_ref",
+    "archived_at",
 ]
+#: kind/status/exec_runtime/started_at/finished_at/schedule_ref stehen bereits
+#: breit in _exec_summary() (User-Feedback 2026-07-01: wichtigste Attribute
+#: breit statt in der langen vertikalen Tabelle) — hier nicht doppeln.
+_ATTR_HIDDEN = {"kind", "status", "exec_runtime", "started_at", "finished_at", "schedule_ref"}
 
 
 def _attr_table(e: dict) -> str:
     import datetime as _dt
     rows = []
-    seen = set()
+    seen = set(_ATTR_HIDDEN)
     for key in _ATTR_ORDER:
         if key not in e:
             continue
@@ -1328,21 +1284,37 @@ def _attr_table(e: dict) -> str:
 
 
 def _exec_summary(e: dict) -> str:
-    """Kompakte Zeile: exit N · Dauer X s · host H · worker W."""
+    """Breite Kompakt-Zeile mit den wichtigsten Attributen: kind · Status ·
+    exit · Start → Ende (Dauer) · host · worker · schedule_ref (User-Feedback
+    2026-07-01: "eher breit als hoch die wichtigsten Attribute", statt sie nur
+    in der langen vertikalen Tabelle zu verstecken)."""
+    import datetime as _dt
     parts = []
+    if e.get("kind"):
+        parts.append(f'<span class="kind">{_e(str(e["kind"]))}</span>')
+    st = e.get("status")
+    if st:
+        parts.append(f'<span class="st {_e(st)}">{_e(st)}</span>')
     ec = e.get("exit_code")
     if ec is not None:
         parts.append(f"exit {ec}")
     rt = e.get("exec_runtime")
     s, f = e.get("started_at"), e.get("finished_at")
-    if rt is not None:
+    if rt is None and s is not None and f is not None:
+        rt = f - s
+    if s is not None and f is not None:
+        s_str = _dt.datetime.fromtimestamp(s).strftime("%H:%M:%S")
+        f_str = _dt.datetime.fromtimestamp(f).strftime("%H:%M:%S")
+        dauer = f" (Dauer {round(rt)} s)" if rt is not None else ""
+        parts.append(f"{s_str} → {f_str}{dauer}")
+    elif rt is not None:
         parts.append(f"Dauer {round(rt)} s")
-    elif s is not None and f is not None:
-        parts.append(f"Dauer {round(f - s)} s")
     if e.get("host"):
         parts.append(f"host {_e(str(e['host']))}")
     if e.get("worker"):
         parts.append(f"worker {_e(str(e['worker']))}")
+    if e.get("schedule_ref"):
+        parts.append(f'schedule_ref <code>{_e(str(e["schedule_ref"]))}</code>')
     return f'<p class="muted">{"  ·  ".join(parts)}</p>' if parts else ""
 
 
@@ -1354,18 +1326,22 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
     run_id = _e(e.get("run_id") or "—")
     slug = _e(e.get("slug") or "")
     st = _e(e.get("status") or "")
-    back = (f'<a class="back" href="/-/ui/schedule/{slug}">← {slug}</a> · '
-            f'<a class="back" href="/-/ui/feed">Feed</a>')
+    # Breadcrumb statt eigenem "bibi ·"-Header (User-Feedback 2026-07-01: doppeltes
+    # "bibi" + verschachtelte Nav) — derselbe Aufbau wie schedule_detail_page().
+    back = (f'<a class="back" href="/-/ui/schedule/{slug}">← {slug}</a>'
+            if slug else '<a class="back" href="/-/ui/feed">← Feed</a>')
     out = output_block(events, e.get("kind") or kind)
     jid = e.get("id")
     # Follow-up (User-Feedback): "auch bei archivierten Jobs im Journal eine
     # Möglichkeit, den Original Output zu sehen" — roher Zugriff neben dem
     # formatierten Output (/-/journal/{jid}/out|err|stream, PLAN-14 Stufe 14.0).
+    # target=_blank (User-Feedback 2026-07-01): roher Output soll die formatierte
+    # Ansicht nicht verdrängen.
     raw_links = (
         f' <span class="muted">roh: '
-        f'<a class="back" href="/-/journal/{jid}/out">out</a> · '
-        f'<a class="back" href="/-/journal/{jid}/err">err</a> · '
-        f'<a class="back" href="/-/journal/{jid}/stream">stream</a></span>'
+        f'<a class="back" href="/-/journal/{jid}/out" target="_blank" rel="noopener">out</a> · '
+        f'<a class="back" href="/-/journal/{jid}/err" target="_blank" rel="noopener">err</a> · '
+        f'<a class="back" href="/-/journal/{jid}/stream" target="_blank" rel="noopener">stream</a></span>'
         if jid is not None else ""
     )
     return (
@@ -1380,8 +1356,8 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         ".attrtable td { padding: .15rem .3rem; vertical-align: top; }"
         "</style></head><body>"
         f"{_header('')}"
-        f'<header><h1>bibi · <span class="st {st}">{run_id}</span></h1>'
-        f'<span class="muted">{back}</span></header>'
+        f'<div style="display:flex;gap:.75rem;align-items:baseline">{back}</div>'
+        f'<h1><span class="st {st}">{run_id}</span></h1>'
         f"{_exec_summary(e)}"
         f"{_attr_table(e)}"
         f"<h2>Output</h2>{raw_links}"

@@ -47,8 +47,8 @@ def _events_from_message(msg: dict, t: float | None, *, skip_text: bool = False)
             out.extend({"t": t, "s": "out", "line": ln} for ln in text.split("\n"))
         elif btype == "tool_use":
             summary = _tool_summary(block.get("name", "tool"), block.get("input") or {})
-            # Leerzeilen davor/danach ⇒ render.py::_markdown() rendert die
-            # Summary als eigenen <p>, statt sie in Fließtext zu kleben.
+            # Leerzeilen davor/danach ⇒ optischer Abstand um die Tool-Summary-Zeile
+            # in der Zeilen-für-Zeile-Darstellung (render.py::_event_line()).
             out += [{"t": t, "s": "out", "line": ""},
                     {"t": t, "s": "out", "line": summary},
                     {"t": t, "s": "out", "line": ""}]

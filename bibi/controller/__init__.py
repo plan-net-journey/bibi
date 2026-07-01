@@ -195,6 +195,16 @@ def add_controller_routes(
             data = client.run_output(jid)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             entry, data = {}, {}
+        # schedule_ref lebt nur am aktuellen Job (nicht im Journal) — Live-Lookup
+        # per Slug, best-effort (User-Feedback 2026-07-01: "wo ist die schedule_ref?").
+        # Existiert der Schedule nicht mehr (gelöscht/umbenannt), bleibt sie schlicht leer.
+        if entry.get("slug"):
+            try:
+                schedule_ref = client.schedule_config(entry["slug"]).get("schedule_ref")
+                if schedule_ref:
+                    entry = {**entry, "schedule_ref": schedule_ref}
+            except Exception:  # noqa: BLE001 — defensiv (§2.7)
+                pass
         return HTMLResponse(render.execution_detail_page(
             entry, data.get("events", []), data.get("kind") or entry.get("kind", "job")))
 

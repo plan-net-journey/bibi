@@ -19,12 +19,13 @@ from bibi.daemon.app import create_app
 
 
 def _sched(slug, *, kind="job", trigger="now", last_status="pending",
-           last_run_at=None, next_fire_at=None, oneshot=False,
+           last_run_at=None, last_run_id=None, next_fire_at=None, oneshot=False,
            payload="echo hi", app_port=None, active=True) -> dict:
     return {"slug": slug, "kind": kind, "trigger": trigger,
             "last_status": last_status, "last_run_at": last_run_at,
-            "next_fire_at": next_fire_at, "oneshot": oneshot,
-            "payload": payload, "app_port": app_port, "active": active}
+            "last_run_id": last_run_id, "next_fire_at": next_fire_at,
+            "oneshot": oneshot, "payload": payload, "app_port": app_port,
+            "active": active}
 
 
 def test_schedule_list_empty():
@@ -96,6 +97,26 @@ def test_sched_row_has_kind_and_last_status():
     assert '<th>Art</th>' in html
     assert '>claude<' in html
     assert 'class="st complete">complete<' in html
+
+
+def test_sched_row_status_and_ago_link_to_run_detail():
+    # User-Feedback 2026-07-01: Status/letzter-seit -> Lauf-Details (journal-id),
+    # Schedule/nächster -> Job-Details (Schedule selbst).
+    items = [_sched("nightly", trigger="0 9 * * *", last_status="complete",
+                    last_run_at=100.0, last_run_id=42, next_fire_at=360.0)]
+    html = render.schedule_list(items, now=300.0)
+    assert 'href="/-/ui/run/42">complete<' in html
+    assert '>vor' in html and 'href="/-/ui/run/42">vor' in html
+    assert 'href="/-/ui/schedule/nightly">nightly<' in html
+    assert 'href="/-/ui/schedule/nightly">in ' in html  # "nächster" verlinkt
+
+
+def test_sched_row_status_and_ago_plain_without_run_id():
+    # Ohne abgeschlossenen Lauf (last_run_id=None) gibt es nichts zum Verlinken.
+    items = [_sched("fresh", last_status="pending")]
+    html = render.schedule_list(items, now=300.0)
+    assert '/-/ui/run/' not in html
+    assert 'class="st pending">pending<' in html
 
 
 def test_schedules_fragment_self_polls_under_follow():

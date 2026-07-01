@@ -56,10 +56,43 @@ def test_execution_detail_output_job_preformatted():
     assert "hallo" in html and 'class="term"' in html
 
 
-def test_execution_detail_output_claude_markdown():
+def test_execution_detail_output_claude_uses_same_renderer_as_live():
+    # User-Feedback 2026-07-01: archivierter Output muss genauso formatiert sein
+    # wie während RUNNING (Uhrzeit-Präfix), nicht über einen separaten Markdown-Renderer.
     events = [{"t": 1, "s": "out", "line": "# Titel"}]
     html = render.execution_detail_page(_entry(kind="claude"), events=events, kind="claude")
-    assert "<h1>Titel</h1>" in html
+    assert "<h1>Titel</h1>" not in html
+    assert "# Titel" in html
+    assert 'class="lts"' in html
+
+
+def test_execution_detail_summary_shows_kind_status_and_range_wide():
+    # User-Feedback 2026-07-01: kind/status/Start->Ende sollen breit in der
+    # Summary-Zeile stehen statt nur in der langen vertikalen Tabelle.
+    html = render.execution_detail_page(_entry(kind="claude", status="complete"),
+                                        events=[], kind="claude")
+    assert 'class="kind">claude<' in html
+    assert 'class="st complete">complete<' in html
+    assert "→" in html  # Start -> Ende
+
+
+def test_execution_detail_attr_table_does_not_duplicate_summary_fields():
+    # kind/status/exec_runtime/started_at/finished_at stehen jetzt nur noch in
+    # der Summary-Zeile, nicht mehr zusätzlich in der langen Attribut-Tabelle.
+    html = render.execution_detail_page(_entry(kind="claude", status="complete"),
+                                        events=[], kind="claude")
+    attrs_html = html.split("<h2>Output</h2>")[0]
+    assert "<td><b>kind</b></td>" not in attrs_html
+    assert "<td><b>status</b></td>" not in attrs_html
+    assert "<td><b>started_at</b></td>" not in attrs_html
+
+
+def test_execution_detail_header_has_no_duplicate_bibi_prefix():
+    # User-Feedback 2026-07-01: Nav-/Kopfzeile war doppelt ("bibi" im globalen
+    # Header + nochmal "bibi ·" vor dem run_id) — jetzt ein bloßes <h1>{run_id}</h1>.
+    html = render.execution_detail_page(_entry(run_id="Witz:54"), events=[], kind="claude")
+    assert "<h1>bibi ·" not in html
+    assert "<h1><span" in html
 
 
 def test_execution_detail_duration_from_timestamps():
@@ -78,14 +111,17 @@ def test_execution_detail_escapes_slug():
 
 
 class FakeClient:
-    def __init__(self, entry: dict, output: dict) -> None:
-        self._e, self._o = entry, output
+    def __init__(self, entry: dict, output: dict, *, schedule: dict | None = None) -> None:
+        self._e, self._o, self._sched = entry, output, schedule or {}
 
     def journal_entry(self, jid: int) -> dict:
         return self._e
 
     def run_output(self, jid: int) -> dict:
         return self._o
+
+    def schedule_config(self, slug: str) -> dict:
+        return self._sched
 
 
 def test_ui_run_detail_route(team_repo: Path):
@@ -98,6 +134,36 @@ def test_ui_run_detail_route(team_repo: Path):
         r = c.get("/-/ui/run/7")
         assert r.status_code == 200
         assert "Witz:54" in r.text and "ein witz" in r.text
+
+
+def test_ui_run_detail_route_shows_schedule_ref(team_repo: Path):
+    # User-Feedback 2026-07-01: schedule_ref fehlte auf der Execution-Detail-Seite
+    # (steht nicht im Journal, nur am aktuellen Job) — Live-Lookup per Slug.
+    client = FakeClient(
+        _entry(jid=7, run_id="Witz:54", slug="Witz", kind="claude"),
+        {"id": 7, "kind": "claude", "events": []},
+        schedule={"schedule_ref": "20260628.Witz-abc1.md"})
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/run/7")
+        assert r.status_code == 200
+        assert "20260628.Witz-abc1.md" in r.text
+
+
+def test_ui_run_detail_route_tolerates_missing_schedule_config(team_repo: Path):
+    # Schedule inzwischen gelöscht/umbenannt — darf die Seite nicht kaputt machen.
+    class _NoScheduleConfigClient(FakeClient):
+        def schedule_config(self, slug: str) -> dict:
+            raise RuntimeError("boom")
+
+    client = _NoScheduleConfigClient(
+        _entry(jid=7, run_id="Witz:54", slug="Witz", kind="claude"),
+        {"id": 7, "kind": "claude", "events": []})
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/run/7")
+        assert r.status_code == 200
+        assert "Witz:54" in r.text
 
 
 # ── Daemon: GET /-/journal/{jid} (Metadaten) ──────────────────────────────────

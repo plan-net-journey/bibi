@@ -38,25 +38,17 @@ def test_output_block_strips_ansi():
     assert "\x1b[31m" not in html
 
 
-def test_output_block_claude_markdown():
-    ev = [{"s": "out", "line": "# Titel"},
-          {"s": "out", "line": ""},
-          {"s": "out", "line": "Ein **fetter** Satz mit `code`."},
-          {"s": "out", "line": "- erstens"},
-          {"s": "out", "line": "- zweitens"}]
+def test_output_block_claude_uses_same_line_rendering_as_live():
+    # User-Feedback 2026-07-01: der archivierte Output sah über einen zweiten,
+    # Markdown-basierten Renderer anders aus als während RUNNING — jetzt dieselbe
+    # Zeilen-für-Zeile-Formatierung (Uhrzeit-Präfix, kein Markdown-Parsing mehr).
+    ev = [{"t": 1, "s": "out", "line": "# Titel"},
+          {"t": 2, "s": "thinking", "line": "grübel"}]
     html = render.output_block(ev, "claude")
-    assert "<h1>Titel</h1>" in html
-    assert "<strong>fetter</strong>" in html
-    assert "<code>code</code>" in html
-    assert "<li>erstens</li>" in html and "<li>zweitens</li>" in html
-
-
-def test_output_block_claude_fenced_code():
-    ev = [{"s": "out", "line": "```"},
-          {"s": "out", "line": "x = 1"},
-          {"s": "out", "line": "```"}]
-    html = render.output_block(ev, "claude")
-    assert "<pre><code>x = 1</code></pre>" in html
+    assert "<h1>Titel</h1>" not in html
+    assert "# Titel" in html
+    assert 'class="thinking"' in html and "grübel" in html
+    assert 'class="lts"' in html
 
 
 def test_output_block_empty():
@@ -251,22 +243,22 @@ def test_run_output_route_renders(app_with):
         assert 'class="err"' in r.text and "fehler" in r.text
 
 
-def test_run_output_route_renders_claude_tool_use_as_own_paragraph(app_with):
-    # PLAN-12 Stufe 12.6 (Verifikation): bereits formatierte Events (Text +
-    # gepolsterte Tool-Use-Zeile, wie sie output_format.format_events liefert)
-    # rendern über die bestehende Markdown-Kette ohne Änderung an output_block —
-    # die Leerzeilen um die Summary lassen _markdown() sie als eigenen <p> setzen.
+def test_run_output_route_renders_claude_tool_use_as_plain_line(app_with):
+    # Follow-up (User-Feedback 2026-07-01): output_block() rendert claude nicht
+    # mehr über die Markdown-Kette — bereits formatierte Tool-Use-Zeilen (wie sie
+    # output_format.format_events liefert) erscheinen als eigene Zeile, roh.
     client = FakeClient(output={"id": 7, "kind": "claude", "events": [
-        {"s": "out", "line": "Ein **fetter** Satz."},
-        {"s": "out", "line": ""},
-        {"s": "out", "line": "→ Bash: ls -la"},
-        {"s": "out", "line": ""},
+        {"t": 1, "s": "out", "line": "Ein **fetter** Satz."},
+        {"t": 2, "s": "out", "line": ""},
+        {"t": 3, "s": "out", "line": "→ Bash: ls -la"},
+        {"t": 4, "s": "out", "line": ""},
     ]})
     with TestClient(app_with(client)) as c:
         r = c.get("/-/ui/run/7/output")
         assert r.status_code == 200
-        assert "<p>Ein <strong>fetter</strong> Satz.</p>" in r.text
-        assert "<p>→ Bash: ls -la</p>" in r.text
+        assert "<strong>fetter</strong>" not in r.text
+        assert "Ein **fetter** Satz." in r.text
+        assert "→ Bash: ls -la" in r.text
 
 
 def test_action_route_calls_verb_and_rerenders(app_with):
