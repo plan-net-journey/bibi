@@ -27,8 +27,8 @@ def client(team_repo: Path):
 
 def _seed_complete(lines: list[tuple[str, str]]) -> str:
     jid = secrets.token_hex(4)
-    # Output liegt am run_id-Pfad (slug:fire), den die Live-Route auflöst; fire=0.
-    run_id = "run1:0"
+    # Output liegt am run_id-Pfad (run_id_for), den die Live-Route auflöst; fire=0.
+    run_id = job_db.run_id_for("run1", jid, 0)
     conn = job_db.connect()
     try:
         conn.execute(
@@ -46,7 +46,7 @@ def _seed_complete(lines: list[tuple[str, str]]) -> str:
 
 def _seed_claude_complete(stream_json_lines: list[str]) -> str:
     jid = secrets.token_hex(4)
-    run_id = "claude1:0"
+    run_id = job_db.run_id_for("claude1", jid, 0)
     conn = job_db.connect()
     try:
         conn.execute(

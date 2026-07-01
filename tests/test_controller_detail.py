@@ -202,6 +202,9 @@ class FakeClient:
     def run_output(self, jid: int) -> dict:
         return self._output
 
+    def job_output(self, job_id: str) -> dict:
+        return self._output
+
     def job_action(self, job_id: str, verb: str) -> dict:
         self.actions.append((job_id, verb))
         return {"id": job_id, "status": verb}
@@ -231,6 +234,21 @@ def test_schedule_detail_route(app_with):
         assert r.headers["content-type"].startswith("text/html")
         assert "boom" in r.text and "error" in r.text
         assert "Output ↓" not in r.text  # Follow-up: "Output entfällt" für Journal-Zeilen
+
+
+def test_schedule_detail_route_shows_output_for_terminal_job(app_with):
+    # User-Feedback 2026-07-01: der Controller holt jetzt auch für einen
+    # bereits terminalen Job den Output — die Route darf ihn nicht mehr
+    # unterdrücken, bis ein neuer Lauf ihn ersetzt.
+    client = FakeClient(
+        schedules=[{"slug": "boom", "kind": "job", "trigger": "now",
+                    "next_fire_at": None, "last_status": "complete"}],
+        jobs=[{"id": "j1", "slug": "boom", "status": "complete", "finished_at": 2.0}],
+        output={"id": "j1", "kind": "job", "events": [{"s": "out", "line": "fertig"}]})
+    with TestClient(app_with(client)) as c:
+        r = c.get("/-/ui/schedule/boom")
+        assert r.status_code == 200
+        assert 'class="liveout"' in r.text and "fertig" in r.text
 
 
 def test_run_output_route_renders(app_with):
@@ -312,11 +330,15 @@ def test_detail_live_panel_for_running_job():
     assert "noch keine Läufe" in html                    # Journal noch leer
 
 
-def test_detail_no_live_panel_when_terminal():
+def test_detail_shows_live_panel_for_last_terminal_run():
+    # User-Feedback 2026-07-01: "archiviert wird erst vor dem nächsten Rerun" —
+    # der letzte Lauf bleibt oben sichtbar (Status + "beendet vor..."), bis ein
+    # neuer Lauf ihn ersetzt. Das Journal bekommt seine Zeile trotzdem sofort.
     s = {"slug": "a", "kind": "job", "trigger": "now"}
     job = {"id": "j", "slug": "a", "status": "complete", "finished_at": 2.0}
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
-    assert 'class="live"' not in html                    # terminal → kein Live-Block
+    assert 'class="live"' in html and 'class="st complete">complete' in html
+    assert "letzter Lauf" in html and "beendet vor 3s" in html
 
 
 def test_detail_self_polls_under_follow():
@@ -331,6 +353,17 @@ def test_live_panel_shows_output_expanded():
     html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0,
                                         live_output=live)
     assert 'class="liveout"' in html and "lebt" in html   # Live-Output inline
+
+
+def test_live_panel_shows_output_for_last_terminal_run():
+    # User-Feedback 2026-07-01: Output des letzten Laufs bleibt oben sichtbar,
+    # auch nachdem der Job terminal geworden ist (nicht erst wieder über den
+    # Journal-Detail-Link).
+    job = {"id": "j", "slug": "a", "status": "complete", "finished_at": 5.0}
+    live = {"kind": "job", "events": [{"s": "out", "line": "fertig"}]}
+    html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0,
+                                        live_output=live)
+    assert 'class="liveout"' in html and "fertig" in html
 
 
 def test_run_rows_no_output_toggle():

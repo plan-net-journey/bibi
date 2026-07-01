@@ -335,7 +335,7 @@ def execute_reservation(
     (z. B. ``killed`` per ``/-/job/{id}/kill``), lehnt der Scheduler den Übergang ab
     (``invalid``) und der Worker überschreibt nichts."""
     jid = reservation["id"]
-    run_id = f"{reservation['slug']}:{reservation.get('fire', 0)}"
+    run_id = job_db.run_id_for(reservation["slug"], jid, reservation.get("fire", 0))
     host = host or socket.gethostname()
     attempt = reservation.get("attempt") or 0
     attempts = reservation.get("attempts") or 1
@@ -506,9 +506,10 @@ class Worker:
         """``output.jsonl``-Pfad des **aktuellen** Laufs eines Jobs (Live-Routen).
 
         Löst die stabile ``job_id`` über die DB auf den laufenden run_id
-        (``slug:fire``) auf — so zeigt ``/-/job/{id}/…`` immer nur den jüngsten
-        Lauf (Historie früherer Läufe läuft über ``output_ref`` im Journal). Ist
-        die ID unbekannt (z. B. ephemerer ``/run``), bleibt sie selbst der Pfad."""
+        (``run_id_for()``) auf — so zeigt ``/-/job/{id}/…`` immer nur den
+        jüngsten Lauf (Historie früherer Läufe läuft über ``output_ref`` im
+        Journal). Ist die ID unbekannt (z. B. ephemerer ``/run``), bleibt sie
+        selbst der Pfad."""
         root, _ = self._roots()
         conn = job_db.connect(self.db_path)
         try:
@@ -516,7 +517,7 @@ class Worker:
                 "SELECT slug, fire FROM jobs WHERE id=?", (job_id,)).fetchone()
         finally:
             conn.close()
-        run_id = f"{row['slug']}:{row['fire']}" if row else job_id
+        run_id = job_db.run_id_for(row["slug"], job_id, row["fire"]) if row else job_id
         return _output_path(root, run_id)
 
     def _register(self, job_id: str, proc: subprocess.Popen | None) -> None:

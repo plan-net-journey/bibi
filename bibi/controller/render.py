@@ -1062,18 +1062,24 @@ def _run_rows(runs: list[dict], slug: str, now: float) -> str:
 
 def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
                slug: str = "") -> str:
-    """Eigener Block für den **aktiven/anstehenden** Lauf, nahe am Header — getrennt
-    vom Journal (das erst beim Terminal-Übergang eine Zeile bekommt). So ist der
-    laufende Job sofort sichtbar (pending → running → …); wird er terminal,
-    verschwindet der Block und der echte Journal-Eintrag erscheint unten. Der
-    Live-Output wird **default expanded** mitgerendert (server-seitig, überlebt Poll)."""
-    if not job or job.get("status") in _TERMINAL_VIEW:
+    """Eigener Block für den **aktuellen** Lauf (aktiv oder zuletzt beendet), nahe
+    am Header. Bleibt auch nach einem Terminal-Übergang mit Status+Output stehen
+    (User-Feedback 2026-07-01: "archiviert wird erst vor dem nächsten Rerun" —
+    die Job-Zeile trägt den letzten Lauf ja weiter fort, bis sie ein neuer Lauf
+    überschreibt; das Journal bekommt seine Zeile trotzdem sofort beim Terminal-
+    Übergang, s. job_db.py::_write_journal, nur diese Anzeige hier hängt nicht
+    mehr daran). Der Output wird **default expanded** mitgerendert (server-seitig,
+    überlebt Poll)."""
+    if not job:
         return ""
     st = _e(job.get("status"))
-    started = job.get("started_at")
+    is_terminal = job.get("status") in _TERMINAL_VIEW
     bits = []
-    if started:
-        bits.append(f"seit {_ago(started, now)}")
+    if is_terminal:
+        if job.get("finished_at"):
+            bits.append(f"beendet {_ago(job['finished_at'], now)}")
+    elif job.get("started_at"):
+        bits.append(f"seit {_ago(job['started_at'], now)}")
     if job.get("status") == "pending" and job.get("next_fire_at"):
         bits.append(f"nächster Lauf {_until(job.get('next_fire_at'), now)}")
     if job.get("reason"):
@@ -1098,12 +1104,17 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
                    + output_block(live_output["events"], live_output.get("kind", "job"))
                    + "</div>")
         out += _hitl_panel(job)
+    elif is_terminal and live_output and live_output.get("events"):
+        out = ('<div class="liveout">'
+               + output_block(live_output["events"], live_output.get("kind", "job"))
+               + "</div>")
     app_port = job.get("app_port") if job else None
     app_link = (f' <a href="http://127.0.0.1:{app_port}/" target="_blank" '
                 f'style="font-size:.82rem">Zur App →</a>' if app_port else "")
+    label = "letzter Lauf" if is_terminal else "aktiver Lauf"
     return (f'<div class="live"><div class="live-head">'
             f'<span class="st {st}">{st}</span>'
-            f'<span class="muted">aktiver Lauf{tail}</span>{app_link}</div>{out}</div>')
+            f'<span class="muted">{label}{tail}</span>{app_link}</div>{out}</div>')
 
 
 def _hitl_panel(job: dict) -> str:

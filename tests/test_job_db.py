@@ -231,6 +231,40 @@ def test_list_schedules_excludes_local_domain_phantom_entries(conn):
     assert not any(s["slug"] == "adhoc" for s in items)
 
 
+def test_run_id_for_includes_job_id_suffix():
+    assert job_db.run_id_for("Witz", "bf63ab4f", 12) == "Witz:12:bf63ab4f"
+
+
+def test_journal_entries_from_different_job_incarnations_do_not_collide(conn, tmp_path: Path):
+    # User-Feedback 2026-07-01 (live reproduziert): `fire` startet bei jeder neuen
+    # Job-Zeile wieder bei 0 — ein heutiger Lauf traf denselben run_id wie ein
+    # Jahre alter Lauf einer früheren Job-Inkarnation desselben Slugs (z.B. nach
+    # Maschinenwechsel/DB-Reset). Ohne den job_id-Suffix in run_id_for() wurde
+    # der echte neue Journal-Eintrag stillschweigend verworfen (Dedup-Kollision)
+    # und der zugehörige Output-Pfad auf Platte hätte den alten Lauf überschrieben.
+    _write(tmp_path / "case" / "flaky.md", '---\nschedule: never\njob: "echo x"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    old_jid = conn.execute("SELECT id FROM jobs WHERE slug='flaky'").fetchone()["id"]
+
+    # Alte Job-Inkarnation erreicht fire=3 und schließt ab (echte Historie).
+    conn.execute("UPDATE jobs SET fire=3 WHERE id=?", (old_jid,))
+    job_db.report_status(conn, old_jid, status="running")
+    job_db.report_status(conn, old_jid, status="complete", now=1000.0)
+
+    # Job-Zeile wird gelöscht + neu angelegt (neue job_id, fire startet wieder bei 0).
+    conn.execute("DELETE FROM jobs WHERE id=?", (old_jid,))
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    new_jid = conn.execute("SELECT id FROM jobs WHERE slug='flaky'").fetchone()["id"]
+    assert new_jid != old_jid
+    conn.execute("UPDATE jobs SET fire=3 WHERE id=?", (new_jid,))  # erreicht denselben fire-Wert
+    job_db.report_status(conn, new_jid, status="running")
+    job_db.report_status(conn, new_jid, status="complete", now=2000.0)
+
+    rows = [r for r in job_db.list_journal(conn) if r["slug"] == "flaky"]
+    assert len(rows) == 2  # beide Abschlüsse landen im Journal, keiner wird verschluckt
+    assert len({r["run_id"] for r in rows}) == 2  # unterschiedliche run_ids (job_id-Suffix)
+
+
 def test_schedule_list_status_is_last_run_not_rearmed_pending(conn, tmp_path: Path):
     # Ein wiederkehrender Job re-armt nach `complete` sofort zu `pending`. Die Liste
     # soll dennoch den **letzten Lauf** (complete) zeigen, nicht den Zeilen-Status.

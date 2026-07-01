@@ -48,7 +48,7 @@ def test_listener_fires_on_terminal_journal(tmp_path: Path):
     assert len(seen) == 1
     row = seen[0]
     assert row["slug"] == "r" and row["status"] == "complete"
-    assert row["run_id"] == "r:0"  # slug:fire
+    assert row["run_id"] == job_db.run_id_for("r", jid, 0)  # slug:fire:job_id
     assert row["output_ref"] == "data/job/r:0/output.jsonl"
 
 

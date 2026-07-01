@@ -883,6 +883,25 @@ def reconcile_startup_orphans(
 
 # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────────
 
+
+def run_id_for(slug: str, job_id: str, fire: int) -> str:
+    """Kanonische Lauf-ID: ``slug:fire`` (lesbar, wie bisher) + Job-ID-Suffix.
+
+    ``fire`` allein ist NICHT über die gesamte Slug-Historie eindeutig — er
+    startet bei jeder Neuanlage einer Job-Zeile (neue ``job_id``, z. B. nach
+    einem DB-Reset/Maschinenwechsel) wieder bei 0. Ein heutiger Lauf konnte so
+    denselben ``run_id`` wie ein Jahre alter Lauf einer früheren Job-
+    Inkarnation treffen (User-Feedback 2026-07-01) — mit Folgen sowohl für den
+    Journal-Dedup (``_write_journal``) als auch für den Output-Pfad auf Platte
+    (``worker.py:_output_path`` ist ``data/job/<run_id>/output.jsonl``, eine
+    Kollision hätte dort Läufe unterschiedlicher Job-Inkarnationen vermischt).
+    Der Job-ID-Suffix macht ihn durch Konstruktion eindeutig. **Muss** überall
+    identisch verwendet werden, wo ``run_id`` vor UND nach dem Report gebildet
+    wird (``worker.py:execute_reservation``/``Worker.output_path`` vs. hier),
+    sonst laufen Output-Pfad und Journal-Metadaten auseinander."""
+    return f"{slug}:{fire}:{job_id}"
+
+
 #: Optionaler Hook: wird nach jedem Journal-Insert mit der frischen ``journal_view``-
 #: Zeile gerufen — der Daemon registriert hier seinen Feed-Broadcaster (Frontend-Plan
 #: §B). Hält ``job_db`` vom Daemon entkoppelt (keine Broadcaster-Importe). ``None`` = aus.
@@ -915,18 +934,29 @@ def _write_journal(
 ) -> None:
     """Eine append-only Journal-Zeile aus dem aktuellen Job-Zustand schreiben.
 
-    Watermark-Dedup: pro (run_id, status) genau eine Zeile — ein erneuter
-    Terminal-Report (z. B. idempotenter Retry) dupliziert nicht. ``commit_sha``/
-    ``branch`` kommen vom Worker-Report (v6, §2.3); Sweeper-/Reconcile-Terminals
-    ohne Worktree-Commit lassen sie ``NULL``."""
+    Watermark-Dedup: pro (run_id, status, started_at) genau eine Zeile — ein
+    erneuter Terminal-Report (z. B. idempotenter Retry) dupliziert nicht.
+    ``started_at`` ist Teil des Schlüssels (User-Feedback 2026-07-01): ``fire``
+    startet bei jedem neu angelegten Job-Datensatz wieder bei 0 (z. B. nach
+    Neuanlage/Migration) — ein heutiger Lauf kann so zufällig denselben
+    ``run_id`` wie ein Jahre alter, abgeschlossener Lauf treffen. Ohne
+    ``started_at`` im Schlüssel hielt die Dedup-Prüfung das für "schon
+    geloggt" und verwarf den echten neuen Eintrag still, sodass die Liste auf
+    dem uralten (Fehl-)Status hängen blieb. Ein *echter* Wiederholungs-Report
+    derselben Ausführung hat dagegen dasselbe ``started_at`` — bleibt also
+    weiter dedupliziert. ``commit_sha``/``branch`` kommen vom Worker-Report
+    (v6, §2.3); Sweeper-/Reconcile-Terminals ohne Worktree-Commit lassen sie
+    ``NULL``."""
     row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return
-    # run_id je Trigger eindeutig (fire) ⇒ Watermark-Dedup kollidiert nicht über
-    # wiederkehrende cron-Läufe hinweg.
-    run_id = f"{row['slug']}:{row['fire']}"
+    # run_id (inkl. job_id-Suffix, s. run_id_for()) ist über die gesamte
+    # Slug-Historie eindeutig ⇒ Watermark-Dedup kollidiert nicht über
+    # wiederkehrende Läufe *und* nicht über Job-Neuanlagen hinweg.
+    run_id = run_id_for(row["slug"], row["id"], row["fire"])
     dup = conn.execute(
-        "SELECT 1 FROM journal WHERE run_id=? AND status=?", (run_id, row["status"])
+        "SELECT 1 FROM journal WHERE run_id=? AND status=? AND started_at IS ?",
+        (run_id, row["status"], row["started_at"]),
     ).fetchone()
     if dup:
         return

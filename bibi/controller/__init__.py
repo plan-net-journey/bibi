@@ -139,8 +139,6 @@ def add_controller_routes(
     def feed_bands_fragment():
         return HTMLResponse(render.bands_fragment(_jobs(), _journal()))
 
-    _TERMINAL = {"complete", "error", "inactive", "zombie", "killed"}
-
     def _detail_data(slug: str):
         try:
             schedule = next((s for s in client.schedules()
@@ -152,13 +150,17 @@ def add_controller_routes(
         return schedule, runs, job
 
     def _detail_outputs(job: dict | None):
-        # Live-Output **default expanded** nur für den aktiven Job — kein
-        # Auto-Fetch mehr für den jüngsten Journal-Lauf (User-Feedback: stand
-        # kontextlos nach der ganzen Tabelle, jeder Lauf hat jetzt einheitlich
-        # nur seinen Toggle-Button, PLAN-11-Nacharbeit).
+        # Live-Output **default expanded** für den aktuellen Job — auch nach
+        # einem Terminal-Übergang, bis der nächste Lauf ihn ersetzt (User-
+        # Feedback 2026-07-01: "archiviert wird erst vor dem nächsten Rerun" —
+        # die Job-Zeile trägt den letzten Lauf ja weiter, bis sie neu dispatcht
+        # wird; kein Grund, den Output vorher auszublenden). Kein Auto-Fetch
+        # für ÄLTERE Journal-Läufe (User-Feedback: stand sonst kontextlos nach
+        # der ganzen Tabelle, jeder Lauf hat einheitlich nur seinen Detail-Link,
+        # PLAN-11-Nacharbeit) — das bleibt unverändert.
         live_output = None
         try:
-            if job and job.get("id") and job.get("status") not in _TERMINAL:
+            if job and job.get("id"):
                 live_output = client.job_output(job["id"])
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass

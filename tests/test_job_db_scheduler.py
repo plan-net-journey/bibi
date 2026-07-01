@@ -367,7 +367,24 @@ def test_cron_two_fires_two_journal_rows(conn):
     job_db.report_status(conn, jid, status="complete")          # fire 1
     rows = job_db.list_journal(conn)
     assert len(rows) == 2                          # KEIN Dedup über fires hinweg
-    assert {r["run_id"] for r in rows} == {"c:0", "c:1"}
+    assert {r["run_id"] for r in rows} == {
+        job_db.run_id_for("c", jid, 0), job_db.run_id_for("c", jid, 1)}
+
+
+def test_journal_dedup_scoped_by_started_at_not_just_run_id(conn):
+    # User-Feedback 2026-07-01 (live reproduziert): `fire` startet bei jedem neu
+    # angelegten Job-Datensatz wieder bei 0 — ein heutiger Lauf kann so denselben
+    # run_id wie ein längst abgeschlossener Lauf einer alten Job-Inkarnation
+    # treffen. Die Dedup-Prüfung darf den echten neuen Eintrag dann nicht für
+    # "schon geloggt" halten und stillschweigend verwerfen.
+    conn.execute(
+        "INSERT INTO journal (run_id, slug, kind, status, started_at, finished_at, "
+        "archived_at) VALUES ('stale:0','stale','job','error', 100.0, 130.0, 130.0)")
+    jid = _seed_full(conn, slug="stale", status="running", fire=0, started_at=9000.0)
+    job_db.report_status(conn, jid, status="complete", now=9030.0)
+    rows = [r for r in job_db.list_journal(conn) if r["slug"] == "stale"]
+    assert len(rows) == 2  # der alte Eintrag UND der echte neue, nicht verschluckt
+    assert any(r["status"] == "complete" and r["started_at"] == 9000.0 for r in rows)
 
 
 def test_now_job_does_not_recur(conn):
