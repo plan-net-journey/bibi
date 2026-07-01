@@ -381,9 +381,17 @@ _CLOCK_JS = """
 """
 
 
+def _follow_toggle() -> str:
+    """FOLLOW-Button (pausiert Live-Updates, ``window.bibiFollow``) — Teil des
+    gemeinsamen Headers (Follow-up: war zuvor nur auf dem Feed-Screen
+    sichtbar/steuerbar, jetzt auf jedem Screen)."""
+    return '<button id="follow" class="handle on" onclick="bibiToggleFollow()">FOLLOW: AN</button>'
+
+
 def _header(active: str) -> str:
-    """Gemeinsamer Screen-Header: Titel + Live-Uhr + Tab-Leiste."""
-    return f'<header><h1>bibi</h1>{_live_clock()} {_screen_nav(active)}</header>'
+    """Gemeinsamer Screen-Header: Titel + Live-Uhr + Tab-Leiste + FOLLOW-Toggle."""
+    return (f'<header><h1>bibi</h1>{_live_clock()} {_screen_nav(active)} '
+            f'{_follow_toggle()}</header>')
 
 
 def schedules_page(schedules: list[dict], typ: str | None = None,
@@ -786,8 +794,9 @@ def _feed_nav() -> str:
 
 def _feed_handles(status: dict | None = None) -> str:
     """Ops-Bedienelemente auf der Home (Feed): RESCAN, MAINT-Toggle (spiegelt
-    ``status.maintenance``), FOLLOW-Toggle (pausiert die Live-Updates). Plain-JS
-    (``_FEED_HANDLES_JS`` + ``_FOLLOW_JS``) — passend zum Feed-Idiom (kein htmx)."""
+    ``status.maintenance``). FOLLOW sitzt seit dem Follow-up im gemeinsamen
+    ``_header()`` (jeder Screen, nicht nur Feed) — hier nicht mehr doppelt.
+    Plain-JS (``_FEED_HANDLES_JS``) — passend zum Feed-Idiom (kein htmx)."""
     maint = bool((status or {}).get("maintenance"))
     mcls = "handle warn" if maint else "handle"
     mlabel = "MAINT: AN" if maint else "MAINT: aus"
@@ -797,7 +806,6 @@ def _feed_handles(status: dict | None = None) -> str:
         '<nav class="handles">'
         '<button id="rescan" class="handle">RESCAN</button>'
         f'<button id="maint" class="{mcls}">{mlabel}</button>'
-        '<button id="follow" class="handle on" onclick="bibiToggleFollow()">FOLLOW: AN</button>'
         f'<span id="maintbanner" class="banner bad"{hide}>Wartungsmodus aktiv</span>'
         "</nav>"
     )
@@ -1259,11 +1267,13 @@ def schedule_detail_page(
         f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
+        f"{_header('')}"
         f'<div style="display:flex;gap:.75rem;align-items:baseline">'
-        f'<a class="back" href="/-/">← zurück</a>'
+        f'<a class="back" href="/-/ui/feed">← zurück</a>'
         f'<a class="back" href="/-/ui/schedule/{_e(name)}/attrs">Attribute →</a>'
         f'</div>'
         f"{schedule_detail_inner(schedule, runs, job, slug, now, live_output=live_output)}"
+        f"<script>{_CLOCK_JS}</script>"
         f"<script>{_LIVE_JS}</script>"
         "</body></html>"
     )
@@ -1348,17 +1358,20 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>bibi · {run_id}</title>"
+        f"<script>{_FOLLOW_JS}</script>"
         f"<style>{_CSS}"
         ".attrtable { width: auto; margin: .75rem 0; font-size: .85rem; }"
         ".attrtable td:first-child { padding-right: 1.5rem; white-space: nowrap; }"
         ".attrtable td { padding: .15rem .3rem; vertical-align: top; }"
         "</style></head><body>"
+        f"{_header('')}"
         f'<header><h1>bibi · <span class="st {st}">{run_id}</span></h1>'
         f'<span class="muted">{back}</span></header>'
         f"{_exec_summary(e)}"
         f"{_attr_table(e)}"
         "<h2>Output</h2>"
         f'<div class="outscroll">{out}</div>'
+        f"<script>{_CLOCK_JS}</script>"
         "</body></html>"
     )
 

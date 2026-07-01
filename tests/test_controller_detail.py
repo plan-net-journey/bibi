@@ -79,7 +79,7 @@ def test_schedule_detail_page_renders_runs():
     assert "error" in html
     assert "abc1234" in html and "abc1234deadbeef" not in html.split("title=")[0]
     assert 'hx-get="/-/ui/run/7/output"' in html
-    assert 'href="/-/"' in html  # zurück-Link
+    assert 'href="/-/ui/feed"' in html  # zurück-Link (Follow-up: war stales "/-/")
 
 
 def test_schedule_detail_page_no_runs():
