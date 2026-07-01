@@ -114,11 +114,14 @@ def _claude_argv(env: dict[str, str]) -> list[str]:
     # Unconditional (Registry-Default, PLAN-12 Stufe 12.2) — `claude -p` puffert
     # sonst den kompletten Output bis Turn-Ende (live gemessen). `--verbose` ist bei
     # `--print --output-format stream-json` PFLICHT (die CLI bricht sonst sofort mit
-    # "requires --verbose" ab, live in test_container_claude.py aufgedeckt) — liefert
-    # aber weiterhin Event-Granularität pro Turn/Tool-Call, kein Token-Level-Streaming
-    # (das bräuchte zusätzlich --include-partial-messages, bewusst nicht gesetzt, damit
-    # der Ausgabefilter keine Markdown-Fragmente reassemblen muss).
-    argv += ["--output-format", "stream-json", "--verbose"]
+    # "requires --verbose" ab, live in test_container_claude.py aufgedeckt).
+    # `--include-partial-messages` (Follow-up PLAN-14, vormals bewusst aus) liefert
+    # zusätzlich Token-Level-Deltas (stream_event/content_block_delta) für die
+    # Live-Box; der Ausgabefilter (output_format.py) verarbeitet sie zustandslos
+    # pro Aufruf über die volle Roh-Historie, kein Reassemble über Aufrufe hinweg
+    # nötig. Die komplette assistant-Nachricht kommt weiterhin zusätzlich — der
+    # Formatter unterdrückt die dann redundante Text-Wiederholung selbst.
+    argv += ["--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     soul_prompt = _resolve_soul_prompt(env)
     if soul_prompt:
         argv += ["--append-system-prompt", soul_prompt]

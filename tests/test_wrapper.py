@@ -122,6 +122,24 @@ def test_claude_argv_stream_json_coexists_with_resume_and_permission_mode():
          "BIBI_EXEC_MODE": "container"})
     assert "--output-format" in argv and "stream-json" in argv and "--verbose" in argv
     assert "--resume" in argv and "sess-1" in argv
+
+
+# ── Follow-up PLAN-14 — Token-Level-Streaming (--include-partial-messages) ───
+
+
+def test_claude_argv_includes_partial_messages_by_default():
+    argv = wrapper.REGISTRY["claude"].build_command({"BIBI_JOB_PROMPT": "hi"})
+    assert "--include-partial-messages" in argv
+    # nur zusammen mit --print (-p) + --output-format stream-json gültig (CLI-Doku)
+    assert "-p" in argv
+    i = argv.index("--output-format")
+    assert argv[i + 1] == "stream-json"
+
+
+def test_claude_argv_partial_messages_coexists_with_container_permission_mode():
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_EXEC_MODE": "container"})
+    assert "--include-partial-messages" in argv
     assert "--permission-mode" in argv and "acceptEdits" in argv
 
 

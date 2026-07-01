@@ -115,3 +115,74 @@ def test_claude_non_json_out_line_passes_through_raw():
     events = [_ev("Ganz normaler Klartext-Output (Alt-Lauf ohne stream-json)")]
     out = output_format.format_events(events, "claude")
     assert out == events
+
+
+# ── Follow-up PLAN-14 — Token-Level-Deltas (--include-partial-messages) ─────
+
+
+def _stream_event(inner_type: str, **kwargs) -> str:
+    return json.dumps({"type": "stream_event", "event": {"type": inner_type, **kwargs}})
+
+
+def test_claude_text_delta_first_chunk_starts_line_rest_append():
+    events = [
+        _ev(_stream_event("message_start")),
+        _ev(_stream_event("content_block_start", content_block={"type": "text", "text": ""})),
+        _ev(_stream_event("content_block_delta", delta={"type": "text_delta", "text": "Hal"})),
+        _ev(_stream_event("content_block_delta", delta={"type": "text_delta", "text": "lo!"})),
+    ]
+    out = output_format.format_events(events, "claude")
+    assert [(e["s"], e["line"], e["delta"]) for e in out] == [
+        ("out", "Hal", False), ("out", "lo!", True),
+    ]
+
+
+def test_claude_thinking_delta_uses_thinking_marker():
+    events = [
+        _ev(_stream_event("message_start")),
+        _ev(_stream_event("content_block_start", content_block={"type": "thinking", "thinking": ""})),
+        _ev(_stream_event("content_block_delta", delta={"type": "thinking_delta", "thinking": "Hmm"})),
+    ]
+    out = output_format.format_events(events, "claude")
+    assert out == [{"t": 1.0, "s": "thinking", "line": "Hmm", "delta": False}]
+
+
+def test_claude_message_start_content_block_stop_message_delta_stop_no_output():
+    for line in (_stream_event("message_start"), _stream_event("content_block_stop"),
+                 _stream_event("message_delta", delta={"stop_reason": "end_turn"}),
+                 _stream_event("message_stop")):
+        assert output_format.format_events([_ev(line)], "claude") == []
+
+
+def test_claude_complete_assistant_text_suppressed_after_delta_seen():
+    # Die komplette assistant-Nachricht kommt nach den Deltas zusätzlich —
+    # der Text darf nicht doppelt erscheinen.
+    events = [
+        _ev(_stream_event("message_start")),
+        _ev(_stream_event("content_block_start", content_block={"type": "text", "text": ""})),
+        _ev(_stream_event("content_block_delta", delta={"type": "text_delta", "text": "Hallo!"})),
+        _ev(_stream_event("content_block_stop")),
+        _ev(_assistant_text("Hallo!")),
+    ]
+    out = output_format.format_events(events, "claude")
+    assert [e["line"] for e in out if e.get("s") == "out"] == ["Hallo!"]
+
+
+def test_claude_complete_assistant_text_shown_without_deltas():
+    # Alt-Lauf ohne --include-partial-messages (oder Journal vor diesem
+    # Feature) — die komplette Nachricht bleibt die einzige Quelle.
+    events = [_ev(_assistant_text("Hallo Welt"))]
+    out = output_format.format_events(events, "claude")
+    assert out == [{"t": 1.0, "s": "out", "line": "Hallo Welt"}]
+
+
+def test_claude_tool_use_still_rendered_after_text_delta():
+    events = [
+        _ev(_stream_event("message_start")),
+        _ev(_stream_event("content_block_start", content_block={"type": "text", "text": ""})),
+        _ev(_stream_event("content_block_delta", delta={"type": "text_delta", "text": "ok"})),
+        _ev(_stream_event("content_block_stop")),
+        _ev(_assistant_tool_use("Bash", {"command": "ls"})),
+    ]
+    out = output_format.format_events(events, "claude")
+    assert "→ Bash: ls" in [e["line"] for e in out if e.get("s") == "out"]
