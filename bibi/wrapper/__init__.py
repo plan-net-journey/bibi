@@ -82,6 +82,27 @@ class TypeHandler:
     supports_hitl: bool = False  # True → App kann AWAIT_INPUT-Signal senden
 
 
+def _resolve_soul_prompt(env: dict[str, str]) -> str | None:
+    """``soul: <name>`` → Inhalt von ``.claude/souls/*.<name>.SOUL.md`` im
+    Job-Worktree (Nummer-Präfix wird ignoriert, Name-Teil case-insensitive).
+    Best-effort: kein Verzeichnis/keine Datei ⇒ None, kein Fehler."""
+    soul = env.get("BIBI_JOB_SOUL")
+    worktree = env.get("BIBI_WORKTREE")
+    if not soul or not worktree:
+        return None
+    souls_dir = Path(worktree) / ".claude" / "souls"
+    if not souls_dir.is_dir():
+        return None
+    target = f".{soul.lower()}.soul.md"
+    for p in sorted(souls_dir.iterdir()):
+        if p.is_file() and p.name.lower().endswith(target):
+            try:
+                return p.read_text(encoding="utf-8")
+            except OSError:
+                return None
+    return None
+
+
 def _claude_argv(env: dict[str, str]) -> list[str]:
     container = (env.get("BIBI_EXEC_MODE") or "").strip().lower() == "container"
     # Host: BIBI_CLAUDE_BIN überschreibt das Binary (Tests/Stubs, abs. Pfad bei
@@ -98,6 +119,9 @@ def _claude_argv(env: dict[str, str]) -> list[str]:
     # (das bräuchte zusätzlich --include-partial-messages, bewusst nicht gesetzt, damit
     # der Ausgabefilter keine Markdown-Fragmente reassemblen muss).
     argv += ["--output-format", "stream-json", "--verbose"]
+    soul_prompt = _resolve_soul_prompt(env)
+    if soul_prompt:
+        argv += ["--append-system-prompt", soul_prompt]
     # Container ohne ~/.claude-Settings: claude würde bei Tool-Nutzung (Datei
     # schreiben) nachfragen und headless hängen. ``acceptEdits`` erlaubt Datei-Edits
     # ohne Prompt und funktioniert als root (``--dangerously-skip-permissions`` ist

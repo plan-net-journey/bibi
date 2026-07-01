@@ -125,6 +125,54 @@ def test_claude_argv_stream_json_coexists_with_resume_and_permission_mode():
     assert "--permission-mode" in argv and "acceptEdits" in argv
 
 
+# ── PLAN-12 Stufe 12.3 — soul:-Frontmatter wirkt jetzt ──────────────────────
+
+
+def test_claude_argv_appends_soul_prompt_when_file_matches(tmp_path: Path):
+    souls = tmp_path / ".claude" / "souls"
+    souls.mkdir(parents=True)
+    (souls / "12.Data.SOUL.md").write_text("Du bist Data.", encoding="utf-8")
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_JOB_SOUL": "data", "BIBI_WORKTREE": str(tmp_path)})
+    i = argv.index("--append-system-prompt")
+    assert argv[i + 1] == "Du bist Data."
+
+
+def test_claude_argv_no_souls_dir_no_flag(tmp_path: Path):
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_JOB_SOUL": "data", "BIBI_WORKTREE": str(tmp_path)})
+    assert "--append-system-prompt" not in argv
+
+
+def test_claude_argv_souls_dir_without_match_no_flag(tmp_path: Path):
+    souls = tmp_path / ".claude" / "souls"
+    souls.mkdir(parents=True)
+    (souls / "01.Rook.SOUL.md").write_text("Du bist Rook.", encoding="utf-8")
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_JOB_SOUL": "data", "BIBI_WORKTREE": str(tmp_path)})
+    assert "--append-system-prompt" not in argv
+
+
+def test_claude_argv_no_soul_no_flag(tmp_path: Path):
+    souls = tmp_path / ".claude" / "souls"
+    souls.mkdir(parents=True)
+    (souls / "12.Data.SOUL.md").write_text("Du bist Data.", encoding="utf-8")
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_WORKTREE": str(tmp_path)})
+    assert "--append-system-prompt" not in argv
+
+
+def test_claude_argv_soul_multiple_candidates_deterministic_first_sorted(tmp_path: Path):
+    souls = tmp_path / ".claude" / "souls"
+    souls.mkdir(parents=True)
+    (souls / "12.Data.SOUL.md").write_text("erste", encoding="utf-8")
+    (souls / "99.Data.SOUL.md").write_text("zweite", encoding="utf-8")
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_JOB_SOUL": "data", "BIBI_WORKTREE": str(tmp_path)})
+    i = argv.index("--append-system-prompt")
+    assert argv[i + 1] == "erste"
+
+
 def test_run_job_claude_via_stub(tmp_path: Path):
     # claude-Pfad end-to-end ohne echtes claude — Stub-Binary echot.
     fake = tmp_path / "fakeclaude"
