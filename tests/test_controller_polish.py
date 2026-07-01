@@ -1,16 +1,12 @@
 """Stufe 6 — Politur (Frontend-Plan §C.6): Live-Uhr, Job-ID-Links im Log,
-Auto-Auf des aktiv-Bandes bei neuem Lauf, konsistente Nav."""
+konsistente Nav. Das ursprüngliche „Auto-Auf des aktiv-Bandes bei neuem Lauf"
+(Entscheidung #6) ist mit PLAN-14 Stufe 14.4 bewusst entfallen (Klapp-Logik
+komplett ersetzt durch feste Überschriften + scrollbare max-height-Areas,
+User-bestätigt) — die zugehörigen Tests sind daher hier nicht mehr vorhanden."""
 
 from __future__ import annotations
 
 from bibi.controller import render
-
-
-def _job(slug, status, *, jid=None):
-    return {"id": jid or slug, "slug": slug, "kind": "job", "status": status,
-            "reason": None, "started_at": 900.0, "finished_at": None,
-            "next_fire_at": None, "exit_code": None, "host": "h", "worker": "w",
-            "output_ref": None, "priority": 0, "enqueued_at": 0, "attempt": 0}
 
 
 # ── Live-Uhr ──────────────────────────────────────────────────────────────────
@@ -44,17 +40,3 @@ def test_log_page_has_nav_and_clock():
 def test_log_links_slug_to_schedule_detail():
     # Die Log-Zeilen-JS baut slug als Link zum Schedule-Detail.
     assert "/-/ui/schedule/" in render.log_page()
-
-
-# ── Auto-Auf des aktiv-Bandes ─────────────────────────────────────────────────
-
-
-def test_aktiv_row_marks_running_for_autoopen():
-    html = render.bands_fragment([_job("a", "running", jid="j1")], now=1.0)
-    assert 'data-running="j1"' in html
-
-
-def test_bands_js_auto_opens_aktiv_on_new_run():
-    # Die Band-JS öffnet das aktiv-Band bei einem neuen Lauf (Entscheidung #6).
-    html = render.feed_page([], jobs=[], now=1.0)
-    assert "data-running" in html and "bibiBand.aktiv" in html

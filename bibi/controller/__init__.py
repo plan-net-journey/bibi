@@ -137,7 +137,7 @@ def add_controller_routes(
 
     @app.get("/-/ui/feed/bands", include_in_schema=False)
     def feed_bands_fragment():
-        return HTMLResponse(render.bands_fragment(_jobs()))
+        return HTMLResponse(render.bands_fragment(_jobs(), _journal()))
 
     _TERMINAL = {"complete", "error", "inactive", "zombie", "killed"}
 

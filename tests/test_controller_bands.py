@@ -1,13 +1,17 @@
-"""Stufe 2 — Bänder „aktiv"/„wartet" + Headline-Zähler + Klapp-Toggle (§C.2).
+"""Stufe 14.4 (PLAN-14) — Root-Bänder als Drei-Gruppen-Modell (Feedback 2026-07-01).
 
-Quelle = ``jobs``-Tabelle (Live-State). Achse #2: **nicht im Journal** → Band.
-- aktiv = alles außer ``pending`` und ``complete``: running/awaiting/failed/
-  deferred ("in Bewegung") UND error/inactive/zombie/killed ("Problem, braucht
-  Aufmerksamkeit") — sonst verschwindet ein gekillter one-shot/app-Job (kein
-  Retry, kein nächster Termin) spurlos aus jeder Übersicht (nur ``complete``
-  ist „erledigt, nichts zu tun").
-- wartet = pending
-Bänder in der Kopfzeile gezählt, per Klick auf-/zuklappbar (localStorage)."""
+Trennlinie ist nicht mehr Laufzeit-Historie, sondern „braucht es jetzt eine
+Handlung von mir?":
+- **will run** = pending/failed/deferred + complete MIT Schedule — läuft von
+  selbst weiter, keine Handlung nötig.
+- **requires action** = error/awaiting/inactive/zombie/killed — OHNE running,
+  ein laufender Job braucht keine Handlung, er tut gerade genau das, was er soll.
+- **journal** = alle running (sortiert nach Startzeit) + eindeutige (unique)
+  Journal-Einträge, die nicht schon in den ersten zwei Gruppen stecken.
+  complete MIT `at:` landet hier automatisch residual (kein Sonderfall nötig).
+
+Überschriften statt Buttons, scrollbare max-height-Area statt Collapse/Expand
+(Stufe-6-Revision aus Frontend-Plan.md, User-bestätigt)."""
 
 from __future__ import annotations
 
@@ -21,66 +25,117 @@ from bibi.daemon.app import create_app
 
 
 def _job(slug: str, status: str, *, jid=None, started_at=900.0,
-         next_fire_at=None, reason=None) -> dict:
+         next_fire_at=None, reason=None, schedule=None) -> dict:
     return {"id": jid or slug, "slug": slug, "kind": "job", "status": status,
             "reason": reason, "started_at": started_at, "finished_at": None,
             "next_fire_at": next_fire_at, "exit_code": None, "host": "h",
             "worker": "w", "output_ref": None, "priority": 0, "enqueued_at": 0,
-            "attempt": 0}
+            "attempt": 0, "schedule": schedule}
+
+
+def _run(slug: str, status: str = "complete", *, jid=None, started_at=500.0,
+         finished_at=600.0) -> dict:
+    return {"id": jid or 1, "run_id": f"{slug}:1", "slug": slug, "kind": "job",
+            "status": status, "reason": None, "started_at": started_at,
+            "finished_at": finished_at, "exit_code": 0, "exec_runtime": 100.0,
+            "host": "h", "worker": "w", "output_ref": None, "commit_sha": None,
+            "branch": None, "domain": "scheduled", "payload": None}
 
 
 # ── pure Renderer ─────────────────────────────────────────────────────────────
 
 
-def test_bands_membership_only_pending_and_complete_excluded():
-    jobs = [_job("run1", "running"), _job("retry1", "failed", next_fire_at=2000.0),
-            _job("def1", "deferred"), _job("wait1", "pending", next_fire_at=3000.0),
-            _job("done1", "complete"), _job("dead1", "killed"),
-            _job("await1", "awaiting"), _job("err1", "error"),
-            _job("zomb1", "zombie"), _job("inact1", "inactive")]
-    html = render.bands_fragment(jobs, now=1000.0)
-    for s in ("run1", "retry1", "def1", "wait1", "dead1", "await1", "err1", "zomb1", "inact1"):
+def test_will_run_includes_pending_failed_deferred_and_scheduled_complete():
+    jobs = [_job("p", "pending"), _job("f", "failed"), _job("d", "deferred"),
+            _job("c", "complete", schedule="0 9 * * *")]
+    html = render.bands_fragment(jobs, [], now=1000.0)
+    for s in ("p", "f", "d", "c"):
         assert s in html
-    assert "done1" not in html  # complete = erledigt, einzig kein Handlungsbedarf
 
 
-def test_bands_problem_states_in_aktiv_not_just_wartet():
-    # Ein gekillter one-shot-Job (schedule: never) hat kein next_fire_at und
-    # damit auch keinen Platz im "wartet"-Band — er muss in "aktiv" auftauchen,
-    # sonst ist er nach einem Kill aus beiden Bändern verschwunden.
-    html = render.bands_fragment([_job("hitl", "killed", next_fire_at=None)], now=1.0)
-    assert "hitl" in html and "1 aktiv" in html
+def test_will_run_excludes_oneshot_complete():
+    # complete OHNE schedule (at:) hat keine Zukunft im Sinne von "will run" —
+    # landet stattdessen residual im journal-Band.
+    html = render.bands_fragment([_job("c", "complete", schedule=None)], [], now=1.0)
+    assert "Will Run" in html
+    wr_section = html.split("Requires Action")[0]
+    assert "c" not in wr_section
 
 
-def test_bands_counts_in_headline():
+def test_requires_action_excludes_running():
+    html = render.bands_fragment([_job("r", "running")], [], now=1.0)
+    section = html.split("Requires Action")[1].split("Will Run")[0]
+    assert 'schedule/r"' not in section
+
+
+def test_requires_action_includes_error_awaiting_inactive_zombie_killed():
+    jobs = [_job("e", "error"), _job("aw", "awaiting"), _job("ia", "inactive"),
+            _job("zo", "zombie"), _job("ki", "killed")]
+    html = render.bands_fragment(jobs, [], now=1.0)
+    section = html.split("Requires Action")[1].split("Will Run")[0]
+    for s in ("e", "aw", "ia", "zo", "ki"):
+        assert s in section
+
+
+def test_journal_group_includes_running_and_unique_journal_entries():
+    jobs = [_job("r", "running", started_at=100.0)]
+    journal = [_run("old", started_at=50.0, finished_at=60.0)]
+    html = render.bands_fragment(jobs, journal, now=1000.0)
+    section = html.split("Journal")[1]
+    assert "r" in section and "old" in section
+
+
+def test_journal_group_excludes_slugs_already_in_will_run_or_requires_action():
+    jobs = [_job("p", "pending")]
+    journal = [_run("p", finished_at=10.0)]  # gleicher Slug wie im will-run-Band
+    html = render.bands_fragment(jobs, journal, now=1000.0)
+    section = html.split("Journal")[1]
+    assert 'schedule/p"' not in section
+
+
+def test_journal_group_oneshot_complete_lands_here_residually():
+    html = render.bands_fragment([_job("c", "complete", schedule=None)], [], now=1.0)
+    section = html.split("Journal")[1]
+    assert "c" in section
+
+
+def test_counts_in_headings():
     jobs = [_job("a", "running"), _job("b", "failed"), _job("c", "pending")]
-    html = render.bands_fragment(jobs, now=1.0)
-    assert "2 aktiv" in html and "1 wartet" in html
+    html = render.bands_fragment(jobs, [], now=1.0)
+    assert "Requires Action (0)" in html
+    assert "Will Run (2)" in html
+    assert "Journal (1)" in html  # a (running)
 
 
-def test_bands_collapse_markup():
-    html = render.bands_fragment([_job("a", "running")], now=1.0)
-    assert 'id="bands"' in html
-    assert 'data-band="aktiv"' in html and 'data-band="wartet"' in html
-    assert 'class="bandtog"' in html and "bibiToggleBand" in html
+def test_empty_placeholders():
+    html = render.bands_fragment([], [], now=1.0)
+    assert "Requires Action (0)" in html and "Will Run (0)" in html
+    assert "Journal (0)" in html
 
 
-def test_bands_empty_placeholders():
-    html = render.bands_fragment([], now=1.0)
-    assert "0 aktiv" in html and "0 wartet" in html
-    assert "nichts aktiv" in html
-
-
-def test_bands_escapes_slug():
-    html = render.bands_fragment([_job("<x>", "running")], now=1.0)
+def test_escapes_slug():
+    html = render.bands_fragment([_job("<x>", "running")], [], now=1.0)
     assert "<x>" not in html.replace("/-/ui/schedule/", "")
     assert "&lt;x&gt;" in html
 
 
+def test_no_collapse_buttons_or_localstorage():
+    html = render.bands_fragment([_job("a", "running")], [], now=1.0)
+    assert "bibiToggleBand" not in html and "bandtog" not in html
+    assert "bandscroll" in html
+
+
+def test_every_job_appears_in_exactly_one_group():
+    jobs = [_job("p", "pending"), _job("r", "running"), _job("e", "error")]
+    html = render.bands_fragment(jobs, [], now=1.0)
+    for s in ("p", "r", "e"):
+        assert html.count(f'schedule/{s}"') == 1
+
+
 def test_feed_page_embeds_bands():
     html = render.feed_page([], jobs=[_job("a", "running")], now=1.0)
-    assert 'id="bands"' in html and "1 aktiv" in html
-    assert "bibiToggleBand" in html  # _BANDS_JS verdrahtet
+    assert 'id="bands"' in html
+    assert "Journal (1)" in html  # running landet im journal-Band
 
 
 # ── Routen ────────────────────────────────────────────────────────────────────
@@ -104,7 +159,7 @@ def test_ui_feed_bands_route(team_repo: Path):
     with TestClient(app) as c:
         r = c.get("/-/ui/feed/bands")
         assert r.status_code == 200 and 'id="bands"' in r.text
-        assert "1 aktiv" in r.text and "1 wartet" in r.text
+        assert "Will Run (1)" in r.text
 
 
 def test_ui_feed_includes_bands(team_repo: Path):
@@ -112,4 +167,4 @@ def test_ui_feed_includes_bands(team_repo: Path):
     app = create_app(roles.resolve({"controller"}), controller_client=client)
     with TestClient(app) as c:
         r = c.get("/-/ui/feed")
-        assert 'id="bands"' in r.text and "1 aktiv" in r.text
+        assert 'id="bands"' in r.text and "Journal (1)" in r.text

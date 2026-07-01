@@ -91,13 +91,10 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .feed-row a.run  { color: inherit; text-decoration: none; opacity: .75; }
 .feed-row a.run:hover { text-decoration: underline; opacity: 1; }
 .feed-row .st.complete { font-weight: 600; }
-.bandbar { display: flex; gap: .5rem; margin: .7rem 0 .35rem; }
-.bandtog { font: inherit; font-size: .82rem; background: #8882; border: 1px solid #8884;
-           border-radius: .35rem; padding: .2rem .7rem; cursor: pointer; color: inherit; }
-.bandtog.open { background: #5a9fe022; border-color: #5a9fe066; }
-.band { border: 1px solid #8883; border-radius: .4rem; padding: .35rem .6rem;
-        margin-bottom: .4rem; font-family: ui-monospace, monospace; font-size: .85rem; }
-.band.collapsed { display: none; }
+#bands h3 { margin: .7rem 0 .3rem; font-size: .95rem; }
+.bandscroll { max-height: 30vh; overflow-y: auto; border: 1px solid #8883;
+              border-radius: .4rem; padding: .35rem .6rem; margin-bottom: .4rem;
+              font-family: ui-monospace, monospace; font-size: .85rem; }
 .band-row { padding: .15rem 0; }
 .outscroll { max-height: 72vh; overflow-y: auto; }
 .hitl { margin: .5rem 0 0; padding: .5rem .75rem; border: 1px solid #d6a23e55;
@@ -639,114 +636,129 @@ _FEED_JS = """
 """
 
 
-#: Band-Zugehörigkeit (Frontend-Plan §C.2): alles außer ``pending`` (eigenes
-#: Band „wartet") und ``complete`` (einzig erledigter Zustand ohne Handlungs-
-#: bedarf). Terminale Problem-Zustände (error/inactive/zombie/killed) bleiben
-#: im „aktiv"-Band sichtbar — sonst verschwindet ein gekillter one-shot-/
-#: App-Job (kein Retry, kein nächster Termin) spurlos aus jeder Übersicht.
-_ACTIVE_STATES = (
-    "running", "awaiting", "failed", "deferred",
-    "error", "inactive", "zombie", "killed",
-)
+#: PLAN-14 Stufe 14.4: Trennlinie ist „braucht es jetzt eine Handlung von mir?",
+#: nicht mehr Laufzeit-Historie. ``running`` ist bewusst NICHT dabei — ein
+#: laufender Job braucht keine Handlung, er tut gerade genau das, was er soll
+#: (Korrektur ggü. der ursprünglichen 2-Bänder-Fassung, die running noch unter
+#: „aktiv" führte).
+_REQUIRES_ACTION_STATES = ("error", "awaiting", "inactive", "zombie", "killed")
+
+#: pending/failed/deferred laufen von selbst weiter; complete zählt nur MIT
+#: Schedule dazu — ein One-Shot (`at:`) ohne Schedule hat keine Zukunft mehr
+#: und landet stattdessen residual im journal-Band.
+_WILL_RUN_STATES = ("pending", "failed", "deferred")
 
 
-def _aktiv_row(j: dict, now: float) -> str:
+def _will_run(jobs: list[dict]) -> list[dict]:
+    return [j for j in jobs if j.get("status") in _WILL_RUN_STATES
+            or (j.get("status") == "complete" and j.get("schedule") is not None)]
+
+
+def _requires_action(jobs: list[dict]) -> list[dict]:
+    return [j for j in jobs if j.get("status") in _REQUIRES_ACTION_STATES]
+
+
+def _journal_band_entries(jobs: list[dict], journal_rows: list[dict],
+                          covered_slugs: set) -> list[dict]:
+    """running (live) + eindeutige Journal-Einträge, die nicht schon in
+    will-run/requires-action stecken (PLAN-14 Stufe 14.4). ``journal_rows``
+    kommt bereits nach ``finished_at DESC`` sortiert (Stufe 14.3) — der erste
+    Treffer je Slug ist damit automatisch der neueste, keine eigene Dedup-Query
+    nötig."""
+    running = [j for j in jobs if j.get("status") == "running"]
+    seen = {j.get("slug") for j in running} | covered_slugs
+    entries = list(running)
+    for r in journal_rows:
+        slug = r.get("slug")
+        if slug in seen:
+            continue
+        seen.add(slug)
+        entries.append(r)
+    entries.sort(key=lambda e: e.get("started_at") or e.get("finished_at") or 0, reverse=True)
+    return entries
+
+
+def _action_row(j: dict, now: float) -> str:
     slug = _e(j.get("slug"))
     st = _e(j.get("status"))
     bits: list[str] = []
-    if j.get("status") == "running" and j.get("started_at"):
-        bits.append(f"seit {_ago(j.get('started_at'), now)}")
-    if j.get("status") == "failed" and j.get("next_fire_at"):
-        bits.append(f"retry {_until(j.get('next_fire_at'), now)}")
     if j.get("reason"):
         bits.append(_e(j.get("reason")))
     if j.get("last_run_at"):
         bits.append(f"letzter {_abs_time(j.get('last_run_at'))}")
     tail = " · ".join(bits)
-    # running-Zeilen tragen data-running (job-id) → die Band-JS klappt das aktiv-Band
-    # bei einem **neuen** Lauf automatisch auf (Entscheidung #6).
-    run_attr = f' data-running="{_e(j.get("id"))}"' if j.get("status") == "running" else ""
-    return (f'<div class="band-row"{run_attr}><span class="st {st}">{st}</span> '
+    return (f'<div class="band-row"><span class="st {st}">{st}</span> '
             f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a>'
             f'{" · " + tail if tail else ""}</div>')
 
 
-def _wartet_row(j: dict, now: float) -> str:
+def _will_run_row(j: dict, now: float) -> str:
     slug = _e(j.get("slug"))
+    st = _e(j.get("status"))
+    if j.get("status") != "pending":
+        bits = [f"retry {_until(j.get('next_fire_at'), now)}"] if j.get("next_fire_at") else []
+        tail = " · ".join(bits)
+        return (f'<div class="band-row"><span class="st {st}">{st}</span> '
+                f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a>'
+                f'{" · " + tail if tail else ""}</div>')
     nf = j.get("next_fire_at")
-    if j.get("schedule") == "on_demand":
-        nxt = "manuell"
-    else:
-        nxt = f"{_abs_time(nf)} ({_until(nf, now)})" if nf else "—"
+    nxt = "manuell" if j.get("schedule") == "on_demand" else (
+        f"{_abs_time(nf)} ({_until(nf, now)})" if nf else "—")
     last = _abs_time(j.get("last_run_at"))
     return (f'<div class="band-row"><span class="st pending">○</span> '
             f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a>'
             f' <span class="muted">nächster {nxt} · letzter {last}</span></div>')
 
 
-def bands_fragment(jobs: list[dict], now: float | None = None) -> str:
-    """Die zwei Bänder (rein): aktiv (running/failed/deferred) + wartet (pending),
-    in der Kopfzeile gezählt. Klapp-Zustand client-seitig (``_BANDS_JS`` / localStorage),
-    darum hier nur das Markup mit ``data-band``; die Zähler sind serverseitig frisch."""
+def _journal_row(e: dict, now: float) -> str:
+    slug = _e(e.get("slug"))
+    st = _e(e.get("status"))
+    if e.get("status") == "running":
+        t = e.get("started_at")
+        tail = f"seit {_ago(t, now)}" if t else ""
+    else:
+        t = e.get("finished_at") or e.get("started_at")
+        tail = f"beendet {_ago(t, now)}" if t else ""
+    return (f'<div class="band-row"><span class="st {st}">{st}</span> '
+            f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a>'
+            f'{" · " + tail if tail else ""}</div>')
+
+
+def bands_fragment(jobs: list[dict], journal_rows: list[dict] | None = None,
+                   now: float | None = None) -> str:
+    """Drei Gruppen (PLAN-14 Stufe 14.4): Requires Action / Will Run / Journal —
+    Überschriften statt Buttons, scrollbare max-height-Area statt Collapse/Expand
+    (bewusste Revision von Frontend-Plan.md Entscheidung #6, User-bestätigt)."""
     now = time.time() if now is None else now
-    active = [j for j in jobs if j.get("status") in _ACTIVE_STATES]
-    waiting = sorted(
-        [j for j in jobs if j.get("status") == "pending"],
-        key=lambda j: j.get("next_fire_at") or float("inf"),
-    )
-    a_body = ("".join(_aktiv_row(j, now) for j in active)
-              or '<div class="out-empty">— nichts aktiv —</div>')
-    w_body = ("".join(_wartet_row(j, now) for j in waiting)
-              or '<div class="out-empty">— nichts wartend —</div>')
+    journal_rows = journal_rows or []
+    will_run = sorted(_will_run(jobs), key=lambda j: j.get("next_fire_at") or float("inf"))
+    requires_action = _requires_action(jobs)
+    covered = {j.get("slug") for j in will_run + requires_action}
+    journal_entries = _journal_band_entries(jobs, journal_rows, covered)
+
+    ra_body = ("".join(_action_row(j, now) for j in requires_action)
+               or '<div class="out-empty">— nichts —</div>')
+    wr_body = ("".join(_will_run_row(j, now) for j in will_run)
+               or '<div class="out-empty">— nichts —</div>')
+    jr_body = ("".join(_journal_row(e, now) for e in journal_entries)
+               or '<div class="out-empty">— nichts —</div>')
     return (
         '<div id="bands">'
-        '<div class="bandbar">'
-        f'<button class="bandtog" data-band="aktiv" onclick="bibiToggleBand(\'aktiv\')">'
-        f'▶ {len(active)} aktiv</button>'
-        f'<button class="bandtog" data-band="wartet" onclick="bibiToggleBand(\'wartet\')">'
-        f'○ {len(waiting)} wartet</button>'
-        '</div>'
-        f'<div class="band" data-band="aktiv">{a_body}</div>'
-        f'<div class="band" data-band="wartet">{w_body}</div>'
+        f'<h3>Requires Action ({len(requires_action)})</h3>'
+        f'<div class="bandscroll">{ra_body}</div>'
+        f'<h3>Will Run ({len(will_run)})</h3>'
+        f'<div class="bandscroll">{wr_body}</div>'
+        f'<h3>Journal ({len(journal_entries)})</h3>'
+        f'<div class="bandscroll">{jr_body}</div>'
         '</div>'
     )
 
 
-#: Bänder: Klapp-Zustand aus localStorage (Default aktiv **auf**, wartet **zu** —
-#: Entscheidung #6) bei Load + nach jedem Refresh anwenden; alle 2 s ``/-/ui/feed/bands``
-#: nachladen (Live-State der jobs-Tabelle). Bei einem **neuen** running-Job (frische
-#: data-running-ID) klappt das aktiv-Band automatisch auf (respektiert sonst die
-#: manuelle Wahl). stdout-Live-Stream: Schedule-Detail (Stufe 5).
+#: Bänder (PLAN-14 Stufe 14.4): keine Klapp-Logik mehr — feste Überschriften +
+#: scrollbare max-height-Area je Gruppe (CSS: ``.bandscroll``). Nur noch der
+#: 2s-Live-Poll gegen ``/-/ui/feed/bands`` bleibt (Live-State der jobs-Tabelle).
 _BANDS_JS = """
 (function(){
-  let prevRunning = new Set();
-  function applyBands(){
-    document.querySelectorAll('.band').forEach(b => {
-      const k=b.dataset.band, def=(k==='aktiv'?'1':'0');
-      const open=(localStorage.getItem('bibiBand.'+k) ?? def)==='1';
-      b.classList.toggle('collapsed', !open);
-      const t=document.querySelector('.bandtog[data-band="'+k+'"]');
-      if(t) t.classList.toggle('open', open);
-    });
-  }
-  function autoOpenAktiv(){
-    const cur=new Set([...document.querySelectorAll('[data-running]')].map(e=>e.dataset.running));
-    let fresh=false; cur.forEach(id=>{ if(!prevRunning.has(id)) fresh=true; });
-    prevRunning=cur;
-    if(fresh){ localStorage.setItem('bibiBand.aktiv','1'); applyBands(); }
-  }
-  window.bibiToggleBand=function(k){
-    const def=(k==='aktiv'?'1':'0');
-    const cur=(localStorage.getItem('bibiBand.'+k) ?? def)==='1';
-    localStorage.setItem('bibiBand.'+k, cur?'0':'1');
-    applyBands();
-  };
-  let lastActiveAt = 0;
-  function hasActive(root){
-    return !!(root || document).querySelector('[data-band="aktiv"] .band-row');
-  }
-  applyBands(); autoOpenAktiv();
-  if(hasActive()) lastActiveAt = Date.now();
   setInterval(async () => {
     if (window.bibiFollow === false) return;   // FOLLOW aus → Band-Poll pausiert
     try{
@@ -754,13 +766,7 @@ _BANDS_JS = """
       const html=await r.text();
       const wrap=document.getElementById('bands');
       if(!wrap) return;
-      const tmp=document.createElement('div'); tmp.innerHTML=html;
-      const incomingActive=hasActive(tmp);
-      // Linger: neuen HTML nicht einspielen wenn das aktiv-Band gerade erst
-      // leer geworden ist — 5 s Schonfrist damit kurze Läufe sichtbar bleiben.
-      if(!incomingActive && Date.now() - lastActiveAt < 5000) return;
-      if(incomingActive) lastActiveAt = Date.now();
-      wrap.outerHTML=html; applyBands(); autoOpenAktiv();
+      wrap.outerHTML=html;
     }catch(_){}
   }, 2000);
 })();
@@ -845,7 +851,7 @@ def feed_page(rows: list[dict], jobs: list[dict] | None = None,
         f"{_feed_handles(status)}"
         f"{_maint_banner(status)}"
         f"{feed_list(rows, now)}"
-        f"{bands_fragment(jobs or [], now)}"
+        f"{bands_fragment(jobs or [], rows, now)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_FEED_HANDLES_JS}</script>"
         f"<script>{_FEED_JS}</script>"
