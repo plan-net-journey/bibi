@@ -1,7 +1,10 @@
-"""Stufe 4.4 — Volle Schedule-Liste + Archiv (PLAN-4 §4.4, Ebene 2).
+"""Stufe 4.4 — Volle Schedule-Liste (PLAN-4 §4.4, Ebene 2).
 
-Aufklappbar (nicht primär), Quick-Spalten slug/status/last/next; abgelaufene
-One-shots (at:) ins **Archiv** (zusammengeklappt, MD bleibt — A15)."""
+Quick-Spalten slug/status/last/next. Die frühere Archiv-Klapp-Logik für
+abgelaufene One-shots ist mit PLAN-14 Stufe 14.6 vollständig durch das
+Registrierungs-Drei-Gruppen-Modell ersetzt (Aktiv/Inaktiv/Journal, siehe
+test_controller_schedules.py) — ein abgelaufener One-shot mit noch vorhandener
+MD landet jetzt einfach in „Aktiv", kein Collapse mehr."""
 
 from __future__ import annotations
 
@@ -17,11 +20,11 @@ from bibi.daemon.app import create_app
 
 def _sched(slug, *, kind="job", trigger="now", last_status="pending",
            last_run_at=None, next_fire_at=None, oneshot=False,
-           payload="echo hi", app_port=None) -> dict:
+           payload="echo hi", app_port=None, active=True) -> dict:
     return {"slug": slug, "kind": kind, "trigger": trigger,
             "last_status": last_status, "last_run_at": last_run_at,
             "next_fire_at": next_fire_at, "oneshot": oneshot,
-            "payload": payload, "app_port": app_port}
+            "payload": payload, "app_port": app_port, "active": active}
 
 
 def test_schedule_list_empty():
@@ -37,30 +40,18 @@ def test_schedule_list_active_rows_and_links():
     assert "complete" in html
 
 
-def test_schedule_list_archives_expired_oneshots():
+def test_schedule_list_expired_oneshot_with_md_stays_active():
+    # PLAN-14 Stufe 14.6: ein abgelaufener One-shot mit noch vorhandener MD
+    # (active=True) landet einfach in "Aktiv" — keine separate Archivierung
+    # mehr allein aufgrund des Terminal-Status.
     items = [
         _sched("recurring", trigger="0 9 * * *", last_status="pending"),
         _sched("done-oneshot", trigger="2026-06-26T20:00:00", oneshot=True,
-               last_status="complete", last_run_at=100.0),
+               last_status="complete", last_run_at=100.0, active=True),
     ]
     html = render.schedule_list(items, now=300.0)
-    # aktives recurring oben; abgelaufener One-shot im Archiv-<details>
-    assert "recurring" in html
-    assert "Archiv" in html
-    assert "done-oneshot" in html
-    # Archiv ist eingeklappt (details ohne open)
-    archive = html.split("Archiv", 1)[1]
-    assert "done-oneshot" in archive
-
-
-def test_schedule_list_pending_oneshot_stays_active():
-    # Ein noch nicht gefeuerter One-shot ist NICHT archiviert (steht bevor).
-    items = [_sched("future", trigger="2026-06-27T09:00:00", oneshot=True,
-                    last_status="pending", next_fire_at=999.0)]
-    html = render.schedule_list(items, now=300.0)
-    # vor dem Archiv-Abschnitt sichtbar (oder gar kein Archiv)
-    head = html.split("Archiv", 1)[0]
-    assert "future" in head
+    assert "recurring" in html and "done-oneshot" in html
+    assert "Inaktiv" not in html and "Journal —" not in html
 
 
 def test_schedule_list_next_is_future_worded():

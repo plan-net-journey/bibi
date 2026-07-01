@@ -327,7 +327,29 @@ def list_schedules(conn: sqlite3.Connection) -> list[dict]:
     ).fetchall():
         last[r["slug"]] = {"status": r["status"], "finished_at": r["finished_at"]}
     rows = conn.execute("SELECT * FROM jobs ORDER BY slug").fetchall()
-    return [schedule_view(r, last_run=last.get(r["slug"])) for r in rows]
+    out = [schedule_view(r, last_run=last.get(r["slug"])) for r in rows]
+
+    # Journal-only-Phantome (PLAN-14 Stufe 14.6): Slugs mit disponierter
+    # Journal-Historie, aber ohne (mehr) zugehörige jobs-Zeile — vor Stufe 14.5
+    # löschte remove_slugs() die Zeile hart, alte DBs kennen diesen Zustand noch.
+    # domain='scheduled' schließt /run-lokale Läufe aus (waren nie Schedules).
+    # active=None markiert die dritte Gruppe (Schedules-Übersicht „Journal").
+    known = {r["slug"] for r in rows}
+    for r in conn.execute(
+        "SELECT j.slug, j.status, j.finished_at, j.kind, j.payload FROM journal j JOIN ("
+        "  SELECT slug, MAX(id) AS mx FROM journal WHERE domain='scheduled' GROUP BY slug"
+        ") m ON j.id = m.mx"
+    ).fetchall():
+        if r["slug"] in known:
+            continue
+        out.append({
+            "slug": r["slug"], "kind": r["kind"], "trigger": "",
+            "next_fire_at": None, "last_status": r["status"],
+            "last_run_at": r["finished_at"], "row_status": r["status"],
+            "oneshot": True, "payload": r["payload"], "app_port": None,
+            "active": None,
+        })
+    return out
 
 
 # ── Row → View (JobView/ScheduleView-Form, §3.0-Schemata) ────────────────────
@@ -410,6 +432,8 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
         # sind die einzige Quelle, um claude-/app-artige Schedules zu unterscheiden
         # (FE-Typ-Filter, render.py _effective_sched_type).
         "payload": row["payload"], "app_port": row["app_port"],
+        # Registrierungs-Zustand (PLAN-14 Stufe 14.6): True = MD aktuell entdeckt.
+        "active": bool(row["active"]),
     }
 
 

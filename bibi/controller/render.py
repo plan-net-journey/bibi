@@ -227,9 +227,15 @@ def verdict_fragment(status: dict, now: float | None = None) -> str:
 _TERMINAL_VIEW = {"complete", "error", "inactive", "zombie", "killed"}
 
 
-def _is_archived(s: dict) -> bool:
-    # Abgelaufener One-shot (at:, schon gelaufen) → Archiv; läuft noch bevor → aktiv.
-    return bool(s.get("oneshot")) and s.get("last_status") in _TERMINAL_VIEW
+def _group_schedules(schedules: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    """Registrierungs-Drei-Gruppen (PLAN-14 Stufe 14.6, orthogonal zum Laufzeit-
+    Status): aktiv (MD entdeckt) / inaktiv (DB-Zeile ohne MD) / journal (nur
+    Journal-Historie, kein jobs-Eintrag mehr). Fehlt der ``active``-Key (ältere
+    Fixtures), gilt der Schedule als aktiv."""
+    active = [s for s in schedules if s.get("active", True) is True]
+    inactive = [s for s in schedules if s.get("active", True) is False]
+    journaled = [s for s in schedules if s.get("active", True) is None]
+    return active, inactive, journaled
 
 
 def _sched_row(s: dict, now: float) -> str:
@@ -256,22 +262,21 @@ def _sched_table(items: list[dict], now: float) -> str:
 
 
 def schedule_list(schedules: list[dict], now: float | None = None) -> str:
-    """Die volle Liste — **flach + immer sichtbar** (kein Top-Level-Klapp mehr, so
-    überleben keine Expands den 5s-Poll, und es deckt sich mit der bibi-v3-Sicht):
-    aktive Schedules als Tabelle + ein eingeklapptes Archiv abgelaufener One-shots
-    (MD bleibt — A15, §4.4)."""
+    """Die volle Liste, gruppiert nach Registrierungs-Zustand (PLAN-14 Stufe
+    14.6): Aktiv (MD entdeckt) / Inaktiv (DB-Zeile ohne MD) / Journal (nur
+    Journal-Historie). Flach + immer sichtbar, kein Klapp mehr — überlebt so
+    den 2s-Poll ohne Expand-Verlust."""
     now = time.time() if now is None else now
     head = f'<h2>Schedules ({len(schedules)})</h2>'
     if not schedules:
         return head + '<p class="out-empty">— keine Schedules —</p>'
-    archived = [s for s in schedules if _is_archived(s)]
-    active = [s for s in schedules if not _is_archived(s)]
+    active, inactive, journaled = _group_schedules(schedules)
     body = (_sched_table(active, now) if active
             else '<p class="out-empty">— keine aktiven Schedules —</p>')
-    if archived:
-        body += (f'<details id="sched-archive" class="archive" hx-preserve="true">'
-                 f'<summary>Archiv ({len(archived)})</summary>'
-                 f"{_sched_table(archived, now)}</details>")
+    if inactive:
+        body += f'<h3>Inaktiv — MD entfernt ({len(inactive)})</h3>' + _sched_table(inactive, now)
+    if journaled:
+        body += f'<h3>Journal — nur Historie ({len(journaled)})</h3>' + _sched_table(journaled, now)
     return head + body
 
 

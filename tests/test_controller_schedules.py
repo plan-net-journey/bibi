@@ -17,11 +17,39 @@ from bibi.daemon.app import create_app
 
 def _sched(slug: str, *, kind="job", last_status="complete", row_status=None,
            next_fire_at=None, last_run_at=100.0, trigger="now", oneshot=False,
-           payload="echo hi", app_port=None) -> dict:
+           payload="echo hi", app_port=None, active=True) -> dict:
     return {"slug": slug, "kind": kind, "trigger": trigger,
             "next_fire_at": next_fire_at, "last_status": last_status,
             "last_run_at": last_run_at, "row_status": row_status or last_status,
-            "oneshot": oneshot, "payload": payload, "app_port": app_port}
+            "oneshot": oneshot, "payload": payload, "app_port": app_port,
+            "active": active}
+
+
+# ── PLAN-14 Stufe 14.6 — Registrierungs-Drei-Gruppen (Aktiv/Inaktiv/Journal) ──
+
+
+def test_schedule_list_groups_by_active_flag():
+    items = [_sched("a", active=True), _sched("b", active=False),
+             _sched("c", active=None)]
+    html = render.schedule_list(items, now=1000.0)
+    assert 'href="/-/ui/schedule/a"' in html.split("Inaktiv")[0]
+    assert "Inaktiv" in html and 'href="/-/ui/schedule/b"' in html.split("Inaktiv")[1].split("Journal")[0]
+    assert "Journal" in html and 'href="/-/ui/schedule/c"' in html.split("Journal")[1]
+
+
+def test_schedule_list_no_inactive_or_journal_heading_when_all_active():
+    html = render.schedule_list([_sched("a", active=True)], now=1000.0)
+    assert "Inaktiv" not in html and "Journal —" not in html
+
+
+def test_schedule_list_default_active_true_when_key_missing():
+    # Rückwärtskompatibel: Items ohne "active"-Key (ältere Fixtures/Fake-Clients)
+    # landen in "Aktiv", nicht stillschweigend in einer anderen Gruppe.
+    item = _sched("a")
+    del item["active"]
+    html = render.schedule_list([item], now=1000.0)
+    assert "Inaktiv" not in html and "Journal —" not in html
+    assert 'href="/-/ui/schedule/a"' in html
 
 
 # ── Filter (pure) ─────────────────────────────────────────────────────────────

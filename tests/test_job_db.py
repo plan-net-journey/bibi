@@ -172,6 +172,47 @@ def test_schedule_view_exposes_payload_and_app_port(conn, tmp_path: Path):
     assert sched["app_port"] == 9100
 
 
+# ── PLAN-14 Stufe 14.6 — Schedules-Übersicht: active-Flag + Journal-Phantome ──
+
+
+def test_schedule_view_exposes_active_flag(conn, tmp_path: Path):
+    _write(tmp_path / "case" / "a.md", '---\nschedule: now\njob: "x"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    assert job_db.list_schedules(conn)[0]["active"] is True
+
+
+def test_schedule_view_active_false_after_deactivation(conn, tmp_path: Path):
+    md = tmp_path / "case" / "a.md"
+    _write(md, '---\nschedule: now\njob: "x"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    md.unlink()
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    assert job_db.list_schedules(conn)[0]["active"] is False
+
+
+def test_list_schedules_includes_journal_only_phantom_entries(conn):
+    # Simuliert eine Alt-DB (vor Stufe 14.5): journal-Zeile domain='scheduled'
+    # ohne zugehörige jobs-Zeile (früher durch remove_slugs() gelöscht statt
+    # deaktiviert).
+    conn.execute(
+        "INSERT INTO journal (run_id, slug, kind, status, finished_at, "
+        "archived_at, domain) VALUES ('ghost:1','ghost','job','complete', 2.0, 2.0, 'scheduled')")
+    items = job_db.list_schedules(conn)
+    ghost = next(s for s in items if s["slug"] == "ghost")
+    assert ghost["active"] is None
+    assert ghost["last_status"] == "complete"
+
+
+def test_list_schedules_excludes_local_domain_phantom_entries(conn):
+    # /run-lokale Läufe sind nie Schedules gewesen — kein Phantom-Eintrag.
+    job_db.write_local_journal(
+        conn, run_id="adhoc:1", slug="adhoc", kind="job", status="complete",
+        exit_code=0, output_ref=None, host="h", worker="w",
+        started_at=1.0, finished_at=2.0)
+    items = job_db.list_schedules(conn)
+    assert not any(s["slug"] == "adhoc" for s in items)
+
+
 def test_schedule_list_status_is_last_run_not_rearmed_pending(conn, tmp_path: Path):
     # Ein wiederkehrender Job re-armt nach `complete` sofort zu `pending`. Die Liste
     # soll dennoch den **letzten Lauf** (complete) zeigen, nicht den Zeilen-Status.
