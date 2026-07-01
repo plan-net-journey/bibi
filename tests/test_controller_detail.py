@@ -267,14 +267,16 @@ def test_run_rows_all_get_toggle_no_auto_inline():
 
 
 def test_hitl_panel_shows_app_url_link():
-    """awaiting + app_url → direkter Link im Panel, kein Formular."""
+    """awaiting + app_url → direkter Link im Panel, Linktext = die URL selbst
+    (regulärer Link statt Button — User-Feedback: Button-Klick schlug fehl,
+    reiner Text-Link lässt die Ziel-URL sichtbar/kopierbar und ist eindeutig
+    ein normaler <a>-Link)."""
     job = {"id": "j1", "slug": "a", "status": "awaiting",
            "app_url": "http://localhost:9100/input"}
     html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0)
     assert 'class="hitl"' in html
-    assert 'href="http://localhost:9100/input"' in html
-    assert "Zur App" in html
-    assert "/input" not in html.split('href="http://localhost:9100/input"')[1]  # kein Proxy-POST
+    assert '<a href="http://localhost:9100/input"' in html
+    assert ">http://localhost:9100/input<" in html
     assert "textarea" not in html
 
 

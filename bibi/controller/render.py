@@ -101,10 +101,7 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .hitl { margin: .5rem 0 0; padding: .5rem .75rem; border: 1px solid #d6a23e55;
         border-radius: .35rem; background: #d6a23e0d; }
 .hitl-label { font-weight: 600; font-size: .9rem; margin-bottom: .45rem; }
-.hitl a { display: inline-block; margin-top: .3rem; padding: .35rem .9rem;
-          font-weight: 600; background: #d6a23e22; border: 1px solid #d6a23e88;
-          border-radius: .3rem; color: inherit; text-decoration: none; }
-.hitl a:hover { background: #d6a23e44; }
+.hitl a { color: #d6a23e; word-break: break-all; }
 .liveterm { max-height: 24rem; overflow-y: auto; }
 .liveterm .lts { color: #888; user-select: none; }
 .liveclock { color: #5fb37a; font-size: .8rem; font-family: ui-monospace, monospace; }
@@ -1111,10 +1108,13 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
 
 
 def _hitl_panel(job: dict) -> str:
-    """HITL-Panel (§10.4/§10.5): zeigt app_url als direkten Link — FE postet nicht mehr."""
+    """HITL-Panel (§10.4/§10.5): zeigt app_url als direkten Link — FE postet nicht mehr.
+    Regulärer Text-Link (Linktext = die URL selbst), kein Button — User-Feedback:
+    der Button-Klick schlug fehl, ein normaler Link mit sichtbarer/kopierbarer
+    URL ist eindeutiger."""
     app_url = job.get("app_url") or ""
     if app_url:
-        link = f'<a href="{_e(app_url)}" target="_blank" rel="noopener">Zur App → Eingabe</a>'
+        link = f'<a href="{_e(app_url)}" target="_blank" rel="noopener">{_e(app_url)}</a>'
     else:
         link = '<span class="muted">app_url nicht verfügbar</span>'
     return f'<div class="hitl"><div class="hitl-label">Eingabe erforderlich</div>{link}</div>'
