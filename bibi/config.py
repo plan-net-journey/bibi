@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Reihenfolge = Abfrage-/Schreibreihenfolge. Werte sind die Defaults für init.
 KEYS: dict[str, str] = {
@@ -25,14 +26,29 @@ DAEMON_PORT_DEFAULT = 8769
 
 
 def daemon_port() -> int:
-    """Lauschport des Daemons — ``BIBI_DAEMON_PORT`` env, sonst Default 8769."""
+    """Lauschport des Daemons: ``BIBI_DAEMON_PORT`` env > Port aus
+    ``BIBI_SCHEDULER_URL`` (env oder ``~/.config/bibi/env``) > Default 8769.
+
+    Ohne den ``BIBI_SCHEDULER_URL``-Fallback liefen ``bibi-ctrl job``/
+    ``daemon status`` ohne ``--port``-Flag an per ``init`` konfigurierten
+    Instanzen (z. B. Port 8780) vorbei — silent gegen einen Fremdprozess
+    am Default-Port statt gegen den eigentlich gemeinten Daemon.
+    """
     raw = os.environ.get("BIBI_DAEMON_PORT", "").strip()
-    if not raw:
-        return DAEMON_PORT_DEFAULT
-    try:
-        return int(raw)
-    except ValueError:
-        return DAEMON_PORT_DEFAULT
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+
+    scheduler_url = (os.environ.get("BIBI_SCHEDULER_URL", "").strip()
+                      or read_env().get("BIBI_SCHEDULER_URL", "").strip())
+    if scheduler_url:
+        port = urlparse(scheduler_url).port
+        if port:
+            return port
+
+    return DAEMON_PORT_DEFAULT
 
 
 def env_path() -> Path:
