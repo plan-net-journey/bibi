@@ -33,8 +33,10 @@ class ControllerClient:
     def status(self) -> dict:
         return self._get("/-/status") or {}
 
-    def journal(self, *, slug: str | None = None, host: str | None = None) -> list[dict]:
-        return self._get("/-/journal", {"slug": slug, "host": host}) or []
+    def journal(self, *, slug: str | None = None, host: str | None = None,
+                limit: int | None = None, offset: int | None = None) -> list[dict]:
+        return self._get(
+            "/-/journal", {"slug": slug, "host": host, "limit": limit, "offset": offset}) or []
 
     def jobs(self, *, status: str | None = None) -> list[dict]:
         return self._get("/-/job", {"status": status}) or []

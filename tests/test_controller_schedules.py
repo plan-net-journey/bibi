@@ -118,14 +118,15 @@ def test_sched_table_column_header_combined():
 
 
 class FakeClient:
-    def __init__(self, schedules: list[dict]) -> None:
+    def __init__(self, schedules: list[dict], *, status: dict | None = None) -> None:
         self._s = schedules
+        self._status = status or {}
 
     def schedules(self) -> list[dict]:
         return self._s
 
     def status(self) -> dict:
-        return {}
+        return self._status
 
 
 def test_ui_schedules_screen_route(team_repo: Path):
@@ -135,6 +136,17 @@ def test_ui_schedules_screen_route(team_repo: Path):
         r = c.get("/-/ui/schedules")
         assert r.status_code == 200
         assert 'name="status"' in r.text and "daily" in r.text
+
+
+def test_ui_schedules_screen_route_has_rescan_and_reflects_maintenance(team_repo: Path):
+    # User-Feedback 2026-07-03: RESCAN + MAINT auch auf dem Schedules-Screen.
+    client = FakeClient([], status={"maintenance": True})
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/schedules")
+        assert r.status_code == 200
+        assert 'id="rescan"' in r.text
+        assert "MAINT: AN" in r.text
 
 
 def test_ui_schedules_list_filters_problem(team_repo: Path):

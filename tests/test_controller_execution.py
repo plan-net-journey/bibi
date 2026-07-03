@@ -95,6 +95,43 @@ def test_execution_detail_header_has_no_duplicate_bibi_prefix():
     assert "<h1><span" in html
 
 
+# ── Konfiguration zu diesem Lauf (journal.snapshot, User-Feedback 2026-07-03) ─
+
+
+def test_execution_detail_shows_run_config_snapshot():
+    import json
+    snap = json.dumps({"schedule_ref": "x.md", "attempts": 5, "backoff": "exponential",
+                       "model": "claude-opus-4-8", "schedule": "0 */4 * * *"})
+    entry = {**_entry(), "snapshot": snap}
+    html = render.execution_detail_page(entry, events=[], kind="claude")
+    assert "Konfiguration (zu diesem Lauf)" in html
+    assert "<td><b>attempts</b></td>" in html and "<code>5</code>" in html
+    assert "<code>exponential</code>" in html
+    assert "<code>claude-opus-4-8</code>" in html
+
+
+def test_execution_detail_hides_run_config_for_local_domain():
+    # /run-Läufe (domain=local) haben keinen Schedule — kein echter Snapshot.
+    import json
+    snap = json.dumps({"slug": "x", "kind": "job", "status": "complete", "exit_code": 0})
+    entry = {**_entry(), "domain": "local", "snapshot": snap}
+    html = render.execution_detail_page(entry, events=[], kind="job")
+    assert "Konfiguration (zu diesem Lauf)" not in html
+
+
+def test_execution_detail_hides_run_config_when_snapshot_missing():
+    # Ältere Journal-Zeilen (vor dem Fix) oder fehlender Snapshot — kein Crash,
+    # einfach keine Sektion.
+    html = render.execution_detail_page(_entry(), events=[], kind="claude")
+    assert "Konfiguration (zu diesem Lauf)" not in html
+
+
+def test_attr_table_no_longer_shows_raw_snapshot_row():
+    entry = {**_entry(), "snapshot": '{"schedule_ref": "x.md"}'}
+    html = render.execution_detail_page(entry, events=[], kind="claude")
+    assert "<td><b>snapshot</b></td>" not in html
+
+
 def test_execution_detail_duration_from_timestamps():
     html = render.execution_detail_page(
         _entry(exec_runtime=None, started_at=100.0, finished_at=109.0), events=[], kind="job")

@@ -108,3 +108,14 @@ def test_live_js_appends_delta_events_to_last_span():
 
 def test_live_js_marks_thinking_stream_with_own_class():
     assert "'thinking'" in render._LIVE_JS
+
+
+def test_live_js_preserves_liveclamp_scroll_across_poll():
+    # User-Feedback: .liveclamp (awaiting/terminal-Output) hat kein hx-preserve
+    # wie .liveterm — der 2s-#live-Poll ersetzt es per outerHTML, ein frisches
+    # Element hat scrollTop=0 und "springt" sichtbar nach oben. Scroll muss vor
+    # dem Swap gemerkt und danach am neuen Element wiederhergestellt werden.
+    js = render._LIVE_JS
+    assert "htmx:beforeSwap" in js and "htmx:afterSettle" in js
+    assert ".liveclamp" in js
+    assert "box.scrollTop = saved" in js

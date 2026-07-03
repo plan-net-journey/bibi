@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,16 @@ def test_output_block_job_preformatted_with_stderr():
     assert "term" in html and "<pre" in html
     assert "zeile eins" in html
     assert 'class="err"' in html and "oops" in html
+
+
+def test_output_block_renders_phase_events_with_own_class():
+    # User-Feedback 2026-07-03: Worker-/Wrapper-Startup-Phasen (Worktree,
+    # Container, Prozess-Spawn) landen als "phase"-Events im selben Output,
+    # optisch von normalem Job-Output abgesetzt.
+    ev = [{"s": "phase", "line": "worktree: wird vorbereitet …"},
+          {"s": "out", "line": "hallo"}]
+    html = render.output_block(ev, "job")
+    assert 'class="phase"' in html and "worktree: wird vorbereitet" in html
 
 
 def test_output_block_escapes_html():
@@ -79,14 +90,28 @@ def test_schedule_detail_page_no_runs():
     assert "noch keine Läufe" in html
 
 
+def test_run_rows_have_no_relative_time():
+    # #journal pollt nicht mit (Infinite Scroll, §6) — ein einmal gerendertes
+    # "vor Xs" würde veralten. Nur der absolute Zeitstempel bleibt stehen.
+    now = datetime(2026, 7, 3, 12, 0, 0).timestamp()
+    runs = [{"id": 1, "status": "complete", "kind": "job",
+            "finished_at": datetime(2026, 7, 3, 11, 59, 57).timestamp()}]
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now"}, runs, slug="x", now=now)
+    assert "11:59" in html
+    assert "vor 3s" not in html and "vor 0s" not in html
+
+
 def test_schedule_detail_action_bar_with_job():
     sched = {"slug": "boom", "kind": "job", "trigger": "now", "last_status": "error"}
     job = {"id": "abc123", "slug": "boom", "status": "error"}
     html = render.schedule_detail_page(sched, [], job, slug="boom")
-    for verb in ("start", "reset"):  # PLAN-14 14.1: kill entfernt für error (Bug #1)
-        assert f'hx-post="/-/ui/schedule/boom/{verb}"' in html
-    assert 'hx-post="/-/ui/schedule/boom/kill"' not in html
-    assert "#detail" in html
+    for verb in ("start", "reset"):  # error: enabled
+        assert f'hx-post="/-/ui/schedule/boom/{verb}" hx-target="#live" hx-swap="outerHTML">' in html
+    # kill bleibt sichtbar, aber disabled (ist schon terminal) — alle 3 Buttons
+    # rendern immer, Stage 3 der Job-Lifecycle-Matrix.
+    assert 'hx-post="/-/ui/schedule/boom/kill" hx-target="#live" hx-swap="outerHTML" disabled>' in html
+    assert 'id="live"' in html and 'id="journal"' in html
 
 
 def test_schedule_detail_no_action_bar_without_job():
@@ -110,11 +135,10 @@ def test_verbs_reset_disabled_for_failed():
     assert "reset" not in render._VERBS_FOR_STATUS["failed"]
 
 
-def test_verbs_start_hidden_for_failed():
-    # Follow-up: start_now() akzeptiert failed nicht (bräuchte attempts-1-
-    # Logik) — der Button blieb bislang sichtbar, aber klickte immer auf 409.
-    # Lieber ausblenden als kaputt zeigen.
-    assert "start" not in render._VERBS_FOR_STATUS["failed"]
+def test_verbs_start_enabled_for_failed():
+    # User-Entscheidung (Job Lifecycle §START/failed): sofortiger Start ohne
+    # Attempts-Reset, nur der Backoff-Timer wird übersprungen.
+    assert "start" in render._VERBS_FOR_STATUS["failed"]
 
 
 def test_action_bar_has_kill_button_for_killed_job():
@@ -124,13 +148,13 @@ def test_action_bar_has_kill_button_for_killed_job():
     assert 'hx-post="/-/ui/schedule/x/kill"' in html
 
 
-def test_action_bar_no_reset_no_start_button_for_failed_job():
+def test_action_bar_reset_disabled_start_and_kill_enabled_for_failed_job():
     job = {"id": "j1", "slug": "x", "status": "failed"}
     html = render.schedule_detail_page(
         {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
-    assert 'hx-post="/-/ui/schedule/x/reset"' not in html
-    assert 'hx-post="/-/ui/schedule/x/start"' not in html
-    assert 'hx-post="/-/ui/schedule/x/kill"' in html
+    assert 'hx-post="/-/ui/schedule/x/reset" hx-target="#live" hx-swap="outerHTML" disabled>' in html
+    assert 'hx-post="/-/ui/schedule/x/start" hx-target="#live" hx-swap="outerHTML">' in html
+    assert 'hx-post="/-/ui/schedule/x/kill" hx-target="#live" hx-swap="outerHTML">' in html
 
 
 # ── PLAN-14 Stufe 14.2 — START für inactive/zombie/killed (+ error/complete) ──
@@ -146,6 +170,26 @@ def test_action_bar_has_start_button_for_inactive_job():
     html = render.schedule_detail_page(
         {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
     assert 'hx-post="/-/ui/schedule/x/start"' in html
+
+
+def test_action_bar_pending_kill_enabled():
+    # pending+KILL ("aus dem Schedule nehmen") ist jetzt wirksam, nicht mehr
+    # nur ein toter Button (Stage 2 der Job-Lifecycle-Matrix).
+    job = {"id": "j1", "slug": "x", "status": "pending"}
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
+    assert 'hx-post="/-/ui/schedule/x/kill" hx-target="#live" hx-swap="outerHTML">' in html
+
+
+def test_action_bar_complete_kill_and_reset_disabled():
+    # User-Feedback 2026-07-03: KILL ist reine Lauf-Ebene — complete bleibt ein
+    # echter Terminalzustand, KILL wie RESET dort No-op, nur START wirkt.
+    job = {"id": "j1", "slug": "x", "status": "complete"}
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
+    assert 'hx-post="/-/ui/schedule/x/kill" hx-target="#live" hx-swap="outerHTML" disabled>' in html
+    assert 'hx-post="/-/ui/schedule/x/reset" hx-target="#live" hx-swap="outerHTML" disabled>' in html
+    assert 'hx-post="/-/ui/schedule/x/start" hx-target="#live" hx-swap="outerHTML">' in html
 
 
 def test_run_row_has_delete_button():
@@ -174,27 +218,56 @@ def test_run_rows_duration_dash_when_missing():
     assert "—" in html
 
 
+# ── Journal-Historie: Datum bei Nicht-heute-Läufen ────────────────────────────
+
+
+def test_abs_datetime_omits_date_for_today():
+    now = datetime(2026, 7, 3, 12, 0, 0).timestamp()
+    ts = datetime(2026, 7, 3, 8, 30, 0).timestamp()
+    assert render._abs_datetime(ts, now) == "08:30"
+
+
+def test_abs_datetime_shows_date_for_other_days():
+    now = datetime(2026, 7, 3, 12, 0, 0).timestamp()
+    ts = datetime(2026, 6, 28, 20, 56, 0).timestamp()
+    assert render._abs_datetime(ts, now) == "28.06. 20:56"
+
+
+def test_run_rows_show_date_for_runs_from_other_days():
+    now = datetime(2026, 7, 3, 12, 0, 0).timestamp()
+    runs = [{"id": 1, "status": "complete", "kind": "job",
+            "finished_at": datetime(2026, 7, 1, 9, 15, 0).timestamp()}]
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now"}, runs, slug="x", now=now)
+    assert "01.07. 09:15" in html
+
+
 # ── Routen mit gefaktem Client ───────────────────────────────────────────────
 
 
 class FakeClient:
     def __init__(self, *, schedules=None, journal=None, output=None,
-                 jobs=None) -> None:
+                 jobs=None, status=None) -> None:
         self._schedules = schedules or []
         self._journal = journal or []
         self._output = output or {}
         self._jobs = jobs or []
+        self._status = status or {}
         self.actions: list[tuple] = []
         self.deleted: list[int] = []
 
     def status(self) -> dict:
-        return {}
+        return self._status
 
     def schedules(self) -> list[dict]:
         return self._schedules
 
-    def journal(self, *, slug=None, host=None) -> list[dict]:
-        return [j for j in self._journal if slug is None or j.get("slug") == slug]
+    def journal(self, *, slug=None, host=None, limit=None, offset=None) -> list[dict]:
+        rows = [j for j in self._journal if slug is None or j.get("slug") == slug]
+        if limit is not None:
+            offset = offset or 0
+            rows = rows[offset:offset + limit]
+        return rows
 
     def jobs(self, *, status=None) -> list[dict]:
         return self._jobs
@@ -236,6 +309,18 @@ def test_schedule_detail_route(app_with):
         assert "Output ↓" not in r.text  # Follow-up: "Output entfällt" für Journal-Zeilen
 
 
+def test_schedule_detail_route_has_rescan_and_reflects_maintenance(app_with):
+    # User-Feedback 2026-07-03: RESCAN + MAINT auch auf der Job-Detail-Seite.
+    client = FakeClient(
+        schedules=[{"slug": "boom", "kind": "job", "trigger": "now"}],
+        status={"maintenance": True})
+    with TestClient(app_with(client)) as c:
+        r = c.get("/-/ui/schedule/boom")
+        assert r.status_code == 200
+        assert 'id="rescan"' in r.text
+        assert "MAINT: AN" in r.text
+
+
 def test_schedule_detail_route_shows_output_for_terminal_job(app_with):
     # User-Feedback 2026-07-01: der Controller holt jetzt auch für einen
     # bereits terminalen Job den Output — die Route darf ihn nicht mehr
@@ -248,7 +333,8 @@ def test_schedule_detail_route_shows_output_for_terminal_job(app_with):
     with TestClient(app_with(client)) as c:
         r = c.get("/-/ui/schedule/boom")
         assert r.status_code == 200
-        assert 'class="liveout"' in r.text and "fertig" in r.text
+        # terminal ⇒ liveclamp (20-Zeilen-Höhenbegrenzung, Stage 5)
+        assert 'class="liveout liveclamp"' in r.text and "fertig" in r.text
 
 
 def test_run_output_route_renders(app_with):
@@ -289,7 +375,8 @@ def test_action_route_calls_verb_and_rerenders(app_with):
         r = c.post("/-/ui/schedule/boom/start")
         assert r.status_code == 200
         assert client.actions == [("abc123", "start")]
-        assert 'id="detail"' in r.text  # re-rendertes Fragment
+        assert 'id="live"' in r.text  # re-rendertes Live-Fragment
+        assert 'id="journal" hx-swap-oob="true"' in r.text  # + OOB-Refresh (G-1)
 
 def test_action_route_rejects_unknown_verb(app_with):
     client = FakeClient(jobs=[{"id": "abc123", "slug": "boom"}])
@@ -306,7 +393,8 @@ def test_run_delete_route(app_with):
         r = c.request("DELETE", "/-/ui/schedule/boom/run/42")
         assert r.status_code == 200
         assert client.deleted == [42]
-        assert 'id="detail"' in r.text
+        assert 'id="journal"' in r.text
+        assert 'id="live"' not in r.text  # nur #journal wird neu gerendert
 
 
 def test_detail_shows_last_run_in_meta_and_live_state_in_panel():
@@ -343,7 +431,7 @@ def test_detail_shows_live_panel_for_last_terminal_run():
 
 def test_detail_self_polls_under_follow():
     html = render.schedule_detail_inner({"slug": "a"}, [], None, slug="a", now=1.0)
-    assert 'hx-get="/-/ui/schedule/a/detail"' in html
+    assert 'hx-get="/-/ui/schedule/a/live"' in html
     assert "every 2s [window.bibiFollow]" in html
 
 
@@ -363,7 +451,34 @@ def test_live_panel_shows_output_for_last_terminal_run():
     live = {"kind": "job", "events": [{"s": "out", "line": "fertig"}]}
     html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0,
                                         live_output=live)
-    assert 'class="liveout"' in html and "fertig" in html
+    # terminal ⇒ liveclamp (20-Zeilen-Höhenbegrenzung, Stage 5)
+    assert 'class="liveout liveclamp"' in html and "fertig" in html
+
+
+def test_live_panel_terminal_output_has_height_cap():
+    job = {"id": "j", "slug": "a", "status": "error", "finished_at": 5.0}
+    live = {"kind": "job", "events": [{"s": "out", "line": "x"}]}
+    html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0,
+                                        live_output=live)
+    assert "liveclamp" in html
+
+
+def test_live_panel_awaiting_output_has_height_cap():
+    job = {"id": "j", "slug": "a", "status": "awaiting", "app_url": "http://x/"}
+    live = {"kind": "job", "events": [{"s": "out", "line": "x"}]}
+    html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0,
+                                        live_output=live)
+    assert "liveclamp" in html
+
+
+def test_live_panel_running_output_not_double_capped():
+    # running hat mit .liveterm bereits einen eigenen Cap (24rem) — kein
+    # zweiter verschachtelter Scrollbox-Rahmen nötig.
+    job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0}
+    live = {"kind": "job", "events": [{"s": "out", "line": "lebt"}]}
+    html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0,
+                                        live_output=live)
+    assert "liveclamp" not in html
 
 
 def test_run_rows_no_output_toggle():
@@ -411,3 +526,87 @@ def test_hitl_panel_polls_ungated_when_awaiting():
     html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0)
     assert "every 2s" in html
     assert "[window.bibiFollow]" not in html.split("every 2s")[0].split("hx-trigger")[-1]
+
+
+# ── Journal Infinite Scroll ───────────────────────────────────────────────────
+
+
+def _run(i: int) -> dict:
+    return {"id": i, "status": "complete", "exit_code": 0, "kind": "job",
+            "finished_at": float(i)}
+
+
+def test_journal_sentinel_colspan_matches_columns():
+    # 7 Spalten in der Journal-Tabelle: Zeit/Status/Grund/exit/Dauer/Commit/Aktionen.
+    runs = [_run(i) for i in range(render._JOURNAL_PAGE_SIZE)]
+    html = render.journal_fragment(runs, "x", now=100.0)
+    assert 'id="journal-more"' in html
+    assert '<td colspan="7"' in html
+
+
+def test_journal_fragment_omits_sentinel_when_batch_short():
+    runs = [_run(i) for i in range(3)]
+    html = render.journal_fragment(runs, "x", now=100.0)
+    assert 'id="journal-more"' not in html
+
+
+def test_journal_fragment_oob_swap_attribute():
+    html = render.journal_fragment([], "x", now=100.0, oob=True)
+    assert 'id="journal" hx-swap-oob="true"' in html
+
+
+def test_journal_runs_route_returns_next_batch_and_sentinel(app_with):
+    full_page = [{"id": i, "slug": "boom", "status": "complete", "kind": "job",
+                 "finished_at": float(i)} for i in range(render._JOURNAL_PAGE_SIZE)]
+    client = FakeClient(journal=full_page)
+    with TestClient(app_with(client)) as c:
+        r = c.get("/-/ui/schedule/boom/runs", params={"offset": 0})
+        assert r.status_code == 200
+        assert 'id="journal-more"' in r.text
+        assert f'offset={render._JOURNAL_PAGE_SIZE}' in r.text
+
+
+def test_journal_runs_route_omits_sentinel_when_batch_short(app_with):
+    # 51 Läufe insgesamt: die Batch ab offset=50 hat nur noch 1 Eintrag (< 50)
+    # → kein weiterer Sentinel, Scroll endet natürlich.
+    all_runs = [{"id": i, "slug": "boom", "status": "complete", "kind": "job",
+                "finished_at": float(i)} for i in range(51)]
+    client = FakeClient(journal=all_runs)
+    with TestClient(app_with(client)) as c:
+        r = c.get("/-/ui/schedule/boom/runs", params={"offset": 50})
+        assert r.status_code == 200
+        assert 'id="journal-more"' not in r.text
+
+
+# ── Automatischer Journal-Refresh bei Terminal-Übergang ohne Klick ────────────
+# (User-Feedback 2026-07-03: "wenn ein RUNNING Lauf terminal endet ... wird er
+# erst bei manuellem Reload angezeigt")
+
+
+def test_live_fragment_carries_slug_and_finished_at_fingerprint():
+    job = {"id": "j1", "slug": "x", "status": "complete", "finished_at": 123.0}
+    html = render.live_fragment({"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
+    assert 'data-slug="x"' in html
+    assert 'data-finished-at="123.0"' in html
+
+
+def test_live_fragment_finished_at_empty_while_running():
+    job = {"id": "j1", "slug": "x", "status": "running", "started_at": 1.0}
+    html = render.live_fragment({"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
+    assert 'data-finished-at=""' in html
+
+
+def test_journal_autorefresh_js_watches_finished_at_fingerprint():
+    js = render._JOURNAL_AUTOREFRESH_JS
+    assert "data-finished-at" not in js  # liest über .dataset.finishedAt, kein Attribut-String
+    assert "dataset.finishedAt" in js
+    assert "htmx.ajax" in js and "'#journal'" in js
+
+
+def test_schedule_journal_route_returns_fresh_page_one(app_with):
+    client = FakeClient(journal=[{"id": 1, "slug": "boom", "status": "error", "kind": "job",
+                                  "finished_at": 5.0}])
+    with TestClient(app_with(client)) as c:
+        r = c.get("/-/ui/schedule/boom/journal")
+        assert r.status_code == 200
+        assert 'id="journal"' in r.text and "error" in r.text

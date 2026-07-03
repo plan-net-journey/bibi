@@ -44,7 +44,7 @@ td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
            margin: 1rem 0 .25rem; }
 .handles a, .handles button { font: inherit; font-size: .82rem; text-decoration: none;
            color: inherit; background: #8882; border: 1px solid #8884;
-           border-radius: .35rem; padding: .25rem .7rem; cursor: pointer; }
+           border-radius: .35rem; padding: .15rem .5rem; cursor: pointer; }
 .handles .handle.on { background: #1a7f3733; border-color: #1a7f3766; }
 .handles .handle.warn { background: #d6a23e33; border-color: #d6a23e88; }
 a.slug { font-weight: 600; text-decoration: none; }
@@ -60,6 +60,7 @@ h2 { font-size: .95rem; color: #888; margin: 1.5rem 0 .4rem; font-weight: 600; }
         font-size: .82rem; line-height: 1.45; white-space: pre-wrap; }
 .term .err { color: #e06c5a; }
 .term .thinking { color: #888; font-style: italic; }
+.term .phase { color: #5a9fe0; font-style: italic; }
 .md { font-size: .92rem; }
 .md pre { background: #0008; border: 1px solid #8883; border-radius: .4rem;
           padding: .6rem .8rem; overflow-x: auto; }
@@ -73,6 +74,10 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .live-head { display: flex; gap: .6rem; align-items: baseline; }
 .live .st { font-weight: 600; }
 .liveout { margin-top: .5rem; }
+/* ~20 Zeilen (.term: font-size .82rem, line-height 1.45) dann scrollbar — nur
+   awaiting/terminal-Output (siehe _live_panel); running hat mit .liveterm
+   bereits einen eigenen Cap, kein zweiter verschachtelter nötig. */
+.liveclamp { max-height: 23.8rem; overflow-y: auto; }
 .actions { margin: .6rem 0 1.2rem; display: flex; gap: .5rem; }
 .actions button { padding: .3rem .8rem; font-weight: 600; }
 .logbar { display: flex; gap: .6rem; align-items: center; margin: 1rem 0 .6rem;
@@ -149,6 +154,19 @@ def _abs_time(ts: float | None) -> str:
         return "—"
     import datetime
     return datetime.datetime.fromtimestamp(ts).strftime("%H:%M")
+
+
+def _abs_datetime(ts: float | None, now: float) -> str:
+    """Wie ``_abs_time``, aber mit Datum (TT.MM.) für alles außer heute — die
+    Journal-Historie zeigt über Infinite Scroll oft tage-/wochenalte Läufe,
+    "17:02" allein ist dann nicht mehr zuordenbar (User-Feedback)."""
+    if ts is None:
+        return "—"
+    import datetime
+    dt = datetime.datetime.fromtimestamp(ts)
+    if dt.date() == datetime.datetime.fromtimestamp(now).date():
+        return dt.strftime("%H:%M")
+    return dt.strftime("%d.%m. %H:%M")
 
 
 def _e(v) -> str:
@@ -407,9 +425,13 @@ def _header(active: str) -> str:
 
 
 def schedules_page(schedules: list[dict], typ: str | None = None,
-                   status: str | None = None, now: float | None = None) -> str:
-    """Der Schedules-Screen: Nav + Filterleiste + (gefilterte) self-pollende Liste.
-    ``schedules`` ist bereits gefiltert; ``typ``/``status`` spiegeln die Auswahl."""
+                   status: str | None = None, now: float | None = None,
+                   *, daemon_status: dict | None = None) -> str:
+    """Der Schedules-Screen: Nav + Ops-Handles (RESCAN/MAINT, User-Feedback
+    2026-07-03) + Filterleiste + (gefilterte) self-pollende Liste. ``schedules``
+    ist bereits gefiltert; ``typ``/``status`` spiegeln die Auswahl — ``status``
+    ist hier der Filterwert (z. B. "error"), nicht zu verwechseln mit
+    ``daemon_status`` (``/-/status``-JSON für den MAINT-Toggle)."""
     now = time.time() if now is None else now
     return (
         "<!DOCTYPE html>\n"
@@ -420,9 +442,11 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Schedules')}"
+        f"{_ops_handles(daemon_status)}"
         f"{_filter_bar(typ, status)}"
         f"{schedules_fragment(schedules, now, typ=typ, status=status)}"
         f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
         "</body></html>"
     )
 
@@ -461,6 +485,15 @@ function bibiToggleFollow(){
   const b = document.getElementById('follow');
   b.textContent = 'FOLLOW: ' + (window.bibiFollow ? 'AN' : 'aus');
   b.className = 'handle ' + (window.bibiFollow ? 'on' : '');
+  // Wieder-Einschalten muss sofort ans Ende springen — sonst bleibt die Box
+  // bis zum nächsten Append "stick=false" (atBottom() prüft die aktuelle
+  // Scroll-Position, die während FOLLOW=aus eingefroren war) und folgt nie
+  // wieder, obwohl der Nutzer genau das mit dem Klick angefordert hat.
+  if (window.bibiFollow){
+    document.querySelectorAll('.liveterm, #feed').forEach(box => {
+      box.scrollTop = box.scrollHeight;
+    });
+  }
 }
 document.addEventListener('DOMContentLoaded', () => {
   const b = document.getElementById('follow');
@@ -804,11 +837,14 @@ def _feed_nav() -> str:
     return _screen_nav("Feed")
 
 
-def _feed_handles(status: dict | None = None) -> str:
-    """Ops-Bedienelemente auf der Home (Feed): RESCAN, MAINT-Toggle (spiegelt
-    ``status.maintenance``). FOLLOW sitzt seit dem Follow-up im gemeinsamen
-    ``_header()`` (jeder Screen, nicht nur Feed) — hier nicht mehr doppelt.
-    Plain-JS (``_FEED_HANDLES_JS``) — passend zum Feed-Idiom (kein htmx)."""
+def _ops_handles(status: dict | None = None) -> str:
+    """Ops-Bedienelemente: RESCAN, MAINT-Toggle (spiegelt ``status.maintenance``).
+    Ursprünglich Feed-exklusiv, jetzt auch auf Schedules-Liste und Job-Detail
+    (User-Feedback 2026-07-03: "brauchen den Rescan und Maintenance Button auf
+    Schedule Screen"). FOLLOW sitzt seit einem früheren Follow-up im gemeinsamen
+    ``_header()`` (jeder Screen) — hier nicht mehr doppelt. Plain-JS
+    (``_OPS_HANDLES_JS``) statt htmx — funktioniert dadurch identisch auf jeder
+    Seite, ohne pro Screen ein eigenes hx-target verdrahten zu müssen."""
     maint = bool((status or {}).get("maintenance"))
     mcls = "handle warn" if maint else "handle"
     mlabel = "MAINT: AN" if maint else "MAINT: aus"
@@ -824,7 +860,7 @@ def _feed_handles(status: dict | None = None) -> str:
 
 
 def _maint_banner(status: dict | None = None) -> str:
-    """Nicht mehr als eigenes Element gerendert — Banner ist in _feed_handles() inline."""
+    """Nicht mehr als eigenes Element gerendert — Banner ist in _ops_handles() inline."""
     return ""
 
 
@@ -832,7 +868,7 @@ def _maint_banner(status: dict | None = None) -> str:
 #: /-/rescan (kurze Quittung). MAINT → POST/DELETE /-/maintenance; der Button **und
 #: ein Banner** spiegeln die **echte Server-Antwort** (kein optimistisches Toggle —
 #: bei Fehler bleibt der Zustand). FOLLOW besorgt _FOLLOW_JS (window.bibiFollow).
-_FEED_HANDLES_JS = """
+_OPS_HANDLES_JS = """
 (function(){
   const rescan = document.getElementById('rescan');
   if (rescan) rescan.addEventListener('click', async () => {
@@ -874,12 +910,12 @@ def feed_page(rows: list[dict], jobs: list[dict] | None = None,
         f"<script>{_FOLLOW_JS}</script>"
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Feed')}"
-        f"{_feed_handles(status)}"
+        f"{_ops_handles(status)}"
         f"{_maint_banner(status)}"
         f"{feed_list(rows, now)}"
         f"{bands_fragment(jobs or [], rows, now)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"<script>{_FEED_HANDLES_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_FEED_JS}</script>"
         f"<script>{_BANDS_JS}</script>"
         "</body></html>"
@@ -919,7 +955,16 @@ def _event_line(e: dict) -> str:
         ts = "--:--:--"
     line = _e(_strip_ansi(e.get("line", "")))
     s = e.get("s")
-    cls = ' class="err"' if s == "err" else (' class="thinking"' if s == "thinking" else "")
+    # "phase" (User-Feedback 2026-07-03): Worker-/Wrapper-Startup-Zeilen (Worktree,
+    # Container, Prozess-Spawn) — optisch als System-Info abgesetzt, kein Job-Output.
+    if s == "err":
+        cls = ' class="err"'
+    elif s == "thinking":
+        cls = ' class="thinking"'
+    elif s == "phase":
+        cls = ' class="phase"'
+    else:
+        cls = ""
     return f'<span class="lts">{ts}</span> <span{cls}>{line}</span>'
 
 
@@ -991,6 +1036,7 @@ _LIVE_JS = """
         const span = document.createElement('span');
         if (o.s === 'err') span.className = 'err';
         else if (o.s === 'thinking') span.className = 'thinking';
+        else if (o.s === 'phase') span.className = 'phase';
         span.textContent = o.line || '';
         box.appendChild(span);
         box._bibiLastSpan = span;
@@ -1013,6 +1059,62 @@ _LIVE_JS = """
   document.addEventListener('DOMContentLoaded', attach);
   document.addEventListener('htmx:afterSwap', attach);
 })();
+// Scroll-Erhalt für .liveclamp (awaiting/terminal-Output — kein SSE-Append wie
+// .liveterm, das über hx-preserve ohnehin nie neu gerendert wird): der 2s-
+// #live-Poll ersetzt bei jedem Tick das ganze outerHTML, ein frisches Element
+// hat scrollTop=0 — die Box "springt" sonst sichtbar nach oben, sobald man
+// runtergescrollt hat (User-Feedback). Scroll-Position vor dem Swap merken,
+// danach am neuen Element wiederherstellen.
+(function(){
+  let saved = null;
+  document.body.addEventListener('htmx:beforeSwap', (ev) => {
+    const t = ev.detail && ev.detail.target;
+    if (t && t.id === 'live') {
+      const box = t.querySelector('.liveclamp');
+      saved = box ? box.scrollTop : null;
+    }
+  });
+  document.body.addEventListener('htmx:afterSettle', () => {
+    if (saved == null) return;
+    const live = document.getElementById('live');
+    const box = live && live.querySelector('.liveclamp');
+    if (box) box.scrollTop = saved;
+    saved = null;
+  });
+})();
+"""
+
+#: User-Feedback 2026-07-03: "wenn ein RUNNING Lauf terminal endet ... wird er
+#: erst bei manuellem Reload in der Historie angezeigt". #journal pollt bewusst
+#: nicht mit (§6, Infinite Scroll), reagiert also nicht von selbst, wenn ein Lauf
+#: OHNE Button-Klick fertig wird. Fingerabdruck ist `data-finished-at` an #live
+#: (ändert sich nur bei einem neuen Terminal-Übergang, egal ob complete/error/…);
+#: ändert er sich zwischen zwei Polls, wird #journal einmalig auf Seite 1
+#: zurückgesetzt — derselbe Effekt wie beim Button-Klick (schedule_action), nur
+#: automatisch statt nutzergetriggert.
+_JOURNAL_AUTOREFRESH_JS = """
+(function(){
+  let lastFinished = null;
+  function baseline(){
+    const live = document.getElementById('live');
+    lastFinished = live ? (live.dataset.finishedAt || '') : null;
+  }
+  document.addEventListener('DOMContentLoaded', baseline);
+  document.body.addEventListener('htmx:afterSettle', () => {
+    const live = document.getElementById('live');
+    if (!live) return;
+    const finished = live.dataset.finishedAt || '';
+    if (lastFinished === null) { lastFinished = finished; return; }
+    if (finished && finished !== lastFinished && window.htmx) {
+      const slug = live.dataset.slug;
+      if (slug) {
+        htmx.ajax('GET', '/-/ui/schedule/' + encodeURIComponent(slug) + '/journal',
+                  {target: '#journal', swap: 'outerHTML'});
+      }
+    }
+    lastFinished = finished;
+  });
+})();
 """
 
 
@@ -1033,27 +1135,81 @@ def _duration_cell(r: dict) -> str:
     return f"{round(rt)} s" if rt is not None else "—"
 
 
+#: Läufe pro Infinite-Scroll-Nachladung (User-Entscheidung, Job Lifecycle-Diskussion).
+_JOURNAL_PAGE_SIZE = 50
+
+
+def _journal_sentinel_row(slug: str, offset: int) -> str:
+    """Trigger-Zeile für Infinite Scroll: sichtbar (``revealed``) lädt sie die
+    nächste Batch nach und ersetzt sich selbst (outerHTML) — mit neuer Batch +
+    ggf. frischer Sentinel-Zeile, oder ganz ohne, wenn das Ende erreicht ist."""
+    s = _e(slug)
+    return (
+        f'<tr id="journal-more" hx-get="/-/ui/schedule/{s}/runs?offset={offset}" '
+        f'hx-trigger="revealed" hx-swap="outerHTML">'
+        f'<td colspan="7" class="muted">lädt weitere Läufe…</td></tr>'
+    )
+
+
+def _journal_table_html(runs: list[dict], slug: str, now: float, *, offset: int = 0) -> str:
+    if not runs:
+        return '<p class="out-empty">— noch keine Läufe —</p>'
+    rows = _run_rows(runs, slug, now)
+    if len(runs) == _JOURNAL_PAGE_SIZE:
+        rows += _journal_sentinel_row(slug, offset + _JOURNAL_PAGE_SIZE)
+    return (
+        '<table><thead><tr><th>Zeit</th><th>Status</th><th>Grund</th>'
+        '<th>exit</th><th>Dauer</th><th>Commit</th><th></th></tr></thead>'
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
+def journal_fragment(runs: list[dict], slug: str, now: float, *, oob: bool = False) -> str:
+    """Eigenständige, nicht selbst-pollende Region (``#journal``) — wächst nur
+    durch nutzergetriggertes Infinite-Scroll-Nachladen (kein 2s-Poll, der die
+    nachgeladenen Zeilen sonst wieder plattmachen würde)."""
+    oob_attr = ' hx-swap-oob="true"' if oob else ""
+    return (
+        f'<div id="journal"{oob_attr}>'
+        "<h2>Journal</h2>"
+        f"{_journal_table_html(runs, slug, now)}"
+        "</div>"
+    )
+
+
+def journal_runs_fragment(runs: list[dict], slug: str, now: float, offset: int) -> str:
+    """Nächste Batch für ``GET .../runs?offset=N`` — ersetzt die Sentinel-Zeile
+    (outerHTML) durch die neuen Zeilen + ggf. eine frische Sentinel-Zeile."""
+    rows = _run_rows(runs, slug, now)
+    if len(runs) == _JOURNAL_PAGE_SIZE:
+        rows += _journal_sentinel_row(slug, offset + _JOURNAL_PAGE_SIZE)
+    return rows
+
+
 def _run_rows(runs: list[dict], slug: str, now: float) -> str:
     # Follow-up (User-Feedback): "Output entfällt" für Journal-Zeilen — kein
     # Inline-Toggle mehr, nur Detail/Löschen. Der Output (formatiert + roh)
     # lebt auf der Execution-Detail-Seite ("→ Detail").
+    # Kein relatives "vor Xs/min" hier (User-Feedback): #journal pollt bewusst
+    # nicht mit (Infinite Scroll, §6) — ein einmal gerendertes "vor 3s" würde
+    # beim nächsten Blick veraltet dastehen. Der absolute Zeitstempel bleibt
+    # dagegen für immer korrekt.
     s = _e(slug)
     rows = []
     for r in runs:
         rid = r.get("id")
         st = _e(r.get("status"))
-        t_abs = _abs_time(r.get("finished_at") or r.get("started_at"))
-        t_rel = _ago(r.get("finished_at") or r.get("started_at"), now)
+        t_abs = _abs_datetime(r.get("finished_at") or r.get("started_at"), now)
         rows.append(
             "<tr>"
-            f"<td>{t_abs} <span class='muted'>({t_rel})</span></td>"
+            f"<td>{t_abs}</td>"
             f'<td class="st {st}">{st}</td>'
             f"<td>{_e(r.get('reason'))}</td>"
             f"<td>{_e(r.get('exit_code'))}</td>"
             f"<td>{_duration_cell(r)}</td>"
             f"<td>{_commit_cell(r)}</td>"
             f'<td><a class="back" href="/-/ui/run/{rid}">→ Detail</a> '
-            f'<button hx-delete="/-/ui/schedule/{s}/run/{rid}" hx-target="#detail" '
+            f'<button hx-delete="/-/ui/schedule/{s}/run/{rid}" hx-target="#journal" '
             f'hx-swap="outerHTML" hx-confirm="Lauf-Record löschen?">Löschen</button></td>'
             "</tr>"
         )
@@ -1100,12 +1256,12 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
                + "</div>")
     elif job.get("status") == "awaiting":
         if live_output and live_output.get("events"):
-            out = ('<div class="liveout">'
+            out = ('<div class="liveout liveclamp">'
                    + output_block(live_output["events"], live_output.get("kind", "job"))
                    + "</div>")
         out += _hitl_panel(job)
     elif is_terminal and live_output and live_output.get("events"):
-        out = ('<div class="liveout">'
+        out = ('<div class="liveout liveclamp">'
                + output_block(live_output["events"], live_output.get("kind", "job"))
                + "</div>")
     app_port = job.get("app_port") if job else None
@@ -1133,18 +1289,19 @@ def _hitl_panel(job: dict) -> str:
 #: §5.6-Verben, die der Controller als Buttons anbietet (Durchsetzung/Scope: 4.6).
 _VERBS = ("start", "reset", "kill")
 
-# Welche Verben sind für welchen Status sinnvoll?
-# PLAN-14 Stufe 14.1: an den Lifecycle angeglichen (bibi.schedule.lifecycle) —
-# error hat kein (ERROR, KILL) und failed kein (FAILED, RESET), beide Buttons
-# waren tote Attrappen (409). killed→killed ist idempotent erlaubt (KILL bleibt).
-# failed hat auch kein START — start_now() bräuchte dafür attempts-1-Logik
-# (noch nicht gebaut, Follow-up); lieber ausblenden als einen Button zeigen,
-# der immer mit 409 scheitert.
+# Welche Verben sind für welchen Status wirksam? (Job Lifecycle-Referenztabelle,
+# §5.4). Alle drei Buttons werden IMMER gerendert (_action_bar) — hier steht nur,
+# welche davon `disabled` bleiben. KILL greift auf reiner Lauf-Ebene (pending/
+# running/failed/deferred/awaiting — überall, wo gerade etwas aktiv oder
+# unmittelbar bevorstehend ist) und bleibt No-op auf allen echten Terminal-
+# zuständen inkl. complete (User-Feedback 2026-07-03: KILL vermischte vorher
+# Lauf- und Job/Schedule-Semantik). START erzwingt "sofort", RESET respektiert
+# den Trigger (siehe job_db.py).
 _VERBS_FOR_STATUS: dict[str, tuple[str, ...]] = {
     "pending":  ("start", "kill"),
     "running":  ("kill",),
     "awaiting": ("kill",),
-    "failed":   ("kill",),
+    "failed":   ("start", "kill"),
     "deferred": ("start", "kill"),
     "killed":   ("start", "reset", "kill"),
     "error":    ("start", "reset"),
@@ -1159,24 +1316,25 @@ def _action_bar(slug: str, job: dict | None) -> str:
         return ""
     s = _e(slug)
     status = job.get("status", "")
-    verbs = _VERBS_FOR_STATUS.get(status, _VERBS)
+    enabled = _VERBS_FOR_STATUS.get(status, ())
     btns = "".join(
-        f'<button hx-post="/-/ui/schedule/{s}/{v}" hx-target="#detail" '
-        f'hx-swap="outerHTML">{v.upper()}</button> '
-        for v in verbs
+        f'<button hx-post="/-/ui/schedule/{s}/{v}" hx-target="#live" '
+        f'hx-swap="outerHTML"{"" if v in enabled else " disabled"}>{v.upper()}</button> '
+        for v in _VERBS
     )
     return f'<div class="actions">{btns}</div>'
 
 
-def schedule_detail_inner(
+def live_fragment(
     schedule: dict | None, runs: list[dict], job: dict | None,
     slug: str = "", now: float | None = None,
     *, live_output: dict | None = None,
 ) -> str:
-    """Der austauschbare Detail-Kern (``#detail``): Meta + Aktions-Leiste
-    (START/RESET/KILL) + Live-Block (aktiver Lauf, Output default expanded) +
-    Journal (jeder Lauf per Toggle — kein Auto-Expand, User-Feedback: stand
-    sonst kontextlos nach der ganzen Tabelle statt bei seiner Zeile)."""
+    """Der austauschbare Live-Kern (``#live``): Meta + Aktions-Leiste
+    (START/RESET/KILL) + Live-Block (aktiver Lauf, Output default expanded).
+    Self-pollt alle 2s — bleibt deshalb getrennt vom Journal (``#journal``),
+    das sonst durch nachgeladene Infinite-Scroll-Zeilen bei jedem Tick wieder
+    plattgemacht würde (Journal Infinite Scroll, §6)."""
     now = time.time() if now is None else now
     s = schedule or {}
     name = _e(s.get("slug") or slug)
@@ -1195,17 +1353,18 @@ def schedule_detail_inner(
     nxt = _until(s.get("next_fire_at"), now)
     meta = (f"Typ <b>{kind}</b> · Trigger <code>{trigger}</code> · "
             f"letzter Lauf <b>{last_run}</b> · nächster Lauf {nxt}")
-    runs_html = (
-        '<table><thead><tr><th>Zeit</th><th>Status</th><th>Grund</th>'
-        '<th>exit</th><th>Dauer</th><th>Commit</th><th></th></tr></thead>'
-        f"<tbody>{_run_rows(runs, slug, now)}</tbody></table>"
-        if runs else '<p class="out-empty">— noch keine Läufe —</p>'
-    )
-    # #detail self-pollt: awaiting immer (unbedingt), sonst FOLLOW-gated.
+    # #live self-pollt: awaiting immer (unbedingt), sonst FOLLOW-gated.
     # Wenn awaiting: HITL-Formular darf nie durch bibiFollow=false einfrieren.
     _is_awaiting = job.get("status") == "awaiting" if job else False
     _poll = "every 2s" if _is_awaiting else _POLL
-    attrs = (f'id="detail" hx-get="/-/ui/schedule/{_e(slug)}/detail" '
+    # data-finished-at: Fingerabdruck des aktuellen/letzten Laufs für
+    # _JOURNAL_AUTOREFRESH_JS (User-Feedback 2026-07-03) — ändert er sich
+    # zwischen zwei Polls, ist gerade ein Lauf terminal geworden (egal ob
+    # complete/error/…) und #journal wird automatisch neu geladen, statt nur
+    # bei einem Button-Klick oder vollem Seiten-Reload.
+    _finished = _e(job.get("finished_at")) if job and job.get("finished_at") else ""
+    attrs = (f'id="live" data-slug="{_e(slug)}" data-finished-at="{_finished}" '
+             f'hx-get="/-/ui/schedule/{_e(slug)}/live" '
              f'hx-trigger="{_poll}" hx-swap="outerHTML"')
     return (
         f"<div {attrs}>"
@@ -1213,18 +1372,32 @@ def schedule_detail_inner(
         f'<div class="meta">{meta}</div>'
         f"{_action_bar(slug, job)}"
         f"{_live_panel(job, now, live_output, slug=slug)}"
-        "<h2>Journal</h2>"
-        f"{runs_html}"
         "</div>"
+    )
+
+
+def schedule_detail_inner(
+    schedule: dict | None, runs: list[dict], job: dict | None,
+    slug: str = "", now: float | None = None,
+    *, live_output: dict | None = None,
+) -> str:
+    """Voller Detail-Kern für den initialen Seitenaufbau: ``#live`` (self-
+    pollend) + ``#journal`` (einmalig, wächst nur per Infinite Scroll)."""
+    now = time.time() if now is None else now
+    return (
+        live_fragment(schedule, runs, job, slug, now, live_output=live_output)
+        + journal_fragment(runs, slug, now)
     )
 
 
 def schedule_detail_page(
     schedule: dict | None, runs: list[dict], job: dict | None = None,
     slug: str = "", now: float | None = None,
-    *, live_output: dict | None = None,
+    *, live_output: dict | None = None, daemon_status: dict | None = None,
 ) -> str:
-    """Schedule-zentrierte Detail-Sicht (§3 Ebene 3) als volle Seite."""
+    """Schedule-zentrierte Detail-Sicht (§3 Ebene 3) als volle Seite. Ops-Handles
+    (RESCAN/MAINT) seit User-Feedback 2026-07-03 auch hier — außerhalb von
+    ``#live``/``#journal``, damit sie nicht bei jedem 2s-Poll neu gerendert werden."""
     name = _e((schedule or {}).get("slug") or slug)
     return (
         "<!DOCTYPE html>\n"
@@ -1235,6 +1408,7 @@ def schedule_detail_page(
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('')}"
+        f"{_ops_handles(daemon_status)}"
         f'<div style="display:flex;gap:.75rem;align-items:baseline">'
         f'<a class="back" href="/-/ui/feed">← zurück</a>'
         f'<a class="back" href="/-/ui/schedule/{_e(name)}/attrs">Attribute →</a>'
@@ -1242,6 +1416,8 @@ def schedule_detail_page(
         f"{schedule_detail_inner(schedule, runs, job, slug, now, live_output=live_output)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_LIVE_JS}</script>"
+        f"<script>{_JOURNAL_AUTOREFRESH_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
         "</body></html>"
     )
 
@@ -1252,13 +1428,16 @@ def schedule_detail_page(
 _TS_FIELDS = {"started_at", "finished_at", "archived_at"}
 _ATTR_ORDER = [
     "run_id", "slug", "domain", "reason", "exit_code",
-    "host", "worker", "branch", "commit_sha", "snapshot", "output_ref",
+    "host", "worker", "branch", "commit_sha", "output_ref",
     "archived_at",
 ]
 #: kind/status/exec_runtime/started_at/finished_at/schedule_ref stehen bereits
 #: breit in _exec_summary() (User-Feedback 2026-07-01: wichtigste Attribute
-#: breit statt in der langen vertikalen Tabelle) — hier nicht doppeln.
-_ATTR_HIDDEN = {"kind", "status", "exec_runtime", "started_at", "finished_at", "schedule_ref"}
+#: breit statt in der langen vertikalen Tabelle) — hier nicht doppeln. snapshot
+#: bekommt eine eigene, geparste Sektion (_run_config_section(), User-Feedback
+#: 2026-07-03) statt als abgeschnittener JSON-String in dieser Tabelle zu stehen.
+_ATTR_HIDDEN = {"kind", "status", "exec_runtime", "started_at", "finished_at",
+                "schedule_ref", "snapshot"}
 
 
 def _attr_table(e: dict) -> str:
@@ -1279,8 +1458,6 @@ def _attr_table(e: dict) -> str:
         elif key == "commit_sha" and isinstance(val, str) and len(val) > 7:
             branch = _e(e.get("branch") or "")
             val = f"{val[:7]} ({branch})" if branch else val[:7]
-        elif key == "snapshot" and isinstance(val, str) and len(val) > 80:
-            val = val[:80] + "…"
         rows.append(f"<tr><td><b>{_e(key)}</b></td><td>{_e(str(val))}</td></tr>")
     # Restliche Felder die nicht in _ATTR_ORDER stehen
     for key, val in sorted(e.items()):
@@ -1292,6 +1469,24 @@ def _attr_table(e: dict) -> str:
         "<thead><tr><th>Attribut</th><th>Wert</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
+
+
+def _run_config_section(e: dict) -> str:
+    """Die zum Laufzeitpunkt eingefrorene Konfiguration (``journal.snapshot``,
+    voll via job_full_view() seit User-Feedback 2026-07-03: "ein Schedule oder
+    Attempts kann sich ändern, deshalb müssen alle Werte ... als Attribut am
+    Lauf hängen"). Nur für die disponierte Domäne — lokale ``/run``-Läufe (kein
+    Schedule) haben nur einen minimalen Snapshot ohne echte Konfig-Felder."""
+    import json
+    if e.get("domain") != "scheduled":
+        return ""
+    try:
+        snap = json.loads(e.get("snapshot") or "{}")
+    except ValueError:
+        return ""
+    if not snap.get("schedule_ref"):
+        return ""
+    return _attrs_section("Konfiguration (zu diesem Lauf)", _ATTRS_CONFIG_ORDER, snap)
 
 
 def _exec_summary(e: dict) -> str:
@@ -1371,6 +1566,7 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         f'<h1><span class="st {st}">{run_id}</span></h1>'
         f"{_exec_summary(e)}"
         f"{_attr_table(e)}"
+        f"{_run_config_section(e)}"
         f"<h2>Output</h2>{raw_links}"
         f'<div class="outscroll">{out}</div>'
         f"<script>{_CLOCK_JS}</script>"
@@ -1388,12 +1584,12 @@ _ATTRS_CONFIG_ORDER = [
     "app_port", "app_prefix", "exec_mode", "image",
     "schedule_ref",
 ]
-_ATTRS_RUNTIME_ORDER = [
-    "id", "status", "reason", "attempt", "fire",
-    "enqueued_at", "started_at", "finished_at", "exit_code",
-    "next_fire_at", "deferred_at", "host", "worker",
-    "output_ref", "app_url", "app_port", "pid",
-]
+#: Nur Felder, die wirklich am Job selbst hängen (Scheduler-Bezug) — der Rest
+#: (status/reason/attempt/started_at/finished_at/exit_code/host/worker/
+#: output_ref/app_url/pid/…) beschreibt den *letzten Lauf*, nicht den Job als
+#: Entität, und lebt bereits auf der Job-Detail- bzw. Lauf-Detail-Seite
+#: (User-Feedback: "die hängen am Lauf").
+_ATTRS_RUNTIME_ORDER = ["id", "next_fire_at", "fire"]
 _ATTRS_TS = {"enqueued_at", "started_at", "finished_at", "next_fire_at", "deferred_at"}
 
 
@@ -1427,7 +1623,7 @@ def schedule_attrs_page(slug: str, data: dict, now: float | None = None) -> str:
     name = _e(slug)
     st = _e(data.get("status") or "")
     config_html = _attrs_section("Konfiguration", _ATTRS_CONFIG_ORDER, data)
-    runtime_html = _attrs_section("Runtime", _ATTRS_RUNTIME_ORDER, data)
+    runtime_html = _attrs_section("Scheduling", _ATTRS_RUNTIME_ORDER, data)
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'

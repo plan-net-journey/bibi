@@ -15,6 +15,8 @@ gefrorenen Daten-API ``/-/<noun>``).
 
 from __future__ import annotations
 
+import time
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -79,9 +81,11 @@ def add_controller_routes(
 
     @app.get("/-/ui/schedules", include_in_schema=False)
     def schedules_screen(typ: str | None = None, status: str | None = None):
-        # Der Schedules-Screen (Seite): Nav + Filter + gefilterte, self-pollende Liste.
+        # Der Schedules-Screen (Seite): Nav + Ops-Handles + Filter + gefilterte,
+        # self-pollende Liste.
         items = render.filter_schedules(_schedules(), typ=typ, status=status)
-        return HTMLResponse(render.schedules_page(items, typ=typ, status=status))
+        return HTMLResponse(render.schedules_page(
+            items, typ=typ, status=status, daemon_status=_status()))
 
     @app.get("/-/ui/schedules/list", include_in_schema=False)
     def schedules_list_fragment(typ: str | None = None, status: str | None = None):
@@ -143,7 +147,9 @@ def add_controller_routes(
         try:
             schedule = next((s for s in client.schedules()
                              if s.get("slug") == slug), None)
-            runs = client.journal(slug=slug)
+            # Erste Seite der Journal-Historie — der Rest lädt per Infinite Scroll
+            # nach (GET .../runs?offset=N, render.journal_runs_fragment).
+            runs = client.journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=0)
             job = next((j for j in client.jobs() if j.get("slug") == slug), None)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             schedule, runs, job = None, [], None
@@ -171,15 +177,40 @@ def add_controller_routes(
         schedule, runs, job = _detail_data(slug)
         live_output = _detail_outputs(job)
         return HTMLResponse(render.schedule_detail_page(
-            schedule, runs, job, slug=slug, live_output=live_output))
+            schedule, runs, job, slug=slug, live_output=live_output,
+            daemon_status=_status()))
 
-    @app.get("/-/ui/schedule/{slug}/detail", include_in_schema=False)
-    def schedule_detail_fragment(slug: str):
-        # Self-Poll-Ziel von #detail: Live-Block aktualisiert pending→running→…
+    @app.get("/-/ui/schedule/{slug}/live", include_in_schema=False)
+    def schedule_live_fragment(slug: str):
+        # Self-Poll-Ziel von #live: Live-Block aktualisiert pending→running→…
+        # #journal pollt bewusst NICHT mit (würde nachgeladene Infinite-Scroll-
+        # Zeilen jeden Tick wieder plattmachen) — braucht `runs` trotzdem für
+        # den last_status-Fallback in der Meta-Zeile.
         schedule, runs, job = _detail_data(slug)
         live_output = _detail_outputs(job)
-        return HTMLResponse(render.schedule_detail_inner(
+        return HTMLResponse(render.live_fragment(
             schedule, runs, job, slug=slug, live_output=live_output))
+
+    @app.get("/-/ui/schedule/{slug}/runs", include_in_schema=False)
+    def schedule_runs_fragment(slug: str, offset: int = 0):
+        # Nächste Journal-Batch fürs Infinite Scroll — ersetzt die Sentinel-
+        # Zeile (outerHTML) durch neue Zeilen + ggf. frische Sentinel-Zeile.
+        try:
+            runs = client.journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=offset)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            runs = []
+        return HTMLResponse(render.journal_runs_fragment(runs, slug, time.time(), offset))
+
+    @app.get("/-/ui/schedule/{slug}/journal", include_in_schema=False)
+    def schedule_journal_fragment(slug: str):
+        # Ziel von _JOURNAL_AUTOREFRESH_JS (User-Feedback 2026-07-03): ein
+        # RUNNING-Lauf, der ohne Button-Klick terminal endet, lädt #journal
+        # jetzt automatisch auf Seite 1 neu, statt erst beim nächsten Reload.
+        try:
+            runs = client.journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=0)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            runs = []
+        return HTMLResponse(render.journal_fragment(runs, slug, time.time()))
 
     @app.get("/-/ui/schedule/{slug}/attrs", include_in_schema=False)
     def schedule_attrs(slug: str):
@@ -219,7 +250,7 @@ def add_controller_routes(
         return HTMLResponse(render.output_block(
             data.get("events", []), data.get("kind", "job")))
 
-    # ── Verben (§5.6) + Löschen (§4.0) — wirken, dann #detail neu rendern ─────
+    # ── Verben (§5.6) + Löschen (§4.0) — wirken, dann #live neu rendern ───────
     # Sichtbarkeit/Scope (read-only vs. operator) wird in 4.6 (Traefik) erzwungen.
     @app.post("/-/ui/schedule/{slug}/{verb}", include_in_schema=False)
     def schedule_action(slug: str, verb: str):
@@ -232,7 +263,14 @@ def add_controller_routes(
             except Exception:  # noqa: BLE001 — defensiv (§2.7)
                 pass
         schedule, runs, job = _detail_data(slug)
-        return HTMLResponse(render.schedule_detail_inner(schedule, runs, job, slug=slug))
+        now = time.time()
+        # #journal pollt nicht mit (s.o.) — eine Aktion kann aber sofort eine neue
+        # Journal-Zeile erzeugen (z. B. KILL), deshalb hier explizit per Out-of-
+        # Band-Swap auf Seite 1 zurücksetzen, statt auf den nächsten Scroll zu warten.
+        return HTMLResponse(
+            render.live_fragment(schedule, runs, job, slug=slug, now=now)
+            + render.journal_fragment(runs, slug, now, oob=True)
+        )
 
     @app.delete("/-/ui/schedule/{slug}/run/{jid}", include_in_schema=False)
     def run_delete(slug: str, jid: int):
@@ -240,5 +278,5 @@ def add_controller_routes(
             client.delete_journal(jid)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
-        schedule, runs, job = _detail_data(slug)
-        return HTMLResponse(render.schedule_detail_inner(schedule, runs, job, slug=slug))
+        _, runs, _ = _detail_data(slug)
+        return HTMLResponse(render.journal_fragment(runs, slug, time.time()))

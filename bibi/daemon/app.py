@@ -177,10 +177,11 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
 
     # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────
     @app.get("/-/journal", tags=["journal"])
-    def journal(slug: str | None = None, host: str | None = None):
+    def journal(slug: str | None = None, host: str | None = None,
+                limit: int | None = None, offset: int | None = None):
         conn = job_db.connect()
         try:
-            return job_db.list_journal(conn, slug=slug, host=host)
+            return job_db.list_journal(conn, slug=slug, host=host, limit=limit, offset=offset)
         finally:
             conn.close()
 
