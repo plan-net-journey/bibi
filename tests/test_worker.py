@@ -278,10 +278,47 @@ def test_execute_reservation_setup_failure_does_not_hang_running(gitrepo: Path, 
     )
     assert out["outcome"] == "setup_error" and out["status"] == "failed"
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
-    row = conn.execute("SELECT status, exit_code, attempt FROM jobs WHERE id=?", (jid,)).fetchone()
+    row = conn.execute(
+        "SELECT status, exit_code, attempt, output_ref FROM jobs WHERE id=?", (jid,)).fetchone()
     conn.close()
     assert row["status"] == "failed"   # raus aus `running` (Fund B behoben)
     assert row["exit_code"] == -1 and row["attempt"] == 1
+    # User-Feedback 2026-07-03: der Fehler soll im Job-Output landen, nicht nur
+    # im Daemon-Log — output_ref darf hier nicht mehr None sein.
+    assert row["output_ref"] is not None
+    from bibi.wrapper import output as _output
+    phases = _output.lines(gitrepo / row["output_ref"], "phase")
+    assert any("worktree prepare kaputt" in p for p in phases)
+
+
+def test_run_wrapper_logs_worktree_and_spawn_phases(gitrepo: Path, monkeypatch):
+    # User-Feedback 2026-07-03: Startup-Phasen (Worktree, Wrapper-Spawn) landen
+    # als erste Zeilen im selben output.jsonl, das der Wrapper weiterschreibt.
+    import sys
+    import types
+
+    import bibi.daemon.worker as W
+    from bibi.wrapper import output as _output
+
+    real_popen = W.subprocess.Popen
+
+    def fake_popen(*a, **kw):
+        # Nur den Wrapper-Spawn faken — worktree.prepare() braucht echtes git.
+        if a and isinstance(a[0], list) and a[0][:1] == [sys.executable]:
+            return types.SimpleNamespace(pid=999)
+        return real_popen(*a, **kw)
+    monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
+
+    _, _, out_path, outcome, pid = W._run_wrapper(
+        job_id="j1", slug="phasetest", kind="job", payload="echo hi",
+        repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
+        run_id="phasetest:0", detach=True,
+    )
+    assert outcome == "detached" and pid == 999
+    phases = _output.lines(out_path, "phase")
+    assert any("vorbereitet" in p for p in phases)
+    assert any("bereit" in p for p in phases)
+    assert any("wird gestartet" in p for p in phases)
 
 
 @pytest.mark.slow

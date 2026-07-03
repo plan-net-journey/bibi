@@ -29,7 +29,7 @@ import yaml
 
 from bibi import config, repo, state
 from bibi.daemon import activity, job_db, worktree
-from bibi.wrapper import exec_backend
+from bibi.wrapper import exec_backend, output
 from bibi.schedule import backoff, discovery
 from bibi.schedule.models import CLAUDE_PAYLOAD_RE as _CLAUDE_RE
 from bibi.schedule.models import Status
@@ -203,11 +203,19 @@ def _run_wrapper(
     Der Container-Name bleibt an ``job_id`` (Docker-Namensregel, §3.3b).
     5. Rückgabewert: Wrapper-PID (detach) oder ``None`` (nicht-detach)."""
     out_run_id = run_id or job_id
-    wt_path = worktree.prepare(repo_root=repo_root, work_dir=work_dir, slug=slug)
-    activity.emit(log, logging.DEBUG, "worktree.prepare", role="worker",
-                  slug=slug, run_id=out_run_id, path=str(wt_path))
+    # out_path zuerst (reine Pfad-Arithmetik, kein I/O außer mkdir) — Startup-
+    # Phasen (User-Feedback 2026-07-03: "verschiedene Startup Phasen ... auch
+    # wenn der Worker sie produziert") landen so als erste Zeilen im selben
+    # output.jsonl, das der Wrapper gleich weiterschreibt. Schlägt eine Phase
+    # fehl, existiert die Datei trotzdem schon — execute_reservation()s
+    # except-Block kann den Fehler hineinschreiben statt output_ref=None.
     out_path = _output_path(repo_root, out_run_id)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    output.append(out_path, "phase", "worktree: wird vorbereitet …")
+    wt_path = worktree.prepare(repo_root=repo_root, work_dir=work_dir, slug=slug)
+    output.append(out_path, "phase", f"worktree: bereit ({wt_path})")
+    activity.emit(log, logging.DEBUG, "worktree.prepare", role="worker",
+                  slug=slug, run_id=out_run_id, path=str(wt_path))
 
     env = os.environ.copy()
     env["BIBI_JOB_ID"] = job_id
@@ -273,8 +281,10 @@ def _run_wrapper(
     if exec_mode:
         env["BIBI_EXEC_MODE"] = exec_mode.strip().lower()
     if _is_container():
+        output.append(out_path, "phase", "container: alte Instanz wird entfernt …")
         _docker(["rm", "-f", exec_backend.container_name(job_id)])
 
+    output.append(out_path, "phase", "wrapper: wird gestartet …")
     started = time.time()
     proc = subprocess.Popen(
         [sys.executable, "-m", "bibi.wrapper"],
@@ -387,7 +397,18 @@ def execute_reservation(
                       "Setup vor Wrapper-Start fehlgeschlagen", role="worker",
                       slug=reservation.get("slug"), run_id=jid, error=str(exc))
         log.exception("Setup fehlgeschlagen: %s", jid)
-        fields = {**_retry_fields(reservation), "exit_code": -1, "output_ref": None,
+        # User-Feedback 2026-07-03: der Fehler soll im Job-Output landen, nicht
+        # nur im Daemon-eigenen Log — out_path ist reine Pfad-Arithmetik, hier
+        # unabhängig von _run_wrapper() (das ja gerade fehlgeschlagen sein kann,
+        # noch bevor es die Datei selbst angelegt hat) neu berechenbar.
+        output_ref: str | None = None
+        try:
+            out_path = _output_path(repo_root, run_id)
+            output.append(out_path, "phase", f"setup fehlgeschlagen: {exc}")
+            output_ref = out_path.relative_to(repo_root).as_posix()
+        except Exception:  # noqa: BLE001 — defensiv, darf das Reporting nicht verhindern
+            output_ref = None
+        fields = {**_retry_fields(reservation), "exit_code": -1, "output_ref": output_ref,
                   "worker": worker_name, "host": host, "commit_sha": None, "branch": None}
         res = client.report(jid, **fields)
         return {"id": jid, "exit_code": -1, "commit": None,

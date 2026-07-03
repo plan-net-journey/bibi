@@ -364,6 +364,7 @@ def run_app(env: dict[str, str]) -> int:
     hitl_timeout = int(hitl_str) if hitl_str else None
 
     spec = exec_backend.build_exec(child_argv, env)
+    output.append(out_path, "phase", "prozess: wird gestartet …")
     proc = subprocess.Popen(
         spec.argv, cwd=spec.cwd, env=spec.env, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -494,6 +495,10 @@ def run_job(env: dict[str, str]) -> int:
     out_path = Path(env["BIBI_OUTPUT_PATH"])
     spec = exec_backend.build_exec(child_argv, env)
 
+    # User-Feedback 2026-07-03: Startup-Phasen gehören ins Job-Output, auch
+    # wenn sie vom Wrapper stammen — dieselbe Datei, die der Worker schon mit
+    # seinen eigenen Phasen (worktree/container) vorbefüllt hat.
+    output.append(out_path, "phase", "prozess: wird gestartet …")
     proc = subprocess.Popen(
         spec.argv, cwd=spec.cwd, env=spec.env, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -548,13 +553,28 @@ def run_job(env: dict[str, str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     env = dict(os.environ)
-    kind = env.get("BIBI_JOB_TYPE", "")
-    handler = REGISTRY.get(kind)
-    if handler is None:
-        raise KeyError(f"unbekannter Job-Typ: {kind!r} (Registry: {sorted(REGISTRY)})")
-    if handler.long_lived:
-        return run_app(env)
-    return run_job(env)
+    try:
+        kind = env.get("BIBI_JOB_TYPE", "")
+        handler = REGISTRY.get(kind)
+        if handler is None:
+            raise KeyError(f"unbekannter Job-Typ: {kind!r} (Registry: {sorted(REGISTRY)})")
+        if handler.long_lived:
+            return run_app(env)
+        return run_job(env)
+    except Exception as exc:
+        # Sicherheitsnetz (User-Feedback 2026-07-03): stürzt der Wrapper VOR
+        # _finish() ab (z. B. beim Exec-Setup), lief bislang kein Report mehr —
+        # der Job blieb für immer `running`, ohne dass je jemand es sah. Der
+        # Fehler geht jetzt ins Job-Output, und _finish() meldet ihn wie einen
+        # normalen Fehlschlag (Retry/Backoff greifen dadurch ganz normal).
+        out_path_str = env.get("BIBI_OUTPUT_PATH")
+        if out_path_str:
+            try:
+                output.append(Path(out_path_str), "phase", f"wrapper-fehler: {exc}")
+            except Exception:  # noqa: BLE001 — defensiv, darf den Report nicht verhindern
+                pass
+        _finish(env, 1, "crash")
+        return 1
 
 
 if __name__ == "__main__":

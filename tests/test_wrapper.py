@@ -246,3 +246,40 @@ def test_run_job_runs_in_worktree(tmp_path: Path):
 def test_unknown_type_raises(tmp_path: Path):
     with pytest.raises(KeyError):
         wrapper.run_job({"BIBI_JOB_TYPE": "bogus", "BIBI_OUTPUT_PATH": str(tmp_path / "o")})
+
+
+# ── Startup-Phasen im Job-Output (User-Feedback 2026-07-03) ───────────────────
+
+
+def test_run_job_logs_process_start_phase(tmp_path: Path):
+    out = tmp_path / "output.jsonl"
+    env = {"BIBI_JOB_TYPE": "job", "BIBI_OUTPUT_PATH": str(out), "BIBI_JOB_CMD": "echo hi"}
+    wrapper.run_job(env)
+    phases = output.lines(out, "phase")
+    assert any("wird gestartet" in p for p in phases)
+    # Phase-Zeile steht VOR dem echten Job-Output, nicht danach.
+    events = output.read_events(out)
+    assert events[0]["s"] == "phase"
+
+
+def test_main_reports_crash_as_error_and_logs_phase(tmp_path: Path, monkeypatch):
+    # User-Feedback 2026-07-03: stürzt run_job()/run_app() ab, bevor _finish()
+    # je gerufen wird, blieb der Job bislang für immer `running` — jetzt meldet
+    # main() den Absturz wie einen normalen Fehlschlag (Retry/Backoff greifen).
+    # kind="claude" → main() dispatcht auf run_job() (REGISTRY["job"] ist
+    # long_lived=True → run_app(); nur "claude" nimmt den run_job()-Pfad).
+    out = tmp_path / "output.jsonl"
+    monkeypatch.setenv("BIBI_JOB_TYPE", "claude")
+    monkeypatch.setenv("BIBI_OUTPUT_PATH", str(out))
+    monkeypatch.setenv("BIBI_JOB_PROMPT", "hi")
+    monkeypatch.setenv("BIBI_JOB_ID", "abc123")
+    monkeypatch.setenv("BIBI_ATTEMPT", "0")
+    monkeypatch.setenv("BIBI_ATTEMPTS", "1")
+
+    def boom(env):
+        raise RuntimeError("exec-Setup kaputt")
+    monkeypatch.setattr(wrapper, "run_job", boom)
+
+    assert wrapper.main() == 1
+    phases = output.lines(out, "phase")
+    assert any("exec-Setup kaputt" in p for p in phases)
