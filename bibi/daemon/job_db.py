@@ -253,8 +253,9 @@ def _spec_columns(pr: ParseResult, now: float) -> dict:
 #: den nächsten Cron-Tick verhindert sonst sowohl den Backoff-Retry als auch das
 #: spätere Eskalieren zu ``error`` (User-Feedback 2026-07-01: ein `failed`-Job mit
 #: 2h-Cron blieb dadurch bis zu 1h "hängen" statt nach 30s Backoff zu retryn/
-#: zu eskalieren).
-_PRESERVE_NEXT_FIRE_AT = {"failed", "deferred"}
+#: zu eskalieren). ``complete`` seit dem lazy Rearm (§5.2) ebenso betroffen: sein
+#: next_fire_at ist der Timer bis zum nächsten Dispatch, kein Rescan-Datum.
+_PRESERVE_NEXT_FIRE_AT = {"failed", "deferred", "complete"}
 
 
 def upsert_schedule(conn: sqlite3.Connection, pr: ParseResult, now: float) -> str:
@@ -571,7 +572,8 @@ def reserve_next(
         # Eligibel nur, was **fällig** ist (§5.2): pending feuert erst, wenn
         # next_fire_at gesetzt UND erreicht ist (`now` ⇒ sofort, `at:`/cron ⇒ zur
         # Zeit, `never` ⇒ next_fire_at NULL ⇒ nie). Dazu retriable failed (Backoff
-        # fällig, Versuche übrig) und fällige deferred (resume), §5.4.
+        # fällig, Versuche übrig), fällige deferred (resume) und fällige complete
+        # (lazy Rearm — der Job bleibt bis hierhin sichtbar `complete`), §5.4.
         rows = conn.execute(
             "SELECT id, priority, enqueued_at, rowid AS seq FROM jobs "
             "WHERE active=1 AND locked_at IS NULL AND ("
@@ -579,6 +581,7 @@ def reserve_next(
             "  OR (status='failed' AND attempt < attempts "
             "      AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='deferred' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
+            "  OR (status='complete' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             ")",
             {"now": now},
         ).fetchall()
@@ -586,10 +589,21 @@ def reserve_next(
         if chosen is None:
             conn.execute("COMMIT")
             return None
+        # Quelle 'complete' braucht zusätzlich das Aufräumen des alten Laufs (früher
+        # der Eager-Rearm in report_status()): frischer fire-Zähler (eindeutige
+        # run_id), Attempt-Reset, terminaler Snapshot weg. Für pending/failed/deferred
+        # sind diese Felder ohnehin schon leer/unverändert — die CASEs sind dort No-ops.
         cur = conn.execute(
             "UPDATE jobs SET status='running', locked_at=:now, started_at=:now, "
-            "worker=:w, host=:h "
-            "WHERE id=:id AND status IN ('pending','failed','deferred') "
+            "worker=:w, host=:h, "
+            "fire        = CASE WHEN status='complete' THEN fire+1 ELSE fire END, "
+            "attempt     = CASE WHEN status='complete' THEN 0 ELSE attempt END, "
+            "finished_at = CASE WHEN status='complete' THEN NULL ELSE finished_at END, "
+            "exit_code   = CASE WHEN status='complete' THEN NULL ELSE exit_code END, "
+            "output_ref  = CASE WHEN status='complete' THEN NULL ELSE output_ref END, "
+            "reason      = CASE WHEN status='complete' THEN NULL ELSE reason END, "
+            "deferred_at = CASE WHEN status='complete' THEN NULL ELSE deferred_at END "
+            "WHERE id=:id AND status IN ('pending','failed','deferred','complete') "
             "AND locked_at IS NULL",
             {"now": now, "w": worker, "h": host, "id": chosen["id"]},
         )
@@ -635,7 +649,10 @@ def report_status(
     if target in lifecycle.TERMINAL:
         fields["finished_at"] = now
     # failed/deferred/pending sind wieder dispatchbar ⇒ Lock lösen (reserve braucht NULL).
-    if target in (Status.FAILED, Status.DEFERRED, Status.PENDING):
+    # complete ebenso: reserve_next() darf einen fällig gewordenen complete-Job selbst
+    # dispatchen (lazy Rearm, §5.2 — siehe COMPLETE-Zweig unten), das Lock vom letzten
+    # Lauf muss dafür schon jetzt frei sein.
+    if target in (Status.FAILED, Status.DEFERRED, Status.PENDING, Status.COMPLETE):
         fields["locked_at"] = None
     if target is Status.DEFERRED:
         # deferred_at = Zeitpunkt des ersten Defers (für defer_max-Sweep); nur beim ersten Mal setzen.
@@ -646,6 +663,15 @@ def report_status(
         fields["attempt"] = 0
         fields["reason"] = None
         fields["deferred_at"] = None
+        # PENDING ist ein eigener, sauberer Eintrag (User-Feedback 2026-07-03) —
+        # der Lauf-Snapshot des vorigen (terminalen) Zyklus darf nicht bis zum
+        # nächsten Dispatch stehen bleiben. reserve_next() überschreibt started_at
+        # ohnehin bei jedem Dispatch, aber bis dahin soll die Zeile nicht die
+        # Werte eines bereits abgeschlossenen Laufs zeigen.
+        fields["started_at"] = None
+        fields["finished_at"] = None
+        fields["exit_code"] = None
+        fields["output_ref"] = None
         # Reset respektiert den Trigger, statt blind sofort zu feuern (User-
         # Feedback: RESET reihte bei `schedule: never` fälschlich einen neuen
         # Lauf ein — "steht ja auf never"). Wiederkehrende Schedules bekommen
@@ -653,6 +679,19 @@ def report_status(
         # startup/at:) bleibt unfällig (next_fire_at=None) bis zu einem
         # expliziten START — der erzwingt "sofort" via next_fire_at=now
         # (siehe start_now()).
+        fields["next_fire_at"] = (
+            _next_cron(row["schedule"], now) if is_recurring(row["schedule"]) else None
+        )
+    if target in (Status.KILLED, Status.ERROR, Status.INACTIVE, Status.ZOMBIE):
+        # Echte Sackgassen: ein evtl. noch gesetzter next_fire_at (Backoff-Timer aus
+        # dem vorigen failed/deferred, oder Rest von vor einem KILL) ist jetzt eine
+        # Karteileiche — sie feuern nie automatisch, erst nach explizitem START/RESET.
+        fields["next_fire_at"] = None
+    if target is Status.COMPLETE:
+        # Lazy Rearm (User-Feedback: "archiviert wird erst vor dem nächsten Rerun") —
+        # der Job bleibt sichtbar `complete` (Status/Output/Zeiten unangetastet) bis
+        # reserve_next() ihn beim tatsächlich fälligen nächsten Tick selbst dispatcht
+        # (siehe dortiger complete-Zweig). Kein sofortiges Zurückspringen auf pending.
         fields["next_fire_at"] = (
             _next_cron(row["schedule"], now) if is_recurring(row["schedule"]) else None
         )
@@ -684,35 +723,11 @@ def report_status(
     fields["id"] = job_id
     conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
 
-    # Terminal-Übergang → eine Journal-Zeile (disponierte Domäne, §1.4) …
+    # Terminal-Übergang → eine Journal-Zeile (disponierte Domäne, §1.4). complete
+    # rearmt NICHT mehr sofort hier — das übernimmt reserve_next() lazy, sobald der
+    # nächste next_fire_at-Tick tatsächlich fällig ist (siehe Kommentar oben).
     if target in lifecycle.TERMINAL:
         _write_journal(conn, job_id, now, commit_sha=commit_sha, branch=branch)
-        # … und für wiederkehrende (cron-)Schedules sofort neu einplanen (§5.2):
-        # nächster Tick als pending, frischer Zähler, fire++ (eindeutige run_id).
-        # Nur bei `complete` — error/killed/inactive/zombie sind echte Endzustände
-        # und dürfen nicht still neu eingestellt werden.
-        sched = conn.execute("SELECT schedule FROM jobs WHERE id=?", (job_id,)).fetchone()
-        if sched is not None and target is Status.COMPLETE:
-            schedule_val = sched["schedule"]
-            if is_recurring(schedule_val):
-                nf = _next_cron(schedule_val, now)
-                conn.execute(
-                    "UPDATE jobs SET status='pending', next_fire_at=:nf, attempt=0, "
-                    "reason=NULL, fire=fire+1, locked_at=NULL, started_at=NULL, "
-                    "finished_at=NULL, exit_code=NULL, output_ref=NULL, deferred_at=NULL, "
-                    "updated_at=:now WHERE id=:id",
-                    {"nf": nf, "now": now, "id": job_id},
-                )
-            elif schedule_val == "on_demand":
-                # Manuell startbar: nach complete sofort wieder pending (next_fire_at=NULL
-                # → nie auto-gefeuert), fire++ für eindeutige run_id.
-                conn.execute(
-                    "UPDATE jobs SET status='pending', next_fire_at=NULL, attempt=0, "
-                    "reason=NULL, fire=fire+1, locked_at=NULL, started_at=NULL, "
-                    "finished_at=NULL, exit_code=NULL, output_ref=NULL, deferred_at=NULL, "
-                    "updated_at=:now WHERE id=:id",
-                    {"now": now, "id": job_id},
-                )
     return "ok"
 
 
@@ -760,26 +775,29 @@ def fire_startup(conn: sqlite3.Connection, now: float | None = None) -> int:
 
 #: Terminalzustände, die ``start`` archiviert (= report_status→pending) statt
 #: nur fällig zu machen (PLAN-14 Stufe 14.2). failed/deferred bewusst nicht
-#: dabei — bräuchten eine eigene attempts-1-Logik statt einfachem Archivieren.
+#: dabei — die bleiben in ihrem Status und werden nur sofort fällig gemacht
+#: (kein Attempts-Reset, User-Entscheidung Job Lifecycle §START/failed).
 _ARCHIVE_AND_START = (Status.ERROR, Status.INACTIVE, Status.ZOMBIE, Status.KILLED, Status.COMPLETE)
 
 
 def start_now(conn: sqlite3.Connection, job_id: str, now: float | None = None) -> str:
-    """User-Verb ``start`` (§5.6): einen ``pending``- oder ``deferred``-Job
-    **sofort** fällig machen (``next_fire_at=now``), ohne auf den Trigger zu
-    warten. Bei archivierbaren Terminalzuständen (``_ARCHIVE_AND_START``)
-    archiviert es wie ``reset`` den alten Lauf, erzwingt aber zusätzlich die
-    sofortige Fälligkeit (``next_fire_at=now``) — ``reset`` allein respektiert
-    den Trigger und lässt z. B. ``never``-Jobs bewusst unfällig (User-Feedback,
-    PLAN-14 14.2). ``ok`` | ``invalid`` (running/awaiting/failed) | ``not_found``."""
+    """User-Verb ``start`` (§5.6): einen ``pending``-, ``deferred``- oder
+    ``failed``-Job **sofort** fällig machen (``next_fire_at=now``), ohne auf den
+    Trigger/Backoff zu warten — ``failed`` bewusst ohne Attempts-Reset, nur der
+    Timer wird übersprungen. Bei archivierbaren Terminalzuständen
+    (``_ARCHIVE_AND_START``) archiviert es wie ``reset`` den alten Lauf, erzwingt
+    aber zusätzlich die sofortige Fälligkeit (``next_fire_at=now``) — ``reset``
+    allein respektiert den Trigger und lässt z. B. ``never``-Jobs bewusst
+    unfällig (User-Feedback, PLAN-14 14.2). ``ok`` | ``invalid`` (running/awaiting)
+    | ``not_found``."""
     now = time.time() if now is None else now
     row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return "not_found"
     status = Status(row["status"])
-    if status in (Status.PENDING, Status.DEFERRED):
-        # deferred braucht keine attempts-1-Logik — "sofortiger Start" reicht,
-        # der Job ist schon dispatchbar sobald next_fire_at fällig ist (Follow-up).
+    if status in (Status.PENDING, Status.DEFERRED, Status.FAILED):
+        # failed/deferred brauchen keine attempts-1-Logik — "sofortiger Start"
+        # reicht, der Job ist schon dispatchbar sobald next_fire_at fällig ist.
         conn.execute("UPDATE jobs SET next_fire_at=?, updated_at=? WHERE id=?", (now, now, job_id))
         return "ok"
     if status in _ARCHIVE_AND_START:
@@ -976,7 +994,11 @@ def _write_journal(
             "exit_code": row["exit_code"], "exec_runtime": exec_runtime,
             "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
             "commit_sha": commit_sha, "branch": branch, "payload": row["payload"],
-            "snapshot": json.dumps(job_view(row), ensure_ascii=False),
+            # job_full_view() statt job_view() (User-Feedback 2026-07-03: "ein
+            # Schedule oder Attempts kann sich ändern" — der Snapshot muss ALLE
+            # Konfig-Felder einfrieren, nicht nur die kleine Live-Sicht, sonst
+            # verliert man z. B. attempts/backoff/model rückwirkend).
+            "snapshot": json.dumps(job_full_view(row), ensure_ascii=False),
             "archived_at": archived_at,
         },
     )
@@ -998,9 +1020,15 @@ def journal_view(row: sqlite3.Row) -> dict:
 
 
 def get_journal(conn: sqlite3.Connection, journal_id: int) -> dict | None:
-    """Eine Journal-Zeile per ID (für Output-Replay & Detail-Sicht, §4.2)."""
+    """Eine Journal-Zeile per ID (für Output-Replay & Detail-Sicht, §4.2). Anders
+    als ``journal_view()`` (Listenansicht, bewusst schlank — 50 Zeilen pro Scroll-
+    Batch sollen keinen Snapshot-JSON-Ballast tragen) liefert diese Einzelabfrage
+    zusätzlich ``snapshot``/``archived_at`` — die Lauf-Detail-Seite zeigt daraus
+    die zum Laufzeitpunkt eingefrorene Konfiguration (User-Feedback 2026-07-03)."""
     row = conn.execute("SELECT * FROM journal WHERE id=?", (journal_id,)).fetchone()
-    return journal_view(row) if row else None
+    if row is None:
+        return None
+    return {**journal_view(row), "snapshot": row["snapshot"], "archived_at": row["archived_at"]}
 
 
 def delete_journal(conn: sqlite3.Connection, journal_id: int) -> bool:
@@ -1013,6 +1041,7 @@ def delete_journal(conn: sqlite3.Connection, journal_id: int) -> bool:
 def list_journal(
     conn: sqlite3.Connection, slug: str | None = None,
     host: str | None = None, domain: str | None = None,
+    limit: int | None = None, offset: int | None = None,
 ) -> list[dict]:
     sql = "SELECT * FROM journal"
     clauses, params = [], []
@@ -1025,6 +1054,9 @@ def list_journal(
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY finished_at DESC"  # PLAN-14 Stufe 14.3 (war archived_at)
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params += [limit, offset or 0]
     return [journal_view(r) for r in conn.execute(sql, params).fetchall()]
 
 

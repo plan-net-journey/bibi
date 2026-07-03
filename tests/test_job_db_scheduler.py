@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -166,6 +167,34 @@ def test_report_running_to_complete(conn):
     assert row["finished_at"] is not None and row["exit_code"] == 0
 
 
+def test_journal_snapshot_captures_full_config_not_just_live_view(conn):
+    # User-Feedback 2026-07-03: "ein Schedule oder Attempts kann sich ändern,
+    # deshalb müssen alle Werte ... als Attribut am Lauf hängen" — der Snapshot
+    # muss job_full_view() sein (attempts/backoff/model/...), nicht die kleine
+    # job_view() (die nur schedule/priority/app_port trägt).
+    jid = _seed_full(conn, slug="a", attempts=5, backoff="exponential",
+                     model="claude-opus-4-8", status="running", next_fire_at=0)
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    entry_id = job_db.list_journal(conn, slug="a")[0]["id"]
+    entry = job_db.get_journal(conn, entry_id)
+    snap = json.loads(entry["snapshot"])
+    assert snap["attempts"] == 5
+    assert snap["backoff"] == "exponential"
+    assert snap["model"] == "claude-opus-4-8"
+
+
+def test_get_journal_exposes_snapshot_and_archived_at_unlike_list_view(conn):
+    # journal_view() (Listenansicht) bleibt bewusst schlank — get_journal()
+    # (Einzelabfrage für die Lauf-Detail-Seite) ergänzt snapshot/archived_at.
+    jid = _seed_full(conn, slug="a", status="running", next_fire_at=0)
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    entry_id = job_db.list_journal(conn, slug="a")[0]["id"]
+    assert "snapshot" not in job_db.list_journal(conn, slug="a")[0]
+    entry = job_db.get_journal(conn, entry_id)
+    assert entry["snapshot"] is not None
+    assert entry["archived_at"] is not None
+
+
 def test_report_illegal_transition_rejected(conn):
     jid = _insert(conn, "a", 0, time.time())  # pending
     # pending → complete ist verboten (§5.4)
@@ -200,6 +229,20 @@ def test_report_status_same_terminal_status_is_noop(conn):
     assert after["finished_at"] == before["finished_at"] == 100.0
     assert after["updated_at"] == before["updated_at"] == 100.0
     assert len(job_db.list_journal(conn)) == 1
+
+
+@pytest.mark.parametrize("source,target", [
+    ("running", "killed"), ("failed", "error"),
+    ("deferred", "inactive"), ("running", "zombie"),
+])
+def test_report_status_clears_stale_next_fire_at_for_terminal(conn, source, target):
+    # Echte Sackgassen (error/inactive/zombie/killed) dürfen keinen next_fire_at
+    # aus dem vorigen Zyklus (Backoff-Timer, alter Rearm-Wert) stehen lassen —
+    # sonst zeigt die UI ein "nächster Lauf in Xh", das nie feuert.
+    jid = _seed_full(conn, slug="s", status=source, next_fire_at=time.time() + 3600)
+    assert job_db.report_status(conn, jid, status=target) == "ok"
+    row = conn.execute("SELECT next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["next_fire_at"] is None
 
 
 # ── Concurrency: n parallele /next → disjunkt (§3.2/§3.8) ─────────────────────
@@ -319,18 +362,50 @@ def _seed_full(conn, **cols):
 # ── #1 cron-Recurrence ───────────────────────────────────────────────────────
 
 
-def test_cron_job_reschedules_after_complete(conn):
+def test_cron_job_complete_gets_next_fire_at_but_stays_complete(conn):
+    # Lazy Rearm (User-Feedback: "archiviert wird erst vor dem nächsten Rerun") —
+    # complete bleibt sichtbar/terminal, next_fire_at zeigt nur den nächsten Tick.
     jid = _seed_full(conn, slug="cronjob", schedule="*/5 * * * *",
-                     status="running", next_fire_at=0, fire=0)
+                     status="running", next_fire_at=0, fire=0, started_at=1.0)
     job_db.report_status(conn, jid, status="complete", exit_code=0)
-    row = conn.execute("SELECT status, next_fire_at, fire, attempt FROM jobs WHERE id=?",
-                       (jid,)).fetchone()
-    assert row["status"] == "pending"            # neu eingeplant
+    row = conn.execute(
+        "SELECT status, next_fire_at, fire, attempt, finished_at, exit_code, "
+        "locked_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "complete"           # bleibt terminal, kein Sofort-Rearm
     assert row["next_fire_at"] > time.time()     # nächster cron-Tick in der Zukunft
-    assert row["fire"] == 1                       # Zähler hoch
+    assert row["fire"] == 0                       # Zähler unverändert bis zum echten Dispatch
     assert row["attempt"] == 0
+    assert row["finished_at"] is not None and row["exit_code"] == 0  # Snapshot bleibt erhalten
+    assert row["locked_at"] is None               # wieder dispatchbar
     # eine Journal-Zeile für den abgeschlossenen Lauf
     assert len(job_db.list_journal(conn)) == 1
+
+
+def test_complete_job_redispatched_via_reserve_next_bumps_fire_and_clears_snapshot(conn):
+    jid = _seed_full(conn, slug="cronjob2", schedule="*/5 * * * *",
+                     status="running", next_fire_at=0, fire=0, started_at=1.0)
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    # next_fire_at manuell fällig machen, statt auf den echten Cron-Tick zu warten.
+    conn.execute("UPDATE jobs SET next_fire_at=0 WHERE id=?", (jid,))
+    reservation = job_db.reserve_next(conn)
+    assert reservation is not None and reservation["slug"] == "cronjob2"
+    row = conn.execute(
+        "SELECT status, fire, attempt, finished_at, exit_code, output_ref, locked_at "
+        "FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "running"
+    assert row["fire"] == 1                       # frischer, eindeutiger run_id-Zähler
+    assert row["attempt"] == 0
+    assert row["finished_at"] is None and row["exit_code"] is None and row["output_ref"] is None
+    assert row["locked_at"] is not None
+
+
+def test_on_demand_job_stays_complete_with_no_next_fire_at(conn):
+    jid = _seed_full(conn, slug="ondemand", schedule="on_demand",
+                     status="running", next_fire_at=0, fire=0)
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    row = conn.execute("SELECT status, next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "complete"
+    assert row["next_fire_at"] is None
 
 
 @pytest.mark.parametrize("terminal", ["error", "killed", "zombie", "inactive"])
@@ -362,8 +437,10 @@ def test_cron_two_fires_two_journal_rows(conn):
     jid = _seed_full(conn, slug="c", schedule="* * * * *", status="running",
                      next_fire_at=0, fire=0)
     job_db.report_status(conn, jid, status="complete")          # fire 0
-    # zweiter Lauf: wieder running → complete (fire jetzt 1)
-    conn.execute("UPDATE jobs SET status='running' WHERE id=?", (jid,))
+    # zweiter Lauf: fire bumpt jetzt erst beim echten Redispatch über reserve_next()
+    # (lazy Rearm, kein Sofort-Rearm mehr in report_status).
+    conn.execute("UPDATE jobs SET next_fire_at=0 WHERE id=?", (jid,))
+    assert job_db.reserve_next(conn)["slug"] == "c"             # fire → 1, status running
     job_db.report_status(conn, jid, status="complete")          # fire 1
     rows = job_db.list_journal(conn)
     assert len(rows) == 2                          # KEIN Dedup über fires hinweg
@@ -436,11 +513,10 @@ def test_start_now_archives_terminal_status_to_pending(conn, status):
     assert row["next_fire_at"] is not None
 
 
-@pytest.mark.parametrize("status", ["running", "awaiting", "failed"])
+@pytest.mark.parametrize("status", ["running", "awaiting"])
 def test_start_now_stays_invalid_for_non_archivable_status(conn, status):
-    # Bewusste Grenze (PLAN-14 Stufe 14.2): failed bräuchte eine eigene
-    # attempts-1-Logik statt einfachem Archivieren — nicht Teil dieser Stufe.
-    # running/awaiting sind keine Terminalzustände.
+    # running/awaiting sind keine Terminalzustände und haben keinen eigenen
+    # next_fire_at-Fast-Path — START bleibt hier ohne Effekt.
     jid = _seed_full(conn, slug="x", status=status, next_fire_at=0)
     assert job_db.start_now(conn, jid) == "invalid"
 
@@ -465,6 +541,37 @@ def test_reset_recurring_schedule_uses_next_cron_tick_not_now(conn):
     assert row["next_fire_at"] > time.time()
 
 
+def test_reset_to_pending_clears_previous_run_snapshot(conn):
+    # User-Feedback 2026-07-03: "PENDING ist ein eigener Eintrag, dessen
+    # Attribute und Output zurückgesetzt sind" — der Snapshot des vorigen
+    # (terminalen) Laufs darf nicht bis zum nächsten Dispatch stehen bleiben.
+    jid = _seed_full(conn, slug="x", schedule="never", status="killed",
+                     started_at=1.0, finished_at=2.0, exit_code=1,
+                     output_ref="data/job/x/output.jsonl")
+    assert job_db.report_status(conn, jid, status="pending") == "ok"
+    row = conn.execute(
+        "SELECT started_at, finished_at, exit_code, output_ref FROM jobs WHERE id=?",
+        (jid,)).fetchone()
+    assert row["started_at"] is None
+    assert row["finished_at"] is None
+    assert row["exit_code"] is None
+    assert row["output_ref"] is None
+
+
+def test_start_now_archive_clears_previous_run_snapshot(conn):
+    jid = _seed_full(conn, slug="x", status="error",
+                     started_at=1.0, finished_at=2.0, exit_code=1,
+                     output_ref="data/job/x/output.jsonl")
+    assert job_db.start_now(conn, jid) == "ok"
+    row = conn.execute(
+        "SELECT started_at, finished_at, exit_code, output_ref FROM jobs WHERE id=?",
+        (jid,)).fetchone()
+    assert row["started_at"] is None
+    assert row["finished_at"] is None
+    assert row["exit_code"] is None
+    assert row["output_ref"] is None
+
+
 def test_start_now_deferred_dispatches_immediately_like_pending(conn):
     # Follow-up: deferred braucht KEINE attempts-1-Logik ("sofortiger Start"
     # laut Feedback-Tabelle) — war fälschlich mit failed in einen Topf
@@ -474,6 +581,21 @@ def test_start_now_deferred_dispatches_immediately_like_pending(conn):
     row = conn.execute("SELECT status, next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
     assert row["status"] == "deferred"
     assert row["next_fire_at"] <= time.time()
+
+
+def test_start_now_failed_dispatches_immediately_without_attempts_reset(conn):
+    # User-Entscheidung (Job Lifecycle §START/failed): kein Attempts-Reset, nur
+    # next_fire_at=now überspringt den Backoff-Timer — status bleibt `failed`,
+    # bis reserve_next() ihn (bei attempt < attempts) selbst dispatcht.
+    jid = _seed_full(conn, slug="x", status="failed", attempt=1, attempts=3,
+                     next_fire_at=time.time() + 9999)
+    assert job_db.start_now(conn, jid) == "ok"
+    row = conn.execute(
+        "SELECT status, attempt, next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "failed"
+    assert row["attempt"] == 1                    # unverändert, kein Reset
+    assert row["next_fire_at"] <= time.time()
+    assert job_db.reserve_next(conn)["slug"] == "x"  # jetzt fällig
 
 
 # ── PLAN-14 Stufe 14.5 — active-Flag ──────────────────────────────────────────

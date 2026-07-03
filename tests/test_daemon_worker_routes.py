@@ -209,8 +209,32 @@ def test_kill_running_job(client):
     assert client.get(f"/-/job/{jid}/status").json()["reason"] == "by_user"
 
 
-def test_kill_pending_is_409(client):
-    jid = _seed_status("pending")  # pending → killed ist verboten (§5.4)
+def test_kill_pending_ok(client):
+    # pending → killed ("aus dem Schedule nehmen") ist jetzt erlaubt (§5.4).
+    jid = _seed_status("pending")
+    r = client.post(f"/-/job/{jid}/kill")
+    assert r.status_code == 200
+    assert r.json()["status"] == "killed"
+
+
+def test_kill_failed_ok(client):
+    jid = _seed_status("failed")
+    r = client.post(f"/-/job/{jid}/kill")
+    assert r.status_code == 200
+    assert r.json()["status"] == "killed"
+
+
+def test_kill_deferred_ok(client):
+    jid = _seed_status("deferred")
+    r = client.post(f"/-/job/{jid}/kill")
+    assert r.status_code == 200
+    assert r.json()["status"] == "killed"
+
+
+def test_kill_complete_is_409(client):
+    # User-Feedback 2026-07-03: KILL ist reine Lauf-Ebene, complete bleibt ein
+    # echter Terminalzustand wie error/inactive/zombie/killed — KILL No-op.
+    jid = _seed_complete([("out", "x")])
     assert client.post(f"/-/job/{jid}/kill").status_code == 409
 
 
@@ -273,11 +297,13 @@ def test_start_error_archives_to_pending(client):
     assert client.get(f"/-/job/{jid}/status").json()["status"] == "pending"
 
 
-def test_start_failed_stays_409(client):
-    # Bewusste Grenze (Stufe 14.2): failed bräuchte attempts-1-Logik, nicht
-    # Teil dieser Stufe.
+def test_start_failed_dispatches_immediately(client):
+    # User-Entscheidung (Job Lifecycle §START/failed): kein Attempts-Reset, nur
+    # next_fire_at=now überspringt den Backoff-Timer, status bleibt `failed`.
     jid = _seed_status("failed")
-    assert client.post(f"/-/job/{jid}/start").status_code == 409
+    r = client.post(f"/-/job/{jid}/start")
+    assert r.status_code == 200
+    assert client.get(f"/-/job/{jid}/status").json()["status"] == "failed"
 
 
 def test_start_deferred_dispatches_immediately(client):
@@ -312,6 +338,21 @@ def test_journal_lists_terminal_runs(client):
     client.post(f"/-/scheduler/status/{jid}", json={"status": "complete", "exit_code": 0})
     rows = client.get("/-/journal").json()
     assert any(r["slug"] == "s" and r["status"] == "complete" for r in rows)
+
+
+def test_journal_route_limit_offset_params(client):
+    conn = job_db.connect()
+    try:
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO journal (run_id, slug, kind, status, finished_at, archived_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (f"j:{i}", "j", "job", "complete", 100 - i, 100 - i),
+            )
+    finally:
+        conn.close()
+    rows = client.get("/-/journal", params={"slug": "j", "limit": 2, "offset": 1}).json()
+    assert [r["run_id"] for r in rows] == ["j:1", "j:2"]
 
 
 def test_worker_routes_absent_without_worker_role(team_repo):

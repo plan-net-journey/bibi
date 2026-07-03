@@ -84,6 +84,17 @@ _TRANSITIONS: dict[tuple[Status, Event], Status] = {
     (Status.INACTIVE, Event.RESET): Status.PENDING,
     (Status.ZOMBIE, Event.RESET): Status.PENDING,
     (Status.KILLED, Event.RESET): Status.PENDING,
+    # KILL greift überall dort, wo gerade noch ein Lauf aktiv oder unmittelbar
+    # bevorstehend ist (pending wartet auf Trigger, failed auf Retry, deferred
+    # auf Resume) — reine Lauf-Ebene, KEINE Job/Schedule-Semantik mehr (User-
+    # Feedback 2026-07-03: "vermischt Lauf und Job/Schedule-Behandlung"). complete
+    # bewusst NICHT dabei — ist ein echter Terminalzustand wie error/inactive/
+    # zombie/killed (KILL dort No-op), auch wenn es dank Lazy-Rearm einen
+    # next_fire_at trägt: das Aus-dem-Schedule-Nehmen läuft ausschließlich über
+    # die MD (`schedule`/`at`), nicht über einen Lifecycle-Button.
+    (Status.PENDING, Event.KILL): Status.KILLED,
+    (Status.FAILED, Event.KILL): Status.KILLED,
+    (Status.DEFERRED, Event.KILL): Status.KILLED,
 }
 
 # ── Typ-gebundene Kanten ─────────────────────────────────────────────────────

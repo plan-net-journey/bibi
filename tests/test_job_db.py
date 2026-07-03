@@ -122,6 +122,23 @@ def test_rescan_preserves_next_fire_at_while_failed(conn, tmp_path: Path):
     assert row["next_fire_at"] == backoff_deadline
 
 
+def test_rescan_preserves_next_fire_at_while_complete(conn, tmp_path: Path):
+    # Lazy Rearm (§5.2): next_fire_at eines complete-Jobs ist der Timer bis zum
+    # nächsten Dispatch — ein Rescan darf ihn nicht auf einen anderen Cron-Tick
+    # verschieben (derselbe Bug wie bei `failed`/`deferred`, s.o.).
+    md = tmp_path / "case" / "hello" / "README.md"
+    _write(md, '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jid = job_db.list_jobs(conn)[0]["id"]
+    next_tick = time.time() + 60
+    conn.execute("UPDATE jobs SET status='complete', next_fire_at=? WHERE id=?",
+                (next_tick, jid))
+    conn.commit()
+    job_db.rescan(conn, vault_root=tmp_path / "case")  # z.B. periodischer Sync
+    row = conn.execute("SELECT next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["next_fire_at"] == next_tick
+
+
 def test_rescan_deactivates_vanished_instead_of_deleting(conn, tmp_path: Path):
     # PLAN-14 Stufe 14.5: die Zeile bleibt (Journal-Historie erreichbar), nur
     # active=0 statt DELETE — ersetzt den früheren test_rescan_removes_vanished.
@@ -265,9 +282,10 @@ def test_journal_entries_from_different_job_incarnations_do_not_collide(conn, tm
     assert len({r["run_id"] for r in rows}) == 2  # unterschiedliche run_ids (job_id-Suffix)
 
 
-def test_schedule_list_status_is_last_run_not_rearmed_pending(conn, tmp_path: Path):
-    # Ein wiederkehrender Job re-armt nach `complete` sofort zu `pending`. Die Liste
-    # soll dennoch den **letzten Lauf** (complete) zeigen, nicht den Zeilen-Status.
+def test_schedule_list_status_is_last_run_when_complete_and_idle(conn, tmp_path: Path):
+    # Lazy Rearm (§5.2): ein wiederkehrender Job bleibt nach `complete` sichtbar
+    # `complete`, bis reserve_next() ihn beim fälligen Tick selbst redispatcht —
+    # row_status und last_status stimmen hier also überein.
     _write(tmp_path / "case" / "rec.md", '---\nschedule: "0 9 * * *"\njob: "echo x"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     conn.execute("UPDATE jobs SET next_fire_at=1.0 WHERE slug='rec'")  # fällig machen
@@ -275,8 +293,8 @@ def test_schedule_list_status_is_last_run_not_rearmed_pending(conn, tmp_path: Pa
     job_db.report_status(conn, res["id"], status="complete", exit_code=0,
                          branch="agent/rec", commit_sha="a" * 40)
     sched = next(s for s in job_db.list_schedules(conn) if s["slug"] == "rec")
-    assert sched["row_status"] == "pending"      # re-armt
-    assert sched["last_status"] == "complete"    # aber letzter Lauf: complete
+    assert sched["row_status"] == "complete"     # kein Sofort-Rearm mehr
+    assert sched["last_status"] == "complete"    # letzter Lauf: complete
     assert sched["last_run_at"] is not None
     journal_id = conn.execute(
         "SELECT id FROM journal WHERE slug='rec'").fetchone()["id"]
@@ -562,3 +580,18 @@ def test_list_journal_orders_by_finished_at_not_archived_at(conn):
         "VALUES ('b:1','b','job','complete', 50, 100)")
     rows = job_db.list_journal(conn)
     assert [r["run_id"] for r in rows] == ["a:1", "b:1"]
+
+
+def test_list_journal_respects_limit_and_offset(conn):
+    for i in range(5):
+        conn.execute(
+            "INSERT INTO journal (run_id, slug, kind, status, finished_at, archived_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (f"a:{i}", "a", "job", "complete", 100 - i, 100 - i),
+        )
+    page1 = job_db.list_journal(conn, limit=2, offset=0)
+    page2 = job_db.list_journal(conn, limit=2, offset=2)
+    assert [r["run_id"] for r in page1] == ["a:0", "a:1"]  # DESC nach finished_at
+    assert [r["run_id"] for r in page2] == ["a:2", "a:3"]
+    assert len(job_db.list_journal(conn, limit=2, offset=4)) == 1
+    assert len(job_db.list_journal(conn)) == 5  # ohne limit weiterhin unbegrenzt

@@ -31,6 +31,9 @@ EXPECTED_TRANSITIONS = [
     (Status.INACTIVE, Event.RESET, Status.PENDING),
     (Status.ZOMBIE, Event.RESET, Status.PENDING),
     (Status.KILLED, Event.RESET, Status.PENDING),
+    (Status.PENDING, Event.KILL, Status.KILLED),
+    (Status.FAILED, Event.KILL, Status.KILLED),
+    (Status.DEFERRED, Event.KILL, Status.KILLED),
 ]
 
 
@@ -56,12 +59,19 @@ def test_forbidden_edges_explicit():
     # Stichproben verbotener Kanten, die leicht durchrutschen.
     for src, ev in [
         (Status.PENDING, Event.COMPLETE),   # darf nicht direkt fertig werden
-        (Status.PENDING, Event.KILL),       # pending → killed verboten (§5.4)
         (Status.COMPLETE, Event.DISPATCH),  # Terminal nur via reset
         (Status.RUNNING, Event.RESET),      # running ist nicht terminal
         (Status.RUNNING, Event.DISPATCH),   # nur aus pending
         (Status.PENDING, Event.RESET),      # pending ist kein Terminal
         (Status.ERROR, Event.RETRY),        # error nur via reset
+        # Echte Terminalzustände (inkl. complete) — KILL bleibt dort No-op,
+        # anders als bei pending/failed/deferred (§5.4, User-Feedback 2026-07-03:
+        # KILL ist reine Lauf-Ebene, keine Job/Schedule-Semantik mehr).
+        (Status.ERROR, Event.KILL),
+        (Status.ZOMBIE, Event.KILL),
+        (Status.INACTIVE, Event.KILL),
+        (Status.KILLED, Event.KILL),
+        (Status.COMPLETE, Event.KILL),
     ]:
         assert not lc.can(src, ev)
         with pytest.raises(IllegalTransition):
@@ -74,7 +84,8 @@ def test_terminal_set_matches_design():
     )
     for t in lc.TERMINAL:
         assert lc.is_terminal(t)
-        # Terminal → einziges Event ist RESET → pending.
+        # Terminal → einziges Event ist RESET → pending (§5.4). KILL bleibt auf
+        # ALLEN Terminalzuständen No-op, auch complete (User-Feedback 2026-07-03).
         assert lc.events_from(t) == {Event.RESET}
         assert lc.apply(t, Event.RESET) == Status.PENDING
     assert not lc.is_terminal(Status.RUNNING)
@@ -157,5 +168,5 @@ def test_targets_of_running():
 
 
 def test_targets_of_pending_and_terminal():
-    assert lc.targets(Status.PENDING) == {Status.RUNNING}
+    assert lc.targets(Status.PENDING) == {Status.RUNNING, Status.KILLED}
     assert lc.targets(Status.COMPLETE) == {Status.PENDING}
