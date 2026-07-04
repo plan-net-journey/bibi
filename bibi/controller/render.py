@@ -176,76 +176,6 @@ def _e(v) -> str:
     return html.escape("" if v is None else str(v))
 
 
-def _banner(v: dict) -> str:
-    if v.get("ok"):
-        return '<div class="banner ok">✓ alles lief</div>'
-    problems, overdue = v.get("problems", 0), v.get("overdue", 0)
-    parts = []
-    if problems:
-        parts.append(f"{problems} {_plural(problems, 'Problem', 'Probleme')}")
-    if overdue:
-        parts.append(f"{overdue} überfällig")
-    return f'<div class="banner bad">⚠ {" · ".join(parts) or "Problem"}</div>'
-
-
-def _slug_link(slug: str) -> str:
-    s = _e(slug)
-    return f'<a class="slug" href="/-/ui/schedule/{s}">{s}</a>'
-
-
-def _deviation_rows(deviations: list[dict], now: float) -> str:
-    if not deviations:
-        return ""
-    rows = []
-    for d in deviations:
-        when = d.get("finished_at") or d.get("started_at")
-        hint = ' <span class="muted">(letzter Lauf)</span>' if d.get("last_run") else ""
-        rows.append(
-            "<tr>"
-            f"<td>{_slug_link(d.get('slug'))}</td>"
-            f'<td class="st {_e(d.get("status"))}">{_e(d.get("status"))}{hint}</td>'
-            f"<td>{_e(d.get('reason'))}</td>"
-            f"<td>{_ago(when, now)}</td>"
-            f"<td>{_e(d.get('host'))}</td>"
-            "</tr>"
-        )
-    return ('<h2>Abweichungen</h2><table><thead><tr><th>Schedule</th>'
-            '<th>Status</th><th>Grund</th><th>seit</th><th>Knoten</th>'
-            f'</tr></thead><tbody>{"".join(rows)}</tbody></table>')
-
-
-def _overdue_rows(overdue_jobs: list[dict], now: float) -> str:
-    if not overdue_jobs:
-        return ""
-    rows = []
-    for o in overdue_jobs:
-        rows.append(
-            "<tr>"
-            f"<td>{_slug_link(o.get('slug'))}</td>"
-            '<td class="st overdue">überfällig</td>'
-            f"<td>seit {_ago(o.get('next_fire_at'), now)}</td>"
-            f"<td>{_e(o.get('host'))}</td>"
-            "</tr>"
-        )
-    return ('<h2>Überfällig</h2><table><thead><tr><th>Schedule</th>'
-            '<th>Status</th><th>fällig</th><th>Knoten</th>'
-            f'</tr></thead><tbody>{"".join(rows)}</tbody></table>')
-
-
-def verdict_fragment(status: dict, now: float | None = None) -> str:
-    """Der selbst-pollende Verdikt-Block: Banner + Abweichungs-/Überfällig-Listen.
-    ``status`` ist die Antwort von ``GET /-/status``."""
-    now = time.time() if now is None else now
-    attrs = (f'id="verdict" hx-get="/-/ui/verdict" hx-trigger="{_POLL}" hx-swap="outerHTML"')
-    v = status.get("verdict")
-    if v is None:
-        return (f'<div {attrs}><div class="banner">Kein Verdikt — '
-                "Scheduler-Rolle nötig.</div></div>")
-    body = _banner(v) + _deviation_rows(v.get("deviations", []), now) \
-        + _overdue_rows(v.get("overdue_jobs", []), now)
-    return f"<div {attrs}>{body}</div>"
-
-
 # ── Volle Schedule-Liste + Archiv (Ebene 2, §4.4) ────────────────────────────
 
 #: Terminale Sicht-Zustände — ein One-shot in einem davon gilt als „abgelaufen".
@@ -488,30 +418,6 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
     )
 
 
-def maint_handle(status: dict) -> str:
-    """Maintenance-Toggle, der seinen Zustand spiegelt (``/-/status.maintenance``)."""
-    on = bool(status.get("maintenance"))
-    label = "MAINT: AN" if on else "MAINT: aus"
-    cls = "handle warn" if on else "handle"
-    return (f'<button id="maint" class="{cls}" hx-post="/-/ui/maintenance" '
-            f'hx-target="#maint" hx-swap="outerHTML">{label}</button>')
-
-
-def _handles(status: dict) -> str:
-    """Die Handle-Leiste: Rescan, Docs, Live-Log, FOLLOW-Toggle, Maintenance."""
-    return (
-        '<nav class="handles">'
-        '<button hx-post="/-/ui/rescan" hx-target="#schedules" '
-        'hx-swap="outerHTML">RESCAN</button>'
-        '<button id="follow" class="handle on" onclick="bibiToggleFollow()">FOLLOW: AN</button>'
-        f"{maint_handle(status)}"
-        '<a href="/-/ui/logs">Live-Log</a>'
-        '<a href="/-/docs" target="_blank" rel="noopener">API-Docs</a>'
-        '<a href="/-/redoc" target="_blank" rel="noopener">ReDoc</a>'
-        "</nav>"
-    )
-
-
 #: FOLLOW-Toggle: steuert ``window.bibiFollow`` (Trigger-Filter der Poll-Fragmente).
 #: Vor htmx-Init gesetzt (im <head>), damit die Trigger den Startzustand sehen.
 _FOLLOW_JS = """
@@ -537,28 +443,6 @@ document.addEventListener('DOMContentLoaded', () => {
   if (b && !window.bibiFollow){ b.textContent = 'FOLLOW: aus'; b.className = 'handle'; }
 });
 """
-
-
-def dashboard_page(
-    status: dict, schedules: list[dict] | None = None, now: float | None = None
-) -> str:
-    """Die App-Wurzel ``/-/`` (Browser): Server-Render — Handle-Leiste, dann Verdikt
-    + Abweichungen (Ebene 0/1), darunter die flache, self-pollende Liste (Ebene 2)."""
-    return (
-        "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>bibi</title>"
-        f"<script>{_FOLLOW_JS}</script>"
-        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
-        f"<style>{_CSS}</style></head><body>"
-        '<header><h1>bibi</h1><span class="muted">Health- &amp; Anomalie-Sicht'
-        "</span></header>"
-        f"{_handles(status)}"
-        f"{verdict_fragment(status, now)}"
-        f"{schedules_fragment(schedules or [], now)}"
-        "</body></html>"
-    )
 
 
 # ── Live-Log-Panel (§5.4 Slice C) — EventSource gegen /-/log/stream ──────────

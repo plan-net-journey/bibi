@@ -72,21 +72,6 @@ def test_root_default_curl_is_json(ctrl):
     assert r.json()["service"] == "bibi"
 
 
-def test_verdict_fragment_route(team_repo):
-    dev = [{"slug": "boom", "status": "failed", "reason": None, "host": "n1"}]
-    red = {"roles": ["scheduler", "controller"], "verdict": {
-        "ok": False, "problems": 1, "overdue": 0,
-        "deviations": dev, "overdue_jobs": []}}
-    app = create_app(roles.resolve({"controller"}), controller_client=FakeClient(red))
-    with TestClient(app) as client:
-        r = client.get("/-/ui/verdict")
-        assert r.status_code == 200
-        assert r.headers["content-type"].startswith("text/html")
-        assert 'id="verdict"' in r.text
-        assert "1 Problem" in r.text
-        assert "boom" in r.text
-
-
 def test_root_degrades_when_client_unreachable(team_repo):
     class Boom:
         def status(self):

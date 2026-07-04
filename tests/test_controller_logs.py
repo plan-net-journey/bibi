@@ -25,10 +25,6 @@ def test_log_page_has_eventsource_and_filters():
     assert 'href="/-/"' in html                           # Nav (Stufe 6, Home = Schedules)
 
 
-def test_dashboard_links_to_live_log():
-    assert 'href="/-/ui/logs"' in render.dashboard_page({})
-
-
 def test_logs_route_serves_panel():
     app = create_app(roles.resolve({"controller"}), controller_client=_Dummy())
     c = TestClient(app)

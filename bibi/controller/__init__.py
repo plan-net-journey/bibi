@@ -8,9 +8,9 @@ PLAN-4 §2.1 — die App-Wurzel *ist* ``/-/`` (kein ``/-/overview``):
 - Nicht-Browser → knapper **JSON-Service-Deskriptor** (System-Info + App-Link);
   so bleibt §1.1 (reine JSON-API für Maschinen) auch an der Wurzel gewahrt.
 
-Stufe 4.1: Verdikt (Ebene 0) + Abweichungs-/Überfällig-Listen (Ebene 1), htmx-Poll.
-Fragment-Routen liegen unter ``/-/ui/`` (App-Namensraum, kollidiert nicht mit der
-gefrorenen Daten-API ``/-/<noun>``).
+Home = Schedules-Übersicht (User-Feedback 2026-07-04; ex Verdikt-Dashboard/Feed,
+beide entfernt). Fragment-Routen liegen unter ``/-/ui/`` (App-Namensraum,
+kollidiert nicht mit der gefrorenen Daten-API ``/-/<noun>``).
 """
 
 from __future__ import annotations
@@ -72,16 +72,6 @@ def add_controller_routes(
                 items, typ=typ, status=status, daemon_status=_status()))
         return JSONResponse(service_descriptor(roles))
 
-    @app.get("/-/ui/dashboard", include_in_schema=False)
-    def dashboard():
-        # Health-/Anomalie-Sicht + Ops-Handles (RESCAN/MAINT) — nicht mehr über
-        # die Tab-Nav verlinkt (Direct-Link-only), Schedules ist Home.
-        return HTMLResponse(render.dashboard_page(_status(), _schedules()))
-
-    @app.get("/-/ui/verdict", include_in_schema=False)
-    def verdict_fragment():
-        return HTMLResponse(render.verdict_fragment(_status()))
-
     @app.get("/-/ui/schedules", include_in_schema=False)
     def schedules_screen(typ: str | None = None, status: str | None = None):
         # Der Schedules-Screen (Seite): Nav + Ops-Handles + Filter + gefilterte,
@@ -95,24 +85,6 @@ def add_controller_routes(
         # Filter-fähiges Fragment — Self-Poll-Ziel + Ziel der Filter-Dropdowns.
         items = render.filter_schedules(_schedules(), typ=typ, status=status)
         return HTMLResponse(render.schedules_fragment(items, typ=typ, status=status))
-
-    @app.post("/-/ui/rescan", include_in_schema=False)
-    def ui_rescan():
-        try:
-            client.rescan()
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            pass
-        return HTMLResponse(render.schedules_fragment(_schedules()))
-
-    @app.post("/-/ui/maintenance", include_in_schema=False)
-    def ui_maintenance():
-        # Toggle: aktuellen Zustand lesen, umschalten, den Handle neu rendern.
-        on = bool(_status().get("maintenance"))
-        try:
-            client.maintenance(not on)
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            pass
-        return HTMLResponse(render.maint_handle(_status()))
 
     @app.get("/-/ui/logs", include_in_schema=False)
     def logs_page():
