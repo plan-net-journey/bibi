@@ -4,7 +4,9 @@ Case-Ordner: ``vault/<case_dir>/YYYYmmdd.<slug>-<short>/`` mit ``README.md``
 und Frontmatter ``slug, short, status, created``. ``create_case`` legt sie
 immer flach direkt unter ``case_dir`` an; die Suche (``find_matches``) findet
 Cases aber auch beliebig tief in Unterordnern (z. B. nach Jahr/Monat einsortiert),
-falls sie dorthin verschoben wurden.
+falls sie dorthin verschoben wurden. Das gilt auch für Altbestand ohne
+``-<short>``-Suffix im Ordnernamen (Zeit vor der aktuellen Konvention) — dort
+wird der Case per ``slug``-Frontmatter erkannt statt per Namensmuster.
 
 ``short = uuid4().hex[:8]`` — eine ID, als Suffix im Ordnernamen.
 Das Case-Verzeichnis ist konfigurierbar (``repo.case_dir``); Default ``case``,
@@ -57,26 +59,49 @@ class Match:
     #: oder ``2026/06/20260624.Foo-deadbeef`` (verschoben/verschachtelt).
     folder_name: str
     slug: str
-    short: str
+    #: ``None`` für Altbestand ohne ``-<short>``-Suffix (Slug kommt dann aus
+    #: der Frontmatter statt aus dem Ordnernamen geparst, siehe find_matches).
+    short: str | None
 
     @property
     def folder(self) -> Path:
         return repo.case_dir() / self.folder_name
 
 
+def _has_case_frontmatter(folder: Path) -> bool:
+    """True, wenn ``folder/README.md`` einen ``slug``-Key trägt.
+
+    Fängt Case-Ordner aus einer Zeit vor der ``-<short>``-Namenskonvention ab
+    (manuell archiviert, kein Suffix im Namen) — ohne diesen Check hält
+    ``_iter_case_dirs`` sie für einen reinen Gliederungsordner, steigt
+    vergeblich hinein (README ist keine Unterordner) und der Case verschwindet
+    komplett aus ``find_matches``.
+    """
+    readme = folder / "README.md"
+    if not readme.is_file():
+        return False
+    try:
+        fm = frontmatter.read(readme)
+    except Exception:
+        return False
+    return "slug" in fm
+
+
 def _iter_case_dirs(root: Path) -> Iterator[Path]:
     """Case-Ordner rekursiv unter ``root`` finden.
 
-    Sortiert pro Verzeichnisebene. Ein Ordner, dessen Name dem Case-Muster
-    entspricht, wird geliefert, aber nicht selbst durchsucht — sein Inhalt
-    (Notizen, Anhänge) ist kein Container für weitere Cases. Alles andere
-    (z. B. eine Jahres-/Monats-Gliederung wie ``2026/06/``) wird durchstiegen,
-    damit verschobene Cases trotzdem gefunden werden.
+    Sortiert pro Verzeichnisebene. Ein Ordner gilt als Case-Blatt — wird
+    geliefert, aber nicht selbst durchsucht, da sein Inhalt (Notizen, Anhänge)
+    kein Container für weitere Cases ist —, wenn sein Name dem Case-Muster
+    entspricht **oder** er direkt eine ``README.md`` mit ``slug``-Frontmatter
+    enthält (Altbestand ohne Namenssuffix). Alles andere (z. B. eine
+    Jahres-/Monats-Gliederung wie ``2026/06/``) wird durchstiegen, damit
+    verschobene Cases trotzdem gefunden werden.
     """
     for p in sorted(root.iterdir()):
         if not p.is_dir():
             continue
-        if _FOLDER_RE.match(p.name):
+        if _FOLDER_RE.match(p.name) or _has_case_frontmatter(p):
             yield p
             continue
         yield from _iter_case_dirs(p)
@@ -93,7 +118,14 @@ def find_matches(topic_or_fragment: str) -> list[Match]:
     needle = _slugify(fragment).lower()
     matches: list[Match] = []
     for p in _iter_case_dirs(case_dir):
-        slug, short = folder_to_slug_short(p.name)
+        try:
+            slug, short = folder_to_slug_short(p.name)
+        except ValueError:
+            # Kein "-<short>"-Suffix im Namen (Altbestand) — Slug kommt dann
+            # aus der Frontmatter; _has_case_frontmatter hat sie oben schon
+            # als lesbar mit slug-Key verifiziert.
+            slug = read_frontmatter(p)["slug"]
+            short = None
         # Beide Seiten slugifizieren, damit ein voller Ordnername (mit
         # Datum/Punkten/Bindestrichen) ebenfalls matcht.
         if needle not in slug.lower() and needle not in _slugify(p.name).lower():

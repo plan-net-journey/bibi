@@ -119,6 +119,58 @@ def test_find_matches_multiple_nested_levels_deep(team_repo: Path):
     assert len(matches) == 2
 
 
+def test_find_matches_legacy_folder_without_short_suffix(team_repo: Path):
+    # Altbestand aus einer Zeit vor der -<short>-Namenskonvention: kein Hash im
+    # Ordnernamen, manuell nach case/2026/ archiviert. Muss trotzdem gefunden
+    # werden, via slug-Frontmatter statt Namensmuster.
+    legacy_dir = team_repo / "vault" / "case" / "2026" / "20260531.LegacyThing"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "README.md").write_text(
+        frontmatter.join(
+            {"slug": "LegacyThing", "status": "open", "created": "2026-05-31"},
+            "\n# Legacy\n",
+        ),
+        encoding="utf-8",
+    )
+
+    matches = case_store.find_matches("legacything")
+    assert len(matches) == 1
+    assert matches[0].folder_name == "2026/20260531.LegacyThing"
+    assert matches[0].slug == "LegacyThing"
+    assert matches[0].short is None
+    assert matches[0].folder == legacy_dir
+
+
+def test_find_matches_ignores_readme_without_slug_key(team_repo: Path):
+    # Ein Ordner mit README.md, die aber kein Case-Frontmatter traegt (z. B.
+    # ein Schedule/Job-MD ohne slug-Key), ist kein Case-Blatt — er wird als
+    # reiner Gliederungsordner behandelt und liefert nichts.
+    job_dir = team_repo / "vault" / "case" / "2026" / "20260531.SomeJob"
+    job_dir.mkdir(parents=True)
+    (job_dir / "README.md").write_text(
+        frontmatter.join({"schedule": "*/10 * * * *", "job": "echo hi"}, "\n# Job\n"),
+        encoding="utf-8",
+    )
+
+    assert case_store.find_matches("somejob") == []
+
+
+def test_find_matches_legacy_folder_status_roundtrip(team_repo: Path):
+    # get_status/set_status arbeiten rein über Frontmatter — funktionieren also
+    # unveraendert auch fuer Cases ohne -<short>-Suffix.
+    legacy_dir = team_repo / "vault" / "case" / "2026" / "20260531.LegacyThing"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "README.md").write_text(
+        frontmatter.join({"slug": "LegacyThing", "status": "paused"}, "\n# Legacy\n"),
+        encoding="utf-8",
+    )
+
+    matches = case_store.find_matches("legacything")
+    assert case_store.get_status(matches[0].folder) == "paused"
+    case_store.set_status(matches[0].folder, "open")
+    assert case_store.get_status(matches[0].folder) == "open"
+
+
 def test_set_and_get_status(team_repo: Path):
     folder = case_store.create_case("Foo")
     assert case_store.get_status(folder) == "open"
