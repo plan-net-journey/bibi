@@ -1,7 +1,10 @@
 """Case-Store: Ordner anlegen, Frontmatter patchen, Slug-Suche (DESIGN §3.2).
 
 Case-Ordner: ``vault/<case_dir>/YYYYmmdd.<slug>-<short>/`` mit ``README.md``
-und Frontmatter ``slug, short, status, created``.
+und Frontmatter ``slug, short, status, created``. ``create_case`` legt sie
+immer flach direkt unter ``case_dir`` an; die Suche (``find_matches``) findet
+Cases aber auch beliebig tief in Unterordnern (z. B. nach Jahr/Monat einsortiert),
+falls sie dorthin verschoben wurden.
 
 ``short = uuid4().hex[:8]`` — eine ID, als Suffix im Ordnernamen.
 Das Case-Verzeichnis ist konfigurierbar (``repo.case_dir``); Default ``case``,
@@ -12,6 +15,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -49,6 +53,8 @@ def folder_to_slug_short(folder_name: str) -> tuple[str, str]:
 
 @dataclass(frozen=True)
 class Match:
+    #: Pfad relativ zu ``case_dir``, z. B. ``20260624.Foo-deadbeef`` (flach)
+    #: oder ``2026/06/20260624.Foo-deadbeef`` (verschoben/verschachtelt).
     folder_name: str
     slug: str
     short: str
@@ -58,8 +64,26 @@ class Match:
         return repo.case_dir() / self.folder_name
 
 
+def _iter_case_dirs(root: Path) -> Iterator[Path]:
+    """Case-Ordner rekursiv unter ``root`` finden.
+
+    Sortiert pro Verzeichnisebene. Ein Ordner, dessen Name dem Case-Muster
+    entspricht, wird geliefert, aber nicht selbst durchsucht — sein Inhalt
+    (Notizen, Anhänge) ist kein Container für weitere Cases. Alles andere
+    (z. B. eine Jahres-/Monats-Gliederung wie ``2026/06/``) wird durchstiegen,
+    damit verschobene Cases trotzdem gefunden werden.
+    """
+    for p in sorted(root.iterdir()):
+        if not p.is_dir():
+            continue
+        if _FOLDER_RE.match(p.name):
+            yield p
+            continue
+        yield from _iter_case_dirs(p)
+
+
 def find_matches(topic_or_fragment: str) -> list[Match]:
-    """Substring-Match gegen Ordnernamen im Case-Verzeichnis."""
+    """Substring-Match gegen Case-Ordner, rekursiv unter dem Case-Verzeichnis."""
     case_dir = repo.case_dir()
     if not case_dir.exists():
         return []
@@ -68,18 +92,14 @@ def find_matches(topic_or_fragment: str) -> list[Match]:
     fragment = topic_or_fragment.strip().removeprefix(f"{repo.case_dir_name()}/")
     needle = _slugify(fragment).lower()
     matches: list[Match] = []
-    for p in sorted(case_dir.iterdir()):
-        if not p.is_dir():
-            continue
-        try:
-            slug, short = folder_to_slug_short(p.name)
-        except ValueError:
-            continue
+    for p in _iter_case_dirs(case_dir):
+        slug, short = folder_to_slug_short(p.name)
         # Beide Seiten slugifizieren, damit ein voller Ordnername (mit
         # Datum/Punkten/Bindestrichen) ebenfalls matcht.
         if needle not in slug.lower() and needle not in _slugify(p.name).lower():
             continue
-        matches.append(Match(folder_name=p.name, slug=slug, short=short))
+        rel = p.relative_to(case_dir).as_posix()
+        matches.append(Match(folder_name=rel, slug=slug, short=short))
     return matches
 
 

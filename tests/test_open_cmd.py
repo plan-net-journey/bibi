@@ -66,3 +66,20 @@ def test_open_respects_case_dir(team_repo: Path, monkeypatch, capsys):
 
 def test_no_subcommand_returns_1(team_repo: Path, capsys):
     assert main([]) == 1
+
+
+def test_open_reactivates_nested_case(team_repo: Path, capsys):
+    # Case wurde manuell in eine Jahres-/Monats-Gliederung verschoben.
+    folder = case_store.create_case("Alpha Feature")
+    case_store.set_status(folder, "paused")
+    nested_dir = team_repo / "vault" / "case" / "2026" / "06"
+    nested_dir.mkdir(parents=True)
+    moved = folder.rename(nested_dir / folder.name)
+
+    rc = main(["open", "alpha"])
+    assert rc == 0
+    assert case_store.get_status(moved) == "open"
+    out = capsys.readouterr().out
+    assert f"reaktiviert: case/2026/06/{folder.name}" in out
+    assert f"cd: {moved.resolve()}" in out
+    assert state.read()["path"] == f"case/2026/06/{folder.name}"

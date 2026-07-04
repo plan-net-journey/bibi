@@ -80,6 +80,45 @@ def test_find_matches_respects_case_dir(team_repo: Path, monkeypatch: pytest.Mon
     assert len(case_store.find_matches("legacy")) == 1
 
 
+def test_find_matches_nested(team_repo: Path):
+    # Case wird flach angelegt, dann "verschoben" (Jahr/Monat-Gliederung).
+    folder = case_store.create_case("Foo Bar")
+    nested_dir = team_repo / "vault" / "case" / "2026" / "06"
+    nested_dir.mkdir(parents=True)
+    folder.rename(nested_dir / folder.name)
+
+    matches = case_store.find_matches("foobar")
+    assert len(matches) == 1
+    assert matches[0].folder_name == f"2026/06/{folder.name}"
+    assert matches[0].slug == "FooBar"
+    assert matches[0].folder == nested_dir / folder.name
+
+
+def test_find_matches_nested_does_not_descend_into_case(team_repo: Path):
+    # Ein Unterordner innerhalb eines Case-Ordners (z. B. Anhänge) ist kein
+    # Container für weitere Cases und wird nicht durchsucht.
+    folder = case_store.create_case("Foo")
+    attachment_dir = folder / "attachments"
+    attachment_dir.mkdir()
+    (attachment_dir / "notes.txt").write_text("x", encoding="utf-8")
+
+    assert len(case_store.find_matches("foo")) == 1
+
+
+def test_find_matches_multiple_nested_levels_deep(team_repo: Path):
+    one = case_store.create_case("Alpha One")
+    two = case_store.create_case("Alpha Two")
+    deep_dir = team_repo / "vault" / "case" / "2025" / "12"
+    deep_dir.mkdir(parents=True)
+    one.rename(deep_dir / one.name)
+    shallow_dir = team_repo / "vault" / "case" / "2026"
+    shallow_dir.mkdir(parents=True)
+    two.rename(shallow_dir / two.name)
+
+    matches = case_store.find_matches("alpha")
+    assert len(matches) == 2
+
+
 def test_set_and_get_status(team_repo: Path):
     folder = case_store.create_case("Foo")
     assert case_store.get_status(folder) == "open"
