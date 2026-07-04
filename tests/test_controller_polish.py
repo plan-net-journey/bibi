@@ -17,8 +17,8 @@ def test_live_clock_markup():
     assert 'id="liveclock"' in html and "live" in html
 
 
-def test_feed_page_ticks_clock():
-    html = render.feed_page([], jobs=[], now=1.0)
+def test_schedules_page_ticks_clock():
+    html = render.schedules_page([], now=1.0)
     assert 'id="liveclock"' in html
     assert "setInterval" in html and "toLocaleTimeString" in html  # tickt clientseitig
 
@@ -33,7 +33,7 @@ def test_schedules_page_has_clock():
 def test_log_page_has_nav_and_clock():
     html = render.log_page()
     assert 'id="liveclock"' in html
-    assert 'href="/-/ui/feed"' in html and 'href="/-/ui/schedules"' in html
+    assert 'href="/-/"' in html
     assert "new EventSource('/-/log/stream" in html  # Live-Quelle bleibt
 
 

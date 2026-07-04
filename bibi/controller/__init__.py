@@ -62,17 +62,20 @@ def add_controller_routes(
             return []
 
     @app.get("/-/", include_in_schema=False)
-    def root(request: Request):
-        # Home = Feed (Frontend-Plan, Entscheidung #5). Browser → Feed-Screen;
-        # Nicht-Browser → JSON-Deskriptor (§1.1 bleibt an der Wurzel gewahrt).
+    def root(request: Request, typ: str | None = None, status: str | None = None):
+        # Home = Schedules (User-Feedback 2026-07-04: Feed entfernt). Browser →
+        # Schedules-Screen (identisch zu /-/ui/schedules); Nicht-Browser →
+        # JSON-Deskriptor (§1.1 bleibt an der Wurzel gewahrt).
         if _wants_html(request):
-            return HTMLResponse(render.feed_page(_journal(), jobs=_jobs(), status=_status()))
+            items = render.filter_schedules(_schedules(), typ=typ, status=status)
+            return HTMLResponse(render.schedules_page(
+                items, typ=typ, status=status, daemon_status=_status()))
         return JSONResponse(service_descriptor(roles))
 
     @app.get("/-/ui/dashboard", include_in_schema=False)
     def dashboard():
-        # Health-/Anomalie-Sicht + Ops-Handles (RESCAN/MAINT) — über die Nav („Status")
-        # erreichbar, seit der Feed die Home ist.
+        # Health-/Anomalie-Sicht + Ops-Handles (RESCAN/MAINT) — nicht mehr über
+        # die Tab-Nav verlinkt (Direct-Link-only), Schedules ist Home.
         return HTMLResponse(render.dashboard_page(_status(), _schedules()))
 
     @app.get("/-/ui/verdict", include_in_schema=False)
@@ -113,35 +116,7 @@ def add_controller_routes(
 
     @app.get("/-/ui/logs", include_in_schema=False)
     def logs_page():
-        return HTMLResponse(render.log_page())
-
-    def _journal() -> list:
-        # Feed-Quelle = Journal (Frontend-Plan §A). Letzte 50 (DESC) als Backfill;
-        # neueste landen via feed_list unten. Live-Push besorgt /-/feed/stream.
-        try:
-            return client.journal()[:50]
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            return []
-
-    def _jobs() -> list:
-        # Band-Quelle = jobs-Tabelle (Live-State, §C.2). Defensiv (ein FakeClient
-        # ohne jobs() oder ein Daemon-Hänger darf den Feed nicht killen).
-        try:
-            return client.jobs()
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            return []
-
-    @app.get("/-/ui/feed", include_in_schema=False)
-    def feed_screen():
-        return HTMLResponse(render.feed_page(_journal(), jobs=_jobs(), status=_status()))
-
-    @app.get("/-/ui/feed/list", include_in_schema=False)
-    def feed_list_fragment():
-        return HTMLResponse(render.feed_list(_journal()))
-
-    @app.get("/-/ui/feed/bands", include_in_schema=False)
-    def feed_bands_fragment():
-        return HTMLResponse(render.bands_fragment(_jobs(), _journal()))
+        return HTMLResponse(render.log_page(daemon_status=_status()))
 
     def _detail_data(slug: str):
         try:
@@ -239,7 +214,8 @@ def add_controller_routes(
             except Exception:  # noqa: BLE001 — defensiv (§2.7)
                 pass
         return HTMLResponse(render.execution_detail_page(
-            entry, data.get("events", []), data.get("kind") or entry.get("kind", "job")))
+            entry, data.get("events", []), data.get("kind") or entry.get("kind", "job"),
+            daemon_status=_status()))
 
     @app.get("/-/ui/run/{jid}/output", include_in_schema=False)
     def run_output(jid: int):

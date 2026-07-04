@@ -44,13 +44,13 @@ def test_controller_role_resolves():
 
 
 def test_root_serves_html_for_browser(ctrl):
-    # Home = Feed (Entscheidung #5) mit Ops-Handles.
+    # Home = Schedules (User-Feedback 2026-07-04: Feed entfernt) mit Ops-Handles.
     r = ctrl.get("/-/", headers={"Accept": "text/html,application/xhtml+xml,*/*"})
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
     body = r.text
     assert "<!doctype html>" in body.lower()
-    assert 'id="feed"' in body              # Feed-Screen
+    assert 'id="schedules"' in body         # Schedules-Screen
     assert "RESCAN" in body and "MAINT" in body  # Ops-Handles auf der Home
 
 
@@ -96,7 +96,7 @@ def test_root_degrades_when_client_unreachable(team_repo):
     with TestClient(app) as client:
         r = client.get("/-/", headers={"Accept": "text/html"})
         assert r.status_code == 200  # defensiv: kein 500
-        assert 'id="feed"' in r.text  # leerer Feed statt Absturz
+        assert 'id="schedules"' in r.text  # leere Schedules-Liste statt Absturz
 
 
 def test_root_absent_without_controller_role(team_repo):

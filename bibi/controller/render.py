@@ -18,9 +18,12 @@ _POLL = "every 2s [window.bibiFollow]"
 
 _CSS = """
 :root { color-scheme: light dark; }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem;
        max-width: 64rem; margin-inline: auto; }
-header { display: flex; align-items: baseline; gap: .75rem; }
+header { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; }
+header .handles { margin: 0; }
 h1 { font-size: 1.4rem; margin: 0; }
 .muted { color: #888; font-size: .85rem; }
 .banner { margin: 0; padding: .35rem .75rem; border-radius: .35rem;
@@ -383,9 +386,9 @@ def _filter_bar(typ: str | None, status: str | None) -> str:
 
 
 def _screen_nav(active: str) -> str:
-    """Screen-Tabs (Feed · Schedules · Live-Log · API-Docs); der aktive ohne Link."""
-    tabs = [("Feed", "/-/ui/feed"), ("Schedules", "/-/ui/schedules"),
-            ("Live-Log", "/-/ui/logs"), ("API-Docs", "/-/docs")]
+    """Screen-Tabs (Schedules · Live-Log · API-Docs); der aktive ohne Link.
+    Feed ist entfernt (User-Feedback 2026-07-04); Schedules ist jetzt Home (``/-/``)."""
+    tabs = [("Schedules", "/-/"), ("Live-Log", "/-/ui/logs"), ("API-Docs", "/-/docs")]
     def _tab(t: str, h: str) -> str:
         if t == active:
             return t
@@ -418,10 +421,44 @@ def _follow_toggle() -> str:
     return '<button id="follow" class="handle on" onclick="bibiToggleFollow()">FOLLOW: AN</button>'
 
 
-def _header(active: str) -> str:
-    """Gemeinsamer Screen-Header: Titel + Live-Uhr + Tab-Leiste + FOLLOW-Toggle."""
+def _theme_toggle() -> str:
+    """DARK/LIGHT-Button — Teil des gemeinsamen Headers, neben FOLLOW
+    (User-Feedback 2026-07-04). Startlabel per ``_THEME_JS`` gesetzt (Default =
+    System-Präferenz), damit hier kein Server-seitiger Theme-State nötig ist."""
+    return '<button id="theme" class="handle" onclick="bibiToggleTheme()">THEME</button>'
+
+
+#: DARK/LIGHT-Toggle: überschreibt ``color-scheme`` explizit via ``data-theme``
+#: auf <html> (s. _CSS), Default = System-Präferenz (``prefers-color-scheme``),
+#: persistiert in localStorage — analog zu _FOLLOW_JS.
+_THEME_JS = """
+(function(){
+  const KEY = 'bibiTheme';
+  const root = document.documentElement;
+  function apply(theme){
+    root.setAttribute('data-theme', theme);
+    const b = document.getElementById('theme');
+    if (b) b.textContent = 'THEME: ' + theme.toUpperCase();
+  }
+  window.bibiToggleTheme = function(){
+    const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    localStorage.setItem(KEY, next);
+    apply(next);
+  };
+  const stored = localStorage.getItem(KEY);
+  apply(stored || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+})();
+"""
+
+
+def _header(active: str, status: dict | None = None) -> str:
+    """Gemeinsame obere Navigationsleiste: Titel + Live-Uhr + Tab-Leiste + FOLLOW-
+    + THEME-Toggle + Ops-Handles (RESCAN/MAINT). Ein Baustein für jeden Screen
+    (User-Feedback 2026-07-04: "ziehe Rescan und Maintenance CTA auf die obere
+    Navigationsleiste mit FOLLOW on/off" — dadurch auch auf Live-Log sichtbar,
+    vorher pro Screen separat bzw. gar nicht eingebunden)."""
     return (f'<header><h1>bibi</h1>{_live_clock()} {_screen_nav(active)} '
-            f'{_follow_toggle()}</header>')
+            f'{_follow_toggle()}{_theme_toggle()}{_ops_handles(status)}</header>')
 
 
 def schedules_page(schedules: list[dict], typ: str | None = None,
@@ -441,12 +478,12 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Schedules')}"
-        f"{_ops_handles(daemon_status)}"
+        f"{_header('Schedules', daemon_status)}"
         f"{_filter_bar(typ, status)}"
         f"{schedules_fragment(schedules, now, typ=typ, status=status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
 
@@ -490,7 +527,7 @@ function bibiToggleFollow(){
   // Scroll-Position, die während FOLLOW=aus eingefroren war) und folgt nie
   // wieder, obwohl der Nutzer genau das mit dem Klick angefordert hat.
   if (window.bibiFollow){
-    document.querySelectorAll('.liveterm, #feed').forEach(box => {
+    document.querySelectorAll('.liveterm').forEach(box => {
       box.scrollTop = box.scrollHeight;
     });
   }
@@ -587,17 +624,20 @@ q.oninput = rerender;
 """
 
 
-def log_page() -> str:
+def log_page(daemon_status: dict | None = None) -> str:
     """Live-Log-Panel (§5.4 Slice C): EventSource gegen ``/-/log/stream``, mit
     Level- + Text-Filter (Rolle/Event/slug/msg). Reines FE; der Daemon liefert
-    die Events als SSE. ``pure`` (kein HTTP/DB) — voll testbar."""
+    die Events als SSE. ``pure`` (kein HTTP/DB) — voll testbar. Ops-Handles +
+    funktionierendes FOLLOW seit User-Feedback 2026-07-04 (vorher fehlte
+    ``_FOLLOW_JS`` hier komplett — der FOLLOW-Button im Header war wirkungslos)."""
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Live-Log</title>"
+        f"<script>{_FOLLOW_JS}</script>"
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Live-Log')}"
+        f"{_header('Live-Log', daemon_status)}"
         f"<script>{_CLOCK_JS}</script>"
         '<div class="logbar">'
         '<label>Level <select id="lvl">'
@@ -609,232 +649,10 @@ def log_page() -> str:
         "</div>"
         '<div id="log" class="logbox"></div>'
         f"<script>{_LOG_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
-
-
-# ── Feed (Home) — Journal als zeitsortierte Strömung (Frontend-Plan §C.1) ────
-
-def _hms(ts: float | None) -> str:
-    """Absolute Uhrzeit ``HH:MM:SS`` (lokal) — der Feed zeigt *wann*, nicht *vor wie lang*."""
-    if ts is None:
-        return "--:--:--"
-    return time.strftime("%H:%M:%S", time.localtime(ts))
-
-
-def feed_row(r: dict, now: float | None = None) -> str:
-    """Eine Journal-Zeile als Feed-Eintrag (rein). ``status`` trägt die CSS-Klasse
-    (complete prominent); ``run_id`` verlinkt zum Execution-Detail (Stufe 4),
-    ``slug`` zum Schedule-Detail. Kein inline-Output (Entscheidung #4 — Link genügt)."""
-    rid = _e(r.get("run_id"))
-    slug = _e(r.get("slug"))
-    st = _e(r.get("status"))
-    jid = r.get("id")
-    t = _hms(r.get("finished_at") or r.get("started_at"))
-    exit_code = r.get("exit_code")
-    ex = f'<span class="ex">exit {_e(exit_code)}</span> ' if exit_code is not None else ""
-    sha = r.get("commit_sha")
-    commit = f'<span class="commit">⎘ {_e(sha[:7])}</span>' if sha else ""
-    run = (f'<a class="run" href="/-/ui/run/{_e(jid)}">{rid}</a>'
-           if jid is not None else rid)
-    return (
-        f'<div class="feed-row" data-jid="{_e(jid)}">'
-        f'<span class="t">{t}</span> '
-        f'<span class="st {st}">{st}</span> '
-        f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a> '
-        f"{run} {ex}{commit}"
-        "</div>"
-    )
-
-
-def feed_list(rows: list[dict], now: float | None = None) -> str:
-    """Die Journal-Zeilen als Feed (rein). Eingabe = ``/-/journal`` (archived_at
-    **DESC**, neueste zuerst); der Feed zeigt neueste **unten** → umgedreht gerendert."""
-    now = time.time() if now is None else now
-    body = "".join(feed_row(r, now) for r in reversed(rows))
-    return f'<div id="feed" class="feed">{body}</div>'
-
-
-#: Live-Feed: an ``/-/feed/stream`` (Stufe 0) hängen; jedes Journal-Event als Zeile
-#: **unten** anhängen (Tail), Autoscroll wenn am Ende. Backfill-Dedup über data-jid
-#: (der Server hat die Backfill-Zeilen schon gerendert) — der Stream re-sendet sie,
-#: wir überspringen bereits bekannte IDs und hängen nur wirklich Neues an.
-_FEED_JS = """
-(function(){
-  const feed = document.getElementById('feed');
-  if (!feed) return;
-  const seen = new Set([...feed.querySelectorAll('.feed-row')].map(e => e.dataset.jid));
-  feed.scrollTop = feed.scrollHeight;
-  function el(tag, cls, txt){ const e=document.createElement(tag);
-    if(cls) e.className=cls; if(txt!=null) e.textContent=txt; return e; }
-  function feedRow(o){
-    const row = el('div','feed-row'); row.dataset.jid = o.id;
-    const t = o.finished_at ? new Date(o.finished_at*1000).toLocaleTimeString() : '';
-    row.appendChild(el('span','t',t)); row.append(' ');
-    row.appendChild(el('span','st '+(o.status||''), o.status||'')); row.append(' ');
-    const s = el('a','slug',o.slug||''); s.href='/-/ui/schedule/'+encodeURIComponent(o.slug||'');
-    row.appendChild(s); row.append(' ');
-    const r = el('a','run',o.run_id||''); r.href='/-/ui/run/'+encodeURIComponent(o.id);
-    row.appendChild(r); row.append(' ');
-    if (o.exit_code!=null){ row.appendChild(el('span','ex','exit '+o.exit_code)); row.append(' '); }
-    if (o.commit_sha) row.appendChild(el('span','commit','\\u2398 '+String(o.commit_sha).slice(0,7)));
-    return row;
-  }
-  const atBottom = () => feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 24;
-  const es = new EventSource('/-/feed/stream');
-  es.onmessage = (e) => {
-    if (window.bibiFollow === false) return;   // FOLLOW aus → Live pausiert
-    let o; try { o = JSON.parse(e.data); } catch(_) { return; }
-    if (o.id==null || seen.has(String(o.id))) return;
-    seen.add(String(o.id));
-    const stick = atBottom();
-    feed.appendChild(feedRow(o));
-    if (stick) feed.scrollTop = feed.scrollHeight;
-  };
-})();
-"""
-
-
-#: PLAN-14 Stufe 14.4: Trennlinie ist „braucht es jetzt eine Handlung von mir?",
-#: nicht mehr Laufzeit-Historie. ``running`` ist bewusst NICHT dabei — ein
-#: laufender Job braucht keine Handlung, er tut gerade genau das, was er soll
-#: (Korrektur ggü. der ursprünglichen 2-Bänder-Fassung, die running noch unter
-#: „aktiv" führte).
-_REQUIRES_ACTION_STATES = ("error", "awaiting", "inactive", "zombie", "killed")
-
-#: pending/failed/deferred laufen von selbst weiter; complete zählt nur MIT
-#: Schedule dazu — ein One-Shot (`at:`) ohne Schedule hat keine Zukunft mehr
-#: und landet stattdessen residual im journal-Band.
-_WILL_RUN_STATES = ("pending", "failed", "deferred")
-
-
-def _will_run(jobs: list[dict]) -> list[dict]:
-    return [j for j in jobs if j.get("status") in _WILL_RUN_STATES
-            or (j.get("status") == "complete" and j.get("schedule") is not None)]
-
-
-def _requires_action(jobs: list[dict]) -> list[dict]:
-    return [j for j in jobs if j.get("status") in _REQUIRES_ACTION_STATES]
-
-
-def _journal_band_entries(jobs: list[dict], journal_rows: list[dict],
-                          covered_slugs: set) -> list[dict]:
-    """running (live) + eindeutige Journal-Einträge, die nicht schon in
-    will-run/requires-action stecken (PLAN-14 Stufe 14.4). ``journal_rows``
-    kommt bereits nach ``finished_at DESC`` sortiert (Stufe 14.3) — der erste
-    Treffer je Slug ist damit automatisch der neueste, keine eigene Dedup-Query
-    nötig."""
-    running = [j for j in jobs if j.get("status") == "running"]
-    seen = {j.get("slug") for j in running} | covered_slugs
-    entries = list(running)
-    for r in journal_rows:
-        slug = r.get("slug")
-        if slug in seen:
-            continue
-        seen.add(slug)
-        entries.append(r)
-    entries.sort(key=lambda e: e.get("started_at") or e.get("finished_at") or 0, reverse=True)
-    return entries
-
-
-def _action_row(j: dict, now: float) -> str:
-    slug = _e(j.get("slug"))
-    st = _e(j.get("status"))
-    bits: list[str] = []
-    if j.get("reason"):
-        bits.append(_e(j.get("reason")))
-    if j.get("last_run_at"):
-        bits.append(f"letzter {_abs_time(j.get('last_run_at'))}")
-    tail = " · ".join(bits)
-    return (f'<div class="band-row"><span class="st {st}">{st}</span> '
-            f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a>'
-            f'{" · " + tail if tail else ""}</div>')
-
-
-def _will_run_row(j: dict, now: float) -> str:
-    slug = _e(j.get("slug"))
-    st = _e(j.get("status"))
-    if j.get("status") != "pending":
-        bits = [f"retry {_until(j.get('next_fire_at'), now)}"] if j.get("next_fire_at") else []
-        tail = " · ".join(bits)
-        return (f'<div class="band-row"><span class="st {st}">{st}</span> '
-                f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a>'
-                f'{" · " + tail if tail else ""}</div>')
-    nf = j.get("next_fire_at")
-    nxt = "manuell" if j.get("schedule") == "on_demand" else (
-        f"{_abs_time(nf)} ({_until(nf, now)})" if nf else "—")
-    last = _abs_time(j.get("last_run_at"))
-    return (f'<div class="band-row"><span class="st pending">○</span> '
-            f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a>'
-            f' <span class="muted">nächster {nxt} · letzter {last}</span></div>')
-
-
-def _journal_row(e: dict, now: float) -> str:
-    slug = _e(e.get("slug"))
-    st = _e(e.get("status"))
-    if e.get("status") == "running":
-        t = e.get("started_at")
-        tail = f"seit {_ago(t, now)}" if t else ""
-    else:
-        t = e.get("finished_at") or e.get("started_at")
-        tail = f"beendet {_ago(t, now)}" if t else ""
-    return (f'<div class="band-row"><span class="st {st}">{st}</span> '
-            f'<a class="slug" href="/-/ui/schedule/{slug}">{slug}</a>'
-            f'{" · " + tail if tail else ""}</div>')
-
-
-def bands_fragment(jobs: list[dict], journal_rows: list[dict] | None = None,
-                   now: float | None = None) -> str:
-    """Drei Gruppen (PLAN-14 Stufe 14.4): Requires Action / Will Run / Journal —
-    Überschriften statt Buttons, scrollbare max-height-Area statt Collapse/Expand
-    (bewusste Revision von Frontend-Plan.md Entscheidung #6, User-bestätigt)."""
-    now = time.time() if now is None else now
-    journal_rows = journal_rows or []
-    will_run = sorted(_will_run(jobs), key=lambda j: j.get("next_fire_at") or float("inf"))
-    requires_action = _requires_action(jobs)
-    covered = {j.get("slug") for j in will_run + requires_action}
-    journal_entries = _journal_band_entries(jobs, journal_rows, covered)
-
-    ra_body = ("".join(_action_row(j, now) for j in requires_action)
-               or '<div class="out-empty">— nichts —</div>')
-    wr_body = ("".join(_will_run_row(j, now) for j in will_run)
-               or '<div class="out-empty">— nichts —</div>')
-    jr_body = ("".join(_journal_row(e, now) for e in journal_entries)
-               or '<div class="out-empty">— nichts —</div>')
-    return (
-        '<div id="bands">'
-        f'<h3>Requires Action ({len(requires_action)})</h3>'
-        f'<div class="bandscroll">{ra_body}</div>'
-        f'<h3>Will Run ({len(will_run)})</h3>'
-        f'<div class="bandscroll">{wr_body}</div>'
-        f'<h3>Journal ({len(journal_entries)})</h3>'
-        f'<div class="bandscroll">{jr_body}</div>'
-        '</div>'
-    )
-
-
-#: Bänder (PLAN-14 Stufe 14.4): keine Klapp-Logik mehr — feste Überschriften +
-#: scrollbare max-height-Area je Gruppe (CSS: ``.bandscroll``). Nur noch der
-#: 2s-Live-Poll gegen ``/-/ui/feed/bands`` bleibt (Live-State der jobs-Tabelle).
-_BANDS_JS = """
-(function(){
-  setInterval(async () => {
-    if (window.bibiFollow === false) return;   // FOLLOW aus → Band-Poll pausiert
-    try{
-      const r=await fetch('/-/ui/feed/bands'); if(!r.ok) return;
-      const html=await r.text();
-      const wrap=document.getElementById('bands');
-      if(!wrap) return;
-      wrap.outerHTML=html;
-    }catch(_){}
-  }, 2000);
-})();
-"""
-
-
-def _feed_nav() -> str:
-    """Screen-Navigation des Feed (Home) — gemeinsame Tab-Leiste."""
-    return _screen_nav("Feed")
 
 
 def _ops_handles(status: dict | None = None) -> str:
@@ -857,11 +675,6 @@ def _ops_handles(status: dict | None = None) -> str:
         f'<span id="maintbanner" class="banner bad"{hide}>Wartungsmodus aktiv</span>'
         "</nav>"
     )
-
-
-def _maint_banner(status: dict | None = None) -> str:
-    """Nicht mehr als eigenes Element gerendert — Banner ist in _ops_handles() inline."""
-    return ""
 
 
 #: RESCAN + MAINT als plain-JS-Buttons gegen die JSON-API (§1.1). RESCAN → POST
@@ -896,30 +709,6 @@ _OPS_HANDLES_JS = """
 })();
 """
 
-
-def feed_page(rows: list[dict], jobs: list[dict] | None = None,
-              status: dict | None = None, now: float | None = None) -> str:
-    """Der Feed-Screen (Home): Ops-Handles (RESCAN/MAINT/FOLLOW) + Server-Backfill
-    (neueste unten) + Live-Push per SSE, darunter die Bänder „aktiv"/„wartet". Der
-    Daemon liefert JSON; das FE rendert — analog zum Live-Log-Panel."""
-    return (
-        "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>bibi · Feed</title>"
-        f"<script>{_FOLLOW_JS}</script>"
-        f"<style>{_CSS}</style></head><body>"
-        f"{_header('Feed')}"
-        f"{_ops_handles(status)}"
-        f"{_maint_banner(status)}"
-        f"{feed_list(rows, now)}"
-        f"{bands_fragment(jobs or [], rows, now)}"
-        f"<script>{_CLOCK_JS}</script>"
-        f"<script>{_OPS_HANDLES_JS}</script>"
-        f"<script>{_FEED_JS}</script>"
-        f"<script>{_BANDS_JS}</script>"
-        "</body></html>"
-    )
 
 
 # ── Output-Rendering (§2.5: event-typ-fähig, nicht „alles ist eine Textzeile") ──
@@ -1407,10 +1196,9 @@ def schedule_detail_page(
         f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('')}"
-        f"{_ops_handles(daemon_status)}"
+        f"{_header('', daemon_status)}"
         f'<div style="display:flex;gap:.75rem;align-items:baseline">'
-        f'<a class="back" href="/-/ui/feed">← zurück</a>'
+        f'<a class="back" href="/-/">← zurück</a>'
         f'<a class="back" href="/-/ui/schedule/{_e(name)}/attrs">Attribute →</a>'
         f'</div>'
         f"{schedule_detail_inner(schedule, runs, job, slug, now, live_output=live_output)}"
@@ -1418,6 +1206,7 @@ def schedule_detail_page(
         f"<script>{_LIVE_JS}</script>"
         f"<script>{_JOURNAL_AUTOREFRESH_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
 
@@ -1525,7 +1314,8 @@ def _exec_summary(e: dict) -> str:
 
 
 def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
-                          now: float | None = None) -> str:
+                          now: float | None = None,
+                          *, daemon_status: dict | None = None) -> str:
     """Ein **Lauf** (``run_id``): alle Journal-Attribute + voller Output."""
     now = time.time() if now is None else now
     e = entry or {}
@@ -1535,7 +1325,7 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
     # Breadcrumb statt eigenem "bibi ·"-Header (User-Feedback 2026-07-01: doppeltes
     # "bibi" + verschachtelte Nav) — derselbe Aufbau wie schedule_detail_page().
     back = (f'<a class="back" href="/-/ui/schedule/{slug}">← {slug}</a>'
-            if slug else '<a class="back" href="/-/ui/feed">← Feed</a>')
+            if slug else '<a class="back" href="/-/">← zurück</a>')
     out = output_block(events, e.get("kind") or kind)
     jid = e.get("id")
     # Follow-up (User-Feedback): "auch bei archivierten Jobs im Journal eine
@@ -1561,7 +1351,7 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         ".attrtable td:first-child { padding-right: 1.5rem; white-space: nowrap; }"
         ".attrtable td { padding: .15rem .3rem; vertical-align: top; }"
         "</style></head><body>"
-        f"{_header('')}"
+        f"{_header('', daemon_status)}"
         f'<div style="display:flex;gap:.75rem;align-items:baseline">{back}</div>'
         f'<h1><span class="st {st}">{run_id}</span></h1>'
         f"{_exec_summary(e)}"
@@ -1570,6 +1360,8 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         f"<h2>Output</h2>{raw_links}"
         f'<div class="outscroll">{out}</div>'
         f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
 

@@ -22,7 +22,7 @@ def test_log_page_has_eventsource_and_filters():
     assert "new EventSource('/-/log/stream" in html      # Live-Quelle
     assert 'id="log"' in html                            # Container
     assert 'id="lvl"' in html and 'id="q"' in html       # Level- + Text-Filter
-    assert 'href="/-/ui/feed"' in html                   # Nav (Stufe 6)
+    assert 'href="/-/"' in html                           # Nav (Stufe 6, Home = Schedules)
 
 
 def test_dashboard_links_to_live_log():

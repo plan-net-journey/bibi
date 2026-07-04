@@ -39,7 +39,7 @@ def test_execution_detail_meta():
     assert "host mac" in html and "worker mac" in html
     assert "094df71" in html
     assert 'href="/-/ui/schedule/Witz"' in html      # zurück zum Schedule
-    assert 'href="/-/ui/feed"' in html               # zurück zum Feed
+    assert 'href="/-/"' in html                      # zurück zur Home (Schedules)
 
 
 def test_execution_detail_links_to_raw_journal_stream():

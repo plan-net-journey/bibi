@@ -917,32 +917,6 @@ def run_id_for(slug: str, job_id: str, fire: int) -> str:
     return f"{slug}:{fire}:{job_id}"
 
 
-#: Optionaler Hook: wird nach jedem Journal-Insert mit der frischen ``journal_view``-
-#: Zeile gerufen — der Daemon registriert hier seinen Feed-Broadcaster (Frontend-Plan
-#: §B). Hält ``job_db`` vom Daemon entkoppelt (keine Broadcaster-Importe). ``None`` = aus.
-_journal_listener = None
-
-
-def set_journal_listener(cb) -> None:
-    """Den Feed-Hook setzen (``cb(journal_view_dict)``) oder mit ``None`` löschen."""
-    global _journal_listener
-    _journal_listener = cb
-
-
-def _notify_journal(conn: sqlite3.Connection, journal_id: int | None) -> None:
-    """Den Listener best-effort mit der gerade geschriebenen Journal-Zeile rufen.
-    Ein Fehler im Feed-Broadcast darf den DB-/Status-Pfad **nie** killen."""
-    cb = _journal_listener
-    if cb is None or journal_id is None:
-        return
-    try:
-        row = get_journal(conn, journal_id)
-        if row is not None:
-            cb(row)
-    except Exception:
-        pass
-
-
 def _write_journal(
     conn: sqlite3.Connection, job_id: str, archived_at: float,
     *, commit_sha: str | None = None, branch: str | None = None,
@@ -999,7 +973,6 @@ def _write_journal(
             "archived_at": archived_at,
         },
     )
-    _notify_journal(conn, cur.lastrowid)  # Feed-Push (Frontend-Plan §C.0)
 
 
 def journal_view(row: sqlite3.Row) -> dict:
@@ -1134,7 +1107,6 @@ def write_local_journal(
             "archived_at": finished_at,
         },
     )
-    _notify_journal(conn, cur.lastrowid)  # Feed-Push (Frontend-Plan §C.0)
 
 
 # ── PLAN-11.2: Ping + Demand ──────────────────────────────────────────────────
