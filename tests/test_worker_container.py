@@ -41,6 +41,12 @@ def test_is_container_default_host(monkeypatch, team_repo):
 class _FakeProc:
     pid = 2_147_400_000  # existiert nicht → killpg wirft ProcessLookupError (gefangen)
 
+    def poll(self) -> int | None:
+        # Backstop-Thread (_terminate._escalate) fragt nach 5s proc.poll() ab —
+        # ohne echten Subprozess "bereits beendet" simulieren, sonst AttributeError
+        # im Daemon-Thread (bleedet als Warning in einen späteren, zeitgleichen Test).
+        return 0
+
 
 def test_terminate_container_calls_docker_stop(monkeypatch):
     calls: list[list[str]] = []

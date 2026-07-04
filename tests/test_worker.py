@@ -88,21 +88,22 @@ def test_tick_runs_job_to_complete(gitrepo: Path):
     assert row["status"] == "complete"
     assert row["exit_code"] == 0
     assert row["worker"] == "t"
-    assert row["output_ref"] == "data/job/run1:0/output.jsonl"
+    run_id = job_db.run_id_for("run1", jid, 0)
+    assert row["output_ref"] == f"data/job/{run_id}/output.jsonl"
 
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     try:
         journal = job_db.list_journal(conn)
         assert len(journal) == 1
         assert journal[0]["slug"] == "run1"
-        assert journal[0]["run_id"] == "run1:0"
+        assert journal[0]["run_id"] == run_id
         assert journal[0]["host"] is not None
-        assert journal[0]["output_ref"] == "data/job/run1:0/output.jsonl"
+        assert journal[0]["output_ref"] == f"data/job/{run_id}/output.jsonl"
     finally:
         conn.close()
 
     from bibi.wrapper import output
-    out = gitrepo / "data" / "job" / "run1:0" / "output.jsonl"
+    out = gitrepo / "data" / "job" / run_id / "output.jsonl"
     assert output.lines(out, "out") == ["hallo", "fertig"]
 
 
@@ -344,8 +345,10 @@ def test_per_run_output_isolation(gitrepo: Path):
     assert w.tick_once() is True   # Lauf fire=1
     _wait_terminal(gitrepo, jid)   # warten bis zweiter Lauf abgeschlossen
 
-    out0 = gitrepo / "data" / "job" / "tick:0" / "output.jsonl"
-    out1 = gitrepo / "data" / "job" / "tick:1" / "output.jsonl"
+    run_id0 = job_db.run_id_for("tick", jid, 0)
+    run_id1 = job_db.run_id_for("tick", jid, 1)
+    out0 = gitrepo / "data" / "job" / run_id0 / "output.jsonl"
+    out1 = gitrepo / "data" / "job" / run_id1 / "output.jsonl"
     assert output.lines(out0, "out") == ["hallo"]
     assert output.lines(out1, "out") == ["hallo"]
 
@@ -353,9 +356,9 @@ def test_per_run_output_isolation(gitrepo: Path):
     try:
         journal = job_db.list_journal(conn)
         run_ids = {j["run_id"] for j in journal}
-        assert run_ids == {"tick:0", "tick:1"}
+        assert run_ids == {run_id0, run_id1}
         refs = {j["output_ref"] for j in journal}
-        assert refs == {"data/job/tick:0/output.jsonl", "data/job/tick:1/output.jsonl"}
+        assert refs == {f"data/job/{run_id0}/output.jsonl", f"data/job/{run_id1}/output.jsonl"}
     finally:
         conn.close()
 
@@ -366,7 +369,8 @@ def test_output_path_resolves_current_run(gitrepo: Path):
     # Lauf (slug:fire) treffen, nicht die stabile job_id.
     jid = _seed(gitrepo, "r/README.md", '---\nschedule: now\njob: "echo x"\n---\n')
     w = _worker(gitrepo)
-    assert w.output_path(jid) == gitrepo / "data" / "job" / "r:0" / "output.jsonl"
+    run_id = job_db.run_id_for("r", jid, 0)
+    assert w.output_path(jid) == gitrepo / "data" / "job" / run_id / "output.jsonl"
 
 
 @pytest.mark.slow
