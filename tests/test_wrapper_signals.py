@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from bibi.wrapper import _parse_bibi_line, _handle_signal
+from bibi import wrapper as _wrapper
+from bibi.wrapper import _parse_bibi_line, _handle_signal, output
 from bibi.daemon import job_db
 
 
@@ -131,6 +134,129 @@ def test_handle_unknown_name_is_noop(conn):
     _handle_signal(conn, "j1", {"name": "unknown_signal", "data": 42})
     row = conn.execute("SELECT status FROM jobs WHERE id='j1'").fetchone()
     assert row["status"] == "running"  # unverändert
+
+
+def test_handle_activity_signal_is_noop(conn):
+    # Reiner Herzschlag (User-Feedback 2026-07-04) — last_activity_ts aktualisiert
+    # bereits der Pump-Loop, hier gibt es nichts an der DB zu ändern.
+    _insert_job(conn)
+    conn.execute("UPDATE jobs SET status='awaiting' WHERE id='j1'")
+    _handle_signal(conn, "j1", {"name": "activity"})
+    row = conn.execute("SELECT status FROM jobs WHERE id='j1'").fetchone()
+    assert row["status"] == "awaiting"  # unverändert
+
+
+# ── Monitor-Threads: Phasen-Logging beim autonomen Kill (User-Feedback 2026-07-03,
+# hitl-test-app wurde nach 1h Zombie ohne jede Log-Zeile — weder Live-Log noch
+# Daemon-Log, weil Wall-/Silence-/HITL-Monitor bislang nur die DB meldeten).
+# 2026-07-04: silence_timeout/hitl_timeout zusammengelegt — ein Monitor für
+# beide Fälle, gespeist aus last_activity_ts statt Datei-mtime ─────────────
+
+
+def test_wall_monitor_logs_phase_before_terminate(tmp_path, monkeypatch):
+    killed = []
+    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc: killed.append(proc))
+    out_path = tmp_path / "output.jsonl"
+    proc = SimpleNamespace(poll=lambda: None)
+    outcome = [""]
+    lock = threading.Lock()
+
+    _wrapper._wall_monitor(proc, 1, time.time() - 100, outcome, out_path, lock)
+
+    assert killed == [proc]
+    assert outcome[0] == "wall_time"
+    phase_lines = output.lines(out_path, "phase")
+    assert any("wall_time" in l and "1s" in l for l in phase_lines), phase_lines
+
+
+def test_silence_monitor_logs_phase_before_terminate(tmp_path, monkeypatch):
+    killed = []
+    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc: killed.append(proc))
+    out_path = tmp_path / "output.jsonl"
+    proc = SimpleNamespace(poll=lambda: None)
+    outcome = [""]
+    lock = threading.Lock()
+    last_activity_ts = [time.time() - 100]
+
+    _wrapper._silence_monitor(proc, 1, last_activity_ts, outcome, out_path, lock)
+
+    assert killed == [proc]
+    assert outcome[0] == "silence"
+    phase_lines = output.lines(out_path, "phase")
+    assert any("silence" in l and "1s" in l for l in phase_lines), phase_lines
+
+
+def test_silence_monitor_does_not_fire_while_activity_is_recent(tmp_path, monkeypatch):
+    # Kernpunkt der Zusammenlegung: last_activity_ts wird vom Pump-Loop bei
+    # JEDER Zeile aktualisiert (Output wie BIBI-Signal) — solange das passiert,
+    # bleibt der Monitor still, egal ob "silence" (Job) oder "awaiting" (App).
+    killed = []
+    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc: killed.append(proc))
+    monkeypatch.setattr(_wrapper.time, "sleep", lambda s: None)
+    out_path = tmp_path / "output.jsonl"
+    polls = iter([None, None, "done"])  # zwei lebendige Ticks, dann Ende
+    proc = SimpleNamespace(poll=lambda: next(polls))
+    outcome = [""]
+    lock = threading.Lock()
+    last_activity_ts = [time.time()]  # gerade erst aktiv
+
+    _wrapper._silence_monitor(proc, 3600, last_activity_ts, outcome, out_path, lock)
+
+    assert killed == []
+    assert outcome[0] == ""
+
+
+def test_deferred_watcher_terminates_once_status_flips(tmp_path, monkeypatch):
+    killed = []
+    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc: killed.append(proc))
+    monkeypatch.setattr(_wrapper.time, "sleep", lambda s: None)
+    polls = iter([None, None])
+    proc = SimpleNamespace(poll=lambda: next(polls))
+    current_status = ["deferred"]
+    outcome = [""]
+    lock = threading.Lock()
+
+    _wrapper._deferred_watcher(proc, current_status, outcome, lock)
+
+    assert killed == [proc]
+    assert outcome[0] == "deferred"
+
+
+def test_deferred_watcher_ignores_running_status(tmp_path, monkeypatch):
+    killed = []
+    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc: killed.append(proc))
+    monkeypatch.setattr(_wrapper.time, "sleep", lambda s: None)
+    polls = iter([None, None, "done"])
+    proc = SimpleNamespace(poll=lambda: next(polls))
+    current_status = ["running"]
+    outcome = [""]
+    lock = threading.Lock()
+
+    _wrapper._deferred_watcher(proc, current_status, outcome, lock)
+
+    assert killed == []
+    assert outcome[0] == ""
+
+
+def test_finish_silence_outcome_maps_to_silence_reason(tmp_path):
+    db_path = tmp_path / "jobs.sqlite"
+    c = job_db.connect(db_path)
+    c.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("z10", "z10", "z10.md", "job", "echo hi", "running"),
+    )
+    c.close()
+    env = {"BIBI_JOB_ID": "z10", "BIBI_SCHEDULER_DB_PATH": str(db_path),
+           "BIBI_ATTEMPT": "0", "BIBI_ATTEMPTS": "1"}
+
+    _wrapper._finish(env, 0, "silence")
+
+    c2 = job_db.connect(db_path)
+    row = c2.execute("SELECT status, reason FROM jobs WHERE id='z10'").fetchone()
+    c2.close()
+    assert row["status"] == "zombie"
+    assert row["reason"] == "silence"
 
 
 # ── E2E: run_app mit stdout-Signalen ─────────────────────────────────────────

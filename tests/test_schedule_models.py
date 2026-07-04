@@ -31,8 +31,11 @@ def test_kind_unified_job_only():
 
 
 def test_reason_root_causes_match_design_5_5():
+    # User-Feedback 2026-07-04: silence_timeout/hitl_timeout zu einem Konzept
+    # zusammengelegt ("Silence bei Jobs = Aktivität bei Apps") — activity_timeout
+    # als eigener Reason entfällt, alles läuft über "silence".
     assert {r.value for r in Reason} == {
-        "silence", "activity_timeout", "deferred_expired",
+        "silence", "deferred_expired",
         "no_process", "by_user", "by_wall_time",
     }
 
@@ -54,7 +57,6 @@ def test_schedule_spec_defaults():
     assert s.model == DEFAULT_CLAUDE_MODEL == "claude-sonnet-4-6"
     assert s.attempts == 1
     assert s.silence_timeout == 3600
-    assert s.hitl_timeout == 48 * 3600
     assert s.at is None and s.schedule is None
 
 

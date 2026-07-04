@@ -208,8 +208,12 @@ def test_run_app_deferred_via_bibi_job(tmp_path):
     assert row["status"] == "deferred"
 
 
-def test_hitl_monitor_kills_on_timeout(tmp_path):
-    """Job sendet awaiting, danach Stille → HITL-Timeout → zombie in DB."""
+def test_silence_monitor_kills_awaiting_job_after_timeout(tmp_path):
+    """Job sendet awaiting, danach Stille → silence_timeout → zombie in DB.
+
+    User-Feedback 2026-07-04: silence_timeout/hitl_timeout zusammengelegt —
+    der eine Mechanismus greift jetzt auch während awaiting, kein separater
+    HITL-Timeout mehr nötig."""
     import sys as _sys
     db_path = tmp_path / "jobs.sqlite"
     _seed_job(db_path, "z1")
@@ -229,7 +233,7 @@ def test_hitl_monitor_kills_on_timeout(tmp_path):
         "BIBI_WORKTREE": str(tmp_path),
         "BIBI_JOB_CMD": f"{_sys.executable} {script}",
         "BIBI_SCHEDULER_DB_PATH": str(db_path),
-        "BIBI_HITL_TIMEOUT": "1",
+        "BIBI_SILENCE_TIMEOUT": "1",
     }
     start_t = time.time()
     wrapper.run_app(env)
@@ -237,13 +241,54 @@ def test_hitl_monitor_kills_on_timeout(tmp_path):
     assert elapsed < 10.0, f"run_app hat zu lang gedauert: {elapsed:.1f}s"
 
     c2 = job_db.connect(db_path)
-    row = c2.execute("SELECT status FROM jobs WHERE id='z1'").fetchone()
+    row = c2.execute("SELECT status, reason FROM jobs WHERE id='z1'").fetchone()
     c2.close()
     assert row["status"] == "zombie"
+    assert row["reason"] == "silence"
+
+    from bibi.wrapper.output import lines as _out_lines
+    phase_lines = _out_lines(out, "phase")
+    assert any("silence" in l and "1s" in l for l in phase_lines), phase_lines
 
 
-def test_worker_sets_bibi_hitl_timeout(tmp_path):
-    """_run_wrapper setzt BIBI_HITL_TIMEOUT in die Wrapper-Env."""
+def test_activity_signal_extends_deadline_while_awaiting(tmp_path):
+    """App pingt per bibi.job.activity() während awaiting → übersteht einen
+    silence_timeout, der ohne den Herzschlag längst zugeschlagen hätte."""
+    import sys as _sys
+    db_path = tmp_path / "jobs.sqlite"
+    _seed_job(db_path, "z3")
+
+    script = tmp_path / "pinging_job.py"
+    script.write_text(
+        "import bibi.job, time\n"
+        "bibi.job.awaiting('test', input_format='text')\n"
+        "for _ in range(6):\n"
+        "    time.sleep(0.4)\n"
+        "    bibi.job.activity()\n"
+        "bibi.job.running()\n"
+    )
+
+    out = tmp_path / "output.jsonl"
+    env = {
+        "BIBI_JOB_TYPE": "job",
+        "BIBI_JOB_ID": "z3",
+        "BIBI_OUTPUT_PATH": str(out),
+        "BIBI_WORKTREE": str(tmp_path),
+        "BIBI_JOB_CMD": f"{_sys.executable} {script}",
+        "BIBI_SCHEDULER_DB_PATH": str(db_path),
+        "BIBI_SILENCE_TIMEOUT": "1",
+    }
+    code = wrapper.run_app(env)
+
+    c2 = job_db.connect(db_path)
+    row = c2.execute("SELECT status FROM jobs WHERE id='z3'").fetchone()
+    c2.close()
+    assert code == 0
+    assert row["status"] == "complete"
+
+
+def test_worker_sets_bibi_silence_timeout(tmp_path):
+    """_run_wrapper setzt BIBI_SILENCE_TIMEOUT in die Wrapper-Env (detach-Pfad)."""
     import subprocess as subprocess_mod
     from bibi.daemon import worker as _worker
     captured_env: list[dict] = []
@@ -268,9 +313,9 @@ def test_worker_sets_bibi_hitl_timeout(tmp_path):
         out_path.touch()
         _worker._run_wrapper(
             job_id="ht1", slug="testslug", kind="job", payload="echo x",
-            app_port=8081, app_prefix="/app", hitl_timeout=3600,
-            repo_root=tmp_path, work_dir=tmp_path / "wt",
+            app_port=8081, app_prefix="/app", silence_timeout=172800,
+            repo_root=tmp_path, work_dir=tmp_path / "wt", detach=True,
         )
 
     assert captured_env, "Popen wurde nicht aufgerufen"
-    assert captured_env[0].get("BIBI_HITL_TIMEOUT") == "3600", captured_env[0]
+    assert captured_env[0].get("BIBI_SILENCE_TIMEOUT") == "172800", captured_env[0]

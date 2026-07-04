@@ -131,3 +131,22 @@ def test_lifecycle_knobs_parsed():
     assert r.spec.wall_time == 30
     assert r.spec.silence_timeout == 60
     assert r.spec.backoff == "exponential"
+
+
+def test_silence_timeout_default_1h_for_claude_payload():
+    # User-Feedback 2026-07-04: silence_timeout/hitl_timeout zusammengelegt —
+    # claude-Payloads (Batch, kein HITL) bekommen den kurzen Default.
+    r = _parse('---\nschedule: now\njob: "claude: x"\n---\n')
+    assert r.spec.silence_timeout == 3600
+
+
+def test_silence_timeout_default_48h_for_plain_job_payload():
+    # Plain-job-Payloads (long-lived, HITL-fähig über run_app) bekommen den
+    # langen Default — ein Mensch darf bis zu 48h für seine Eingabe brauchen.
+    r = _parse('---\nschedule: now\njob: "echo hi"\n---\n')
+    assert r.spec.silence_timeout == 48 * 3600
+
+
+def test_silence_timeout_explicit_overrides_kind_default():
+    r = _parse('---\nschedule: now\njob: "claude: x"\nsilence_timeout: 120\n---\n')
+    assert r.spec.silence_timeout == 120

@@ -60,8 +60,7 @@ def effective_kind(payload: str | None, app_port: int | None = None) -> str:
 class Reason(StrEnum):
     """Root Causes für Terminal-/Sonderzustände (DESIGN §5.5)."""
 
-    SILENCE = "silence"                    # zombie: kein stdout/stderr
-    ACTIVITY_TIMEOUT = "activity_timeout"  # zombie: job in awaiting, keine Activity
+    SILENCE = "silence"                    # zombie: keine Aktivität (Output/Signal)
     DEFERRED_EXPIRED = "deferred_expired"  # inactive: Deferred-Periode abgelaufen
     NO_PROCESS = "no_process"              # killed: Prozess weg ohne Exit-Code
     BY_USER = "by_user"                    # killed: manuelles kill
@@ -78,10 +77,14 @@ class Owner(StrEnum):
 # Default-Modell für claude:-Prefix-Jobs (überschreibbar via `model:`).
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
 
-# Default-Silence-Timeout in Sekunden (DESIGN §5.5: 1 h).
+# Default-Silence-Timeout in Sekunden — kind-abhängig (User-Feedback 2026-07-04:
+# silence_timeout/hitl_timeout zusammengelegt, "Silence bei Jobs = Aktivität bei
+# Apps"). claude:-Payloads (Batch, kein HITL) bekommen den kurzen Default (1h);
+# alles andere (long-lived, HITL-fähig über run_app) den langen (48h) — ein
+# Mensch darf so lange auf eine Antwort warten, ohne dass silence_timeout
+# vorzeitig zuschlägt.
 DEFAULT_SILENCE_TIMEOUT = 3600
-# Default-HITL-Activity-Timeout in Sekunden (DESIGN §5.5: 48 h).
-DEFAULT_HITL_TIMEOUT = 48 * 3600
+DEFAULT_SILENCE_TIMEOUT_APP = 48 * 3600
 
 
 @dataclass(frozen=True)
@@ -116,7 +119,6 @@ class ScheduleSpec:
     wall_time: int | None = None
     defer_time: int | None = None
     defer_max: int | None = None
-    hitl_timeout: int = DEFAULT_HITL_TIMEOUT
 
     app_port: int | None = None
     app_prefix: str | None = None

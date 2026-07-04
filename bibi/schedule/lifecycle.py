@@ -106,7 +106,10 @@ EVENT_KINDS: dict[Event, frozenset[Kind]] = {}
 #: Events mit fest verknüpfter Root Cause (§5.5).
 EVENT_REASON: dict[Event, Reason] = {
     Event.SILENCE: Reason.SILENCE,
-    Event.TIMEOUT: Reason.ACTIVITY_TIMEOUT,
+    # TIMEOUT (awaiting → zombie) bleibt ein eigenes Event in der Übergangs-
+    # tabelle (anderer Quellzustand als SILENCE), meldet aber dieselbe Root
+    # Cause — User-Feedback 2026-07-04: "Silence bei Jobs = Aktivität bei Apps".
+    Event.TIMEOUT: Reason.SILENCE,
     Event.EXPIRE: Reason.DEFERRED_EXPIRED,
 }
 

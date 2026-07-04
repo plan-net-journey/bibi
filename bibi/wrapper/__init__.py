@@ -71,6 +71,8 @@ def _handle_signal(conn, job_id: str, sig: dict) -> None:
         _jdb.set_demand(conn, job_id, sig)
     elif name == "app_register":
         _jdb.set_app_port(conn, job_id, sig["port"])
+    elif name == "activity":
+        pass  # reiner Herzschlag — last_activity_ts aktualisiert schon der Pump-Loop
 
 
 @dataclass(frozen=True)
@@ -152,14 +154,6 @@ REGISTRY: dict[str, TypeHandler] = {
 
 # ── Monitoring-Threads ────────────────────────────────────────────────────────
 
-def _last_activity(out_path: Path, started: float) -> float:
-    """Zeitpunkt der letzten Output-Aktivität (mtime oder Start)."""
-    try:
-        return max(out_path.stat().st_mtime, started)
-    except OSError:
-        return started
-
-
 def _terminate_proc(proc: subprocess.Popen) -> None:
     """Prozessgruppe graceful terminieren."""
     try:
@@ -175,42 +169,57 @@ def _terminate_proc(proc: subprocess.Popen) -> None:
 
 
 def _wall_monitor(proc: subprocess.Popen, wall_time: int, started: float,
-                  outcome: list[str]) -> None:
+                  outcome: list[str], out_path: Path, lock: threading.Lock) -> None:
     """Thread: wall_time überwachen und Proc bei Überschreitung killen."""
     while proc.poll() is None:
         if time.time() - started > wall_time:
             outcome[0] = "wall_time"  # VOR terminate setzen → kein Race mit proc.wait()
+            with lock:
+                output.append(out_path, "phase",
+                              f"wall_time: Zeitlimit ({wall_time}s) überschritten — "
+                              "Prozess wird beendet")
             _terminate_proc(proc)
             return
         time.sleep(1.0)
 
 
 def _silence_monitor(proc: subprocess.Popen, silence_timeout: int,
-                     out_path: Path, started: float, outcome: list[str]) -> None:
-    """Thread: Silence-Timeout überwachen (kein stdout/stderr → Zombie)."""
+                     last_activity_ts: list[float], outcome: list[str],
+                     out_path: Path, lock: threading.Lock) -> None:
+    """Thread: Aktivitäts-Timeout überwachen (keine Zeile/Signal → Zombie).
+
+    ``last_activity_ts`` wird vom Pump-Loop bei JEDER Zeile aktualisiert — Output
+    wie BIBI-Signal (z. B. der App-eigene ``activity``-Herzschlag pro Request).
+    Eine Quelle für Batch-Jobs (kein stdout mehr) wie HITL-Apps (kein Ping trotz
+    ``awaiting``) gleichermaßen, ohne Status-Unterscheidung (User-Feedback
+    2026-07-04: „Silence bei Jobs = Aktivität bei Apps")."""
     while proc.poll() is None:
-        if time.time() - _last_activity(out_path, started) > silence_timeout:
+        if time.time() - last_activity_ts[0] > silence_timeout:
             outcome[0] = "silence"  # VOR terminate setzen → kein Race mit proc.wait()
+            with lock:
+                output.append(out_path, "phase",
+                              f"silence: keine Aktivität seit {silence_timeout}s — "
+                              "Prozess wird als Zombie beendet")
             _terminate_proc(proc)
             return
         time.sleep(1.0)
 
 
-def _hitl_monitor(proc: subprocess.Popen, state, outcome: list[str],
-                  *, poll: float = 1.0) -> None:
-    """Hintergrund-Thread: HITL-Zombie-Timeout + DEFERRED-Signal überwachen."""
+def _deferred_watcher(proc: subprocess.Popen, current_status: list[str],
+                      outcome: list[str], lock: threading.Lock) -> None:
+    """Thread: wartet auf ein vom Kindprozess gesendetes ``deferred``-Signal und
+    terminiert dann — kein Timeout, sondern ein expliziter Job-Wunsch, deshalb
+    ein eigener Watcher statt Teil des Silence-Monitors."""
     while proc.poll() is None:
-        if (state.hitl_timeout is not None
-                and state.status == "awaiting"
-                and state.idle_seconds > state.hitl_timeout):
-            state.report("zombie", reason="activity_timeout")
+        with lock:
+            cs = current_status[0]
+            oc = outcome[0]
+        if cs == "deferred" and not oc:
+            with lock:
+                outcome[0] = "deferred"
             _terminate_proc(proc)
             return
-        if state.status == "deferred":
-            outcome[0] = "deferred"
-            _terminate_proc(proc)
-            return
-        time.sleep(poll)
+        time.sleep(0.5)
 
 
 # ── Post-completion: Commit + Report ─────────────────────────────────────────
@@ -312,7 +321,7 @@ def _finish(env: dict[str, str], exit_code: int, outcome: str) -> None:
 
     if outcome == "wall_time":
         status, reason = "killed", "by_wall_time"
-    elif outcome == "silence" or outcome == "zombie_reported":
+    elif outcome == "silence":
         status, reason = "zombie", "silence"
     elif outcome == "deferred":
         defer_secs = int(env.get("BIBI_DEFER_TIME") or "60")
@@ -348,7 +357,7 @@ def _finish(env: dict[str, str], exit_code: int, outcome: str) -> None:
 # ── Ausführungs-Hauptfunktionen ───────────────────────────────────────────────
 
 def run_app(env: dict[str, str]) -> int:
-    """App-Typ: Child spawnen, stdout-Signale parsen, HITL überwachen.
+    """App-Typ: Child spawnen, stdout-Signale parsen, Aktivität überwachen.
 
     PLAN-11.3: kein HTTP-Server mehr — Signale kommen via stdout ``BIBI:{...}``.
     """
@@ -360,8 +369,6 @@ def run_app(env: dict[str, str]) -> int:
     out_path = Path(env["BIBI_OUTPUT_PATH"])
     job_id = env.get("BIBI_JOB_ID", "unknown")
     db_path_str = env.get("BIBI_SCHEDULER_DB_PATH") or None
-    hitl_str = env.get("BIBI_HITL_TIMEOUT")
-    hitl_timeout = int(hitl_str) if hitl_str else None
 
     spec = exec_backend.build_exec(child_argv, env)
     output.append(out_path, "phase", "prozess: wird gestartet …")
@@ -378,7 +385,7 @@ def run_app(env: dict[str, str]) -> int:
 
     lock = threading.Lock()
     outcome: list[str] = [""]
-    current_status: list[str] = ["running"]  # shared with hitl_monitor
+    current_status: list[str] = ["running"]  # shared mit deferred_watcher
     last_activity_ts: list[float] = [time.time()]
 
     def pump(pipe, tag: str) -> None:
@@ -412,53 +419,21 @@ def run_app(env: dict[str, str]) -> int:
                     output.append(out_path, tag, stripped)
             last_activity_ts[0] = time.time()
 
-    def _local_hitl_monitor() -> None:
-        while proc.poll() is None:
-            with lock:
-                cs = current_status[0]
-                oc = outcome[0]
-            if cs == "deferred" and not oc:
-                with lock:
-                    outcome[0] = "deferred"
-                _terminate_proc(proc)
-                return
-            if (hitl_timeout is not None
-                    and cs == "awaiting"
-                    and time.time() - last_activity_ts[0] > hitl_timeout):
-                if db_path_str:
-                    try:
-                        from bibi.daemon import job_db as _jdb
-                        conn = _jdb.connect(Path(db_path_str))
-                        try:
-                            _jdb.report_status(conn, job_id, status="zombie",
-                                               reason="activity_timeout")
-                        finally:
-                            conn.close()
-                    except Exception:
-                        pass
-                else:
-                    _report_terminal(env, status="zombie", reason="activity_timeout")
-                with lock:
-                    current_status[0] = "zombie"
-                    if not outcome[0]:
-                        outcome[0] = "zombie_reported"
-                _terminate_proc(proc)
-                return
-            time.sleep(0.5)
-
     started = time.time()
     wall_str = env.get("BIBI_WALL_TIME")
     silence_str = env.get("BIBI_SILENCE_TIMEOUT")
 
-    monitors = [threading.Thread(target=_local_hitl_monitor, daemon=True, name="hitl-monitor")]
+    monitors = [threading.Thread(
+        target=_deferred_watcher, args=(proc, current_status, outcome, lock),
+        daemon=True, name="deferred-watcher")]
     if silence_str:
         monitors.append(threading.Thread(
             target=_silence_monitor,
-            args=(proc, int(silence_str), out_path, started, outcome),
+            args=(proc, int(silence_str), last_activity_ts, outcome, out_path, lock),
             daemon=True, name="silence-monitor"))
     if wall_str:
         monitors.append(threading.Thread(
-            target=_wall_monitor, args=(proc, int(wall_str), started, outcome),
+            target=_wall_monitor, args=(proc, int(wall_str), started, outcome, out_path, lock),
             daemon=True, name="wall-monitor"))
 
     pump_threads = [
@@ -476,8 +451,6 @@ def run_app(env: dict[str, str]) -> int:
     with lock:
         cs = current_status[0]
         oc = outcome[0]
-    if not oc and cs == "zombie":
-        outcome[0] = "zombie_reported"
     if not oc and cs == "deferred":
         outcome[0] = "deferred"
 
@@ -511,12 +484,14 @@ def run_job(env: dict[str, str]) -> int:
         signal.signal(signal.SIGTERM, _on_sigterm)
 
     lock = threading.Lock()
+    last_activity_ts: list[float] = [time.time()]
 
     def pump(pipe, tag: str) -> None:
         assert pipe is not None
         for line in pipe:
             with lock:
                 output.append(out_path, tag, line.rstrip("\n"))
+            last_activity_ts[0] = time.time()
 
     outcome: list[str] = [""]
     started = time.time()
@@ -526,12 +501,12 @@ def run_job(env: dict[str, str]) -> int:
     monitors = []
     if wall_str:
         monitors.append(threading.Thread(
-            target=_wall_monitor, args=(proc, int(wall_str), started, outcome),
+            target=_wall_monitor, args=(proc, int(wall_str), started, outcome, out_path, lock),
             daemon=True, name="wall-monitor"))
     if silence_str:
         monitors.append(threading.Thread(
             target=_silence_monitor,
-            args=(proc, int(silence_str), out_path, started, outcome),
+            args=(proc, int(silence_str), last_activity_ts, outcome, out_path, lock),
             daemon=True, name="silence-monitor"))
 
     threads = [

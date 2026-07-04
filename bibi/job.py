@@ -15,6 +15,13 @@ def running() -> None:
     _emit({"name": "running"})
 
 
+def activity() -> None:
+    """Reiner Herzschlag ohne sichtbaren Output — hält den silence_timeout am
+    Leben, ohne dass der Job selbst etwas zu loggen hat (z. B. pro HTTP-Request
+    einer HITL-App, die während ``awaiting`` sonst nichts mehr ausgibt)."""
+    _emit({"name": "activity"})
+
+
 def awaiting(input_request: str, *, input_format: str = "text",
              port: int | None = None) -> None:
     """Job wartet auf menschliche Eingabe (HITL)."""

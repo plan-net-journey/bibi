@@ -30,10 +30,11 @@ from dateutil import parser as _date_parser
 from bibi import frontmatter
 from bibi.schedule.models import (
     DEFAULT_CLAUDE_MODEL,
-    DEFAULT_HITL_TIMEOUT,
     DEFAULT_SILENCE_TIMEOUT,
+    DEFAULT_SILENCE_TIMEOUT_APP,
     Kind,
     ScheduleSpec,
+    is_claude_payload,
 )
 
 _CLAUDE_PREFIX_RE = re.compile(r"^\s*claude\s*:\s*(.+)", re.DOTALL)
@@ -180,9 +181,12 @@ def parse_text(
     errors: list[str] = []
     priority, e = _coerce_int(fm, "priority", 0); errors += [e] if e else []
     attempts, e = _coerce_int(fm, "attempts", 1); errors += [e] if e else []
-    silence_timeout, e = _coerce_int(fm, "silence_timeout", DEFAULT_SILENCE_TIMEOUT)
-    errors += [e] if e else []
-    hitl_timeout, e = _coerce_int(fm, "hitl_timeout", DEFAULT_HITL_TIMEOUT)
+    # User-Feedback 2026-07-04: silence_timeout/hitl_timeout zusammengelegt —
+    # claude:-Payloads (Batch, run_job, kein HITL) bekommen den kurzen Default,
+    # alles andere (long-lived, HITL-fähig über run_app) den langen.
+    _default_silence = (DEFAULT_SILENCE_TIMEOUT if is_claude_payload(payload)
+                        else DEFAULT_SILENCE_TIMEOUT_APP)
+    silence_timeout, e = _coerce_int(fm, "silence_timeout", _default_silence)
     errors += [e] if e else []
     wall_time = defer_time = defer_max = app_port = None
     if "wall_time" in fm:
@@ -221,7 +225,7 @@ def parse_text(
         model=model, soul=soul, session=session,
         attempts=attempts, backoff=backoff.lower(),
         silence_timeout=silence_timeout, wall_time=wall_time,
-        defer_time=defer_time, defer_max=defer_max, hitl_timeout=hitl_timeout,
+        defer_time=defer_time, defer_max=defer_max,
         app_port=app_port, app_prefix=app_prefix, exec_mode=exec_mode, image=image,
     )
     return ParseResult(

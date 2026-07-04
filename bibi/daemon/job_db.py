@@ -241,7 +241,6 @@ def _spec_columns(pr: ParseResult, now: float) -> dict:
         "wall_time": s.wall_time,
         "defer_time": s.defer_time,
         "defer_max": s.defer_max,
-        "hitl_timeout": s.hitl_timeout,
     }
 
 
@@ -401,7 +400,6 @@ def job_full_view(row: sqlite3.Row) -> dict:
         "wall_time": row["wall_time"],
         "defer_time": row["defer_time"],
         "defer_max": row["defer_max"],
-        "hitl_timeout": row["hitl_timeout"],
         "app_prefix": row["app_prefix"],
         "exec_mode": row["exec_mode"],
         "image": row["image"],
@@ -546,7 +544,6 @@ def reservation_view(row: sqlite3.Row) -> dict:
         "silence_timeout": row["silence_timeout"],
         "app_port": row["app_port"], "app_prefix": row["app_prefix"],
         "exec_mode": row["exec_mode"],
-        "hitl_timeout": row["hitl_timeout"],
         "defer_time": row["defer_time"],
         "env": {},
     }

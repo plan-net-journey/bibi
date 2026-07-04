@@ -9,6 +9,11 @@ def test_running_writes_signal(capsys):
     assert capsys.readouterr().out.strip() == 'BIBI:{"name":"running"}'
 
 
+def test_activity_writes_signal(capsys):
+    bibi.job.activity()
+    assert capsys.readouterr().out.strip() == 'BIBI:{"name":"activity"}'
+
+
 def test_awaiting_minimal(capsys):
     bibi.job.awaiting("Wie viele?")
     out = capsys.readouterr().out

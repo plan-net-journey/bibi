@@ -137,7 +137,9 @@ def test_events_from_with_kind_job():
 
 def test_reason_for_fixed_events():
     assert lc.reason_for(Event.SILENCE) is Reason.SILENCE
-    assert lc.reason_for(Event.TIMEOUT) is Reason.ACTIVITY_TIMEOUT
+    # TIMEOUT (awaiting → zombie) meldet seit der Zusammenlegung (User-Feedback
+    # 2026-07-04) dieselbe Root Cause wie SILENCE, bleibt aber ein eigenes Event.
+    assert lc.reason_for(Event.TIMEOUT) is Reason.SILENCE
     assert lc.reason_for(Event.EXPIRE) is Reason.DEFERRED_EXPIRED
     assert lc.reason_for(Event.COMPLETE) is None  # Happy-Path hat keine Root Cause
 
