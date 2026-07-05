@@ -244,6 +244,15 @@ class Synchronizer:
         if merged:
             activity.emit(log, logging.INFO, "merge.sweep", role="synchronizer",
                           merged=len(merged), branches=",".join(merged))
+        # Bisher stumm: ein liegengebliebener agent/*-Branch (Konflikt/Fehler)
+        # verschwand ohne jede Spur im Log (verschleierte den dirty-trunk-Fund
+        # 2026-07-05 lange) — jetzt sichtbar, damit ein hängender Mergeback
+        # nicht erst durch manuelle Git-Archäologie auffällt.
+        stuck = {b: s for b, s in results.items() if s not in ("merged", "up_to_date")}
+        if stuck:
+            activity.emit(log, logging.WARNING, "merge.sweep.stuck", role="synchronizer",
+                          stuck=len(stuck),
+                          branches=",".join(f"{b}:{s}" for b, s in stuck.items()))
 
     def _pull_due(self, now: float) -> bool:
         return self._last_pull_at is None or (now - self._last_pull_at) >= self.pull_interval_s

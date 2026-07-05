@@ -200,6 +200,44 @@ def test_tick_merge_sweep_merges_unmerged_branches(tmp_path):
     assert not wt.is_ahead(repo_root=root, branch="agent/x", trunk="trunk")  # gemergt
 
 
+def test_tick_merge_sweep_logs_stuck_conflict(tmp_path, caplog):
+    """Bugfix 2026-07-05: ein Konflikt beim Merge-back darf nicht stumm
+    verschwinden (verschleierte den dirty-trunk-Fund lange, s. Migration.md)."""
+    import logging
+    import subprocess
+
+    from bibi.daemon import worktree as wt
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+    # agent/x-Branch ändert f.txt ...
+    p = wt.prepare(repo_root=root, work_dir=root / "data" / "wt", slug="x")
+    (p / "f.txt").write_text("from agent\n")
+    wt.commit(worktree=p, message="run", slug="x")
+    # ... trunk ändert dieselbe Datei anders → echter Merge-Konflikt beim Sweep
+    (root / "f.txt").write_text("from trunk\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "trunk edit")
+
+    s = Synchronizer(repo_root=root)  # kein push/pull, nur Sweep
+    with caplog.at_level(logging.WARNING, logger="bibi.daemon.synchronizer"):
+        s.tick(0.0)
+    assert any(
+        getattr(r, "bibi", {}).get("event") == "merge.sweep.stuck" for r in caplog.records
+    )
+    assert wt.is_ahead(repo_root=root, branch="agent/x", trunk="trunk")  # weiterhin unmerged
+
+
 def test_tick_no_sweep_without_repo_root(team_repo):
     s, calls = _mk()           # repo_root=None ⇒ kein Sweep, kein Fehler
     s.tick(0.0)                # darf nicht werfen
