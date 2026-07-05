@@ -337,6 +337,22 @@ def test_schedule_detail_route_shows_output_for_terminal_job(app_with):
         assert 'class="liveout liveclamp"' in r.text and "fertig" in r.text
 
 
+def test_schedule_detail_route_shows_output_for_failed_job(app_with):
+    # User-Feedback 2026-07-05: "failed" (Retry noch übrig, vor Backoff-Ablauf)
+    # fehlte in _TERMINAL_VIEW → die Live-Output-Box blieb leer, obwohl der
+    # Output längst da ist — gerade bei "failed" will man ihn VOR dem nächsten
+    # Retry sehen.
+    client = FakeClient(
+        schedules=[{"slug": "boom", "kind": "job", "trigger": "now",
+                    "next_fire_at": 5.0, "last_status": "failed"}],
+        jobs=[{"id": "j1", "slug": "boom", "status": "failed", "finished_at": 2.0}],
+        output={"id": "j1", "kind": "job", "events": [{"s": "err", "line": "kaputt"}]})
+    with TestClient(app_with(client)) as c:
+        r = c.get("/-/ui/schedule/boom")
+        assert r.status_code == 200
+        assert 'class="liveout liveclamp"' in r.text and "kaputt" in r.text
+
+
 def test_run_output_route_renders(app_with):
     client = FakeClient(output={"id": 7, "kind": "job", "events": [
         {"s": "out", "line": "hallo"}, {"s": "err", "line": "fehler"}]})

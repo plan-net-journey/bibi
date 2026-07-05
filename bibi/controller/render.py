@@ -902,7 +902,13 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
     if not job:
         return ""
     st = _e(job.get("status"))
-    is_terminal = job.get("status") in _TERMINAL_VIEW
+    # "failed" bewusst NICHT über _TERMINAL_VIEW (das behandelt live_fragment()s
+    # last-run-Vorrang-Logik anders — ein Retry steht dort noch aus, das Journal
+    # soll gewinnen). Für DIESE Anzeige (Meta-Zeile + Output-Box) ist "failed"
+    # aber genauso ein abgeschlossener letzter Lauf wie "error" — User-Feedback
+    # 2026-07-05: Output blieb sonst ausgerechnet vor dem nächsten Retry leer,
+    # wenn man am ehesten nachsehen will, was schiefging.
+    is_terminal = job.get("status") in _TERMINAL_VIEW or job.get("status") == "failed"
     bits = []
     if is_terminal:
         if job.get("finished_at"):
