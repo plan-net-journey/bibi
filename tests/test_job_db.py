@@ -139,6 +139,25 @@ def test_rescan_preserves_next_fire_at_while_complete(conn, tmp_path: Path):
     assert row["next_fire_at"] == next_tick
 
 
+def test_rescan_recomputes_next_fire_at_when_stuck_at_none_while_complete(conn, tmp_path: Path):
+    # Real beobachtet 2026-07-05 (gmail-transfer): next_fire_at eines
+    # complete-Jobs kann NULL werden (z.B. manueller Start traf einen
+    # Zwischenstand). Die Preserve-Regel (s.o.) darf das NICHT für immer
+    # einfrieren — ohne echten Timer muss ein Rescan neu rechnen dürfen,
+    # sonst verlangt reserve_next() ("next_fire_at IS NOT NULL") auf ewig
+    # ins Leere.
+    md = tmp_path / "case" / "hello" / "README.md"
+    _write(md, '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jid = job_db.list_jobs(conn)[0]["id"]
+    conn.execute("UPDATE jobs SET status='complete', next_fire_at=NULL WHERE id=?", (jid,))
+    conn.commit()
+    job_db.rescan(conn, vault_root=tmp_path / "case")  # z.B. periodischer Sync
+    row = conn.execute("SELECT next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["next_fire_at"] is not None
+    assert row["next_fire_at"] > time.time()
+
+
 def test_rescan_deactivates_vanished_instead_of_deleting(conn, tmp_path: Path):
     # PLAN-14 Stufe 14.5: die Zeile bleibt (Journal-Historie erreichbar), nur
     # active=0 statt DELETE — ersetzt den früheren test_rescan_removes_vanished.

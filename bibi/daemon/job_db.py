@@ -263,13 +263,20 @@ def upsert_schedule(conn: sqlite3.Connection, pr: ParseResult, now: float) -> st
     Schlüssel ist der Slug. Bei Update bleiben ``id`` und Live-Status erhalten —
     nur die aus der MD abgeleiteten Felder werden neu geschrieben. Ausnahme:
     ``next_fire_at`` bleibt unangetastet, wenn der Job gerade in
-    ``_PRESERVE_NEXT_FIRE_AT`` steckt (s.o.).
+    ``_PRESERVE_NEXT_FIRE_AT`` steckt UND dort bereits einen echten Timer trägt
+    (s.o.). Ist er dort stattdessen ``NULL`` (kein Timer gesetzt — z. B. weil
+    ein manueller Start auf einen Zwischenstand traf, bevor das Schedule live
+    geschaltet war, real beobachtet 2026-07-05 bei `gmail-transfer`), gibt es
+    sonst **keinen** Weg mehr zurück: ``reserve_next()`` verlangt
+    ``next_fire_at IS NOT NULL`` und der Job bliebe für immer eingefroren.
+    In diesem Fall lässt dieser Upsert den frisch berechneten Wert stehen —
+    der nächste (periodische) Rescan heilt den Job so von selbst.
     """
     cols = _spec_columns(pr, now)
     cols["active"] = 1  # jeder erfolgreiche Upsert kommt von einer entdeckten MD
     # (PLAN-14 Stufe 14.5) — reaktiviert einen zuvor deaktivierten Slug automatisch.
     existing = conn.execute(
-        "SELECT id, status FROM jobs WHERE slug=?", (cols["slug"],)).fetchone()
+        "SELECT id, status, next_fire_at FROM jobs WHERE slug=?", (cols["slug"],)).fetchone()
     if existing is None:
         job_id = secrets.token_hex(4)
         fields = {
@@ -280,7 +287,7 @@ def upsert_schedule(conn: sqlite3.Connection, pr: ParseResult, now: float) -> st
         placeholders = ", ".join(f":{k}" for k in fields)
         conn.execute(f"INSERT INTO jobs ({names}) VALUES ({placeholders})", fields)
         return job_id
-    if existing["status"] in _PRESERVE_NEXT_FIRE_AT:
+    if existing["status"] in _PRESERVE_NEXT_FIRE_AT and existing["next_fire_at"] is not None:
         cols.pop("next_fire_at", None)
     cols["updated_at"] = now
     assignments = ", ".join(f"{k}=:{k}" for k in cols)
