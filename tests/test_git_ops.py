@@ -126,6 +126,39 @@ def test_integrate_conflict_aborts_and_signals(repo_with_origin, tmp_path):
     assert not (root / ".git" / "rebase-merge").exists()
 
 
+# --- strategy="merge" (bot-robuster Hintergrund-Pull, s. Synchronizer) ---
+
+def test_integrate_merges_on_divergence_no_conflict(repo_with_origin, tmp_path):
+    root, origin = repo_with_origin
+    other = clone(origin, tmp_path / "other")
+    (other / "remote.txt").write_text("r", encoding="utf-8")
+    _sh(other, "add", "-A"); _sh(other, "commit", "-q", "-m", "remote"); _sh(other, "push", "-q", "origin", "trunk")
+
+    (root / "local.txt").write_text("l", encoding="utf-8")  # andere Datei → kein Konflikt
+    git_ops.stage_and_commit(None, "local")
+    ok, kind = git_ops.integrate("trunk", strategy="merge")
+    assert ok and kind is None
+    assert (root / "remote.txt").exists() and (root / "local.txt").exists()
+    # tatsächlich gemerged (Merge-Commit, zwei Eltern) statt umbasiert
+    parents = _sh(root, "log", "-1", "--pretty=%P").strip().split()
+    assert len(parents) == 2
+
+
+def test_integrate_merge_conflict_aborts_and_signals(repo_with_origin, tmp_path):
+    root, origin = repo_with_origin
+    other = clone(origin, tmp_path / "other")
+    (other / "pyproject.toml").write_text("REMOTE\n", encoding="utf-8")
+    _sh(other, "add", "-A"); _sh(other, "commit", "-q", "-m", "remote edit"); _sh(other, "push", "-q", "origin", "trunk")
+
+    (root / "pyproject.toml").write_text("LOCAL\n", encoding="utf-8")  # gleiche Datei
+    git_ops.stage_and_commit(None, "local edit")
+    ok, kind = git_ops.integrate("trunk", strategy="merge")
+    assert ok is False
+    assert kind == "conflict"
+    # kein hängengebliebener Merge
+    assert not (root / ".git" / "MERGE_HEAD").exists()
+
+
 # --- orchestration: commit_and_push ---
 
 def test_commit_and_push_pushes_when_enabled(repo_with_origin):

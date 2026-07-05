@@ -99,8 +99,15 @@ def _default_push() -> tuple[bool, list[str], str | None]:
 
 
 def _default_pull() -> tuple[bool, str | None]:
+    # strategy="merge": unbeaufsichtigter Hintergrund-Loop, niemand löst einen
+    # Konflikt hier je interaktiv auf. Rebase spielt jeden Commit einzeln als
+    # Patch neu ein und kann dabei an botgenerierter Historie (viele kleine
+    # Job-Run-Commits) an einem Zwischenschritt scheitern, obwohl ein
+    # einfacher 3-way-Merge der Endstände konfliktfrei wäre — per
+    # ``git merge-tree`` in der Praxis verifiziert (PLAN: Sync-Divergenz
+    # 2026-07-05). Der interaktive ``/sync``-Pfad bleibt bei Rebase (Default).
     from bibi import git_ops
-    return git_ops.integrate(git_ops.current_branch())
+    return git_ops.integrate(git_ops.current_branch(), strategy="merge")
 
 
 # ── Synchronizer ────────────────────────────────────────────────────────────

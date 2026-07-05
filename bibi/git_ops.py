@@ -144,17 +144,33 @@ def stage_and_commit(scope: Path | None, message: str) -> bool:
     return True
 
 
-def integrate(branch: str, keep_conflict: bool = False) -> tuple[bool, str | None]:
-    """Origin minimal integrieren: fetch + ff/rebase (kein Push).
+def integrate(branch: str, keep_conflict: bool = False,
+             strategy: str = "rebase") -> tuple[bool, str | None]:
+    """Origin minimal integrieren: fetch + ff/rebase|merge (kein Push).
 
     Gibt (ok, kind) zurück. kind ist None bei Erfolg, sonst
     ``"unreachable"``/``"auth"``/``"conflict"``.
 
     ``keep_conflict=False`` (Default, für save/close/done/hook-stop): bricht
-    einen Rebase-Konflikt sauber ab. ``keep_conflict=True`` (für interaktives
+    einen Konflikt sauber ab. ``keep_conflict=True`` (für interaktives
     ``/sync``): lässt den Konflikt im Working Tree stehen, damit die geteilte
     KI-Auflösung (§1.6 A) die Marker auflösen und ``continue_rebase_and_push``
     rufen kann.
+
+    ``strategy``: bei echter Divergenz (weder Fast-Forward noch identisch)
+    entscheidet dies, wie integriert wird:
+    - ``"rebase"`` (Default): ``git rebase FETCH_HEAD`` — saubere lineare
+      Historie, passend für den interaktiven ``/sync``-Pfad, wo ein Mensch
+      einen echten Konflikt auch tatsächlich auflöst.
+    - ``"merge"``: ``git merge FETCH_HEAD`` — robuster für unbeaufsichtigte,
+      bot-generierte Historie (der Synchronizer-Hintergrund-Pull, s.
+      ``daemon/synchronizer.py``). Ein Rebase spielt jeden lokalen Commit
+      einzeln als Patch neu ein; das kann bei vielen automatisierten Commits
+      an einem Zwischenschritt scheitern, obwohl ein einfacher 3-way-Merge der
+      beiden Endstände konfliktfrei wäre. Da hier ohnehin niemand zusieht, um
+      einen Konflikt aufzulösen, ist die robustere Merge-Strategie vorzuziehen
+      — ``keep_conflict`` bleibt dabei ohne Wirkung (Merge wird bei Konflikt
+      immer abgebrochen, nie offen gelassen).
     """
     fetch = _git(["fetch", "origin", branch], check=False, timeout=GIT_NET_TIMEOUT)
     if fetch.returncode != 0:
@@ -169,7 +185,16 @@ def integrate(branch: str, keep_conflict: bool = False) -> tuple[bool, str | Non
     if _git(["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"], check=False).returncode == 0:
         ff = _git(["merge", "--ff-only", "FETCH_HEAD"], check=False)
         return (True, None) if ff.returncode == 0 else (False, "conflict")
-    # echte Divergenz → rebase
+
+    # echte Divergenz → rebase (Default) oder merge (bot-robust)
+    if strategy == "merge":
+        mg = _git(["merge", "--no-edit", "FETCH_HEAD"], check=False, timeout=GIT_NET_TIMEOUT)
+        if mg.returncode != 0:
+            kind = _classify_failure(mg.stderr.strip())
+            _git(["merge", "--abort"], check=False)
+            return False, kind
+        return True, None
+
     rb = _git(["rebase", "FETCH_HEAD"], check=False, timeout=GIT_NET_TIMEOUT)
     if rb.returncode != 0:
         kind = _classify_failure(rb.stderr.strip())
