@@ -158,6 +158,28 @@ def test_rescan_recomputes_next_fire_at_when_stuck_at_none_while_complete(conn, 
     assert row["next_fire_at"] > time.time()
 
 
+def test_rescan_never_rearms_frozen_statuses(conn, tmp_path: Path):
+    # User-Feedback 2026-07-05 (real beobachtet bei news-aggregator):
+    # report_status() setzt beim Übergang in error/killed/inactive/zombie
+    # next_fire_at bewusst auf NULL ("echte Sackgasse — nie automatisch,
+    # erst nach explizitem START/RESET"). Anders als bei failed/deferred/
+    # complete ist dieses NULL kein Unfall, den ein Rescan heilen soll — sonst
+    # feuert der Job doch wieder automatisch, sobald der nächste periodische
+    # Rescan ihm einen frischen Cron-Tick verpasst.
+    for status in ("error", "killed", "inactive", "zombie"):
+        _write(tmp_path / "case" / status / "README.md",
+               '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    for status in ("error", "killed", "inactive", "zombie"):
+        conn.execute("UPDATE jobs SET status=?, next_fire_at=NULL WHERE slug=?",
+                    (status, status))
+    conn.commit()
+    job_db.rescan(conn, vault_root=tmp_path / "case")  # z.B. periodischer Sync
+    for status in ("error", "killed", "inactive", "zombie"):
+        row = conn.execute("SELECT next_fire_at FROM jobs WHERE slug=?", (status,)).fetchone()
+        assert row["next_fire_at"] is None, f"{status} sollte eingefroren bleiben"
+
+
 def test_rescan_deactivates_vanished_instead_of_deleting(conn, tmp_path: Path):
     # PLAN-14 Stufe 14.5: die Zeile bleibt (Journal-Historie erreichbar), nur
     # active=0 statt DELETE — ersetzt den früheren test_rescan_removes_vanished.

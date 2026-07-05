@@ -256,21 +256,37 @@ def _spec_columns(pr: ParseResult, now: float) -> dict:
 #: next_fire_at ist der Timer bis zum nächsten Dispatch, kein Rescan-Datum.
 _PRESERVE_NEXT_FIRE_AT = {"failed", "deferred", "complete"}
 
+#: Echte Sackgassen (§5.5/report_status): beim Übergang dorthin setzt
+#: report_status() next_fire_at bewusst auf NULL — "feuern nie automatisch,
+#: erst nach explizitem START/RESET". Anders als bei _PRESERVE_NEXT_FIRE_AT
+#: ist dieses NULL hier kein Unfall, der geheilt werden soll — ein Rescan
+#: darf es nicht stillschweigend durch einen frischen Cron-Tick ersetzen,
+#: sonst feuert ein `error`-Job doch wieder automatisch (User-Feedback
+#: 2026-07-05, real beobachtet bei `news-aggregator`: ein Rescan gab ihm nach
+#: dem Erschöpfen der attempts trotzdem einen neuen next_fire_at). START/RESET
+#: setzen next_fire_at explizit selbst (start_now()/report_status() mit
+#: übergebenem Wert) — die bleiben davon unberührt.
+_FROZEN_UNTIL_USER_ACTION = {"error", "killed", "inactive", "zombie"}
+
 
 def upsert_schedule(conn: sqlite3.Connection, pr: ParseResult, now: float) -> str:
     """Schedule einfügen (status pending, neue ID) oder Spec-Spalten aktualisieren.
 
     Schlüssel ist der Slug. Bei Update bleiben ``id`` und Live-Status erhalten —
-    nur die aus der MD abgeleiteten Felder werden neu geschrieben. Ausnahme:
-    ``next_fire_at`` bleibt unangetastet, wenn der Job gerade in
-    ``_PRESERVE_NEXT_FIRE_AT`` steckt UND dort bereits einen echten Timer trägt
-    (s.o.). Ist er dort stattdessen ``NULL`` (kein Timer gesetzt — z. B. weil
-    ein manueller Start auf einen Zwischenstand traf, bevor das Schedule live
-    geschaltet war, real beobachtet 2026-07-05 bei `gmail-transfer`), gibt es
-    sonst **keinen** Weg mehr zurück: ``reserve_next()`` verlangt
-    ``next_fire_at IS NOT NULL`` und der Job bliebe für immer eingefroren.
-    In diesem Fall lässt dieser Upsert den frisch berechneten Wert stehen —
-    der nächste (periodische) Rescan heilt den Job so von selbst.
+    nur die aus der MD abgeleiteten Felder werden neu geschrieben. Ausnahmen bei
+    ``next_fire_at``:
+
+    - ``_FROZEN_UNTIL_USER_ACTION``: bleibt **immer** unangetastet (auch wenn
+      ``NULL``) — das ist dort der gewollte Dauerzustand, kein Heilungsfall.
+    - ``_PRESERVE_NEXT_FIRE_AT``: bleibt unangetastet, wenn der Job dort bereits
+      einen echten Timer trägt (s.o.). Ist er dort stattdessen ``NULL`` (kein
+      Timer gesetzt — z. B. weil ein manueller Start auf einen Zwischenstand
+      traf, bevor das Schedule live geschaltet war, real beobachtet 2026-07-05
+      bei `gmail-transfer`), gibt es sonst **keinen** Weg mehr zurück:
+      ``reserve_next()`` verlangt ``next_fire_at IS NOT NULL`` und der Job
+      bliebe für immer eingefroren. In diesem Fall lässt dieser Upsert den
+      frisch berechneten Wert stehen — der nächste (periodische) Rescan heilt
+      den Job so von selbst.
     """
     cols = _spec_columns(pr, now)
     cols["active"] = 1  # jeder erfolgreiche Upsert kommt von einer entdeckten MD
@@ -287,7 +303,9 @@ def upsert_schedule(conn: sqlite3.Connection, pr: ParseResult, now: float) -> st
         placeholders = ", ".join(f":{k}" for k in fields)
         conn.execute(f"INSERT INTO jobs ({names}) VALUES ({placeholders})", fields)
         return job_id
-    if existing["status"] in _PRESERVE_NEXT_FIRE_AT and existing["next_fire_at"] is not None:
+    if existing["status"] in _FROZEN_UNTIL_USER_ACTION:
+        cols.pop("next_fire_at", None)
+    elif existing["status"] in _PRESERVE_NEXT_FIRE_AT and existing["next_fire_at"] is not None:
         cols.pop("next_fire_at", None)
     cols["updated_at"] = now
     assignments = ", ".join(f"{k}=:{k}" for k in cols)
