@@ -78,6 +78,11 @@ def test_run_local_by_slug(gitrepo: Path):
     (gitrepo / "vault" / "case" / "hello" / "README.md").parent.mkdir(parents=True, exist_ok=True)
     (gitrepo / "vault" / "case" / "hello" / "README.md").write_text(
         '---\nschedule: now\njob: "echo viaslug"\n---\n', encoding="utf-8")
+    # Committen: der Worktree ist `git worktree add … trunk` — das Job-cwd
+    # (Verzeichnis der Schedule-MD, § Job-cwd-Fix 2026-07-05) existiert darin
+    # nur, wenn die Datei schon auf trunk sitzt.
+    _git(gitrepo, "add", "-A")
+    _git(gitrepo, "commit", "-q", "-m", "seed hello")
     res = run_local(slug="hello", repo_root=gitrepo,
                     work_dir=gitrepo / "data" / "worktrees",
                     db_path=gitrepo / "data" / "jobs.sqlite")
@@ -118,6 +123,8 @@ def test_run_local_claude_via_stub(gitrepo: Path, monkeypatch):
     md.write_text(
         '---\nschedule: now\njob: "claude: Antworte hallo"\nmodel: claude-haiku-4-5-20251001\n---\n',
         encoding="utf-8")
+    _git(gitrepo, "add", "-A")
+    _git(gitrepo, "commit", "-q", "-m", "seed ki1")
     res = run_local(slug="ki1", repo_root=gitrepo,
                     work_dir=gitrepo / "data" / "worktrees",
                     db_path=gitrepo / "data" / "jobs.sqlite")

@@ -552,6 +552,9 @@ def reservation_view(row: sqlite3.Row) -> dict:
         "app_port": row["app_port"], "app_prefix": row["app_prefix"],
         "exec_mode": row["exec_mode"],
         "defer_time": row["defer_time"],
+        # Vault-relativer Pfad der Schedule-MD (unter case_dir) — der Worker
+        # leitet daraus das Job-cwd ab (Verzeichnis der MD, nicht Worktree-Root).
+        "schedule_ref": row["schedule_ref"],
         "env": {},
     }
 

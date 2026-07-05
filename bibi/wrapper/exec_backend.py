@@ -90,26 +90,32 @@ def _traefik_labels(job_id: str, *, app_port: int | None, app_prefix: str | None
 def build_exec(child_argv: list[str], env: dict[str, str]) -> ExecSpec:
     """Child-argv + env → konkrete Popen-Spezifikation, je nach ``BIBI_EXEC_MODE``.
 
-    - ``host`` (Default): das Child direkt, cwd = Worktree.
+    - ``host`` (Default): das Child direkt, cwd = ``BIBI_JOB_CWD`` (Verzeichnis der
+      Schedule-MD innerhalb des Worktrees), Fallback Worktree-Root ohne ``BIBI_JOB_CWD``.
     - ``container``: ``docker run --rm --name bibi-<id> -v <worktree>:/workspace
-      -w /workspace [-e KEY…] <image> <child-argv>``; PATH um das docker-bin-Dir
-      ergänzt (Cred-Helper).
+      -w /workspace[/<md-relativ>] [-e KEY…] <image> <child-argv>``; der ganze
+      Worktree bleibt gemountet (Zugriff auf andere Repo-Verzeichnisse bleibt
+      möglich), nur der Arbeitsordner (``-w``) zeigt auf den ``BIBI_JOB_CWD``-Unterpfad;
+      PATH um das docker-bin-Dir ergänzt (Cred-Helper).
     - ``container`` + ``app``-Typ: zusätzlich ``--network bibi-net`` + statisches
       App-Content-Traefik-Label, falls ``app_port``/``app_prefix`` beim Spawn schon
       feststehen (PLAN-9 §2, Slice 9.0; bereinigt PLAN-11.5 — kein Wrapper-Routing
       mehr, der Wrapper hat keinen HTTP-Server)."""
     mode = (env.get("BIBI_EXEC_MODE") or "host").strip().lower()
     if mode != "container":
-        return ExecSpec(argv=list(child_argv), cwd=env.get("BIBI_WORKTREE") or None,
-                        env=dict(env))
+        cwd = env.get("BIBI_JOB_CWD") or env.get("BIBI_WORKTREE") or None
+        return ExecSpec(argv=list(child_argv), cwd=cwd, env=dict(env))
 
     worktree = env["BIBI_WORKTREE"]
+    job_cwd = env.get("BIBI_JOB_CWD") or worktree
+    md_rel = os.path.relpath(job_cwd, worktree)
+    workdir = WORKSPACE if md_rel in (".", "") else f"{WORKSPACE}/{md_rel}"
     image = env.get("BIBI_JOB_IMAGE") or DEFAULT_IMAGE
     docker_bin = resolve_docker_bin(env)
     job_id = env.get("BIBI_JOB_ID", "job")
     name = container_name(job_id)
     argv = [docker_bin, "run", "--rm", "--name", name,
-            "-v", f"{worktree}:{WORKSPACE}", "-w", WORKSPACE]
+            "-v", f"{worktree}:{WORKSPACE}", "-w", workdir]
 
     app_port_str = env.get("BIBI_APP_PORT")
     if app_port_str:

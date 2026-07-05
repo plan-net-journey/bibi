@@ -22,6 +22,19 @@ def test_host_mode_is_child_argv_with_worktree_cwd():
     assert spec.cwd == "/wt"
 
 
+def test_host_mode_uses_job_cwd_when_set():
+    spec = exec_backend.build_exec(
+        ["bash", "-c", "echo hi"],
+        {"BIBI_WORKTREE": "/wt", "BIBI_JOB_CWD": "/wt/vault/case/foo"})
+    assert spec.cwd == "/wt/vault/case/foo"
+
+
+def test_host_mode_falls_back_to_worktree_without_job_cwd():
+    spec = exec_backend.build_exec(
+        ["bash", "-c", "echo hi"], {"BIBI_WORKTREE": "/wt"})
+    assert spec.cwd == "/wt"
+
+
 def test_container_mode_wraps_in_docker_run():
     env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
            "BIBI_JOB_ID": "abc123", "BIBI_DOCKER_BIN": "/d/docker",
@@ -35,6 +48,17 @@ def test_container_mode_wraps_in_docker_run():
     assert spec.argv[-4:] == ["img:1", "claude", "-p", "x"]
     # docker-bin-Dir vorne im PATH (Cred-Helper)
     assert spec.env["PATH"].startswith("/d" + os.pathsep)
+
+
+def test_container_mode_uses_job_cwd_as_workdir_subpath():
+    env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
+           "BIBI_JOB_CWD": "/wt/vault/case/foo",
+           "BIBI_JOB_ID": "abc123", "BIBI_DOCKER_BIN": "/d/docker",
+           "BIBI_JOB_IMAGE": "img:1", "PATH": "/usr/bin"}
+    spec = exec_backend.build_exec(["claude", "-p", "x"], env)
+    assert spec.argv[:9] == [
+        "/d/docker", "run", "--rm", "--name", "bibi-abc123",
+        "-v", "/wt:/workspace", "-w", "/workspace/vault/case/foo"]
 
 
 def test_container_passes_api_key_only_when_set():

@@ -40,6 +40,11 @@ def _seed(root: Path, rel: str, body: str) -> str:
     p = root / "vault" / "case" / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(body, encoding="utf-8")
+    # Committen, nicht nur aufs Dateisystem schreiben: der Worker-Worktree ist
+    # ein `git worktree add … trunk` — ein Job-cwd unterhalb der MD (§ Job-cwd-
+    # Fix 2026-07-05) existiert darin nur, wenn die Datei schon auf trunk sitzt.
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", f"seed {rel}")
     conn = job_db.connect(root / "data" / "jobs.sqlite")
     try:
         job_db.rescan(conn, vault_root=root / "vault" / "case")
@@ -105,6 +110,20 @@ def test_tick_runs_job_to_complete(gitrepo: Path):
     from bibi.wrapper import output
     out = gitrepo / "data" / "job" / run_id / "output.jsonl"
     assert output.lines(out, "out") == ["hallo", "fertig"]
+
+
+@pytest.mark.slow
+def test_job_runs_with_cwd_at_schedule_md_directory(gitrepo: Path):
+    """User-Feedback 2026-07-05: Job-cwd = Verzeichnis der Schedule-MD, nicht
+    Worktree-Root — auch wenn die MD tiefer im Case verschachtelt liegt."""
+    jid = _seed(gitrepo, "run1/sub/README.md",
+                '---\nschedule: now\nslug: nested\njob: "pwd > here.txt"\n---\n')
+    assert _worker(gitrepo).tick_once() is True
+    _wait_terminal(gitrepo, jid)
+    job_dir = gitrepo / "data" / "worktrees" / "nested" / "vault" / "case" / "run1" / "sub"
+    probe = job_dir / "here.txt"
+    assert probe.exists()
+    assert probe.read_text().strip() == str(job_dir)
 
 
 @pytest.mark.slow

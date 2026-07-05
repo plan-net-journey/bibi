@@ -178,6 +178,7 @@ def _terminate(proc: subprocess.Popen, *, job_id: str | None = None) -> None:
 
 def _run_wrapper(
     *, job_id: str, slug: str, kind: str, payload: str, model: str | None = None,
+    schedule_ref: str | None = None,
     soul: str | None = None, session: str | None = None,
     wall_time: int | None = None, silence_timeout: int | None = None,
     app_port: int | None = None, app_prefix: str | None = None,
@@ -220,6 +221,16 @@ def _run_wrapper(
     env["BIBI_JOB_ID"] = job_id
     env["BIBI_OUTPUT_PATH"] = str(out_path)
     env["BIBI_WORKTREE"] = str(wt_path)
+    # Job-cwd = Verzeichnis der Schedule-MD (User-Feedback 2026-07-05: ein Job
+    # soll dort laufen, wo seine MD liegt, nicht im Worktree-Root — verhindert,
+    # dass versehentliche relative Schreibzugriffe im ganzen Repo landen).
+    # Zugriff auf andere Repo-Verzeichnisse bleibt möglich, nur der Default
+    # ändert sich. ``schedule_ref`` ist relativ zu ``vault/<case_dir>``
+    # (§ ``repo.case_dir()`` / ``job_db.rescan``s Default).
+    job_cwd = wt_path
+    if schedule_ref:
+        job_cwd = wt_path / "vault" / repo.case_dir_name() / Path(schedule_ref).parent
+    env["BIBI_JOB_CWD"] = str(job_cwd)
 
     # PLAN-10 Stufe 10.0: claude:-Prefix-Expansion beim Spawn.
     # kind aus DB ist immer "job"; effective_type steuert den Wrapper-Dispatch.
@@ -364,6 +375,7 @@ def execute_reservation(
         _, _, out_path, outcome, proc_pid = _run_wrapper(
             job_id=jid, slug=reservation["slug"], kind=kind,
             payload=reservation["payload"], model=reservation.get("model"),
+            schedule_ref=reservation.get("schedule_ref"),
             soul=reservation.get("soul"), session=reservation.get("session"),
             wall_time=reservation.get("wall_time"),
             silence_timeout=silence_timeout,
@@ -419,8 +431,14 @@ def execute_reservation(
 
 
 def _resolve_spec(repo_root: Path, slug: str):
-    """Eine erfasste Schedule-MD per Slug finden (für ``/run <slug>``)."""
-    res = discovery.discover(repo_root / "vault")
+    """Eine erfasste Schedule-MD per Slug finden (für ``/run <slug>``).
+
+    Gleicher ``vault_root`` wie ``job_db.rescan()``s Default (§ ``repo.case_dir()``)
+    — sonst trägt die zurückgegebene ``ParseResult.schedule_ref`` ein anderes
+    Präfix als die von der DB gemeldete (fehlender ``case/``-Teil vs. vorhandener),
+    und ein daraus abgeleitetes Job-cwd (§ ``_run_wrapper``) würde für ``/run``
+    einen anderen Ort treffen als für den regulären Scheduler-Dispatch."""
+    res = discovery.discover(repo_root / "vault" / repo.case_dir_name())
     return res.found.get(slug)
 
 
@@ -438,6 +456,7 @@ def run_local(
     repo_root = repo_root or repo.root()
     work_dir = work_dir or (repo_root / "data" / "worktrees")
     eff_soul = eff_session = None
+    eff_schedule_ref: str | None = None
     if cmd is not None:
         eff_slug, payload, eff_kind, eff_model = slug or "adhoc", cmd, kind, model
     else:
@@ -449,11 +468,13 @@ def run_local(
         s = pr.spec
         eff_slug, payload, eff_kind, eff_model = s.slug, s.payload, s.kind.value, s.model
         eff_soul, eff_session = s.soul, s.session
+        eff_schedule_ref = pr.schedule_ref
 
     jid = secrets.token_hex(4)
     started = time.time()
     code, commit_sha, out_path, outcome, _ = _run_wrapper(
         job_id=jid, slug=eff_slug, kind=eff_kind, payload=payload, model=eff_model,
+        schedule_ref=eff_schedule_ref,
         soul=eff_soul, session=eff_session,
         repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=True,
     )
