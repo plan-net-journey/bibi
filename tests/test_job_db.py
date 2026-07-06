@@ -65,6 +65,38 @@ def test_next_fire_cron_advances():
     assert nf is not None and nf > 1000.0
 
 
+def test_next_fire_cron_uses_local_time_not_utc():
+    # User-Fund 2026-07-06 ("nächster Lauf in 1h" stimmte nicht): _next_cron()
+    # übergab croniter bisher einen rohen Epoch-Float — croniter interpretiert
+    # den intern als UTC-Wanduhrzeit, nicht als lokale. Auf einem Nicht-UTC-
+    # Knoten verschiebt das jede Cron-Berechnung um den UTC-Offset. Erzwingt
+    # eine bekannte Nicht-UTC-Zone (Europe/Berlin, CEST/UTC+2 im Sommer),
+    # damit der Test deterministisch ist, unabhängig von der Maschinen-TZ.
+    import datetime
+    import os
+    import time as time_mod
+
+    from bibi.schedule.models import Kind, ScheduleSpec
+
+    old_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "Europe/Berlin"
+    time_mod.tzset()
+    try:
+        local_dt = datetime.datetime(2026, 7, 6, 10, 28, 53)
+        now = local_dt.timestamp()
+        s = ScheduleSpec(slug="x", kind=Kind.JOB, payload="e", schedule="20 10,17 * * *")
+        nf = job_db.compute_next_fire(s, now=now)
+        # Korrekt: 17:20 lokal (Bug hätte fälschlich ~12:20 geliefert).
+        expected = datetime.datetime(2026, 7, 6, 17, 20, 0).timestamp()
+        assert nf == pytest.approx(expected)
+    finally:
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        time_mod.tzset()
+
+
 def test_next_fire_at_parsed():
     from bibi.schedule.models import Kind, ScheduleSpec
     s = ScheduleSpec(slug="x", kind=Kind.JOB, payload="e", at="2099-01-01T00:00:00")

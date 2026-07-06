@@ -204,9 +204,21 @@ def is_recurring(schedule: str | None) -> bool:
 
 
 def _next_cron(expr: str, now: float) -> float | None:
+    """Nächste Feuerzeit für einen Cron-Ausdruck, in lokaler Wanduhrzeit.
+
+    User-Fund 2026-07-06 ("nächster Lauf in 1h" stimmte nicht): ``croniter``
+    interpretiert einen rohen Epoch-Float intern als UTC-Wanduhrzeit — auf
+    einem Nicht-UTC-Knoten verschiebt das jede Berechnung um den UTC-Offset
+    (verifiziert: 2h Differenz auf einem CEST-Knoten). Fix: ``now`` erst in
+    eine lokale (naive, aber Wanduhrzeit-korrekte) ``datetime`` wandeln, dann
+    croniter darauf rechnen lassen und wieder zu Epoch zurückwandeln."""
     try:
+        import datetime
+
         import croniter
-        return croniter.croniter(expr, now).get_next(float)
+        local_now = datetime.datetime.fromtimestamp(now)
+        next_dt = croniter.croniter(expr, local_now).get_next(datetime.datetime)
+        return next_dt.timestamp()
     except Exception:
         return None
 
