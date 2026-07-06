@@ -37,14 +37,19 @@ class FeedEntity:
     kind: str                  # "case" | "vault" | "system"
     name: str
     last_changed: float
+    last_commit_sha: str       # Commit, der last_changed erzeugt hat (Link zum Server)
     authors: frozenset[str]
     all_agent: bool            # True: JEDE beitragende Änderung war agent/*-Herkunft
 
 
-def _run_log(root: Path, args: list[str]) -> str:
-    proc = subprocess.run(["git", "log", *args], cwd=root,
+def _run_git(root: Path, args: list[str]) -> str:
+    proc = subprocess.run(["git", *args], cwd=root,
                           capture_output=True, text=True, check=False)
     return proc.stdout if proc.returncode == 0 else ""
+
+
+def _run_log(root: Path, args: list[str]) -> str:
+    return _run_git(root, ["log", *args])
 
 
 def _since_args(since_days: int | None) -> list[str]:
@@ -75,13 +80,39 @@ def collect_commits(root: Path, *, since_days: int | None = None) -> list[Commit
     return _parse_log(out)
 
 
+#: git-generierte Default-Merge-Message bei ``merge --no-ff --no-edit agent/<slug>``
+#: (``mergeback.merge_back()``) — ``git merge --no-edit`` erfindet nie eine andere.
+_AGENT_MERGE_PREFIX = "Merge branch 'agent/"
+
+
 def agent_commit_shas(root: Path, *, since_days: int | None = None) -> set[str]:
-    """Commit-Hashes, die über einen ``--no-ff``-Merge von ``agent/*`` kamen —
-    alles außerhalb der First-Parent-Linie (zwei billige ``%H``-only Logs)."""
+    """Commit-Hashes, die über einen ``agent/*``-Merge (``mergeback.merge_back()``)
+    hereinkamen.
+
+    **Nicht** über first-parent-vs-voll-Log-Mengendifferenz (früherer Bug,
+    User-Fund 2026-07-06: „Agents ausblenden versteckt Sachen, die NUR ich
+    gemacht habe") — das klassifizierte JEDEN Merge-Commit als Agent-Herkunft,
+    auch ganz gewöhnliche Mehrgeräte-Sync-Merges des Synchronizers
+    (``strategy="merge"``, ``daemon/synchronizer.py``), deren zweite
+    Eltern-Linie genauso echte, aber fremd-authored Commits enthält. Stattdessen
+    gezielt: nur Merges, deren (von ``--no-edit`` git-generierte) Commit-Message
+    mit ``Merge branch 'agent/`` beginnt — deren zweite Eltern-Linie (die
+    Agent-Branch-Spitze) ist die tatsächliche Agent-Herkunft."""
     since = _since_args(since_days)
-    all_shas = set(_run_log(root, ["--format=%H", *since]).split())
-    first_parent = set(_run_log(root, ["--first-parent", "--format=%H", *since]).split())
-    return all_shas - first_parent
+    fmt = f"--pretty=format:{_RS}%H{_FS}%P{_FS}%s"
+    out = _run_log(root, [fmt, *since])
+
+    agent_shas: set[str] = set()
+    for block in out.split(_RS):
+        block = block.strip()
+        if not block:
+            continue
+        sha, parents_s, subject = block.split(_FS, 2)
+        parents = parents_s.split()
+        if len(parents) == 2 and subject.startswith(_AGENT_MERGE_PREFIX):
+            rev_range = f"{parents[0]}..{parents[1]}"
+            agent_shas.update(_run_git(root, ["rev-list", rev_range]).split())
+    return agent_shas
 
 
 def classify_path(path: str, *, case_dir_name: str = "case") -> tuple[str, str]:
@@ -107,13 +138,15 @@ def group_entities(
         is_agent = c.sha in agent_shas
         for path in c.paths:
             key = classify_path(path, case_dir_name=case_dir_name)
-            b = buckets.setdefault(key, {"last": c.epoch, "authors": set(), "agent": []})
-            b["last"] = max(b["last"], c.epoch)
+            b = buckets.setdefault(
+                key, {"last": c.epoch, "last_sha": c.sha, "authors": set(), "agent": []})
+            if c.epoch > b["last"]:
+                b["last"], b["last_sha"] = c.epoch, c.sha
             b["authors"].add(c.author)
             b["agent"].append(is_agent)
 
     entities = [
-        FeedEntity(kind=kind, name=name, last_changed=b["last"],
+        FeedEntity(kind=kind, name=name, last_changed=b["last"], last_commit_sha=b["last_sha"],
                   authors=frozenset(b["authors"]), all_agent=all(b["agent"]))
         for (kind, name), b in buckets.items()
     ]
@@ -130,6 +163,17 @@ def aggregate_feed(
     commits = collect_commits(root, since_days=since_days)
     agent_shas = agent_commit_shas(root, since_days=since_days)
     return group_entities(commits, agent_shas, case_dir_name=case_dir_name)
+
+
+def remote_commit_base_url(root: Path) -> str | None:
+    """Gitea-Basis-URL für Commit-Links, aus dem konfigurierten ``origin``-
+    Remote abgeleitet (PLAN-17 Befund 3: ``.git``-Suffix strippen, Aufrufer
+    hängt ``/commit/<sha>`` an) — konfigurierbar über den Remote selbst, keine
+    neue Einstellung nötig. ``None`` ohne konfiguriertes ``origin``."""
+    url = _run_git(root, ["remote", "get-url", "origin"]).strip()
+    if not url:
+        return None
+    return url[: -len(".git")] if url.endswith(".git") else url
 
 
 #: Heatmap-Layout (Wireframe, verifiziert): 5 Wochen-Zeilen × 7 Tage × 8 3h-Buckets.

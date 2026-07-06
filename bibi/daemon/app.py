@@ -616,8 +616,10 @@ def create_app(
         grid = feed_mod.heatmap_buckets(commits)
         return {
             "since_days": days,
+            "commit_base_url": feed_mod.remote_commit_base_url(root),
             "entities": [
                 {"kind": e.kind, "name": e.name, "last_changed": e.last_changed,
+                 "last_commit_sha": e.last_commit_sha,
                  "authors": sorted(e.authors), "all_agent": e.all_agent}
                 for e in entities
             ],

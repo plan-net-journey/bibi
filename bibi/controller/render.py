@@ -184,6 +184,8 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .lvl.system { background: #d6a23e33; color: #d6a23e; }
 .frow .msg { flex: 1; }
 .frow .who { color: #888; font-size: .78rem; flex: 0 0 auto; }
+.frow a.commit { text-decoration: none; }
+.frow a.commit:hover { text-decoration: underline; color: #5a9fe0; }
 .loadmore { display: flex; gap: .5rem; margin: .8rem 0; }
 """
 
@@ -965,16 +967,28 @@ def _heatmap_html(grid: list[list[list[int]]]) -> str:
            f'{"".join(rows)}</div></div>{legend}')
 
 
-def _feed_row(e: dict, now: float) -> str:
+def _feed_commit_cell(sha: str | None, commit_base_url: str | None) -> str:
+    if not sha:
+        return ""
+    short = _e(sha[:7])
+    if commit_base_url:
+        href = _e(f"{commit_base_url}/commit/{sha}")
+        return f'<a class="commit" href="{href}" target="_blank" rel="noopener">{short}</a>'
+    return f'<span class="commit">{short}</span>'
+
+
+def _feed_row(e: dict, now: float, *, commit_base_url: str | None = None) -> str:
     kind, name = e["kind"], e["name"]
     is_agent = bool(e.get("all_agent"))
     cls = "frow is-agent" if is_agent else "frow"
     t = _ago(e.get("last_changed"), now)
     authors = ", ".join(e.get("authors") or []) or "—"
+    commit = _feed_commit_cell(e.get("last_commit_sha"), commit_base_url)
     return (f'<div class="{cls}" data-kind="{_e(kind)}" data-agent="{"1" if is_agent else "0"}">'
            f'<span class="t">{_e(t)}</span>'
            f'<span class="lvl {_e(kind)}">{_e(kind)}</span>'
            f'<span class="msg">{_e(name)}</span>'
+           f"{commit}"
            f'<span class="who">{_e(authors)}</span>'
            "</div>")
 
@@ -1005,11 +1019,11 @@ def _feed_filter_bar() -> str:
     )
 
 
-def _feed_list(entities: list[dict], now: float) -> str:
+def _feed_list(entities: list[dict], now: float, *, commit_base_url: str | None = None) -> str:
     if not entities:
         return '<p class="out-empty">— keine Änderungen in diesem Zeitraum —</p>'
     return '<div class="feedlist" id="feedlist">' + "".join(
-        _feed_row(e, now) for e in entities) + "</div>"
+        _feed_row(e, now, commit_base_url=commit_base_url) for e in entities) + "</div>"
 
 
 def feed_fragment(feed_data: dict, *, days: int | None = None, now: float | None = None) -> str:
@@ -1019,6 +1033,7 @@ def feed_fragment(feed_data: dict, *, days: int | None = None, now: float | None
     now = time.time() if now is None else now
     entities = feed_data.get("entities") or []
     grid = feed_data.get("heatmap") or []
+    commit_base_url = feed_data.get("commit_base_url")
     next_days = (days or 1) + 1
     load_more = (
         f'<div class="loadmore">'
@@ -1033,7 +1048,7 @@ def feed_fragment(feed_data: dict, *, days: int | None = None, now: float | None
         f"{_heatmap_html(grid)}"
         '<h2>Änderungen</h2>'
         f"{_feed_filter_bar()}"
-        f"{_feed_list(entities, now)}"
+        f"{_feed_list(entities, now, commit_base_url=commit_base_url)}"
         f"{load_more}"
         f"<script>{_FEED_FILTER_JS}</script>"
         "</div>"

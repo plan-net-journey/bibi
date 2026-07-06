@@ -11,7 +11,7 @@ import pytest
 
 from bibi.feed import (
     CommitInfo, agent_commit_shas, aggregate_feed, classify_path, collect_commits,
-    heatmap_buckets,
+    heatmap_buckets, remote_commit_base_url,
 )
 
 pytestmark = pytest.mark.slow
@@ -111,6 +111,28 @@ def test_agent_commit_shas_detects_no_ff_merge(repo: Path):
     assert shas.isdisjoint(non_agent_shas)
 
 
+def test_agent_commit_shas_does_not_misclassify_ordinary_sync_merge(repo: Path, tmp_path: Path):
+    # User-Fund 2026-07-06: "Agents ausblenden versteckt Sachen, die NUR ich
+    # gemacht habe" — ein ganz normaler Mehrgeräte-Sync-Merge (Synchronizer,
+    # strategy="merge") hat auch eine zweite Eltern-Linie, ist aber KEIN
+    # agent/*-Merge. Nur Merges mit der git-generierten Message
+    # "Merge branch 'agent/..." zählen als Agent-Herkunft.
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", str(repo), "other")
+    (other / "human2.md").write_text("human work on other device", encoding="utf-8")
+    _commit_as(other, "Carol", "carol@x.io", "vault: human work on other device")
+    other_sha = _git(other, "rev-parse", "HEAD")
+
+    (repo / "human1.md").write_text("human work here too", encoding="utf-8")
+    _commit_as(repo, "Alice", "alice@x.io", "vault: human work here too")
+
+    _git(repo, "fetch", "-q", str(other), "trunk")
+    _git(repo, "merge", "--no-edit", "FETCH_HEAD")
+
+    shas = agent_commit_shas(repo)
+    assert other_sha not in shas
+
+
 # --- aggregate_feed -------------------------------------------------------------
 
 def test_aggregate_feed_one_row_per_entity(repo: Path):
@@ -131,6 +153,13 @@ def test_aggregate_feed_sorted_newest_first(repo: Path):
     entities = aggregate_feed(repo)
     timestamps = [e.last_changed for e in entities]
     assert timestamps == sorted(timestamps, reverse=True)
+
+
+def test_aggregate_feed_last_commit_sha_is_the_newest_touching_commit(repo: Path):
+    entities = {e.name: e for e in aggregate_feed(repo)}
+    expected_sha = _git(repo, "log", "-1", "--format=%H", "--",
+                        "vault/case/20260601.FooBar/README.md")
+    assert entities["20260601.FooBar"].last_commit_sha == expected_sha
 
 
 def test_aggregate_feed_all_agent_flag(repo: Path):
@@ -240,3 +269,17 @@ def test_feed_endpoint_days_param(repo: Path, monkeypatch):
         assert r.status_code == 200
         assert r.json()["since_days"] == 3650
         assert len(r.json()["entities"]) == 3
+
+
+# --- remote_commit_base_url ----------------------------------------------------
+
+
+def test_remote_commit_base_url_strips_dot_git(repo: Path):
+    _git(repo, "remote", "add", "origin",
+        "http://sarasate.tail9f9173.ts.net:3000/m.rau/bibi-notes.git")
+    assert (remote_commit_base_url(repo)
+           == "http://sarasate.tail9f9173.ts.net:3000/m.rau/bibi-notes")
+
+
+def test_remote_commit_base_url_none_without_origin(repo: Path):
+    assert remote_commit_base_url(repo) is None

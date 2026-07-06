@@ -88,6 +88,24 @@ def test_feed_row_shows_kind_badge_and_authors():
     assert 'data-agent="0"' in html
 
 
+def test_feed_row_links_commit_hash_when_base_url_given():
+    e = {"kind": "case", "name": "x", "last_changed": 90.0, "authors": ["Alice"],
+        "all_agent": False, "last_commit_sha": "cf88e049ed9504cc045edb2b40ef5d476422e8fd"}
+    html = render._feed_row(e, now=100.0,
+                            commit_base_url="http://sarasate.tail9f9173.ts.net:3000/m.rau/bibi-notes")
+    assert ('href="http://sarasate.tail9f9173.ts.net:3000/m.rau/bibi-notes/commit/'
+           'cf88e049ed9504cc045edb2b40ef5d476422e8fd"') in html
+    assert ">cf88e04<" in html  # kurzer Hash (7 Zeichen)
+
+
+def test_feed_row_commit_hash_plain_without_base_url():
+    e = {"kind": "case", "name": "x", "last_changed": 90.0, "authors": ["Alice"],
+        "all_agent": False, "last_commit_sha": "cf88e049ed9504cc045edb2b40ef5d476422e8fd"}
+    html = render._feed_row(e, now=100.0, commit_base_url=None)
+    assert "<a " not in html
+    assert 'class="commit">cf88e04<' in html
+
+
 def test_feed_row_marks_agent_only_entity():
     e = {"kind": "vault", "name": "x.md", "last_changed": 90.0,
         "authors": ["bot"], "all_agent": True}
