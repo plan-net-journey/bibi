@@ -17,16 +17,19 @@ nicht mehr die Root selbst. Fragment-Routen liegen unter ``/-/ui/``
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from bibi.daemon import openapi, roles as roles_mod
+from bibi.daemon import activity, openapi, roles as roles_mod
 
 from . import render
 from .client import ControllerClient
+
+log = logging.getLogger("bibi.controller")
 
 __all__ = ["ControllerClient", "add_controller_routes", "render", "service_descriptor"]
 
@@ -83,10 +86,25 @@ def add_controller_routes(
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             return []
 
+    def _effective_days(days: int | None) -> int | None:
+        """``days`` fehlt im Query (allererster Seitenaufruf) → Default 1 Tag
+        (PLAN-18 Design-Pass), nicht unbegrenzt — ein voller, unbegrenzter Log
+        über die echte bibi-notes-Historie brauchte live 5,7s, über dem
+        5s-Timeout des Controller-Selbstaufrufs (User-Fund 2026-07-06, „Feed
+        ist auf einmal leer"). ``days=0`` ist das explizite Signal des
+        „gesamte Historie"-Buttons (der sonst nicht von einem frischen
+        Seitenaufruf unterscheidbar wäre) → kein Zeitfenster."""
+        if days is None:
+            return 1
+        return None if days == 0 else days
+
     def _feed_data(days: int | None) -> dict:
         try:
             return client.feed(days=days)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            activity.emit(log, logging.WARNING, "controller.feed_unreachable",
+                         "Feed-Selbstaufruf fehlgeschlagen (Timeout/Fehler?) — "
+                         "zeige leeren Feed statt abzustürzen", role="controller")
             return {"entities": [], "heatmap": []}
 
     def _feed_git_status() -> dict | None:
@@ -109,14 +127,16 @@ def add_controller_routes(
         # (§1.1 bleibt an der Wurzel gewahrt). Schedules bleibt unter
         # /-/ui/schedules erreichbar, unverändert.
         if _wants_html(request):
+            eff = _effective_days(days)
             return HTMLResponse(render.feed_page(
-                _feed_data(days), git_status=_feed_git_status(), days=days,
+                _feed_data(eff), git_status=_feed_git_status(), days=eff,
                 daemon_status=_status()))
         return JSONResponse(service_descriptor(roles))
 
     @app.get("/-/ui/feed/board", include_in_schema=False)
     def feed_board(days: int | None = None):
-        return HTMLResponse(render.feed_fragment(_feed_data(days), days=days))
+        eff = _effective_days(days)
+        return HTMLResponse(render.feed_fragment(_feed_data(eff), days=eff))
 
     @app.get("/-/ui/schedules", include_in_schema=False)
     def schedules_screen(typ: str | None = None, status: str | None = None):

@@ -111,13 +111,16 @@ def test_agent_commit_shas_detects_no_ff_merge(repo: Path):
     assert shas.isdisjoint(non_agent_shas)
 
 
-def test_agent_commit_shas_detects_via_branch_even_with_custom_merge_message(repo: Path):
-    # User-Korrektur 2026-07-06: Branch-Containment statt Commit-Message als
-    # Signal — robuster, weil unabhängig vom genauen Message-Text. Dieser Test
-    # simuliert genau den Unterschied: ein Merge mit einer Message, die NICHT
-    # dem git-generierten "Merge branch 'agent/..." Muster entspricht (z. B.
-    # weil jemand --no-ff ohne --no-edit nutzte), muss trotzdem erkannt werden,
-    # weil der zweite Elternteil nachweislich auf agent/* liegt.
+def test_agent_commit_shas_accepted_limitation_needs_default_merge_message(repo: Path):
+    # Zwischenstand verworfen (s. agent_commit_shas()-Docstring): Branch-
+    # Containment als Zusatzsignal für abweichende Merge-Messages wurde live
+    # gegen die echte bibi-notes-Historie widerlegt — alle 8 echten Sync-Merges
+    # dort wurden über Containment fälschlich als Agent erkannt (alte Commits
+    # werden irgendwann Vorfahre praktisch jedes späteren Branches). Bewusst
+    # akzeptierte Grenze: ein Merge OHNE die git-generierte "Merge branch
+    # 'agent/…'"-Message (z. B. --no-ff ohne --no-edit) wird NICHT erkannt —
+    # in der Praxis irrelevant, weil mergeback.merge_back() --no-edit fest
+    # verdrahtet hat, nie konfigurierbar.
     _git(repo, "checkout", "-q", "-b", "agent/jobslug")
     (repo / "vault" / "case" / "20260601.FooBar" / "output.md").write_text(
         "agent output", encoding="utf-8")
@@ -127,7 +130,7 @@ def test_agent_commit_shas_detects_via_branch_even_with_custom_merge_message(rep
     _git(repo, "merge", "--no-ff", "-m", "abweichende Nachricht, kein Standardtext",
         "agent/jobslug")
 
-    assert agent_sha in agent_commit_shas(repo)
+    assert agent_sha not in agent_commit_shas(repo)
 
 
 def test_agent_commit_shas_does_not_misclassify_ordinary_sync_merge(repo: Path, tmp_path: Path):

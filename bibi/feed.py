@@ -80,43 +80,61 @@ def collect_commits(root: Path, *, since_days: int | None = None) -> list[Commit
     return _parse_log(out)
 
 
+#: git-generierte Default-Merge-Message bei ``merge --no-ff --no-edit agent/<slug>``
+#: (``mergeback.merge_back()`` — ``--no-edit`` ist hartcodiert, nie konfigurierbar).
+_AGENT_MERGE_PREFIX = "Merge branch 'agent/"
+
+
 def agent_commit_shas(root: Path, *, since_days: int | None = None) -> set[str]:
     """Commit-Hashes, die über einen ``agent/*``-Merge (``mergeback.merge_back()``)
-    hereinkamen.
+    hereinkamen — Signal ist die Commit-Message, **nicht** Branch-Containment.
 
-    **Nicht** über first-parent-vs-voll-Log-Mengendifferenz (früherer Bug,
-    User-Fund 2026-07-06: „Agents ausblenden versteckt Sachen, die NUR ich
-    gemacht habe") — das klassifizierte JEDEN Merge-Commit als Agent-Herkunft,
-    auch ganz gewöhnliche Mehrgeräte-Sync-Merges des Synchronizers
-    (``strategy="merge"``, ``daemon/synchronizer.py``), deren zweite
-    Eltern-Linie genauso echte, aber fremd-authored Commits enthält.
+    Zwei verworfene Zwischenstände, beide live gegen die echte
+    bibi-notes-Historie widerlegt (Design-Pass „miss trauen, nicht raten"):
 
-    **Auch nicht** über die Commit-Message (Zwischenstand, User-Korrektur
-    2026-07-06: „sauberer, den Branch als Agenten-Signal zu verwenden statt
-    auf die Message zu gehen") — stattdessen die tatsächliche Branch-
-    Zugehörigkeit (``git branch --contains``): für jeden Merge-Commit prüft
-    diese Funktion, ob sein zweiter Elternteil auf einem ``agent/*``-Branch
-    liegt (Branches werden im Code nirgends gelöscht, Containment bleibt
-    dauerhaft prüfbar). Nur dann zählt dessen zweite Eltern-Linie
-    (``git rev-list p1..p2``) als Agent-Herkunft."""
+    1. **First-Parent-vs-voll-Log-Mengendifferenz** (User-Fund 2026-07-06:
+       „Agents ausblenden versteckt Sachen, die NUR ich gemacht habe") —
+       klassifizierte JEDEN Merge als Agent-Herkunft, auch gewöhnliche
+       Mehrgeräte-Sync-Merges des Synchronizers (``strategy="merge"``).
+    2. **Branch-Containment** (``git branch``/``rev-list --contains`` gegen
+       lebende ``agent/*``-Refs, User-Vorschlag „sauberer als die Message") —
+       zwei Probleme, beide am echten Repo nachgewiesen: (a) **langsam**, ein
+       Aufruf je Merge-Commit ⇒ 193 Merges ⇒ 5,7s, über dem 5s-Timeout des
+       Controller-Selbstaufrufs; (b) **falsch-positiv**, weil alte Commits
+       irgendwann Vorfahre praktisch jedes späteren Branches werden — alle 8
+       echten Sync-Merges dieses Repos wurden fälschlich als Agent erkannt,
+       weil ihr zweiter Elternteil (ein älterer Remote-Stand) transitiv
+       Vorfahre von ``agent/Runner``/``agent/Witz`` ist. Containment prüft
+       Erreichbarkeit, nicht „hat DIESER Merge DIESEN Branch reingeholt".
+
+    Die Commit-Message ist damit das einzige verlässliche Signal für **dieses**
+    System (``--no-edit`` ist hartcodiert, nie ein Aufruf, der sie ändern
+    könnte) — kein Kompromiss, sondern die einzig korrekte Wahl hier.
+
+    **Kein** gebündelter ``git rev-list p1a..p2a p1b..p2b …``-Aufruf über alle
+    Bereiche auf einmal (dritter Zwischenstand, ebenfalls widerlegt): git
+    behandelt mehrere Bereiche nicht als unabhängige Vereinigung, sondern als
+    EINE globale „alle p2 minus alle p1"-Menge — der ``p1`` eines späteren
+    Merges enthält chronologisch oft schon den ``p2`` eines früheren Merges
+    (weil trunk zwischenzeitlich weiterging), wodurch dessen echte Commits
+    fälschlich herausgerechnet werden (live beobachtet: 185 erwartete Treffer
+    wurden so auf 2 zusammengestrichen). Ein ``rev-list``-Aufruf pro Bereich
+    bleibt nötig — 185 Aufrufe brauchen live gegen die echte Historie ~1,8s
+    (statt 5,7s vorher), der Flaschenhals war die eine überflüssige
+    ``branch --contains``-Prüfung je Merge, nicht die Anzahl an sich."""
     since = _since_args(since_days)
-    fmt = f"--pretty=format:{_RS}%H{_FS}%P"
-    out = _run_log(root, ["--merges", fmt, *since])
+    fmt = f"--pretty=format:{_RS}%H{_FS}%P{_FS}%s"
+    merges_out = _run_log(root, ["--merges", fmt, *since])
 
     agent_shas: set[str] = set()
-    for block in out.split(_RS):
+    for block in merges_out.split(_RS):
         block = block.strip()
         if not block:
             continue
-        sha, parents_s = block.split(_FS)
+        _sha, parents_s, subject = block.split(_FS, 2)
         parents = parents_s.split()
-        if len(parents) != 2:
-            continue
-        second_parent = parents[1]
-        on_agent_branch = _run_git(
-            root, ["branch", "--list", "agent/*", "--contains", second_parent])
-        if on_agent_branch.strip():
-            rev_range = f"{parents[0]}..{second_parent}"
+        if len(parents) == 2 and subject.startswith(_AGENT_MERGE_PREFIX):
+            rev_range = f"{parents[0]}..{parents[1]}"
             agent_shas.update(_run_git(root, ["rev-list", rev_range]).split())
     return agent_shas
 

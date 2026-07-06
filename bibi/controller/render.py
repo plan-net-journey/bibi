@@ -1034,15 +1034,22 @@ def feed_fragment(feed_data: dict, *, days: int | None = None, now: float | None
     entities = feed_data.get("entities") or []
     grid = feed_data.get("heatmap") or []
     commit_base_url = feed_data.get("commit_base_url")
-    next_days = (days or 1) + 1
-    load_more = (
-        f'<div class="loadmore">'
-        f'<button hx-get="/-/ui/feed/board?days={next_days}" hx-target="#feedboard" '
-        f'hx-swap="outerHTML">mehr laden ({next_days} Tage)</button>'
-        f'<button hx-get="/-/ui/feed/board" hx-target="#feedboard" '
-        f'hx-swap="outerHTML">gesamte Historie</button>'
-        f"</div>"
-    )
+    if days is None:
+        # Schon "gesamte Historie" — nichts mehr zu laden. days=0 ist das
+        # explizite Sentinel dafür (siehe __init__.py::_effective_days);
+        # ohne dieses Signal wäre "kein days-Query-Param" nicht von einem
+        # frischen Seitenaufruf (Default 1 Tag) unterscheidbar.
+        load_more = ""
+    else:
+        next_days = days + 1
+        load_more = (
+            f'<div class="loadmore">'
+            f'<button hx-get="/-/ui/feed/board?days={next_days}" hx-target="#feedboard" '
+            f'hx-swap="outerHTML">mehr laden ({next_days} Tage)</button>'
+            f'<button hx-get="/-/ui/feed/board?days=0" hx-target="#feedboard" '
+            f'hx-swap="outerHTML">gesamte Historie</button>'
+            f"</div>"
+        )
     return (
         '<div id="feedboard">'
         f"{_heatmap_html(grid)}"

@@ -131,9 +131,19 @@ def test_feed_fragment_includes_heatmap_list_and_load_more():
     assert "gesamte Historie" in html
 
 
-def test_feed_fragment_defaults_next_days_from_none():
+def test_feed_fragment_hides_load_more_when_full_history_shown():
+    # days=None heißt jetzt "gesamte Historie bereits gezeigt" (Sentinel-
+    # Auflösung passiert in __init__.py::_effective_days, nicht hier) —
+    # nichts mehr zu laden, kein "mehr laden"/"gesamte Historie" mehr nötig.
     html = render.feed_fragment({"entities": [], "heatmap": []}, days=None, now=100.0)
-    assert "mehr laden (2 Tage)" in html
+    assert "mehr laden" not in html
+    assert "gesamte Historie" not in html
+
+
+def test_feed_fragment_gesamte_historie_button_sends_days_zero_sentinel():
+    feed_data = {"entities": [], "heatmap": []}
+    html = render.feed_fragment(feed_data, days=3, now=100.0)
+    assert 'hx-get="/-/ui/feed/board?days=0"' in html
 
 
 def test_feed_page_has_header_nav_and_status_cards():
