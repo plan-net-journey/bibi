@@ -96,3 +96,20 @@ class RemoteScheduler:
 
     def register(self, worker: str, host: str, git_status: str | None = None) -> None:
         self._post("/-/worker", {"worker": worker, "host": host, "git_status": git_status})
+
+    def _get(self, path: str) -> object:
+        headers = {"Accept": "application/json"}
+        if self.secret:
+            headers[SECRET_HEADER] = self.secret
+        req = urllib.request.Request(self.base + path, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310
+            body = resp.read()
+            return json.loads(body) if body else None
+
+    def schedules(self) -> list[dict]:
+        """GET ``/-/schedule`` beim entfernten Scheduler (PLAN-17 Befund 2 Punkt 3)
+        — Remote-Seite des Jobs-Screen-Abgleichs. Reine Leseoperation; Fehler
+        (Host down, Netz) bleiben Sache des Aufrufers (Controller fängt defensiv,
+        §2.7)."""
+        data = self._get("/-/schedule")
+        return data.get("schedules", []) if isinstance(data, dict) else []

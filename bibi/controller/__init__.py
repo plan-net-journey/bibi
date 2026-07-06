@@ -15,6 +15,7 @@ kollidiert nicht mit der gefrorenen Daten-API ``/-/<noun>``).
 
 from __future__ import annotations
 
+import os
 import time
 
 from fastapi import FastAPI, Request
@@ -32,6 +33,25 @@ def _wants_html(request: Request) -> bool:
     """Browser senden ``text/html`` im Accept-Header; Tooling (curl, ``Accept:
     application/json`` oder ``*/*``) nicht. Genau das trennt App von Deskriptor."""
     return "text/html" in request.headers.get("accept", "")
+
+
+def _local_schedules() -> dict[str, dict]:
+    """Read-only Discovery-Scan des Vaults (PLAN-17 Befund 2 Punkt 1) — bewusst
+    **ohne** ``job_db.upsert_schedule()``, kein DB-Schreiben, kein Dispatch. Ein
+    Client trägt im Ruhezustand keine Rolle, die ``vault/case/`` sonst einliest."""
+    from bibi import repo
+    from bibi.schedule import discovery
+    try:
+        found = discovery.discover(repo.case_dir()).found
+    except Exception:  # noqa: BLE001 — defensiv (§2.7)
+        return {}
+    return {slug: {"schedule": pr.spec.schedule, "at": pr.spec.at, "payload": pr.spec.payload}
+            for slug, pr in found.items()}
+
+
+def _scheduler_url() -> str | None:
+    from bibi import config
+    return os.environ.get("BIBI_SCHEDULER_URL") or config.read_env().get("BIBI_SCHEDULER_URL")
 
 
 def service_descriptor(roles: roles_mod.Roles) -> dict:
@@ -95,6 +115,59 @@ def add_controller_routes(
         # PLAN-17 Stufe 17.0: Status-Kacheln + dasselbe Live-Log, additiv neben
         # Live-Log (nicht ersetzend).
         return HTMLResponse(render.daemon_page(daemon_status=_status()))
+
+    def _remote_job_schedules() -> list:
+        # Trägt dieser Knoten selbst die scheduler-Rolle, ist der Selbstaufruf
+        # (client.schedules()) schon die Wahrheit; sonst Remote-Abruf beim
+        # konfigurierten Scheduler (PLAN-17 Befund 2 Punkt 3 — "Browser redet
+        # nur mit dem eigenen Daemon, der holt sich Remote-Daten bei Bedarf
+        # selbst").
+        if roles.scheduler:
+            return _schedules()
+        url = _scheduler_url()
+        if not url:
+            return []
+        try:
+            from bibi.daemon.scheduler_client import RemoteScheduler
+            return RemoteScheduler(url, secret=os.environ.get("BIBI_CONNECT_SECRET")).schedules()
+        except Exception:  # noqa: BLE001 — Host down/Netz, defensiv (§2.7)
+            return []
+
+    def _jobs_data() -> tuple[list, dict, list]:
+        compared = render._compare_jobs(_local_schedules(), _remote_job_schedules())
+        try:
+            run_journal = client.run_journal(limit=200)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            run_journal = []
+        # Sortiert nach finished_at DESC (job_db.list_journal) — der erste
+        # Treffer je Slug ist damit schon der jeweils letzte Lauf.
+        local_runs: dict[str, dict] = {}
+        for run in run_journal:
+            local_runs.setdefault(run["slug"], run)
+        return compared, local_runs, run_journal[:20]
+
+    @app.get("/-/ui/jobs", include_in_schema=False)
+    def jobs_screen():
+        compared, local_runs, runs = _jobs_data()
+        return HTMLResponse(render.jobs_page(
+            compared, local_runs, runs, scheduler_url=_scheduler_url(), daemon_status=_status()))
+
+    @app.get("/-/ui/jobs/board", include_in_schema=False)
+    def jobs_board():
+        # Self-Poll-Ziel von #jobsboard (wie #live/#journal bei Schedules).
+        compared, local_runs, runs = _jobs_data()
+        return HTMLResponse(render.jobs_fragment(
+            compared, local_runs, runs, scheduler_url=_scheduler_url()))
+
+    @app.post("/-/ui/jobs/start/{slug}", include_in_schema=False)
+    def jobs_start(slug: str):
+        try:
+            client.run(slug=slug)
+        except Exception:  # noqa: BLE001 — Board zeigt Fehlschlag beim nächsten Poll (defensiv, §2.7)
+            pass
+        compared, local_runs, runs = _jobs_data()
+        return HTMLResponse(render.jobs_fragment(
+            compared, local_runs, runs, scheduler_url=_scheduler_url()))
 
     def _detail_data(slug: str):
         try:

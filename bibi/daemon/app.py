@@ -178,11 +178,12 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
 
     # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────
     @app.get("/-/journal", tags=["journal"])
-    def journal(slug: str | None = None, host: str | None = None,
+    def journal(slug: str | None = None, host: str | None = None, domain: str | None = None,
                 limit: int | None = None, offset: int | None = None):
         conn = job_db.connect()
         try:
-            return job_db.list_journal(conn, slug=slug, host=host, limit=limit, offset=offset)
+            return job_db.list_journal(conn, slug=slug, host=host, domain=domain,
+                                       limit=limit, offset=offset)
         finally:
             conn.close()
 
@@ -582,6 +583,22 @@ def create_app(
             return run_local(slug=req.slug, cmd=req.cmd, kind=req.kind)
         except LookupError as exc:
             return JSONResponse(status_code=404, content={"error": str(exc)})
+
+    # ── /run/journal: lokale Lauf-Historie (§1.4) — rollenunabhängig ───────────
+    # PLAN-17 Stufe 17.1 (Jobs-Screen): bewusst NICHT einfach /-/journal um
+    # domain=local erweitert und dessen Gate gelockert — /-/journal ist Teil des
+    # eingefrorenen v3.0-Vertrags (§1.1/§3.0, 501-Stub ohne scheduler-Rolle,
+    # test_daemon_contract.py) und bleibt unangetastet. Diese Route ist neu,
+    # ausschließlich domain="local" (die /run-Läufe DIESES Knotens), symmetrisch
+    # zu /-/run selbst rollenunabhängig — ein reiner Client kann seine eigene
+    # Lauf-Historie damit lesen, ohne je die scheduler-Rolle zu tragen.
+    @app.get("/-/run/journal", tags=["job"])
+    def run_journal(limit: int | None = None, offset: int | None = None):
+        conn = job_db.connect()
+        try:
+            return job_db.list_journal(conn, domain="local", limit=limit, offset=offset)
+        finally:
+            conn.close()
 
     @app.get("/-/log/stream", tags=["daemon"])
     def log_stream(n: int = Query(50, ge=0, le=1000), follow: bool = True):

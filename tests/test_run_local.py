@@ -203,3 +203,43 @@ def test_run_endpoint_works_without_any_worker_role(gitrepo: Path):
         assert c.post("/-/run", json={"slug": "nope"}).status_code == 404
         # weder slug noch cmd → 400
         assert c.post("/-/run", json={}).status_code == 400
+
+
+def test_run_journal_endpoint_works_without_any_worker_or_scheduler_role(gitrepo: Path):
+    # PLAN-17 Stufe 17.1: die eigene /run-Historie muss ein reiner Client (kein
+    # --scheduler, kein --worker) lesen können — /-/journal selbst bleibt
+    # scheduler-gated (frozen contract), /-/run/journal ist die dafür neue,
+    # bewusst rollenunabhängige Route (nur domain="local").
+    from fastapi.testclient import TestClient
+
+    from bibi.daemon import roles
+    from bibi.daemon.app import create_app
+
+    app = create_app(roles.resolve({"synchronizer", "controller"}))
+    with TestClient(app) as c:
+        c.post("/-/run", json={"cmd": "echo local-lauf"})
+        r = c.get("/-/run/journal")
+        assert r.status_code == 200
+        rows = r.json()
+        assert rows and all(row["domain"] == "local" for row in rows)
+
+
+def test_journal_endpoint_filters_by_domain(gitrepo: Path):
+    # PLAN-17 Stufe 17.1: ein Knoten mit BEIDEN Rollen (Scheduler + eigene /run-
+    # Läufe, wie sarasate) soll die disponierte /-/journal-Sicht optional auf
+    # eine Domäne einschränken können — /-/journal kannte bisher nur
+    # slug/host/limit/offset, kein domain-Filter. Bleibt scheduler-gated (§1.1
+    # gefrorener Vertrag, s. test_daemon_contract.py) — anders als /-/run selbst
+    # (rollenunabhängig) ist /-/journal Teil des eingefrorenen v3.0-Vertrags.
+    from fastapi.testclient import TestClient
+
+    from bibi.daemon import roles
+    from bibi.daemon.app import create_app
+
+    app = create_app(roles.resolve({"scheduler", "synchronizer", "controller"}))
+    with TestClient(app) as c:
+        c.post("/-/run", json={"cmd": "echo local-lauf"})
+        r = c.get("/-/journal", params={"domain": "local"})
+        assert r.status_code == 200
+        rows = r.json()
+        assert rows and all(row["domain"] == "local" for row in rows)

@@ -16,13 +16,18 @@ class ControllerClient:
         self.base = base_url.rstrip("/")
         self.timeout = timeout
 
-    def _request(self, method: str, path: str, params: dict | None = None) -> object:
+    def _request(self, method: str, path: str, params: dict | None = None,
+                 *, json_body: dict | None = None) -> object:
         url = self.base + path
         if params:
             url += "?" + urllib.parse.urlencode({k: v for k, v in params.items()
                                                  if v is not None})
-        req = urllib.request.Request(url, method=method,
-                                     headers={"Accept": "application/json"})
+        headers = {"Accept": "application/json"}
+        data = None
+        if json_body is not None:
+            data = json.dumps(json_body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310
             body = resp.read()
             return json.loads(body) if body else None
@@ -37,6 +42,16 @@ class ControllerClient:
                 limit: int | None = None, offset: int | None = None) -> list[dict]:
         return self._get(
             "/-/journal", {"slug": slug, "host": host, "limit": limit, "offset": offset}) or []
+
+    def run_journal(self, *, limit: int | None = None, offset: int | None = None) -> list[dict]:
+        # Rollenunabhängiges Gegenstück zu journal() (PLAN-17 Stufe 17.1): nur
+        # domain="local", funktioniert auch ohne scheduler-Rolle (/-/run/journal).
+        return self._get("/-/run/journal", {"limit": limit, "offset": offset}) or []
+
+    def run(self, *, slug: str | None = None, cmd: str | None = None) -> dict:
+        # Lokaler On-Demand-Lauf auf DIESEM Knoten (/-/run, PLAN-3 §3.3b) — der
+        # Start-Button des Jobs-Screens (PLAN-17 Stufe 17.2).
+        return self._request("POST", "/-/run", json_body={"slug": slug, "cmd": cmd}) or {}
 
     def jobs(self, *, status: str | None = None) -> list[dict]:
         return self._get("/-/job", {"status": status}) or []

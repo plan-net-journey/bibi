@@ -124,6 +124,23 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .card .value.ok { color: #5fb37a; }
 .card .value.bad { color: #e06c5a; }
 .card .sub { font-size: .75rem; color: #888; margin-top: .15rem; }
+.side-empty { color: #888; font-size: .82rem; }
+.chip { font-family: ui-monospace, monospace; font-size: .7rem; font-weight: 700;
+        padding: .1rem .45rem; border-radius: .3rem; display: inline-block; white-space: nowrap; }
+.chip.same { background: #5fb37a2e; color: #5fb37a; }
+.chip.diff { background: #d6a23e2e; color: #d6a23e; }
+.chip.local_only, .chip.remote_only { background: #8882; color: #888; }
+.diffhint { font-size: .75rem; color: #888; margin-top: .15rem; font-family: ui-monospace, monospace; }
+.startbtn { font: inherit; font-size: .78rem; background: #5a9fe033; border: 1px solid #5a9fe066;
+        border-radius: .35rem; padding: .2rem .55rem; cursor: pointer; color: inherit; font-weight: 600;
+        white-space: nowrap; }
+.startbtn:disabled { opacity: .35; cursor: default; background: #8882; border-color: #8884; }
+.note { color: #888; font-size: .82rem; margin: .2rem 0 .8rem; }
+.hostlink { margin: .3rem 0 1.5rem; font-size: .88rem; }
+.runhist { font-size: .86rem; }
+.runhist .row { display: flex; gap: .8rem; padding: .35rem 0; border-bottom: 1px solid #8881;
+                align-items: baseline; }
+.runhist .t { color: #888; font-family: ui-monospace, monospace; font-size: .78rem; flex: 0 0 4.4rem; }
 """
 
 
@@ -324,12 +341,14 @@ def _filter_bar(typ: str | None, status: str | None) -> str:
 
 
 def _screen_nav(active: str) -> str:
-    """Screen-Tabs (Schedules · Live-Log · Daemon · API-Docs); der aktive ohne Link.
-    Feed ist entfernt (User-Feedback 2026-07-04); Schedules ist jetzt Home (``/-/``).
-    Daemon (PLAN-17 Stufe 17.0) zeigt Rollen/Verbindungsstatus + dasselbe Live-Log,
-    additiv neben Live-Log (nicht ersetzend — kein Risiko für bestehende Links)."""
-    tabs = [("Schedules", "/-/"), ("Live-Log", "/-/ui/logs"), ("Daemon", "/-/ui/daemon"),
-            ("API-Docs", "/-/docs")]
+    """Screen-Tabs (Schedules · Jobs · Live-Log · Daemon · API-Docs); der aktive
+    ohne Link. Feed ist entfernt (User-Feedback 2026-07-04); Schedules ist jetzt
+    Home (``/-/``). Jobs (PLAN-17 Stufe 17.2) zeigt den Lokal/Remote-Abgleich +
+    Start-Button für /run. Daemon (Stufe 17.0) zeigt Rollen/Verbindungsstatus +
+    dasselbe Live-Log, additiv neben Live-Log (nicht ersetzend — kein Risiko für
+    bestehende Links)."""
+    tabs = [("Schedules", "/-/"), ("Jobs", "/-/ui/jobs"), ("Live-Log", "/-/ui/logs"),
+            ("Daemon", "/-/ui/daemon"), ("API-Docs", "/-/docs")]
     def _tab(t: str, h: str) -> str:
         if t == active:
             return t
@@ -631,6 +650,173 @@ def daemon_page(daemon_status: dict | None = None, now: float | None = None) -> 
         f"<script>{_CLOCK_JS}</script>"
         f"{_status_cards(status, now)}"
         f"{_log_panel()}"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
+
+
+# ── Jobs-Screen (PLAN-17 Stufe 17.1/17.2) ────────────────────────────────────
+
+_COMPARE_LABEL = {
+    "same": ("chip same", "✓ identisch"),
+    "diff": ("chip diff", "⚠ unterschiedlich"),
+    "local_only": ("chip local_only", "nur lokal"),
+    "remote_only": ("chip remote_only", "nur remote"),
+}
+
+
+def _compare_jobs(local: dict[str, dict], remote: list[dict]) -> list[dict]:
+    """Pro Slug (Vereinigung aus lokal entdeckten und remote gemeldeten Slugs)
+    Trigger (``schedule``/``at``) + Payload vergleichen → identisch/
+    unterschiedlich/nur lokal/nur remote (PLAN-17 Befund 2 Punkt 2). Reine
+    Vergleichsfunktion, kein Datenbankzugriff — ``local``/``remote`` sind schon
+    fertige Dicts (Discovery bzw. ``/-/schedule``)."""
+    remote_by_slug = {r["slug"]: r for r in remote}
+    slugs = sorted(set(local) | set(remote_by_slug))
+    rows = []
+    for slug in slugs:
+        l, r = local.get(slug), remote_by_slug.get(slug)
+        if l and r:
+            l_trigger = l.get("schedule") or l.get("at") or ""
+            r_trigger = r.get("trigger") or ""
+            l_payload = l.get("payload") or ""
+            r_payload = r.get("payload") or ""
+            if l_trigger == r_trigger and l_payload == r_payload:
+                compare, hint = "same", ""
+            else:
+                compare = "diff"
+                hint = (f'schedule: "{l_trigger}" → "{r_trigger}"' if l_trigger != r_trigger
+                       else "payload unterschiedlich")
+        elif l:
+            compare, hint = "local_only", ""
+        else:
+            compare, hint = "remote_only", ""
+        rows.append({"slug": slug, "local": l, "remote": r, "compare": compare, "diff_hint": hint})
+    return rows
+
+
+def _jobs_row(row: dict, local_runs: dict[str, dict], now: float) -> str:
+    slug = row["slug"]
+    s = _e(slug)
+    local, remote = row["local"], row["remote"]
+
+    if local is not None:
+        lr = local_runs.get(slug)
+        if lr:
+            local_cell = f'<span class="st {_e(lr["status"])}">{_e(lr["status"])}</span>'
+        else:
+            local_cell = '<span class="side-empty">noch nie lokal gelaufen</span>'
+    else:
+        local_cell = '<span class="side-empty">—</span>'
+
+    if remote is not None:
+        status = remote.get("last_status") or "—"
+        nxt = remote.get("next_fire_at")
+        suffix = f" · nächster {_until(nxt, now)}" if nxt else ""
+        remote_cell = f'<span class="st {_e(status)}">{_e(status)}</span>{suffix}'
+    else:
+        remote_cell = '<span class="side-empty">—</span>'
+
+    cls, label = _COMPARE_LABEL[row["compare"]]
+    hint = f'<div class="diffhint">{_e(row["diff_hint"])}</div>' if row["diff_hint"] else ""
+    compare_cell = f'<span class="{cls}">{label}</span>{hint}'
+
+    if local is not None:
+        btn_attrs = (f'hx-post="/-/ui/jobs/start/{s}" hx-target="#jobsboard" hx-swap="outerHTML" '
+                    f'title="/run {s} sofort auf diesem Rechner"')
+    else:
+        btn_attrs = ('disabled title="Keine lokale MD gefunden — nicht per /run startbar"')
+    start_cell = f'<button class="startbtn" {btn_attrs}>▶ Start</button>'
+
+    return (f'<tr><td><a class="slug" href="/-/ui/schedule/{s}">{s}</a></td>'
+            f"<td>{local_cell}</td><td>{remote_cell}</td><td>{compare_cell}</td>"
+            f"<td>{start_cell}</td></tr>")
+
+
+def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float) -> str:
+    if not rows:
+        return '<p class="out-empty">— keine Schedules (weder lokal noch remote) —</p>'
+    body = "".join(_jobs_row(r, local_runs, now) for r in rows)
+    return (
+        '<table><thead><tr><th>Slug</th><th>Lokal</th><th>Remote</th>'
+        "<th>Abgleich</th><th></th></tr></thead>"
+        f"<tbody>{body}</tbody></table>"
+    )
+
+
+def _run_hist_row(r: dict, now: float) -> str:
+    t = _abs_time(r.get("finished_at"))
+    status = r.get("status", "")
+    exit_code = r.get("exit_code")
+    exit_txt = f" · exit {exit_code}" if exit_code is not None else ""
+    dur = _duration_cell(r)
+    dur_txt = f" · {dur}" if dur != "—" else ""
+    return (f'<div class="row"><span class="t">{_e(t)}</span>'
+            f'<span class="st {_e(status)}">{_e(status)}</span>'
+            f'<span>{_e(r.get("slug"))}{exit_txt}{dur_txt}</span></div>')
+
+
+def _run_history(runs: list[dict], now: float) -> str:
+    if not runs:
+        return '<p class="out-empty">— noch keine lokalen Läufe —</p>'
+    return '<div class="runhist">' + "".join(_run_hist_row(r, now) for r in runs) + "</div>"
+
+
+def jobs_fragment(
+    compared: list[dict], local_runs: dict[str, dict], runs: list[dict],
+    *, scheduler_url: str | None = None, now: float | None = None,
+) -> str:
+    """Der austauschbare Jobs-Kern (``#jobsboard``): Lokal/Remote-Tabelle +
+    Start-Button je Zeile + lokale Lauf-Historie. Self-pollt wie die anderen
+    Screens (PLAN-17 Stufe 17.2) — eine Aktion (Start) swapt sofort dasselbe
+    Fragment zurück, damit der neue Lauf ohne Warten auf den nächsten Poll
+    sichtbar wird."""
+    now = time.time() if now is None else now
+    link = ""
+    if scheduler_url:
+        u = _e(scheduler_url.rstrip("/") + "/-/ui/schedules")
+        link = (f'<div class="hostlink">Vollständige Remote-Sicht (alle Knoten, '
+               f'Journal-Historie): <a href="{u}" target="_blank" rel="noopener">'
+               f"{u} ↗</a></div>")
+    return (
+        f'<div id="jobsboard" hx-get="/-/ui/jobs/board" hx-trigger="{_POLL}" hx-swap="outerHTML">'
+        '<h2>Lokal ↔ Remote</h2>'
+        '<div class="note">„Lokal" = per <code>/run</code> auf diesem Rechner '
+        "ausführbar/ausgeführt (aus den <code>vault/case/</code>-MDs dieses "
+        'Checkouts gescannt). „Remote" = was der Scheduler tatsächlich '
+        "registriert hat. Abgleich vergleicht Schedule + Payload beider "
+        "Seiten.</div>"
+        f"{_jobs_table(compared, local_runs, now)}"
+        f"{link}"
+        '<h2>Lokale Läufe</h2>'
+        f"{_run_history(runs, now)}"
+        "</div>"
+    )
+
+
+def jobs_page(
+    compared: list[dict], local_runs: dict[str, dict], runs: list[dict],
+    *, scheduler_url: str | None = None, daemon_status: dict | None = None,
+    now: float | None = None,
+) -> str:
+    """Jobs-Screen (PLAN-17 Stufe 17.2): Lokal/Remote-Abgleich + Start-Button je
+    Zeile + lokale Lauf-Historie. Funktioniert auch auf einem reinen Client
+    (kein Scheduler/Worker im Ruhezustand) — Lokal via Discovery-Scan, Remote
+    via ``RemoteScheduler`` gegen die konfigurierte Scheduler-URL."""
+    now = time.time() if now is None else now
+    status = daemon_status or {}
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>bibi · Jobs</title>"
+        f"<script>{_FOLLOW_JS}</script>"
+        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
+        f"<style>{_CSS}</style></head><body>"
+        f"{_header('Jobs', status)}"
+        f"<script>{_CLOCK_JS}</script>"
+        f"{jobs_fragment(compared, local_runs, runs, scheduler_url=scheduler_url, now=now)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"

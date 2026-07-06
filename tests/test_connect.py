@@ -149,3 +149,17 @@ def test_remote_report_omits_none_fields(monkeypatch):
     rs.report("id", status="complete", reason=None, exit_code=0)
     assert "reason" not in captured  # None weggelassen
     assert captured["exit_code"] == 0 and captured["status"] == "complete"
+
+
+def test_remote_schedules_gets_schedule_list(monkeypatch):
+    # PLAN-17 Befund 2 Punkt 3: Jobs-Screen-Remote-Seite braucht einen GET-
+    # Wrapper (next/report/register sind reine POST-Verben für den Dispatch-Pfad).
+    rs = RemoteScheduler("http://x")
+    monkeypatch.setattr(rs, "_get", lambda p: {"schedules": [{"slug": "a"}]})
+    assert rs.schedules() == [{"slug": "a"}]
+
+
+def test_remote_schedules_empty_on_bad_shape(monkeypatch):
+    rs = RemoteScheduler("http://x")
+    monkeypatch.setattr(rs, "_get", lambda p: None)
+    assert rs.schedules() == []
