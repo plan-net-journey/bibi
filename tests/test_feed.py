@@ -111,6 +111,25 @@ def test_agent_commit_shas_detects_no_ff_merge(repo: Path):
     assert shas.isdisjoint(non_agent_shas)
 
 
+def test_agent_commit_shas_detects_via_branch_even_with_custom_merge_message(repo: Path):
+    # User-Korrektur 2026-07-06: Branch-Containment statt Commit-Message als
+    # Signal — robuster, weil unabhängig vom genauen Message-Text. Dieser Test
+    # simuliert genau den Unterschied: ein Merge mit einer Message, die NICHT
+    # dem git-generierten "Merge branch 'agent/..." Muster entspricht (z. B.
+    # weil jemand --no-ff ohne --no-edit nutzte), muss trotzdem erkannt werden,
+    # weil der zweite Elternteil nachweislich auf agent/* liegt.
+    _git(repo, "checkout", "-q", "-b", "agent/jobslug")
+    (repo / "vault" / "case" / "20260601.FooBar" / "output.md").write_text(
+        "agent output", encoding="utf-8")
+    _commit_as(repo, "bot", "bot@bibi.local", "agent: job output")
+    agent_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "trunk")
+    _git(repo, "merge", "--no-ff", "-m", "abweichende Nachricht, kein Standardtext",
+        "agent/jobslug")
+
+    assert agent_sha in agent_commit_shas(repo)
+
+
 def test_agent_commit_shas_does_not_misclassify_ordinary_sync_merge(repo: Path, tmp_path: Path):
     # User-Fund 2026-07-06: "Agents ausblenden versteckt Sachen, die NUR ich
     # gemacht habe" — ein ganz normaler Mehrgeräte-Sync-Merge (Synchronizer,

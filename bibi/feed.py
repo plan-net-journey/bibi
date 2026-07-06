@@ -80,11 +80,6 @@ def collect_commits(root: Path, *, since_days: int | None = None) -> list[Commit
     return _parse_log(out)
 
 
-#: git-generierte Default-Merge-Message bei ``merge --no-ff --no-edit agent/<slug>``
-#: (``mergeback.merge_back()``) — ``git merge --no-edit`` erfindet nie eine andere.
-_AGENT_MERGE_PREFIX = "Merge branch 'agent/"
-
-
 def agent_commit_shas(root: Path, *, since_days: int | None = None) -> set[str]:
     """Commit-Hashes, die über einen ``agent/*``-Merge (``mergeback.merge_back()``)
     hereinkamen.
@@ -94,23 +89,34 @@ def agent_commit_shas(root: Path, *, since_days: int | None = None) -> set[str]:
     gemacht habe") — das klassifizierte JEDEN Merge-Commit als Agent-Herkunft,
     auch ganz gewöhnliche Mehrgeräte-Sync-Merges des Synchronizers
     (``strategy="merge"``, ``daemon/synchronizer.py``), deren zweite
-    Eltern-Linie genauso echte, aber fremd-authored Commits enthält. Stattdessen
-    gezielt: nur Merges, deren (von ``--no-edit`` git-generierte) Commit-Message
-    mit ``Merge branch 'agent/`` beginnt — deren zweite Eltern-Linie (die
-    Agent-Branch-Spitze) ist die tatsächliche Agent-Herkunft."""
+    Eltern-Linie genauso echte, aber fremd-authored Commits enthält.
+
+    **Auch nicht** über die Commit-Message (Zwischenstand, User-Korrektur
+    2026-07-06: „sauberer, den Branch als Agenten-Signal zu verwenden statt
+    auf die Message zu gehen") — stattdessen die tatsächliche Branch-
+    Zugehörigkeit (``git branch --contains``): für jeden Merge-Commit prüft
+    diese Funktion, ob sein zweiter Elternteil auf einem ``agent/*``-Branch
+    liegt (Branches werden im Code nirgends gelöscht, Containment bleibt
+    dauerhaft prüfbar). Nur dann zählt dessen zweite Eltern-Linie
+    (``git rev-list p1..p2``) als Agent-Herkunft."""
     since = _since_args(since_days)
-    fmt = f"--pretty=format:{_RS}%H{_FS}%P{_FS}%s"
-    out = _run_log(root, [fmt, *since])
+    fmt = f"--pretty=format:{_RS}%H{_FS}%P"
+    out = _run_log(root, ["--merges", fmt, *since])
 
     agent_shas: set[str] = set()
     for block in out.split(_RS):
         block = block.strip()
         if not block:
             continue
-        sha, parents_s, subject = block.split(_FS, 2)
+        sha, parents_s = block.split(_FS)
         parents = parents_s.split()
-        if len(parents) == 2 and subject.startswith(_AGENT_MERGE_PREFIX):
-            rev_range = f"{parents[0]}..{parents[1]}"
+        if len(parents) != 2:
+            continue
+        second_parent = parents[1]
+        on_agent_branch = _run_git(
+            root, ["branch", "--list", "agent/*", "--contains", second_parent])
+        if on_agent_branch.strip():
+            rev_range = f"{parents[0]}..{second_parent}"
             agent_shas.update(_run_git(root, ["rev-list", rev_range]).split())
     return agent_shas
 
