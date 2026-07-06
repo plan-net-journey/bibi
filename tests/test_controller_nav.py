@@ -1,9 +1,11 @@
 """Gemeinsame Navigationsleiste (``_header()``): Tab-Leiste + FOLLOW- +
 THEME-Toggle + Ops-Handles (RESCAN/MAINT) auf jedem Screen — inkl. Live-Log
 (User-Feedback 2026-07-04: "ziehe Rescan und Maintenance CTA auf die obere
-Navigationsleiste mit FOLLOW on/off"). Der Feed-Screen ist entfernt (User-
-Feedback: "entferne den Feed, den will ich nicht mehr sehen"); Schedules ist
-jetzt der Home-Screen (``/-/``)."""
+Navigationsleiste mit FOLLOW on/off"). Der Feed-Screen war zwischenzeitlich
+entfernt (2026-07-04: "entferne den Feed, den will ich nicht mehr sehen"),
+kam aber mit PLAN-18 (2026-07-06, Client-Umbau) als **Home-Screen** zurück —
+Schedules bleibt unter ``/-/ui/schedules`` erreichbar, ist nur nicht mehr
+``/-/`` selbst."""
 
 from __future__ import annotations
 
@@ -27,10 +29,12 @@ def test_header_includes_ops_handles():
     assert 'id="maint"' in html and "MAINT: AN" in html
 
 
-def test_screen_nav_has_no_feed_tab():
+def test_screen_nav_feed_tab_is_home():
+    # PLAN-18 Stufe 18.3: Feed ist zurück und jetzt der Home-Screen (/-/),
+    # Schedules zieht auf seine eigene Route um.
     html = render._screen_nav("Live-Log")
-    assert "Feed" not in html
-    assert 'href="/-/"' in html  # Schedules-Tab zeigt jetzt auf Home
+    assert 'href="/-/">Feed' in html
+    assert 'href="/-/ui/schedules">Schedules' in html
 
 
 def test_ops_handles_no_longer_duplicates_follow_button():
@@ -49,8 +53,7 @@ def test_follow_toggle_snaps_output_boxes_to_bottom_on_reenable():
     # User-Feedback: FOLLOW wieder anschalten muss die Live-Boxen (.liveterm auf
     # dem Job-Detail) sofort ans Ende scrollen — sonst bleibt "stick" auf false
     # hängen (atBottom() sah die eingefrorene Scroll-Position) und die Box folgt
-    # trotz eingeschaltetem FOLLOW nie wieder. ``#feed`` ist mit dem Feed-Screen
-    # entfallen (Feed entfernt).
+    # trotz eingeschaltetem FOLLOW nie wieder.
     js = render._FOLLOW_JS
     on_branch = js.split("if (window.bibiFollow){")[1]
     assert "querySelectorAll('.liveterm')" in on_branch

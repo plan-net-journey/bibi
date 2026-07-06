@@ -141,6 +141,50 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .runhist .row { display: flex; gap: .8rem; padding: .35rem 0; border-bottom: 1px solid #8881;
                 align-items: baseline; }
 .runhist .t { color: #888; font-family: ui-monospace, monospace; font-size: .78rem; flex: 0 0 4.4rem; }
+.gitsegment { font-family: ui-monospace, monospace; font-size: .95rem; }
+.gitsegment .sep { color: #888; }
+.tree-clean, .sync-synced { color: #5fb37a; }
+.tree-modified, .sync-ahead { color: #d6a23e; }
+.sync-behind, .sync-conflict { color: #e06c5a; }
+.filterbar { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap;
+             margin: .3rem 0 .8rem; font-size: .85rem; }
+.filterbar select { font: inherit; padding: .2rem .45rem; color: inherit;
+          background: #8881; border: 1px solid #8884; border-radius: .3rem; }
+.filterbar label.chk { display: flex; align-items: center; gap: .35rem; cursor: pointer; }
+.heatmap-wrap { overflow-x: auto; padding-bottom: .3rem; }
+.heatmap2 { display: flex; flex-direction: column; gap: 3px; width: max-content; }
+.hm2-header, .hm2-subheader, .hm2-row { display: flex; align-items: center; gap: .5rem; }
+.hm2-subheader { margin-bottom: .1rem; }
+.hm2-wlabel { flex: 0 0 5.2rem; font-size: .72rem; color: #888; text-align: right; }
+.hm2-daylabel { font-size: .68rem; color: #888; text-align: center; width: 100%; font-weight: 600; }
+.hm2-day-group { display: flex; gap: 2px; padding: 0 .3rem; border-right: 1px solid #8882;
+                 width: 103px; box-sizing: border-box; justify-content: center; }
+.hm2-day-group:last-child { border-right: none; }
+.hm2-hourtick { width: 10px; font-size: .55rem; color: #888; text-align: center;
+                font-family: ui-monospace, monospace; }
+.hm-cell { width: 10px; height: 14px; border-radius: 2px; background: #8882; }
+.hm-cell[data-lvl="1"] { background: #5a9fe044; }
+.hm-cell[data-lvl="2"] { background: #5a9fe088; }
+.hm-cell[data-lvl="3"] { background: #5a9fe0cc; }
+.hm-cell[data-lvl="4"] { background: #5a9fe0; }
+.heatmap-legend { display: flex; align-items: center; gap: .3rem; font-size: .75rem;
+                  color: #888; margin-top: .35rem; }
+.heatmap-legend .hm-cell { width: 9px; height: 9px; }
+.feedlist { display: flex; flex-direction: column; gap: 0; font-size: .88rem; }
+.frow { display: flex; gap: .6rem; align-items: baseline; padding: .38rem 0;
+        border-bottom: 1px solid #8881; }
+.frow.is-agent { opacity: .55; }
+.frow .t { color: #888; font-family: ui-monospace, monospace; font-size: .78rem;
+           flex: 0 0 6.4rem; }
+.lvl { font-family: ui-monospace, monospace; font-size: .68rem; font-weight: 700;
+       padding: .05rem .4rem; border-radius: .25rem; flex: 0 0 auto;
+       text-transform: uppercase; letter-spacing: .02em; }
+.lvl.case { background: #5fb37a33; color: #5fb37a; }
+.lvl.vault { background: #5a9fe033; color: #5a9fe0; }
+.lvl.system { background: #d6a23e33; color: #d6a23e; }
+.frow .msg { flex: 1; }
+.frow .who { color: #888; font-size: .78rem; flex: 0 0 auto; }
+.loadmore { display: flex; gap: .5rem; margin: .8rem 0; }
 """
 
 
@@ -341,14 +385,15 @@ def _filter_bar(typ: str | None, status: str | None) -> str:
 
 
 def _screen_nav(active: str) -> str:
-    """Screen-Tabs (Schedules · Jobs · Live-Log · Daemon · API-Docs); der aktive
-    ohne Link. Feed ist entfernt (User-Feedback 2026-07-04); Schedules ist jetzt
-    Home (``/-/``). Jobs (PLAN-17 Stufe 17.2) zeigt den Lokal/Remote-Abgleich +
-    Start-Button für /run. Daemon (Stufe 17.0) zeigt Rollen/Verbindungsstatus +
-    dasselbe Live-Log, additiv neben Live-Log (nicht ersetzend — kein Risiko für
-    bestehende Links)."""
-    tabs = [("Schedules", "/-/"), ("Jobs", "/-/ui/jobs"), ("Live-Log", "/-/ui/logs"),
-            ("Daemon", "/-/ui/daemon"), ("API-Docs", "/-/docs")]
+    """Screen-Tabs (Feed · Schedules · Jobs · Live-Log · Daemon · API-Docs); der
+    aktive ohne Link. **Home ist jetzt Feed** (PLAN-18 Stufe 18.3, löst die
+    2026-07-04-Entscheidung „Home = Schedules" bewusst ab) — Schedules bleibt
+    unter seiner eigenen Route erreichbar, ist nur nicht mehr ``/-/`` selbst.
+    Jobs (PLAN-17 Stufe 17.2) zeigt den Lokal/Remote-Abgleich + Start-Button für
+    /run. Daemon (Stufe 17.0) zeigt Rollen/Verbindungsstatus + dasselbe
+    Live-Log."""
+    tabs = [("Feed", "/-/"), ("Schedules", "/-/ui/schedules"), ("Jobs", "/-/ui/jobs"),
+            ("Live-Log", "/-/ui/logs"), ("Daemon", "/-/ui/daemon"), ("API-Docs", "/-/docs")]
     def _tab(t: str, h: str) -> str:
         if t == active:
             return t
@@ -603,10 +648,11 @@ def _card(label: str, value: str, sub: str = "", cls: str = "") -> str:
             f'<div class="value{cls_attr}">{_e(value)}</div>{sub_html}</div>')
 
 
-def _status_cards(status: dict, now: float) -> str:
-    """Status-Kacheln (PLAN-17 Stufe 17.0): Rollen, Host-Verbindung (nur wenn
-    ``connect`` im Status steckt — s. ``Heartbeat``, PLAN-17-Vorarbeit
-    2026-07-05), Auto-Sync, Maintenance, Uptime."""
+def _status_card_list(status: dict, now: float) -> list[str]:
+    """Die Rollen/Host-Verbindung/Auto-Sync/Maintenance/Uptime-Kacheln als
+    Liste (statt schon im ``.statuscards``-Wrapper) — Baustein von
+    ``_status_cards()`` (Daemon-Screen) UND ``_feed_status_cards()`` (PLAN-18
+    Stufe 18.3, hängt eine Git-Segment-Kachel dahinter)."""
     cards = [_card("Rollen", ", ".join(status.get("roles") or []) or "—")]
 
     conn = status.get("connect")
@@ -629,7 +675,45 @@ def _status_cards(status: dict, now: float) -> str:
     cards.append(_card("Maintenance", "an" if maint else "aus", cls="bad" if maint else ""))
 
     cards.append(_card("Uptime", _uptime_label(status.get("started_at"), now)))
+    return cards
 
+
+def _status_cards(status: dict, now: float) -> str:
+    """Status-Kacheln (PLAN-17 Stufe 17.0): Rollen, Host-Verbindung (nur wenn
+    ``connect`` im Status steckt — s. ``Heartbeat``, PLAN-17-Vorarbeit
+    2026-07-05), Auto-Sync, Maintenance, Uptime."""
+    return '<div class="statuscards">' + "".join(_status_card_list(status, now)) + "</div>"
+
+
+_TREE_LABEL_CLASS = {"clean": "tree-clean", "modified": "tree-modified"}
+_SYNC_LABEL_CLASS = {"synced": "sync-synced", "ahead": "sync-ahead",
+                     "behind": "sync-behind", "conflict": "sync-conflict"}
+
+
+def _git_segment_card(git_status: dict | None) -> str:
+    """Git-Segment-Kachel (PLAN-18 Stufe 18.3, User-Entscheidung: zweigeteilt
+    wie die CLI-Statusline, nicht ein einzelner ``_card()``-Wert). ``git_status``
+    ist bereits ein Dict (``{"tree", "sync", "branch"}``, aus
+    ``bibi.git_status.working_tree_status()`` — rein lokal, kein Heartbeat/
+    Netzwerk nötig). ``None`` (kein Git-Repo) → leere Kachel mit „—"."""
+    if git_status is None:
+        return _card("Git", "—")
+    tree, sync = git_status["tree"], git_status["sync"]
+    value = (f'<span class="{_TREE_LABEL_CLASS[tree]}">{_e(tree)}</span>'
+            f'<span class="sep"> · </span>'
+            f'<span class="{_SYNC_LABEL_CLASS[sync]}">{_e(sync)}</span>')
+    branch = git_status.get("branch")
+    return (f'<div class="card"><div class="label">Git</div>'
+           f'<div class="value gitsegment">{value}</div>'
+           f'{f"<div class=\"sub\">{_e(branch)}</div>" if branch else ""}</div>')
+
+
+def _feed_status_cards(status: dict, git_status: dict | None, now: float) -> str:
+    """Wie ``_status_cards()``, plus die Git-Segment-Kachel — nur für den
+    Feed-Header (PLAN-18 Stufe 18.3). ``_status_cards()`` selbst bleibt
+    unverändert (weiterhin der Daemon-Screen-Baustein... bis dessen Rückbau,
+    Stufe 18.4)."""
+    cards = _status_card_list(status, now) + [_git_segment_card(git_status)]
     return '<div class="statuscards">' + "".join(cards) + "</div>"
 
 
@@ -817,6 +901,166 @@ def jobs_page(
         f"{_header('Jobs', status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{jobs_fragment(compared, local_runs, runs, scheduler_url=scheduler_url, now=now)}"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
+
+
+# ── Feed-Screen (PLAN-18 Stufe 18.3) — jetzt Home (``/-/``) ──────────────────
+
+_HM_DAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+_HM_WEEK_LABELS = ["diese Woche", "vor 1 Woche", "vor 2 Wochen", "vor 3 Wochen", "vor 4 Wochen"]
+
+
+def _heatmap_level(count: int) -> int:
+    """Rohe Commit-Zahl → Farbstufe 0-4 (feste Schwellen, kein Vorgänger-
+    Precedent — reicht für die erste Umsetzung, ohne Bedarf gemessen)."""
+    if count <= 0:
+        return 0
+    if count <= 2:
+        return 1
+    if count <= 5:
+        return 2
+    if count <= 10:
+        return 3
+    return 4
+
+
+def _heatmap_html(grid: list[list[list[int]]]) -> str:
+    """5×7×8-Grid (``bibi.feed.heatmap_buckets()``) → dasselbe DOM-Layout wie
+    das im Browser verifizierte Wireframe (``wireframes/feed.html``), hier
+    serverseitig aus echten Zählungen statt Zufallswerten gerendert."""
+    header = ('<div class="hm2-header"><span class="hm2-wlabel"></span>' + "".join(
+        f'<div class="hm2-day-group"><span class="hm2-daylabel">{d}</span></div>'
+        for d in _HM_DAYS) + "</div>")
+    ticks = "".join(
+        f'<span class="hm2-hourtick">{b * 3:02d}</span>' if b % 2 == 0
+        else '<span class="hm2-hourtick"></span>'
+        for b in range(8))
+    subheader = ('<div class="hm2-subheader"><span class="hm2-wlabel"></span>'
+                + f'<div class="hm2-day-group">{ticks}</div>' * len(_HM_DAYS) + "</div>")
+
+    rows = []
+    for week_idx, week in enumerate(grid):
+        label = (_HM_WEEK_LABELS[week_idx] if week_idx < len(_HM_WEEK_LABELS)
+                 else f"vor {week_idx} Wochen")
+        groups = []
+        for day_idx, day in enumerate(week):
+            cells = "".join(
+                f'<span class="hm-cell" data-lvl="{_heatmap_level(n)}" '
+                f'title="{_e(label)} · {_HM_DAYS[day_idx]} {b * 3:02d}–{b * 3 + 3:02d} Uhr '
+                f'— {n} Änderung(en)"></span>'
+                for b, n in enumerate(day))
+            groups.append(f'<div class="hm2-day-group">{cells}</div>')
+        rows.append(f'<div class="hm2-row"><span class="hm2-wlabel">{_e(label)}</span>'
+                    f'{"".join(groups)}</div>')
+
+    legend = ('<div class="heatmap-legend"><span>wenig</span>'
+             + "".join(f'<span class="hm-cell" data-lvl="{i}"></span>' for i in range(5))
+             + "<span>viel</span></div>")
+    return (f'<h2>Aktivität — 1 Zeile je Woche, 8 × 3h je Tag (letzte {len(grid)} Wochen)</h2>'
+           f'<div class="heatmap-wrap"><div class="heatmap2">{header}{subheader}'
+           f'{"".join(rows)}</div></div>{legend}')
+
+
+def _feed_row(e: dict, now: float) -> str:
+    kind, name = e["kind"], e["name"]
+    is_agent = bool(e.get("all_agent"))
+    cls = "frow is-agent" if is_agent else "frow"
+    t = _ago(e.get("last_changed"), now)
+    authors = ", ".join(e.get("authors") or []) or "—"
+    return (f'<div class="{cls}" data-kind="{_e(kind)}" data-agent="{"1" if is_agent else "0"}">'
+           f'<span class="t">{_e(t)}</span>'
+           f'<span class="lvl {_e(kind)}">{_e(kind)}</span>'
+           f'<span class="msg">{_e(name)}</span>'
+           f'<span class="who">{_e(authors)}</span>'
+           "</div>")
+
+
+_FEED_FILTER_JS = """
+function bibiApplyFeedFilters(){
+  const kind = document.getElementById('feedkind').value;
+  const hideAgents = document.getElementById('feedhideagents').checked;
+  document.querySelectorAll('#feedlist .frow').forEach(row => {
+    const matchKind = kind === 'alle' || row.dataset.kind === kind;
+    const matchAgent = !(hideAgents && row.dataset.agent === '1');
+    row.style.display = (matchKind && matchAgent) ? '' : 'none';
+  });
+}
+"""
+
+
+def _feed_filter_bar() -> str:
+    return (
+        '<div class="filterbar">'
+        '<label>Ebene <select id="feedkind" onchange="bibiApplyFeedFilters()">'
+        '<option value="alle">alle</option><option value="case">case</option>'
+        '<option value="vault">vault</option><option value="system">system</option>'
+        "</select></label>"
+        '<label class="chk"><input type="checkbox" id="feedhideagents" '
+        'onchange="bibiApplyFeedFilters()"> Agents ausblenden</label>'
+        "</div>"
+    )
+
+
+def _feed_list(entities: list[dict], now: float) -> str:
+    if not entities:
+        return '<p class="out-empty">— keine Änderungen in diesem Zeitraum —</p>'
+    return '<div class="feedlist" id="feedlist">' + "".join(
+        _feed_row(e, now) for e in entities) + "</div>"
+
+
+def feed_fragment(feed_data: dict, *, days: int | None = None, now: float | None = None) -> str:
+    """Der austauschbare Feed-Kern (``#feedboard``): Filterleiste + Heatmap +
+    aggregierte Änderungsliste + „mehr laden" (lineares Tagesfenster, PLAN-18
+    Design-Pass: einfacher wachsender Zähler statt fester Tier-Liste)."""
+    now = time.time() if now is None else now
+    entities = feed_data.get("entities") or []
+    grid = feed_data.get("heatmap") or []
+    next_days = (days or 1) + 1
+    load_more = (
+        f'<div class="loadmore">'
+        f'<button hx-get="/-/ui/feed/board?days={next_days}" hx-target="#feedboard" '
+        f'hx-swap="outerHTML">mehr laden ({next_days} Tage)</button>'
+        f'<button hx-get="/-/ui/feed/board" hx-target="#feedboard" '
+        f'hx-swap="outerHTML">gesamte Historie</button>'
+        f"</div>"
+    )
+    return (
+        '<div id="feedboard">'
+        f"{_heatmap_html(grid)}"
+        '<h2>Änderungen</h2>'
+        f"{_feed_filter_bar()}"
+        f"{_feed_list(entities, now)}"
+        f"{load_more}"
+        f"<script>{_FEED_FILTER_JS}</script>"
+        "</div>"
+    )
+
+
+def feed_page(
+    feed_data: dict, *, git_status: dict | None = None, days: int | None = None,
+    daemon_status: dict | None = None, now: float | None = None,
+) -> str:
+    """Feed-Screen (PLAN-18 Stufe 18.3) — jetzt Home (``/-/``): fixierte
+    Status-Kacheln (inkl. Git-Segment) + Heatmap + aggregierte Änderungsliste.
+    Kein Daemon-Log hier (User-Entscheidung, Rückmeldung 11) — dafür bleibt
+    vorerst `/-/ui/logs`/`/-/ui/daemon` (Rückbau erst Stufe 18.4)."""
+    now = time.time() if now is None else now
+    status = daemon_status or {}
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>bibi · Feed</title>"
+        f"<script>{_FOLLOW_JS}</script>"
+        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
+        f"<style>{_CSS}</style></head><body>"
+        f"{_header('Feed', status)}"
+        f"<script>{_CLOCK_JS}</script>"
+        f"{_feed_status_cards(status, git_status, now)}"
+        f"{feed_fragment(feed_data, days=days, now=now)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"

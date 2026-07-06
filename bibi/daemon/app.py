@@ -600,6 +600,30 @@ def create_app(
         finally:
             conn.close()
 
+    # ── /feed: Git-Historie zu Entitäten + Heatmap (PLAN-18) — rollenunabhängig ─
+    # Reine Git-/Filesystem-Introspektion (bibi/feed.py), kein job_db-Zugriff —
+    # funktioniert auf jedem Knoten, auch einem reinen Client ohne Scheduler/
+    # Worker. Eigenständig abfragbar (User-Wunsch "Heatmap auch query-fähig
+    # machen"), nicht nur ins Feed-HTML gebacken.
+    @app.get("/-/feed", tags=["daemon"])
+    def feed(days: int | None = None):
+        from bibi import feed as feed_mod
+        root = repo.root()
+        commits = feed_mod.collect_commits(root, since_days=days)
+        agent_shas = feed_mod.agent_commit_shas(root, since_days=days)
+        entities = feed_mod.group_entities(commits, agent_shas,
+                                           case_dir_name=repo.case_dir_name())
+        grid = feed_mod.heatmap_buckets(commits)
+        return {
+            "since_days": days,
+            "entities": [
+                {"kind": e.kind, "name": e.name, "last_changed": e.last_changed,
+                 "authors": sorted(e.authors), "all_agent": e.all_agent}
+                for e in entities
+            ],
+            "heatmap": grid,
+        }
+
     @app.get("/-/log/stream", tags=["daemon"])
     def log_stream(n: int = Query(50, ge=0, le=1000), follow: bool = True):
         """Live-Aktivitätslog als SSE (§5.4 Slice B): Backfill der letzten ``n``

@@ -1,0 +1,178 @@
+"""Feed-Screen (PLAN-18 Stufe 18.3) — jetzt Home (``/-/``): Status-Kacheln
+(inkl. neuer Git-Segment-Kachel) + Heatmap + aggregierte Änderungsliste.
+Reine Render-Tests; die Routen-Tests liegen bei ``test_daemon_app_feed.py``
+(neue ``/-/feed``-Route) bzw. werden über einen gefakten Client geprüft, wie
+bei ``test_controller_jobs.py``/``test_controller_daemon.py``."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from bibi.controller import render
+from bibi.daemon import roles
+from bibi.daemon.app import create_app
+
+
+# --- Git-Segment-Kachel ---------------------------------------------------------
+
+
+def test_git_segment_card_clean_synced():
+    html = render._git_segment_card({"tree": "clean", "sync": "synced", "branch": "trunk"})
+    assert 'class="tree-clean"' in html and 'class="sync-synced"' in html
+    assert "trunk" in html
+
+
+def test_git_segment_card_modified_ahead():
+    html = render._git_segment_card({"tree": "modified", "sync": "ahead", "branch": "trunk"})
+    assert 'class="tree-modified"' in html and 'class="sync-ahead"' in html
+
+
+def test_git_segment_card_none_shows_dash():
+    html = render._git_segment_card(None)
+    assert ">—<" in html
+
+
+def test_feed_status_cards_has_five_cards():
+    html = render._feed_status_cards(
+        {"roles": ["connect"]}, {"tree": "clean", "sync": "synced", "branch": "trunk"}, now=100.0)
+    assert html.count('<div class="card">') == 5
+    assert "Rollen" in html and "Git" in html
+
+
+def test_status_cards_unchanged_after_refactor():
+    # Regressionsschutz für die _status_card_list()-Extraktion: _status_cards()
+    # muss weiterhin genau 4 Kacheln liefern, keine Git-Kachel.
+    html = render._status_cards({"roles": ["connect"]}, now=100.0)
+    assert html.count('<div class="card">') == 4
+
+
+# --- Heatmap ---------------------------------------------------------------------
+
+
+def test_heatmap_level_thresholds():
+    assert render._heatmap_level(0) == 0
+    assert render._heatmap_level(2) == 1
+    assert render._heatmap_level(5) == 2
+    assert render._heatmap_level(10) == 3
+    assert render._heatmap_level(11) == 4
+
+
+def test_heatmap_html_has_day_labels_and_correct_cell_count():
+    grid = [[[0] * 8 for _ in range(7)] for _ in range(5)]
+    grid[0][2][3] = 7
+    html = render._heatmap_html(grid)
+    for d in ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"):
+        assert f">{d}<" in html
+    assert html.count('class="hm-cell"') == 5 * 7 * 8 + 5  # + 5 Legende-Zellen
+    assert 'data-lvl="3"' in html  # 7 Änderungen → Stufe 3
+
+
+def test_heatmap_html_week_label_for_this_week():
+    grid = [[[0] * 8 for _ in range(7)] for _ in range(5)]
+    html = render._heatmap_html(grid)
+    assert "diese Woche" in html
+
+
+# --- Feed-Zeilen -----------------------------------------------------------------
+
+
+def test_feed_row_shows_kind_badge_and_authors():
+    e = {"kind": "case", "name": "20260601.FooBar", "last_changed": 90.0,
+        "authors": ["Alice", "Bob"], "all_agent": False}
+    html = render._feed_row(e, now=100.0)
+    assert 'class="lvl case"' in html and "20260601.FooBar" in html
+    assert "Alice, Bob" in html
+    assert 'data-agent="0"' in html
+
+
+def test_feed_row_marks_agent_only_entity():
+    e = {"kind": "vault", "name": "x.md", "last_changed": 90.0,
+        "authors": ["bot"], "all_agent": True}
+    html = render._feed_row(e, now=100.0)
+    assert "is-agent" in html and 'data-agent="1"' in html
+
+
+def test_feed_list_empty_placeholder():
+    assert "keine Änderungen" in render._feed_list([], now=100.0)
+
+
+# --- Fragment / Page ---------------------------------------------------------------
+
+
+def test_feed_fragment_includes_heatmap_list_and_load_more():
+    feed_data = {"entities": [{"kind": "system", "name": "System", "last_changed": 1.0,
+                              "authors": ["a"], "all_agent": False}],
+                "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
+    html = render.feed_fragment(feed_data, days=3, now=100.0)
+    assert 'id="feedboard"' in html
+    assert "System" in html
+    assert "mehr laden (4 Tage)" in html
+    assert "gesamte Historie" in html
+
+
+def test_feed_fragment_defaults_next_days_from_none():
+    html = render.feed_fragment({"entities": [], "heatmap": []}, days=None, now=100.0)
+    assert "mehr laden (2 Tage)" in html
+
+
+def test_feed_page_has_header_nav_and_status_cards():
+    feed_data = {"entities": [], "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
+    html = render.feed_page(feed_data, git_status={"tree": "clean", "sync": "synced",
+                                                   "branch": "trunk"}, now=100.0)
+    assert 'href="/-/ui/jobs"' in html and 'href="/-/ui/schedules"' in html
+    assert "<title>bibi · Feed</title>" in html
+    assert 'class="statuscards"' in html
+
+
+# --- Route (gefakter Client) -------------------------------------------------------
+
+
+class _FakeClient:
+    def __init__(self, *, feed_data=None) -> None:
+        self._feed = feed_data or {"entities": [], "heatmap": []}
+
+    def status(self) -> dict:
+        return {}
+
+    def feed(self, **_):
+        return self._feed
+
+    def schedules(self):
+        return []
+
+    def journal(self, **_):
+        return []
+
+    def jobs(self, **_):
+        return []
+
+
+@pytest.fixture
+def app_with(team_repo: Path):
+    def _make(client: _FakeClient):
+        return create_app(roles.resolve({"controller"}), controller_client=client)
+    return _make
+
+
+def test_root_route_renders_feed_not_schedules(app_with):
+    app = app_with(_FakeClient(feed_data={
+        "entities": [{"kind": "system", "name": "System", "last_changed": 1.0,
+                     "authors": ["a"], "all_agent": False}],
+        "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)],
+    }))
+    with TestClient(app) as c:
+        r = c.get("/-/", headers={"Accept": "text/html"})
+        assert r.status_code == 200
+        assert "<title>bibi · Feed</title>" in r.text
+        assert "System" in r.text
+
+
+def test_feed_board_fragment_route(app_with):
+    app = app_with(_FakeClient())
+    with TestClient(app) as c:
+        r = c.get("/-/ui/feed/board")
+        assert r.status_code == 200
+        assert 'id="feedboard"' in r.text

@@ -8,9 +8,11 @@ PLAN-4 §2.1 — die App-Wurzel *ist* ``/-/`` (kein ``/-/overview``):
 - Nicht-Browser → knapper **JSON-Service-Deskriptor** (System-Info + App-Link);
   so bleibt §1.1 (reine JSON-API für Maschinen) auch an der Wurzel gewahrt.
 
-Home = Schedules-Übersicht (User-Feedback 2026-07-04; ex Verdikt-Dashboard/Feed,
-beide entfernt). Fragment-Routen liegen unter ``/-/ui/`` (App-Namensraum,
-kollidiert nicht mit der gefrorenen Daten-API ``/-/<noun>``).
+Home = Feed (PLAN-18 Stufe 18.3, 2026-07-06) — löst die 2026-07-04-Entscheidung
+„Home = Schedules" bewusst ab (Client-Umbau, ``Client Requirements.md``).
+Schedules bleibt unter ``/-/ui/schedules`` vollständig erreichbar, ist nur
+nicht mehr die Root selbst. Fragment-Routen liegen unter ``/-/ui/``
+(App-Namensraum, kollidiert nicht mit der gefrorenen Daten-API ``/-/<noun>``).
 """
 
 from __future__ import annotations
@@ -81,16 +83,40 @@ def add_controller_routes(
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             return []
 
+    def _feed_data(days: int | None) -> dict:
+        try:
+            return client.feed(days=days)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return {"entities": [], "heatmap": []}
+
+    def _feed_git_status() -> dict | None:
+        # Rein lokal (kein Heartbeat/Netzwerk nötig, PLAN-18 Befund 1) — dieselbe
+        # working_tree_status()-Basis wie Heartbeat/CLI-Statusline.
+        from bibi import repo as repo_mod
+        from bibi.git_status import working_tree_status
+        try:
+            s = working_tree_status(repo_mod.root())
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return None
+        if s is None:
+            return None
+        return {"tree": s.tree, "sync": s.sync, "branch": s.branch}
+
     @app.get("/-/", include_in_schema=False)
-    def root(request: Request, typ: str | None = None, status: str | None = None):
-        # Home = Schedules (User-Feedback 2026-07-04: Feed entfernt). Browser →
-        # Schedules-Screen (identisch zu /-/ui/schedules); Nicht-Browser →
-        # JSON-Deskriptor (§1.1 bleibt an der Wurzel gewahrt).
+    def root(request: Request, days: int | None = None):
+        # Home = Feed (PLAN-18 Stufe 18.3, löst 2026-07-04 "Home = Schedules"
+        # bewusst ab). Browser → Feed-Screen; Nicht-Browser → JSON-Deskriptor
+        # (§1.1 bleibt an der Wurzel gewahrt). Schedules bleibt unter
+        # /-/ui/schedules erreichbar, unverändert.
         if _wants_html(request):
-            items = render.filter_schedules(_schedules(), typ=typ, status=status)
-            return HTMLResponse(render.schedules_page(
-                items, typ=typ, status=status, daemon_status=_status()))
+            return HTMLResponse(render.feed_page(
+                _feed_data(days), git_status=_feed_git_status(), days=days,
+                daemon_status=_status()))
         return JSONResponse(service_descriptor(roles))
+
+    @app.get("/-/ui/feed/board", include_in_schema=False)
+    def feed_board(days: int | None = None):
+        return HTMLResponse(render.feed_fragment(_feed_data(days), days=days))
 
     @app.get("/-/ui/schedules", include_in_schema=False)
     def schedules_screen(typ: str | None = None, status: str | None = None):

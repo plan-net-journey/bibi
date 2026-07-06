@@ -197,3 +197,46 @@ def test_heatmap_shape_default_five_weeks():
     assert len(grid) == 5
     assert all(len(week) == 7 for week in grid)
     assert all(len(day) == 8 for week in grid for day in week)
+
+
+# --- GET /-/feed (rollenunabhängig, PLAN-18) ------------------------------------
+
+
+def test_feed_endpoint_works_without_any_role(repo: Path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from bibi.daemon import roles
+    from bibi.daemon.app import create_app
+
+    monkeypatch.chdir(repo)
+    from bibi import repo as repo_mod
+    repo_mod._root_of.cache_clear()
+
+    app = create_app(roles.resolve(set()))
+    with TestClient(app) as c:
+        r = c.get("/-/feed")
+        assert r.status_code == 200
+        body = r.json()
+        assert {"20260601.FooBar", "CONVENTIONS.md", "System"} == {
+            e["name"] for e in body["entities"]
+        }
+        assert len(body["heatmap"]) == 5
+        assert body["since_days"] is None
+
+
+def test_feed_endpoint_days_param(repo: Path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from bibi.daemon import roles
+    from bibi.daemon.app import create_app
+
+    monkeypatch.chdir(repo)
+    from bibi import repo as repo_mod
+    repo_mod._root_of.cache_clear()
+
+    app = create_app(roles.resolve(set()))
+    with TestClient(app) as c:
+        r = c.get("/-/feed", params={"days": 3650})
+        assert r.status_code == 200
+        assert r.json()["since_days"] == 3650
+        assert len(r.json()["entities"]) == 3

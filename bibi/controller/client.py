@@ -38,6 +38,10 @@ class ControllerClient:
     def status(self) -> dict:
         return self._get("/-/status") or {}
 
+    def feed(self, *, days: int | None = None) -> dict:
+        # Feed-Screen (PLAN-18): Entitäten (Case/Vault/System) + Heatmap-Grid.
+        return self._get("/-/feed", {"days": days}) or {}
+
     def journal(self, *, slug: str | None = None, host: str | None = None,
                 limit: int | None = None, offset: int | None = None) -> list[dict]:
         return self._get(

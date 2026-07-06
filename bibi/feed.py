@@ -95,14 +95,13 @@ def classify_path(path: str, *, case_dir_name: str = "case") -> tuple[str, str]:
     return "system", "System"
 
 
-def aggregate_feed(
-    root: Path, *, since_days: int | None = None, case_dir_name: str = "case",
+def group_entities(
+    commits: list[CommitInfo], agent_shas: set[str], *, case_dir_name: str = "case",
 ) -> list[FeedEntity]:
-    """Entitäten (neuester Zeitpunkt zuerst), eine Zeile je Case-Ordner/Vault-
-    Datei/System-Sammelzeile — Kern der Feed-Änderungsliste (PLAN-18)."""
-    commits = collect_commits(root, since_days=since_days)
-    agent_shas = agent_commit_shas(root, since_days=since_days)
-
+    """Reine Gruppierung schon gesammelter Commits (kein Git-Aufruf) — Baustein
+    von ``aggregate_feed()``, direkt wiederverwendbar, wenn dieselbe
+    ``collect_commits()``-Liste auch die Heatmap speist (ein Aufruf, zwei
+    Aggregationen, PLAN-18 Befund 2)."""
     buckets: dict[tuple[str, str], dict] = {}
     for c in commits:
         is_agent = c.sha in agent_shas
@@ -119,6 +118,18 @@ def aggregate_feed(
         for (kind, name), b in buckets.items()
     ]
     return sorted(entities, key=lambda e: e.last_changed, reverse=True)
+
+
+def aggregate_feed(
+    root: Path, *, since_days: int | None = None, case_dir_name: str = "case",
+) -> list[FeedEntity]:
+    """Entitäten (neuester Zeitpunkt zuerst), eine Zeile je Case-Ordner/Vault-
+    Datei/System-Sammelzeile — Kern der Feed-Änderungsliste (PLAN-18). Bequemer
+    Wrapper um ``collect_commits()`` + ``agent_commit_shas()`` +
+    ``group_entities()`` für den Alleinstellungs-/Testfall."""
+    commits = collect_commits(root, since_days=since_days)
+    agent_shas = agent_commit_shas(root, since_days=since_days)
+    return group_entities(commits, agent_shas, case_dir_name=case_dir_name)
 
 
 #: Heatmap-Layout (Wireframe, verifiziert): 5 Wochen-Zeilen × 7 Tage × 8 3h-Buckets.

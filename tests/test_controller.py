@@ -44,13 +44,13 @@ def test_controller_role_resolves():
 
 
 def test_root_serves_html_for_browser(ctrl):
-    # Home = Schedules (User-Feedback 2026-07-04: Feed entfernt) mit Ops-Handles.
+    # Home = Feed (PLAN-18 Stufe 18.3, löst 2026-07-04 "Home = Schedules" ab).
     r = ctrl.get("/-/", headers={"Accept": "text/html,application/xhtml+xml,*/*"})
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
     body = r.text
     assert "<!doctype html>" in body.lower()
-    assert 'id="schedules"' in body         # Schedules-Screen
+    assert 'id="feedboard"' in body         # Feed-Screen
     assert "RESCAN" in body and "MAINT" in body  # Ops-Handles auf der Home
 
 
@@ -81,7 +81,7 @@ def test_root_degrades_when_client_unreachable(team_repo):
     with TestClient(app) as client:
         r = client.get("/-/", headers={"Accept": "text/html"})
         assert r.status_code == 200  # defensiv: kein 500
-        assert 'id="schedules"' in r.text  # leere Schedules-Liste statt Absturz
+        assert 'id="feedboard"' in r.text  # leerer Feed statt Absturz (Boom kennt kein feed())
 
 
 def test_root_absent_without_controller_role(team_repo):
