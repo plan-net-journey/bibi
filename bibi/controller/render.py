@@ -116,6 +116,14 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .liveterm { max-height: 24rem; overflow-y: auto; }
 .liveterm .lts { color: #888; user-select: none; }
 .liveclock { color: #5fb37a; font-size: .8rem; font-family: ui-monospace, monospace; }
+.statuscards { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+               gap: .6rem; margin-bottom: 1.2rem; }
+.card { border: 1px solid #8883; border-radius: .4rem; padding: .55rem .7rem; }
+.card .label { font-size: .72rem; color: #888; text-transform: uppercase; letter-spacing: .03em; }
+.card .value { font-size: 1.05rem; font-weight: 600; margin-top: .1rem; }
+.card .value.ok { color: #5fb37a; }
+.card .value.bad { color: #e06c5a; }
+.card .sub { font-size: .75rem; color: #888; margin-top: .15rem; }
 """
 
 
@@ -316,9 +324,12 @@ def _filter_bar(typ: str | None, status: str | None) -> str:
 
 
 def _screen_nav(active: str) -> str:
-    """Screen-Tabs (Schedules · Live-Log · API-Docs); der aktive ohne Link.
-    Feed ist entfernt (User-Feedback 2026-07-04); Schedules ist jetzt Home (``/-/``)."""
-    tabs = [("Schedules", "/-/"), ("Live-Log", "/-/ui/logs"), ("API-Docs", "/-/docs")]
+    """Screen-Tabs (Schedules · Live-Log · Daemon · API-Docs); der aktive ohne Link.
+    Feed ist entfernt (User-Feedback 2026-07-04); Schedules ist jetzt Home (``/-/``).
+    Daemon (PLAN-17 Stufe 17.0) zeigt Rollen/Verbindungsstatus + dasselbe Live-Log,
+    additiv neben Live-Log (nicht ersetzend — kein Risiko für bestehende Links)."""
+    tabs = [("Schedules", "/-/"), ("Live-Log", "/-/ui/logs"), ("Daemon", "/-/ui/daemon"),
+            ("API-Docs", "/-/docs")]
     def _tab(t: str, h: str) -> str:
         if t == active:
             return t
@@ -508,6 +519,25 @@ q.oninput = rerender;
 """
 
 
+def _log_panel() -> str:
+    """Log-Filterleiste + Box + EventSource-Script — geteilter Baustein zwischen
+    ``log_page()`` (Live-Log) und ``daemon_page()`` (PLAN-17 Stufe 17.0: dieselbe
+    Quelle, jetzt zusätzlich neben den Status-Kacheln), damit beide Seiten
+    dasselbe Verhalten (Filter, FOLLOW-Autoscroll) ohne Duplikat-Pflege haben."""
+    return (
+        '<div class="logbar">'
+        '<label>Level <select id="lvl">'
+        '<option value="0">debug</option>'
+        '<option value="1" selected>info</option>'
+        '<option value="2">warning</option>'
+        '<option value="3">error</option></select></label>'
+        '<input id="q" type="text" placeholder="Filter: Rolle/Event/slug/msg…">'
+        "</div>"
+        '<div id="log" class="logbox"></div>'
+        f"<script>{_LOG_JS}</script>"
+    )
+
+
 def log_page(daemon_status: dict | None = None) -> str:
     """Live-Log-Panel (§5.4 Slice C): EventSource gegen ``/-/log/stream``, mit
     Level- + Text-Filter (Rolle/Event/slug/msg). Reines FE; der Daemon liefert
@@ -523,16 +553,84 @@ def log_page(daemon_status: dict | None = None) -> str:
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Live-Log', daemon_status)}"
         f"<script>{_CLOCK_JS}</script>"
-        '<div class="logbar">'
-        '<label>Level <select id="lvl">'
-        '<option value="0">debug</option>'
-        '<option value="1" selected>info</option>'
-        '<option value="2">warning</option>'
-        '<option value="3">error</option></select></label>'
-        '<input id="q" type="text" placeholder="Filter: Rolle/Event/slug/msg…">'
-        "</div>"
-        '<div id="log" class="logbox"></div>'
-        f"<script>{_LOG_JS}</script>"
+        f"{_log_panel()}"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
+
+
+def _uptime_label(started_at: float | None, now: float) -> str:
+    """Laufzeit seit Daemon-Start, grobkörnig (Tage/Stunden bzw. Stunden/Minuten)."""
+    if started_at is None:
+        return "—"
+    d = max(0, int(now - started_at))
+    days, rem = divmod(d, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days} T {hours} h"
+    if hours:
+        return f"{hours} h {minutes} min"
+    if minutes:
+        return f"{minutes} min"
+    return f"{d}s"
+
+
+def _card(label: str, value: str, sub: str = "", cls: str = "") -> str:
+    cls_attr = f" {cls}" if cls else ""
+    sub_html = f'<div class="sub">{_e(sub)}</div>' if sub else ""
+    return (f'<div class="card"><div class="label">{_e(label)}</div>'
+            f'<div class="value{cls_attr}">{_e(value)}</div>{sub_html}</div>')
+
+
+def _status_cards(status: dict, now: float) -> str:
+    """Status-Kacheln (PLAN-17 Stufe 17.0): Rollen, Host-Verbindung (nur wenn
+    ``connect`` im Status steckt — s. ``Heartbeat``, PLAN-17-Vorarbeit
+    2026-07-05), Auto-Sync, Maintenance, Uptime."""
+    cards = [_card("Rollen", ", ".join(status.get("roles") or []) or "—")]
+
+    conn = status.get("connect")
+    if conn is not None:
+        ok = conn.get("ok")
+        if ok is True:
+            value, cls = "verbunden", "ok"
+        elif ok is False:
+            value, cls = "getrennt", "bad"
+        else:
+            value, cls = "wartet…", ""
+        last_at = conn.get("last_at")
+        sub = f"Heartbeat {_ago(last_at, now)}" if last_at is not None else ""
+        cards.append(_card("Host-Verbindung", value, sub, cls))
+
+    auto_sync = bool(status.get("auto_sync"))
+    cards.append(_card("Auto-Sync", "an" if auto_sync else "aus", cls="ok" if auto_sync else ""))
+
+    maint = bool(status.get("maintenance"))
+    cards.append(_card("Maintenance", "an" if maint else "aus", cls="bad" if maint else ""))
+
+    cards.append(_card("Uptime", _uptime_label(status.get("started_at"), now)))
+
+    return '<div class="statuscards">' + "".join(cards) + "</div>"
+
+
+def daemon_page(daemon_status: dict | None = None, now: float | None = None) -> str:
+    """Daemon-Screen (PLAN-17 Stufe 17.0): Status-Kacheln + dasselbe Live-Log wie
+    ``log_page()`` (geteilter ``_log_panel()``-Baustein) — additiv neben
+    Live-Log, ersetzt es nicht (kein Migrationsrisiko für bestehende Links)."""
+    now = time.time() if now is None else now
+    status = daemon_status or {}
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>bibi · Daemon</title>"
+        f"<script>{_FOLLOW_JS}</script>"
+        f"<style>{_CSS}</style></head><body>"
+        f"{_header('Daemon', status)}"
+        f"<script>{_CLOCK_JS}</script>"
+        f"{_status_cards(status, now)}"
+        f"{_log_panel()}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"

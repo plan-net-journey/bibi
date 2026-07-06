@@ -63,17 +63,31 @@ def run(args: argparse.Namespace) -> int:
         synchronizer = Synchronizer(push=True, pull=True, consent=state.get_auto_sync,
                                     lock=sync_lock, repo_root=repo.root())
 
+    # --connect ⇒ Remote-Pull beim Scheduler (BIBI_SCHEDULER_URL: env > Config-Datei).
+    connect_url = None
+    if r.connect:
+        connect_url = os.environ.get("BIBI_SCHEDULER_URL") or config.read_env().get("BIBI_SCHEDULER_URL")
+
     worker = None
     if r.worker:
         from bibi.daemon.worker import Worker
-        # --connect ⇒ Remote-Pull beim Scheduler (BIBI_SCHEDULER_URL: env > Config-Datei).
-        url = None
-        if r.connect:
-            url = os.environ.get("BIBI_SCHEDULER_URL") or config.read_env().get("BIBI_SCHEDULER_URL")
         worker = Worker(
-            connect=r.connect, scheduler_url=url,
+            connect=r.connect, scheduler_url=connect_url,
             secret=os.environ.get("BIBI_CONNECT_SECRET"),
         )
+
+    # Heartbeat (A12) ist von der Worker-Rolle entkoppelt (User-Feedback
+    # 2026-07-05): ein reiner Client (Synchronizer + --connect, kein Worker)
+    # meldet sich sonst nie beim Scheduler — --connect wäre sonst wirkungslos.
+    heartbeat = None
+    if r.connect:
+        from bibi.daemon.heartbeat import Heartbeat
+        from bibi.daemon.scheduler_client import RemoteScheduler
+        hb_client = RemoteScheduler(
+            connect_url or "http://127.0.0.1:8769",
+            secret=os.environ.get("BIBI_CONNECT_SECRET"),
+        )
+        heartbeat = Heartbeat(client=hb_client, repo_root=repo.root())
 
     import uvicorn
 
@@ -81,7 +95,7 @@ def run(args: argparse.Namespace) -> int:
     # Controller ruft die /-/-API über HTTP am **tatsächlichen** Bind-Port auf
     # (nicht config.daemon_port() — sonst zeigt --port ins Leere/auf einen Fremd-Daemon).
     port = args.port or config.daemon_port()
-    app = create_app(r, synchronizer=synchronizer, worker=worker,
+    app = create_app(r, synchronizer=synchronizer, worker=worker, heartbeat=heartbeat,
                      controller_base_url=f"http://{args.host}:{port}",
                      sync_lock=sync_lock)
     # Aktivitätslog verdrahten (§5.1): JSONL unter gitignored data/ + Klartext auf
@@ -100,7 +114,7 @@ def run(args: argparse.Namespace) -> int:
 
 def install_cmd(args: argparse.Namespace) -> int:
     from bibi.daemon import install
-    print(install.install(role=args.role))
+    print(install.install(role=args.role, connect=args.connect))
     return 0
 
 
@@ -166,6 +180,8 @@ def register(sub: argparse._SubParsersAction) -> None:
 
     pi = dsub.add_parser("install", help="Autostart-Unit/Plist schreiben")
     pi.add_argument("--role", default=None, help="BIBI_ROLE für die Unit (sonst aus env)")
+    pi.add_argument("--connect", action="store_true",
+                    help="Heartbeat/--connect für die Unit aktivieren (kein BIBI_ROLE-Mitglied)")
     pi.set_defaults(func=install_cmd)
 
     dsub.add_parser("uninstall", help="Autostart entfernen").set_defaults(func=uninstall_cmd)

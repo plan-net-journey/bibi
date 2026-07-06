@@ -65,6 +65,42 @@ def test_launchd_plist_text():
     assert "<key>RunAtLoad</key><true/>" in t
 
 
+def test_systemd_unit_text_with_connect_appends_flag():
+    # PLAN-17 Stufe 17.0 Folgefund: --connect ist kein BIBI_ROLE-Mitglied (roles.py
+    # KNOWN_ROLES), eine installierte Unit brauchte bisher keine Möglichkeit, den
+    # Heartbeat-Modifikator zu setzen — ohne ihn bliebe ein installierter Client
+    # ohne Heartbeat (dieselbe Lücke wie bei Worker, jetzt am Install-Pfad).
+    t = install.systemd_unit_text(
+        root=Path("/srv/team"), uv="/usr/bin/uv", port=8780, user="mra",
+        role="synchronizer,controller", connect=True,
+    )
+    assert "ExecStart=/usr/bin/uv run bibi-ctrl daemon run --host 0.0.0.0 --port 8780 --connect" in t
+
+
+def test_systemd_unit_text_without_connect_omits_flag():
+    t = install.systemd_unit_text(
+        root=Path("/srv/team"), uv="/usr/bin/uv", port=8780, user="mra", role="synchronizer",
+    )
+    assert "--connect" not in t
+
+
+def test_launchd_plist_text_with_connect_appends_flag():
+    t = install.launchd_plist_text(
+        root=Path("/Users/x/team"), uv="/opt/homebrew/bin/uv", port=9001,
+        label="com.bibi.abcd1234", log_dir=Path("/Users/x/team/data"),
+        role="synchronizer,controller", connect=True,
+    )
+    assert "<string>--connect</string>" in t
+
+
+def test_launchd_plist_text_without_connect_omits_flag():
+    t = install.launchd_plist_text(
+        root=Path("/Users/x/team"), uv="/opt/homebrew/bin/uv", port=9001,
+        label="com.bibi.abcd1234", log_dir=Path("/Users/x/team/data"), role="synchronizer",
+    )
+    assert "--connect" not in t
+
+
 def test_install_unsupported_platform(team_repo, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(install.sys, "platform", "sunos5")
     assert "unsupported" in install.install()

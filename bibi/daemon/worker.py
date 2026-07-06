@@ -504,7 +504,7 @@ class Worker:
         db_path: Path | None = None, poll_interval: float = 1.0,
         worker_name: str | None = None, autopoll: bool = True,
         client=None, connect: bool = False, scheduler_url: str | None = None,
-        secret: str | None = None, heartbeat_interval: float = 15.0,
+        secret: str | None = None,
         max_concurrent: int = 4,
     ) -> None:
         self.repo_root = repo_root
@@ -516,8 +516,6 @@ class Worker:
         # autopoll=False: nur die Routen (Streams/kill) bedienen, kein Pull-Loop —
         # für Tests und für reine Stream-Knoten ohne lokale Ausführung.
         self.autopoll = autopoll
-        self.connect = connect
-        self.heartbeat_interval = heartbeat_interval
         self.max_concurrent = max_concurrent
         # Scheduler-Client: lokal (Single-Node) oder remote (--connect, §3.6).
         if client is not None:
@@ -531,7 +529,6 @@ class Worker:
         self._procs: dict[str, subprocess.Popen] = {}
         self._app_routes: dict[str, int] = {}  # job_id → zuletzt registrierter app_port
         self._task: asyncio.Task | None = None
-        self._hb_task: asyncio.Task | None = None
         self._running = False
         self._maint_active = False  # Wartungs-Übergang nur einmal loggen (kein Tick-Spam)
 
@@ -631,29 +628,6 @@ class Worker:
             log.exception("Job-Setup fehlgeschlagen: %s", res.get("id"))
         return True
 
-    def _git_status(self) -> str:
-        """Kurzer Git-Status des Knotens (Branch) für den Heartbeat (A12)."""
-        root, _ = self._roots()
-        try:
-            r = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                               cwd=root, capture_output=True, text=True, check=False)
-            return r.stdout.strip() if r.returncode == 0 else "n/a"
-        except OSError:
-            return "n/a"
-
-    async def _heartbeat_loop(self) -> None:
-        loop = asyncio.get_event_loop()
-        while self._running:
-            try:
-                await loop.run_in_executor(
-                    None, lambda: self.client.register(self.worker_name, self.host, self._git_status()))
-                activity.emit(log, logging.DEBUG, "worker.heartbeat", role="worker",
-                              worker=self.worker_name)
-            except Exception:
-                activity.emit(log, logging.WARNING, "worker.heartbeat",
-                              "Heartbeat fehlgeschlagen (Scheduler erreichbar?)", role="worker")
-            await asyncio.sleep(self.heartbeat_interval)
-
     def kill(self, job_id: str) -> bool:
         """Lauf beenden — container-aware (PLAN-8 D7): ``docker stop`` (graceful) +
         Host-Wrapper-Gruppe; im Container-Modus auch dann ``docker kill`` als Backstop,
@@ -685,17 +659,13 @@ class Worker:
             return  # nur Routen bedienen, kein Pull-Loop
         self._running = True
         self._task = asyncio.create_task(self._loop())
-        if self.connect:  # beim entfernten Scheduler an-/abmelden (Heartbeat, A12)
-            self.client.register(self.worker_name, self.host, self._git_status())
-            self._hb_task = asyncio.create_task(self._heartbeat_loop())
 
     async def stop(self) -> None:
         self._running = False
-        for task in (self._task, self._hb_task):
-            if task is not None:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        self._task = self._hb_task = None
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None

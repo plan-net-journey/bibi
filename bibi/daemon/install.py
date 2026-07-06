@@ -60,8 +60,15 @@ def _nonsnap_uv() -> str:
     raise RuntimeError("uv nicht auf PATH (und ~/.local/bin/uv fehlt)")
 
 
-def _exec_args(uv: str, host: str, port: int) -> list[str]:
-    return [uv, "run", "bibi-ctrl", "daemon", "run", "--host", host, "--port", str(port)]
+def _exec_args(uv: str, host: str, port: int, *, connect: bool = False) -> list[str]:
+    args = [uv, "run", "bibi-ctrl", "daemon", "run", "--host", host, "--port", str(port)]
+    if connect:
+        # --connect ist ein reiner CLI-Modifikator, kein KNOWN_ROLES-Mitglied
+        # (roles.py) — BIBI_ROLE allein kann ihn nicht tragen. Ohne dieses Flag
+        # hier bliebe eine installierte Client-Unit ohne Heartbeat (A12), genau
+        # die Lücke, die PLAN-17 Stufe 17.0 bei Worker aufgedeckt hat.
+        args.append("--connect")
+    return args
 
 
 def _log_dir(root: Path) -> Path:
@@ -73,7 +80,7 @@ def _log_dir(root: Path) -> Path:
 # ── reine Text-Renderer ─────────────────────────────────────────────────────
 
 def systemd_unit_text(*, root: Path, uv: str, port: int, user: str,
-                      role: str | None = None) -> str:
+                      role: str | None = None, connect: bool = False) -> str:
     uv_dir = str(Path(uv).parent)
     path = f"{uv_dir}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     lines = [
@@ -93,7 +100,7 @@ def systemd_unit_text(*, root: Path, uv: str, port: int, user: str,
     if role:
         lines.append(f"Environment=BIBI_ROLE={role}")
     lines += [
-        "ExecStart=" + " ".join(_exec_args(uv, "0.0.0.0", port)),
+        "ExecStart=" + " ".join(_exec_args(uv, "0.0.0.0", port, connect=connect)),
         "Restart=always",
         "RestartSec=3",
         "",
@@ -105,7 +112,7 @@ def systemd_unit_text(*, root: Path, uv: str, port: int, user: str,
 
 
 def launchd_plist_text(*, root: Path, uv: str, port: int, label: str,
-                       log_dir: Path, role: str | None = None) -> str:
+                       log_dir: Path, role: str | None = None, connect: bool = False) -> str:
     extra = [
         "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
         str(Path.home() / ".local" / "bin"), str(Path.home() / ".cargo" / "bin"),
@@ -120,7 +127,7 @@ def launchd_plist_text(*, root: Path, uv: str, port: int, label: str,
     if role:
         env.append(f"    <key>BIBI_ROLE</key><string>{role}</string>")
     env.append("  </dict>")
-    args = "".join(f"<string>{a}</string>" for a in _exec_args(uv, "127.0.0.1", port))
+    args = "".join(f"<string>{a}</string>" for a in _exec_args(uv, "127.0.0.1", port, connect=connect))
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -146,7 +153,7 @@ def _plist_path(label: str) -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
 
 
-def install(role: str | None = None) -> str:
+def install(role: str | None = None, connect: bool = False) -> str:
     root = repo.root()
     port = config.daemon_port()
     uv = _nonsnap_uv()
@@ -155,14 +162,15 @@ def install(role: str | None = None) -> str:
         plist = _plist_path(label)
         plist.parent.mkdir(parents=True, exist_ok=True)
         plist.write_text(launchd_plist_text(
-            root=root, uv=uv, port=port, label=label, log_dir=_log_dir(root), role=role))
+            root=root, uv=uv, port=port, label=label, log_dir=_log_dir(root), role=role,
+            connect=connect))
         subprocess.run(["launchctl", "load", str(plist)], check=False)
         return f"installed (launchd): {plist}"
     if sys.platform.startswith("linux"):
         unit = _systemd_unit_name(root)
         unit_path = _systemd_unit_path(root)
         text = systemd_unit_text(root=root, uv=uv, port=port,
-                                 user=getpass.getuser(), role=role)
+                                 user=getpass.getuser(), role=role, connect=connect)
         w = subprocess.run(["sudo", "tee", str(unit_path)],
                            input=text, capture_output=True, text=True)
         if w.returncode != 0:

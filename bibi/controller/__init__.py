@@ -90,6 +90,12 @@ def add_controller_routes(
     def logs_page():
         return HTMLResponse(render.log_page(daemon_status=_status()))
 
+    @app.get("/-/ui/daemon", include_in_schema=False)
+    def daemon_page():
+        # PLAN-17 Stufe 17.0: Status-Kacheln + dasselbe Live-Log, additiv neben
+        # Live-Log (nicht ersetzend).
+        return HTMLResponse(render.daemon_page(daemon_status=_status()))
+
     def _detail_data(slug: str):
         try:
             schedule = next((s for s in client.schedules()

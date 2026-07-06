@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
@@ -448,8 +449,9 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
 def create_app(
     roles: Roles, synchronizer=None, worker: Worker | None = None, sweeper=None,
     rescanner=None, controller_client=None, controller_base_url: str | None = None,
-    sync_lock=None,
+    sync_lock=None, heartbeat=None,
 ) -> FastAPI:
+    started_at = time.time()
     if worker is None and roles.worker:
         worker = Worker(worker_name="local")
     # Merge-back für den **lokalen** Worker (PLAN-6): der geht nicht über die
@@ -494,6 +496,8 @@ def create_app(
             await sweeper.start()
         if rescanner is not None:
             await rescanner.start()
+        if heartbeat is not None:
+            await heartbeat.start()
         if worker is not None:
             await worker.start()
         try:
@@ -501,6 +505,8 @@ def create_app(
         finally:
             if worker is not None:
                 await worker.stop()
+            if heartbeat is not None:
+                await heartbeat.stop()
             if rescanner is not None:
                 await rescanner.stop()
             if sweeper is not None:
@@ -538,11 +544,17 @@ def create_app(
             "auto_sync": state.get_auto_sync(),
             "sync_conflict": state.get_sync_conflict(),
             "maintenance": state.get_maintenance(),
+            "started_at": started_at,
         }
         if synchronizer is not None:
             out["synchronizer"] = synchronizer.status()
         if worker_registry is not None:
             out["workers"] = worker_registry.list()
+        # Host-Verbindungsstatus (A12) — eigenständig von der Worker-Rolle (§4.8-Fix
+        # 2026-07-05): ein Client meldet hier, ob sein letzter Heartbeat-Versuch
+        # beim Scheduler ankam, unabhängig davon, ob er selbst Jobs ausführt.
+        if heartbeat is not None:
+            out["connect"] = {"ok": heartbeat.last_ok, "last_at": heartbeat.last_at}
         # Verdikt „läuft alles?" — DB-nah, nur am Knoten mit Scheduler-Rolle (der
         # die Job-DB besitzt). Föderation aggregiert je-Knoten-/-/status (§2.2).
         if roles.scheduler:
