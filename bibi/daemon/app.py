@@ -431,20 +431,6 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
             return JSONResponse(status_code=409, content={"error": "not pending", "id": id})
         return {"id": id, "status": "started"}
 
-    # ── /run: lokale On-Demand-Ausführung (PLAN-3 §3.3b) ──────────────────────
-    @app.post("/-/run", tags=["job"])
-    def run(req: RunRequest):
-        if not req.slug and not req.cmd:
-            return JSONResponse(status_code=400, content={"error": "slug oder cmd nötig"})
-        try:
-            return run_local(
-                slug=req.slug, cmd=req.cmd, kind=req.kind,
-                repo_root=worker.repo_root, work_dir=worker.work_dir,
-                db_path=worker.db_path, register=worker._register,
-            )
-        except LookupError as exc:
-            return JSONResponse(status_code=404, content={"error": str(exc)})
-
 
 def create_app(
     roles: Roles, synchronizer=None, worker: Worker | None = None, sweeper=None,
@@ -578,6 +564,24 @@ def create_app(
         activity.emit(log, logging.INFO, "maintenance.off",
                       "Wartungsmodus aus — Job-Dispatch wieder aktiv", role="daemon")
         return {"maintenance": False}
+
+    # ── /run: lokale On-Demand-Ausführung (PLAN-3 §3.3b) — rollenunabhängig ────
+    # User-Feedback 2026-07-06: hing bisher an _add_worker_routes() (nur mit
+    # --worker registriert), obwohl run_local() selbst kein Worker-Objekt
+    # braucht — sich repo_root/work_dir/db_path genau wie die CLI (run_cmd.py)
+    # selbst über repo.root() auflöst. Ein reiner Client (kein --worker) konnte
+    # /run dadurch nur per CLI nutzen, nie über den Browser/die API — dieselbe
+    # Art Lücke wie beim Heartbeat (PLAN-17 Stufe 17.0). ``register`` bleibt
+    # bewusst weg: die CLI kennt Kill für Ad-hoc-Läufe bis heute auch nicht,
+    # keine Funktions-Reduktion gegenüber dem Bestand.
+    @app.post("/-/run", tags=["job"])
+    def run(req: RunRequest):
+        if not req.slug and not req.cmd:
+            return JSONResponse(status_code=400, content={"error": "slug oder cmd nötig"})
+        try:
+            return run_local(slug=req.slug, cmd=req.cmd, kind=req.kind)
+        except LookupError as exc:
+            return JSONResponse(status_code=404, content={"error": str(exc)})
 
     @app.get("/-/log/stream", tags=["daemon"])
     def log_stream(n: int = Query(50, ge=0, le=1000), follow: bool = True):

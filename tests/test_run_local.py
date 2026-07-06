@@ -182,6 +182,24 @@ def test_run_endpoint(gitrepo: Path):
         finally:
             conn.close()
         # unbekannter slug → 404
+
+
+def test_run_endpoint_works_without_any_worker_role(gitrepo: Path):
+    # User-Feedback 2026-07-06: /-/run hing bisher an _add_worker_routes()
+    # (nur mit --worker registriert) — ein reiner Client (Synchronizer +
+    # --connect, kein --worker) bekam dadurch 404, obwohl run_local() selbst
+    # gar kein Worker-Objekt braucht (genau wie die CLI, run_cmd.py). Dieser
+    # Test ist der eigentliche Regressionsschutz für den Fix.
+    from fastapi.testclient import TestClient
+
+    from bibi.daemon import roles
+    from bibi.daemon.app import create_app
+
+    app = create_app(roles.resolve({"synchronizer", "controller"}))
+    with TestClient(app) as c:
+        r = c.post("/-/run", json={"cmd": "echo via-client-only"})
+        assert r.status_code == 200
+        assert r.json()["status"] == "complete"
         assert c.post("/-/run", json={"slug": "nope"}).status_code == 404
         # weder slug noch cmd → 400
         assert c.post("/-/run", json={}).status_code == 400
