@@ -48,9 +48,17 @@ class _FakeClient:
             raise ConnectionError("scheduler unreachable")
 
 
-def test_git_status_reports_branch(gitrepo: Path):
+def test_git_status_reports_branch_tree_and_sync(gitrepo: Path):
+    # PLAN-18 Stufe 18.0: A12 verspricht Tree+Sync im Heartbeat, bisher kam nur
+    # der Branch-Name hoch — geteilte working_tree_status()-Basis behebt das.
     hb = Heartbeat(client=_FakeClient(), repo_root=gitrepo)
-    assert hb._git_status() == "trunk"
+    assert hb._git_status() == "trunk · clean · synced"
+
+
+def test_git_status_reflects_modified_tree(gitrepo: Path):
+    (gitrepo / "f").write_text("y", encoding="utf-8")
+    hb = Heartbeat(client=_FakeClient(), repo_root=gitrepo)
+    assert hb._git_status() == "trunk · modified · synced"
 
 
 def test_git_status_na_outside_git_repo(tmp_path: Path):
@@ -62,7 +70,7 @@ def test_start_registers_immediately(gitrepo: Path):
     client = _FakeClient()
     hb = Heartbeat(client=client, worker_name="w1", repo_root=gitrepo, interval=60)
     asyncio.run(hb.start())
-    assert client.calls == [("w1", hb.host, "trunk")]
+    assert client.calls == [("w1", hb.host, "trunk · clean · synced")]
     assert hb.last_ok is True
     assert hb.last_at is not None
     asyncio.run(hb.stop())

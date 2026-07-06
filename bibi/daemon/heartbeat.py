@@ -15,12 +15,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
-import subprocess
 import time
 from pathlib import Path
 
 from bibi import repo
 from bibi.daemon import activity
+from bibi.git_status import working_tree_status
 
 log = logging.getLogger("bibi.heartbeat")
 
@@ -45,14 +45,18 @@ class Heartbeat:
         self.last_at: float | None = None
 
     def _git_status(self) -> str:
-        """Kurzer Git-Status des Knotens (Branch) für den Heartbeat (A12)."""
+        """Git-Status des Knotens (Branch + Tree + Sync) für den Heartbeat (A12).
+
+        PLAN-18 Stufe 18.0: A12 verspricht, derselbe Heartbeat trage Tree+Sync
+        mit hoch zum Scheduler — bisher lieferte diese Methode nur den
+        Branch-Namen. Geteilte ``working_tree_status()``-Basis (auch von der
+        CLI-Statusline genutzt) behebt das, ohne das Schema zu ändern
+        (``git_status`` bleibt ein einzelner String)."""
         root = self.repo_root or repo.root()
-        try:
-            r = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                               cwd=root, capture_output=True, text=True, check=False)
-            return r.stdout.strip() if r.returncode == 0 else "n/a"
-        except OSError:
+        s = working_tree_status(root)
+        if s is None:
             return "n/a"
+        return f"{s.branch or '(detached)'} · {s.tree} · {s.sync}"
 
     def _beat(self) -> None:
         try:

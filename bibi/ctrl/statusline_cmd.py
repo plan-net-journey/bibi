@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from bibi import case_store, git_ops, repo, state
+from bibi.git_status import working_tree_status
 
 R = "\033[0m"
 YELLOW = "\033[33m"
@@ -39,42 +40,23 @@ def _color(text: str, code: str) -> str:
     return f"{code}{text}{R}"
 
 
+_TREE_COLOR = {"clean": GREEN, "modified": YELLOW}
+_SYNC_COLOR = {"synced": GREEN, "ahead": CYAN, "behind": RED, "conflict": RED}
+
+
 def _git_segment() -> str:
     """Ein billiger, netzfreier Read des Working Tree → gerendertes git-Segment.
 
     `<tree> · <sync>` mit unabhängigen Farben. Kollabiert zu `clean` (grün),
     wenn beide Dimensionen am Happy Path sind.
     """
-    proc = git_ops._git(
-        ["--no-optional-locks", "status", "--porcelain=v2", "--branch"],
-        check=False,
-    )
-    if proc.returncode != 0:
+    s = working_tree_status(repo.root())
+    if s is None:
         return ""
-
-    ahead = behind = 0
-    dirty = False
-    for line in proc.stdout.splitlines():
-        if line.startswith("# branch.ab "):
-            a, b = line.split()[-2:]
-            ahead, behind = int(a.lstrip("+")), int(b.lstrip("-"))
-        elif line and not line.startswith("#"):
-            dirty = True
-
-    tree_label, tree_color = ("modified", YELLOW) if dirty else ("clean", GREEN)
-    if ahead and behind:
-        sync_label, sync_color = "conflict", RED
-    elif ahead:
-        sync_label, sync_color = "ahead", CYAN
-    elif behind:
-        sync_label, sync_color = "behind", RED
-    else:
-        sync_label, sync_color = "synced", GREEN
-
-    if not dirty and sync_label == "synced":
+    if s.tree == "clean" and s.sync == "synced":
         return _color("clean", GREEN)
-    return (_color(tree_label, tree_color) + _color(" · ", GRAY)
-            + _color(sync_label, sync_color))
+    return (_color(s.tree, _TREE_COLOR[s.tree]) + _color(" · ", GRAY)
+            + _color(s.sync, _SYNC_COLOR[s.sync]))
 
 
 def _proto_state(folder: Path) -> str:
