@@ -136,12 +136,6 @@ def add_controller_routes(
     def logs_page():
         return HTMLResponse(render.log_page(daemon_status=_status()))
 
-    @app.get("/-/ui/daemon", include_in_schema=False)
-    def daemon_page():
-        # PLAN-17 Stufe 17.0: Status-Kacheln + dasselbe Live-Log, additiv neben
-        # Live-Log (nicht ersetzend).
-        return HTMLResponse(render.daemon_page(daemon_status=_status()))
-
     def _remote_job_schedules() -> list:
         # Trägt dieser Knoten selbst die scheduler-Rolle, ist der Selbstaufruf
         # (client.schedules()) schon die Wahrheit; sonst Remote-Abruf beim

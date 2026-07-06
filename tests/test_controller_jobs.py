@@ -129,7 +129,7 @@ def test_jobs_fragment_self_polls():
 
 def test_jobs_page_has_header_and_nav():
     html = render.jobs_page([], {}, [], now=100.0)
-    assert 'href="/-/"' in html and 'href="/-/ui/daemon"' in html
+    assert 'href="/-/"' in html and 'href="/-/ui/logs"' in html
     assert "<title>bibi · Jobs</title>" in html
 
 

@@ -385,15 +385,16 @@ def _filter_bar(typ: str | None, status: str | None) -> str:
 
 
 def _screen_nav(active: str) -> str:
-    """Screen-Tabs (Feed · Schedules · Jobs · Live-Log · Daemon · API-Docs); der
-    aktive ohne Link. **Home ist jetzt Feed** (PLAN-18 Stufe 18.3, löst die
+    """Screen-Tabs (Feed · Schedules · Jobs · Live-Log · API-Docs); der aktive
+    ohne Link. **Home ist jetzt Feed** (PLAN-18 Stufe 18.3, löst die
     2026-07-04-Entscheidung „Home = Schedules" bewusst ab) — Schedules bleibt
     unter seiner eigenen Route erreichbar, ist nur nicht mehr ``/-/`` selbst.
     Jobs (PLAN-17 Stufe 17.2) zeigt den Lokal/Remote-Abgleich + Start-Button für
-    /run. Daemon (Stufe 17.0) zeigt Rollen/Verbindungsstatus + dasselbe
-    Live-Log."""
+    /run. Daemon-Tab entfernt (PLAN-18 Stufe 18.4) — sein Inhalt (Status-
+    Kacheln) lebt jetzt im Feed-Header, ``daemon_page()``/``_status_cards()``
+    bleiben als Bausteine bestehen, nur die eigene Seite/der Tab fallen weg."""
     tabs = [("Feed", "/-/"), ("Schedules", "/-/ui/schedules"), ("Jobs", "/-/ui/jobs"),
-            ("Live-Log", "/-/ui/logs"), ("Daemon", "/-/ui/daemon"), ("API-Docs", "/-/docs")]
+            ("Live-Log", "/-/ui/logs"), ("API-Docs", "/-/docs")]
     def _tab(t: str, h: str) -> str:
         if t == active:
             return t

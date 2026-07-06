@@ -3,6 +3,11 @@
 User-Feedback 2026-07-05: additiv neben dem bestehenden Live-Log-Screen, nicht
 ersetzend — reuse desselben Log-Panel-Bausteins (``_log_panel()``), damit
 Filter/FOLLOW-Verhalten nicht doppelt gepflegt werden.
+
+PLAN-18 Stufe 18.4 (2026-07-06): die eigene Seite/der Nav-Tab sind wieder
+zurückgebaut (Inhalt lebt jetzt im Feed-Header) — ``daemon_page()``/
+``_status_cards()`` bleiben aber als Render-Bausteine bestehen und werden
+hier weiterhin pur getestet.
 """
 
 from __future__ import annotations
@@ -92,9 +97,10 @@ def test_log_page_unchanged_after_refactor():
     assert render._LOG_JS in html
 
 
-def test_screen_nav_includes_daemon_tab():
+def test_screen_nav_no_longer_includes_daemon_tab():
+    # PLAN-18 Stufe 18.4: Daemon-Tab entfernt, Inhalt lebt im Feed-Header.
     html = render._screen_nav("Live-Log")
-    assert 'href="/-/ui/daemon"' in html and "Daemon" in html
+    assert 'href="/-/ui/daemon"' not in html and "Daemon" not in html
 
 
 # ── Route (gefakter Client) ──────────────────────────────────────────────────
@@ -125,12 +131,10 @@ def app_with(team_repo: Path):
     return _make
 
 
-def test_daemon_route_renders_status_and_log(app_with):
+def test_daemon_route_retired(app_with):
+    # PLAN-18 Stufe 18.4: /-/ui/daemon ist zurückgebaut — Status-Kacheln +
+    # Git-Segment leben jetzt im Feed-Header (/-/), s. test_controller_feed.py.
     app = app_with({"roles": ["connect"], "connect": {"ok": True, "last_at": 90.0},
                     "auto_sync": True, "maintenance": False})
     with TestClient(app) as c:
-        r = c.get("/-/ui/daemon")
-        assert r.status_code == 200
-        assert r.headers["content-type"].startswith("text/html")
-        assert "Host-Verbindung" in r.text and "verbunden" in r.text
-        assert 'id="log" class="logbox"' in r.text
+        assert c.get("/-/ui/daemon").status_code == 404
