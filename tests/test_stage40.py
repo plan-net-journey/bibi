@@ -209,3 +209,41 @@ def test_status_verdict_absent_without_scheduler_role(team_repo):
     app = create_app(roles.resolve({"sync"}))
     with TestClient(app) as client:
         assert "verdict" not in client.get("/-/status").json()
+
+
+# ── /-/status-job_stats + /-/transitions (PLAN-21 Befund 11 Chart) ───────────
+
+
+def test_status_job_stats_counts_and_running_since_uptime(sched):
+    client, root = sched
+    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    client.post("/-/rescan")
+    client.post("/-/scheduler/next")  # a → running
+    stats = client.get("/-/status").json()["job_stats"]
+    assert stats["counts"] == {"running": 1}
+    assert stats["running_since_uptime"] == 1
+
+
+def test_status_job_stats_absent_without_scheduler_role(team_repo):
+    app = create_app(roles.resolve({"sync"}))
+    with TestClient(app) as client:
+        assert "job_stats" not in client.get("/-/status").json()
+
+
+def test_transitions_route_returns_log(sched):
+    client, root = sched
+    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    client.post("/-/rescan")
+    client.post("/-/scheduler/next")  # a → running, loggt eine Transition
+    rows = client.get("/-/transitions").json()
+    assert len(rows) == 1
+    assert rows[0]["to_status"] == "running"
+
+
+def test_transitions_route_since_filters(sched):
+    client, root = sched
+    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    client.post("/-/rescan")
+    client.post("/-/scheduler/next")
+    future = 9999999999.0
+    assert client.get("/-/transitions", params={"since": future}).json() == []

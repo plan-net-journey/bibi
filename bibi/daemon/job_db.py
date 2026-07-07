@@ -355,6 +355,14 @@ def deactivate_slugs(conn: sqlite3.Connection, slugs: set[str]) -> int:
     return n
 
 
+def status_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    """Aktuelle Zustands-Zählung aller aktiven Jobs (PLAN-21 Befund 11 Stat-Grid)."""
+    rows = conn.execute(
+        "SELECT status, COUNT(*) AS n FROM jobs WHERE active=1 GROUP BY status"
+    ).fetchall()
+    return {r["status"]: r["n"] for r in rows}
+
+
 def list_jobs(conn: sqlite3.Connection, status: str | None = None) -> list[dict]:
     # active=1 (PLAN-14 Stufe 14.5): dies speist die Root-Bänder (Live-Betrieb) —
     # ein deaktivierter Schedule (MD entfernt) gehört dort nicht mehr hin, nur

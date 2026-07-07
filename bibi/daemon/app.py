@@ -265,6 +265,17 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                                 content={"error": "journal entry not found", "id": jid})
         return {"deleted": jid}
 
+    # ── Lifecycle-Zeitreihe (PLAN-21 Befund 11) ───────────────────────────────
+    @app.get("/-/transitions", tags=["journal"])
+    def transitions_list(since: float | None = None):
+        # Rohes Transition-Log — Bucket-Aggregation für den Chart passiert im
+        # Controller/Render-Layer (reine Funktionen, kein DB-Zugriff dort).
+        conn = job_db.connect()
+        try:
+            return job_db.list_transitions(conn, since=since)
+        finally:
+            conn.close()
+
     # ── Worker-Verbund: Anmeldung/Heartbeat + Liste (PLAN-3 §3.6, A12) ────────
     @app.post("/-/worker", tags=["worker"], dependencies=[Depends(_auth)])
     def worker_heartbeat(hb: WorkerHeartbeat):
@@ -552,6 +563,20 @@ def create_app(
             conn = job_db.connect()
             try:
                 out["verdict"] = job_db.verdict(conn)
+                # Stat-Grid-Grundlage fürs Lauf-Historie-Chart (PLAN-21 Befund
+                # 11): aktuelle Zustands-Zählung + running-Gesamtzahl seit
+                # Prozessstart. Letztere ist bewusst kein persistenter Zähler
+                # (aus transitions abgeleitet, ab started_at) — reicht bis zu
+                # 48h Uptime exakt (Retention der transitions-Tabelle), danach
+                # unterzählt sie leicht; kein neuer State nötig dafür.
+                running_since_uptime = sum(
+                    1 for t in job_db.list_transitions(conn, since=started_at)
+                    if t["to_status"] == "running"
+                )
+                out["job_stats"] = {
+                    "counts": job_db.status_counts(conn),
+                    "running_since_uptime": running_since_uptime,
+                }
             finally:
                 conn.close()
         return out

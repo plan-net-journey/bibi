@@ -97,6 +97,15 @@ def add_controller_routes(
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             return []
 
+    def _transitions() -> list:
+        # /-/transitions ist scheduler-gated (501 ohne scheduler-Rolle, PLAN-21
+        # Befund 11) — auf einem reinen Client bleibt das Chart dann leer statt
+        # den Screen zu brechen (§2.7, wie _status()/_schedules() oben).
+        try:
+            return client.transitions()
+        except Exception:  # noqa: BLE001
+            return []
+
     def _effective_days(days: int | None) -> int | None:
         """``days`` fehlt im Query (allererster Seitenaufruf) → Default 1 Tag
         (PLAN-18 Design-Pass), nicht unbegrenzt — ein voller, unbegrenzter Log
@@ -160,17 +169,25 @@ def add_controller_routes(
 
     @app.get("/-/ui/schedules", include_in_schema=False)
     def schedules_screen(typ: str | None = None, status: str | None = None):
-        # Der Schedules-Screen (Seite): Nav + Ops-Handles + Filter + gefilterte,
-        # self-pollende Liste.
+        # Der Schedules-Screen (Seite): Nav + Ops-Handles + Stat-Grid/24h-Chart
+        # (PLAN-21 Befund 11) + Filter + gefilterte, self-pollende Liste.
         items = render.filter_schedules(_schedules(), typ=typ, status=status)
         return HTMLResponse(render.schedules_page(
-            items, typ=typ, status=status, daemon_status=_status()))
+            items, typ=typ, status=status, daemon_status=_status(),
+            transitions=_transitions()))
 
     @app.get("/-/ui/schedules/list", include_in_schema=False)
     def schedules_list_fragment(typ: str | None = None, status: str | None = None):
         # Filter-fähiges Fragment — Self-Poll-Ziel + Ziel der Filter-Dropdowns.
         items = render.filter_schedules(_schedules(), typ=typ, status=status)
         return HTMLResponse(render.schedules_fragment(items, typ=typ, status=status))
+
+    @app.get("/-/ui/schedules/timeseries", include_in_schema=False)
+    def schedules_timeseries_fragment():
+        # Self-Poll-Ziel des Stat-Grid/Charts — eigene Route, eigene
+        # Datenquelle (transitions/job_stats statt /-/schedule).
+        return HTMLResponse(render.timeseries_fragment(
+            _transitions(), _status().get("job_stats")))
 
     @app.get("/-/ui/logs", include_in_schema=False)
     def logs_page():

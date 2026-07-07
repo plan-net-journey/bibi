@@ -212,6 +212,27 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .heatmap-legend { display: flex; align-items: center; justify-content: flex-end;
                   gap: .3rem; font-size: .75rem; color: #888; margin-top: .35rem; }
 .heatmap-legend .hm-cell { flex: none; width: 9px; height: 9px; }
+/* Lauf-Historie-Chart (PLAN-21 Befund 11) — Stat-Grid + gestapelte CSS-Balken,
+   dieselbe div+Klasse-Konvention wie die Heatmap-Zellen (kein SVG). */
+.job-stats-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 1.2rem;
+                   align-items: center; padding: .4rem 0 .6rem; }
+.jsg-col { display: flex; flex-direction: column; gap: .15rem; }
+.jsg-row { display: flex; justify-content: space-between; gap: .6rem; font-size: .78rem; }
+.jsg-label { color: #888; }
+.jsg-waiting .jsg-count { color: #d6a23e; font-weight: 700; }
+.jsg-halt .jsg-count { color: #e06c5a; font-weight: 700; }
+.jsg-running { align-items: center; text-align: center; }
+.jsg-running .jsg-big { font-size: 1.8rem; font-weight: 700; color: #5fb37a; line-height: 1; }
+.jsg-running .jsg-sub { font-size: .68rem; color: #888; }
+.chart-wrap { padding-bottom: .3rem; }
+.chart-bars { display: flex; gap: 2px; height: 80px; border-bottom: 1px solid #8884; }
+.chart-col { flex: 1; min-width: 3px; display: flex; flex-direction: column-reverse; height: 100%; }
+.chart-col .seg { width: 100%; }
+.chart-col .seg.running { background: #5fb37a; }
+.chart-col .seg.waiting { background: #d6a23e; }
+.chart-col .seg.halt { background: #e06c5a; }
+.chart-axis { display: flex; justify-content: space-between; font-size: .68rem;
+              color: #888; margin-top: .2rem; }
 .feedlist { display: flex; flex-direction: column; gap: 0; font-size: .88rem; }
 .frow { display: flex; gap: .6rem; align-items: baseline; padding: .38rem 0;
         border-bottom: 1px solid #8881; }
@@ -369,6 +390,111 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
     url = "/-/ui/schedules/list" + (f"?{qs}" if qs else "")
     attrs = (f'id="schedules" hx-get="{url}" hx-trigger="{_POLL}" hx-swap="outerHTML"')
     return f"<div {attrs}>{schedule_list(schedules, now)}</div>"
+
+
+# ── Lauf-Historie-Chart (PLAN-21 Befund 11) ──────────────────────────────────
+
+#: Gruppierung je Status fürs Chart (User-Tabelle) — "complete" bewusst nicht
+#: gemappt, es wird ausgeblendet statt in einer Gruppe mitgezählt.
+_STATUS_GROUP = {
+    "pending": "waiting", "failed": "waiting", "deferred": "waiting", "awaiting": "waiting",
+    "running": "running",
+    "error": "halt", "inactive": "halt", "zombie": "halt", "killed": "halt",
+}
+_WAITING_STATUSES = ("pending", "failed", "deferred", "awaiting")
+_HALT_STATUSES = ("error", "inactive", "zombie", "killed")
+
+
+def _timeseries_buckets(transitions: list[dict], *, now: float, hours: int = 24) -> list[dict[str, int]]:
+    """``hours`` stündliche Buckets, ältester links, ``now`` exakt am rechten
+    Rand (rollierendes Fenster relativ zu ``now``, kein Kalenderstunden-Raster
+    — "jetzt" bleibt so immer rechts, auch mitten in einer Stunde). Pro Bucket:
+    wie viele Jobs waren zu dessen Ende in welcher Gruppe (waiting/running/halt)
+    — aus dem letzten vor diesem Zeitpunkt bekannten Status je ``job_id``.
+    ``transitions`` sollte weiter zurückreichen als ``hours`` (die vollen 48h
+    Retention, s. ``job_db.TRANSITIONS_RETENTION_S``), sonst fehlt Jobs, die
+    schon vor dem sichtbaren Fenster in einem Zustand hingen, ihr Startpunkt."""
+    bucket_s = 3600
+    boundaries = [now - (hours - i) * bucket_s for i in range(1, hours + 1)]
+    rows = sorted(transitions, key=lambda t: t["ts"])
+    current: dict[str, str] = {}
+    out: list[dict[str, int]] = []
+    idx, n = 0, len(rows)
+    for boundary in boundaries:
+        while idx < n and rows[idx]["ts"] <= boundary:
+            current[rows[idx]["job_id"]] = rows[idx]["to_status"]
+            idx += 1
+        counts = {"waiting": 0, "running": 0, "halt": 0}
+        for status in current.values():
+            group = _STATUS_GROUP.get(status)
+            if group:
+                counts[group] += 1
+        out.append(counts)
+    return out
+
+
+def _timeseries_html(buckets: list[dict[str, int]]) -> str:
+    """Gestapelte CSS-Balken (dieselbe div+CSS-Klasse-Konvention wie die
+    Heatmap-Zellen, kein SVG) — Höhe je Segment relativ zum größten
+    Bucket-Gesamt (y-Achse an maximaler paralleler Lauf-Zahl orientiert)."""
+    if not buckets:
+        return '<div class="chart-wrap"><p class="out-empty">— noch keine Daten —</p></div>'
+    maxtotal = max((b["waiting"] + b["running"] + b["halt"] for b in buckets), default=0) or 1
+    n = len(buckets)
+    cols = []
+    for i, b in enumerate(buckets):
+        hours_ago = n - i
+        title = (f"vor {hours_ago}–{hours_ago - 1}h · "
+                f"warten {b['waiting']} · aktiv {b['running']} · halt {b['halt']}")
+        segs = "".join(
+            f'<div class="seg {grp}" style="height:{b[grp] / maxtotal * 100:.1f}%"></div>'
+            for grp in ("running", "waiting", "halt") if b[grp]
+        )
+        cols.append(f'<div class="chart-col" title="{_e(title)}">{segs}</div>')
+    return (
+        '<div class="chart-wrap"><div class="chart-bars">' + "".join(cols) + "</div>"
+        '<div class="chart-axis"><span>vor 24h</span><span>jetzt</span></div></div>'
+    )
+
+
+def _job_stats_grid(counts: dict[str, int], running_since_uptime: int) -> str:
+    """3-Spalten-Stat-Grid (PLAN-21 Befund 11): 4 Waiting- + 4 Halt-Zustände
+    untereinander links/rechts, ``running`` als mittlere Spalte mit der
+    Gesamtzahl seit Prozessstart klein dazu."""
+    def _rows(statuses: tuple[str, ...]) -> str:
+        return "".join(
+            f'<div class="jsg-row"><span class="jsg-label">{s}</span>'
+            f'<span class="jsg-count">{counts.get(s, 0)}</span></div>'
+            for s in statuses
+        )
+    running = counts.get("running", 0)
+    return (
+        '<div class="job-stats-grid">'
+        f'<div class="jsg-col jsg-waiting">{_rows(_WAITING_STATUSES)}</div>'
+        '<div class="jsg-col jsg-running">'
+        f'<div class="jsg-big">{running}</div><div class="jsg-label">running</div>'
+        f'<div class="jsg-sub">{running_since_uptime} seit Start</div></div>'
+        f'<div class="jsg-col jsg-halt">{_rows(_HALT_STATUSES)}</div>'
+        "</div>"
+    )
+
+
+def timeseries_fragment(transitions: list[dict], job_stats: dict | None = None,
+                        now: float | None = None) -> str:
+    """Self-pollender Wrapper um Stat-Grid + 24h-Chart. Ziel =
+    ``/-/ui/schedules/timeseries`` — eigener Poll, getrennt von der
+    Schedule-Liste (``schedules_fragment``): andere Datenquelle
+    (``transitions``/``job_stats`` statt ``/-/schedule``), gleicher
+    ``_POLL``-Takt (§ real-time, kein neues Verfahren)."""
+    now = time.time() if now is None else now
+    job_stats = job_stats or {}
+    counts = job_stats.get("counts") or {}
+    running_since_uptime = job_stats.get("running_since_uptime", 0)
+    buckets = _timeseries_buckets(transitions, now=now)
+    body = _job_stats_grid(counts, running_since_uptime) + _timeseries_html(buckets)
+    attrs = ('id="timeseries" hx-get="/-/ui/schedules/timeseries" '
+            f'hx-trigger="{_POLL}" hx-swap="outerHTML"')
+    return f"<div {attrs}>{body}</div>"
 
 
 # ── Schedules-Screen mit Filter (Frontend-Plan §C.3) ─────────────────────────
@@ -545,13 +671,17 @@ def _header(active: str, status: dict | None = None) -> str:
 
 def schedules_page(schedules: list[dict], typ: str | None = None,
                    status: str | None = None, now: float | None = None,
-                   *, daemon_status: dict | None = None) -> str:
+                   *, daemon_status: dict | None = None,
+                   transitions: list[dict] | None = None) -> str:
     """Der Schedules-Screen: Nav + Ops-Handles (RESCAN/MAINT, User-Feedback
-    2026-07-03) + Filterleiste + (gefilterte) self-pollende Liste. ``schedules``
-    ist bereits gefiltert; ``typ``/``status`` spiegeln die Auswahl — ``status``
-    ist hier der Filterwert (z. B. "error"), nicht zu verwechseln mit
-    ``daemon_status`` (``/-/status``-JSON für den MAINT-Toggle)."""
+    2026-07-03) + Stat-Grid/24h-Chart (PLAN-21 Befund 11) + Filterleiste +
+    (gefilterte) self-pollende Liste. ``schedules`` ist bereits gefiltert;
+    ``typ``/``status`` spiegeln die Auswahl — ``status`` ist hier der
+    Filterwert (z. B. "error"), nicht zu verwechseln mit ``daemon_status``
+    (``/-/status``-JSON für den MAINT-Toggle **und** die Stat-Grid-Zählung,
+    ``daemon_status["job_stats"]``)."""
     now = time.time() if now is None else now
+    daemon_status = daemon_status or {}
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'
@@ -561,6 +691,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Schedules', daemon_status)}"
+        f"{timeseries_fragment(transitions or [], daemon_status.get('job_stats'), now)}"
         f"{_filter_bar(typ, status)}"
         f"{schedules_fragment(schedules, now, typ=typ, status=status)}"
         f"<script>{_CLOCK_JS}</script>"

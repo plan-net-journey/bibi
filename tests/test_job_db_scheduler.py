@@ -306,6 +306,27 @@ def test_sweep_prunes_old_transitions(conn):
     assert job_db.list_transitions(conn) == []
 
 
+# ── status_counts (PLAN-21 Befund 11 Stat-Grid) ──────────────────────────────
+
+
+def test_status_counts_groups_active_jobs_by_status(conn):
+    a = _insert(conn, "a", 0, time.time())
+    job_db.reserve_next(conn, now=100.0)  # a → running
+    job_db.report_status(conn, a, status="killed", now=200.0)  # a → killed
+    _insert(conn, "b", 0, time.time())  # bleibt pending, wird nicht reserviert
+    assert job_db.status_counts(conn) == {"pending": 1, "killed": 1}
+
+
+def test_status_counts_excludes_inactive_jobs(conn):
+    jid = _insert(conn, "a", 0, time.time())
+    conn.execute("UPDATE jobs SET active=0 WHERE id=?", (jid,))
+    assert job_db.status_counts(conn) == {}
+
+
+def test_status_counts_empty_db(conn):
+    assert job_db.status_counts(conn) == {}
+
+
 # ── Concurrency: n parallele /next → disjunkt (§3.2/§3.8) ─────────────────────
 
 

@@ -27,11 +27,12 @@ def test_openapi_covers_job_scheduler_worker_journal(client):
     assert "/-/scheduler/status/{id}" in paths
     assert "/-/worker" in paths
     assert "/-/journal" in paths
+    assert "/-/transitions" in paths
 
 
 def test_openapi_is_versioned(client):
     spec = client.get("/-/openapi.json").json()
-    assert spec["info"]["version"] == CONTRACT_VERSION == "3.1"
+    assert spec["info"]["version"] == CONTRACT_VERSION == "3.2"
 
 
 def test_schemas_present_in_components(client):
@@ -69,6 +70,7 @@ def test_status_enum_in_schema(client):
         ("get", "/-/worker", None),
         ("get", "/-/journal", None),
         ("delete", "/-/journal/1", None),
+        ("get", "/-/transitions", None),
     ],
 )
 def test_all_stubs_return_501_json_no_html(client, method, path, body):
