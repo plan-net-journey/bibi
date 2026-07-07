@@ -604,6 +604,42 @@ def create_app(
         finally:
             conn.close()
 
+    # PLAN-21 Befund 10: Einzel-Lauf-Detail für lokale /run-Läufe, symmetrisch
+    # zu /-/run/journal (Liste) — rollenunabhängig, damit ein reiner Client
+    # seine eigene Lauf-Historie auch im Detail sehen kann, ohne je die
+    # scheduler-Rolle zu tragen. Bewusst NICHT /-/journal/{jid} wiederverwendet
+    # (eingefrorener v3.0-Vertrag, 501-Stub ohne scheduler-Rolle) — nur
+    # domain="local" wird ausgeliefert, alles andere 404 (kein Leck disponierter
+    # Läufe über diese eigentlich rollenfreie Route).
+    @app.get("/-/run/journal/{jid}", tags=["job"])
+    def run_journal_get(jid: int):
+        conn = job_db.connect()
+        try:
+            entry = job_db.get_journal(conn, jid)
+        finally:
+            conn.close()
+        if entry is None or entry.get("domain") != "local":
+            return JSONResponse(status_code=404,
+                                content={"error": "local run not found", "id": jid})
+        return entry
+
+    @app.get("/-/run/journal/{jid}/output", tags=["job"])
+    def run_journal_output(jid: int):
+        # Analogon zu /-/journal/{jid}/output (§4.2), nur domain="local".
+        conn = job_db.connect()
+        try:
+            entry = job_db.get_journal(conn, jid)
+        finally:
+            conn.close()
+        if entry is None or entry.get("domain") != "local":
+            return JSONResponse(status_code=404,
+                                content={"error": "local run not found", "id": jid})
+        ref = entry.get("output_ref")
+        raw = output.read_events(repo.root() / ref) if ref else []
+        kind = models.effective_kind(entry.get("payload"))
+        return {"id": jid, "kind": kind, "events": output_format.format_events(raw, kind),
+                "output_ref": entry.get("output_ref")}
+
     # ── /feed: Git-Historie zu Entitäten + Heatmap (PLAN-18) — rollenunabhängig ─
     # Reine Git-/Filesystem-Introspektion (bibi/feed.py), kein job_db-Zugriff —
     # funktioniert auf jedem Knoten, auch einem reinen Client ohne Scheduler/

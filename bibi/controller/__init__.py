@@ -43,15 +43,26 @@ def _wants_html(request: Request) -> bool:
 def _local_schedules() -> dict[str, dict]:
     """Read-only Discovery-Scan des Vaults (PLAN-17 Befund 2 Punkt 1) — bewusst
     **ohne** ``job_db.upsert_schedule()``, kein DB-Schreiben, kein Dispatch. Ein
-    Client trägt im Ruhezustand keine Rolle, die ``vault/case/`` sonst einliest."""
+    Client trägt im Ruhezustand keine Rolle, die ``vault/case/`` sonst einliest.
+
+    ``repo_path`` (repo-root-relative, POSIX) ist neu (PLAN-21 Befund 10) —
+    Grundlage für ``local_files_status()``, die git-Pfade repo-root-relativ
+    erwartet, während ``pr.schedule_ref`` case-dir-relativ ist."""
     from bibi import repo
     from bibi.schedule import discovery
     try:
-        found = discovery.discover(repo.case_dir()).found
+        case_dir = repo.case_dir()
+        root = repo.root()
+        found = discovery.discover(case_dir).found
     except Exception:  # noqa: BLE001 — defensiv (§2.7)
         return {}
-    return {slug: {"schedule": pr.spec.schedule, "at": pr.spec.at, "payload": pr.spec.payload}
-            for slug, pr in found.items()}
+    return {
+        slug: {
+            "schedule": pr.spec.schedule, "at": pr.spec.at, "payload": pr.spec.payload,
+            "repo_path": (case_dir / pr.schedule_ref).relative_to(root).as_posix(),
+        }
+        for slug, pr in found.items()
+    }
 
 
 def _scheduler_url() -> str | None:
@@ -165,25 +176,25 @@ def add_controller_routes(
     def logs_page():
         return HTMLResponse(render.log_page(daemon_status=_status()))
 
-    def _remote_job_schedules() -> list:
-        # Trägt dieser Knoten selbst die scheduler-Rolle, ist der Selbstaufruf
-        # (client.schedules()) schon die Wahrheit; sonst Remote-Abruf beim
-        # konfigurierten Scheduler (PLAN-17 Befund 2 Punkt 3 — "Browser redet
-        # nur mit dem eigenen Daemon, der holt sich Remote-Daten bei Bedarf
-        # selbst").
-        if roles.scheduler:
-            return _schedules()
-        url = _scheduler_url()
-        if not url:
-            return []
-        try:
-            from bibi.daemon.scheduler_client import RemoteScheduler
-            return RemoteScheduler(url, secret=os.environ.get("BIBI_CONNECT_SECRET")).schedules()
-        except Exception:  # noqa: BLE001 — Host down/Netz, defensiv (§2.7)
-            return []
-
     def _jobs_data() -> tuple[list, dict, list]:
-        compared = render._compare_jobs(_local_schedules(), _remote_job_schedules())
+        """PLAN-21 Befund 10, User-Entscheidung: der Jobs-Screen dient
+        ausschließlich dem Review der lokalen Repository-Realität, kein
+        Remote-Abgleich mehr (weder Netzaufruf noch Vergleichsspalte).
+        ``rows`` = lokal entdeckte Job-MDs + echter Git-Status je Datei
+        (``local_files_status()``) — gelöschte MDs tauchen von selbst nicht
+        mehr auf, da ``discovery.discover()`` sie nicht mehr findet."""
+        from bibi import repo
+        from bibi.git_status import local_files_status
+        local = _local_schedules()
+        try:
+            git_by_path = local_files_status(
+                repo.root(), [s["repo_path"] for s in local.values()])
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            git_by_path = {}
+        rows = [
+            {"slug": slug, **s, "git_status": git_by_path.get(s["repo_path"], "clean")}
+            for slug, s in sorted(local.items())
+        ]
         try:
             run_journal = client.run_journal(limit=200)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
@@ -193,20 +204,18 @@ def add_controller_routes(
         local_runs: dict[str, dict] = {}
         for run in run_journal:
             local_runs.setdefault(run["slug"], run)
-        return compared, local_runs, run_journal[:20]
+        return rows, local_runs, run_journal[:20]
 
     @app.get("/-/ui/jobs", include_in_schema=False)
     def jobs_screen():
-        compared, local_runs, runs = _jobs_data()
-        return HTMLResponse(render.jobs_page(
-            compared, local_runs, runs, scheduler_url=_scheduler_url(), daemon_status=_status()))
+        rows, local_runs, runs = _jobs_data()
+        return HTMLResponse(render.jobs_page(rows, local_runs, runs, daemon_status=_status()))
 
     @app.get("/-/ui/jobs/board", include_in_schema=False)
     def jobs_board():
         # Self-Poll-Ziel von #jobsboard (wie #live/#journal bei Schedules).
-        compared, local_runs, runs = _jobs_data()
-        return HTMLResponse(render.jobs_fragment(
-            compared, local_runs, runs, scheduler_url=_scheduler_url()))
+        rows, local_runs, runs = _jobs_data()
+        return HTMLResponse(render.jobs_fragment(rows, local_runs, runs))
 
     @app.post("/-/ui/jobs/start/{slug}", include_in_schema=False)
     def jobs_start(slug: str):
@@ -214,9 +223,8 @@ def add_controller_routes(
             client.run(slug=slug)
         except Exception:  # noqa: BLE001 — Board zeigt Fehlschlag beim nächsten Poll (defensiv, §2.7)
             pass
-        compared, local_runs, runs = _jobs_data()
-        return HTMLResponse(render.jobs_fragment(
-            compared, local_runs, runs, scheduler_url=_scheduler_url()))
+        rows, local_runs, runs = _jobs_data()
+        return HTMLResponse(render.jobs_fragment(rows, local_runs, runs))
 
     def _detail_data(slug: str):
         try:
@@ -303,6 +311,18 @@ def add_controller_routes(
             data = client.run_output(jid)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             entry, data = {}, {}
+        if not entry:
+            # /-/journal/{jid} ist scheduler-gated (501 ohne scheduler-Rolle,
+            # HTTPError → oben abgefangen) — auf einem reinen Client fällt das
+            # hier auf die rollenunabhängige lokale Route zurück (PLAN-21
+            # Befund 10). Trägt dieser Knoten die scheduler-Rolle, liefert
+            # client.journal_entry() bereits JEDE Domäne (get_journal() filtert
+            # nicht nach domain), dieser Zweig greift dann nie.
+            try:
+                entry = client.local_run_entry(jid)
+                data = client.local_run_output(jid)
+            except Exception:  # noqa: BLE001 — defensiv (§2.7)
+                entry, data = {}, {}
         # schedule_ref lebt nur am aktuellen Job (nicht im Journal) — Live-Lookup
         # per Slug, best-effort (User-Feedback 2026-07-01: "wo ist die schedule_ref?").
         # Existiert der Schedule nicht mehr (gelöscht/umbenannt), bleibt sie schlicht leer.

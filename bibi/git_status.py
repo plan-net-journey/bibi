@@ -55,3 +55,32 @@ def working_tree_status(root: Path | None = None) -> WorkingTreeStatus | None:
         sync = "synced"
 
     return WorkingTreeStatus(tree=tree, sync=sync, branch=branch)
+
+
+def local_files_status(root: Path | None, paths: list[str]) -> dict[str, str]:
+    """Git-Status je Pfad — "new" (neu/untracked) | "modified" (getrackt,
+    geändert) | "clean" (getrackt, unverändert) — für die lokal entdeckten
+    Job-MDs (PLAN-21 Befund 10, User-Fund: "die Jobs im Repository plus ihr
+    git Status (neu, geändert, etc.) anzeigen"; gelöschte MDs will der User
+    **nicht** als eigenen Status sehen — sie verschwinden von selbst, da
+    ``discovery.discover()`` (Dateisystem-Scan) sie ohnehin nicht mehr findet).
+
+    Ein einziger ``git status``-Aufruf für alle Pfade statt einem je Datei.
+    ``paths`` sind repo-root-relative Pfade (POSIX-Separator, wie
+    ``Path.relative_to().as_posix()`` liefert). ``--no-renames``, damit ein
+    Rename immer als zwei einfache Zeilen (alter Pfad "gelöscht" — hier
+    irrelevant, neuer Pfad "new") statt eines schwerer zu parsenden
+    Rename-Eintrags erscheint."""
+    proc = subprocess.run(
+        ["git", "--no-optional-locks", "status", "--porcelain=v2",
+         "--untracked-files=all", "--no-renames"],
+        cwd=root, capture_output=True, text=True, check=False,
+    )
+    dirty: dict[str, str] = {}
+    if proc.returncode == 0:
+        for line in proc.stdout.splitlines():
+            if line.startswith("? "):
+                dirty[line[2:]] = "new"
+            elif line.startswith("1 ") or line.startswith("u "):
+                dirty[line.split(" ")[-1]] = "modified"
+    return {p: dirty.get(p, "clean") for p in paths}

@@ -60,7 +60,8 @@ a.slug { font-weight: 600; text-decoration: none; }
 a.slug:hover { text-decoration: underline; }
 .sched a { text-decoration: none; }
 .sched a:hover { text-decoration: underline; }
-.sched a.rowlink { color: inherit; }
+a.rowlink { color: inherit; text-decoration: none; }
+a.rowlink:hover { text-decoration: underline; }
 h2 { font-size: .95rem; color: #888; margin: 1.5rem 0 .4rem; font-weight: 600; }
 .back { color: #888; text-decoration: none; font-size: .85rem; }
 .meta { color: #aaa; font-size: .9rem; margin: .2rem 0 1rem; }
@@ -160,19 +161,19 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .side-empty { color: #888; font-size: .82rem; }
 .chip { font-family: ui-monospace, monospace; font-size: .7rem; font-weight: 700;
         padding: .1rem .45rem; border-radius: .3rem; display: inline-block; white-space: nowrap; }
-.chip.same { background: #5fb37a2e; color: #5fb37a; }
-.chip.diff { background: #d6a23e2e; color: #d6a23e; }
-.chip.local_only, .chip.remote_only { background: #8882; color: #888; }
-.diffhint { font-size: .75rem; color: #888; margin-top: .15rem; font-family: ui-monospace, monospace; }
+/* Git-Status je Job-MD (PLAN-21 Befund 10) — löst die vorherige Lokal/Remote-
+   Abgleich-Chips (same/diff/local_only/remote_only) ab. */
+.chip.clean { background: #5fb37a2e; color: #5fb37a; }
+.chip.modified { background: #d6a23e2e; color: #d6a23e; }
+.chip.new { background: #5a9fe02e; color: #5a9fe0; }
 .startbtn { font: inherit; font-size: .78rem; background: #5a9fe033; border: 1px solid #5a9fe066;
         border-radius: .35rem; padding: .2rem .55rem; cursor: pointer; color: inherit; font-weight: 600;
         white-space: nowrap; }
-.startbtn:disabled { opacity: .35; cursor: default; background: #8882; border-color: #8884; }
 .note { color: #888; font-size: .82rem; margin: .2rem 0 .8rem; }
-.hostlink { margin: .3rem 0 1.5rem; font-size: .88rem; }
 .runhist { font-size: .86rem; }
 .runhist .row { display: flex; gap: .8rem; padding: .35rem 0; border-bottom: 1px solid #8881;
                 align-items: baseline; }
+.runhist a.row:hover { background: #8881; }
 .runhist .t { color: #888; font-family: ui-monospace, monospace; font-size: .78rem; flex: 0 0 4.4rem; }
 .gitsegment { font-family: ui-monospace, monospace; font-size: .95rem; }
 .gitsegment .sep { color: #888; }
@@ -895,91 +896,57 @@ def daemon_page(daemon_status: dict | None = None, now: float | None = None) -> 
     )
 
 
-# ── Jobs-Screen (PLAN-17 Stufe 17.1/17.2) ────────────────────────────────────
+# ── Jobs-Screen (PLAN-17 Stufe 17.1/17.2, PLAN-21 Befund 10) ─────────────────
 
-_COMPARE_LABEL = {
-    "same": ("chip same", "✓ identisch"),
-    "diff": ("chip diff", "⚠ unterschiedlich"),
-    "local_only": ("chip local_only", "nur lokal"),
-    "remote_only": ("chip remote_only", "nur remote"),
+#: Git-Status je lokaler Job-MD (PLAN-21 Befund 10, User-Fund: "die Jobs im
+#: Repository plus ihr git Status (neu, geändert, etc.) anzeigen"; gelöschte
+#: MDs brauchen keinen eigenen Status — sie verschwinden von selbst aus der
+#: Liste, da discovery.discover() sie nicht mehr findet).
+_GIT_STATUS_LABEL = {
+    "new": ("chip new", "neu"),
+    "modified": ("chip modified", "geändert"),
+    "clean": ("chip clean", "unverändert"),
 }
 
 
-def _compare_jobs(local: dict[str, dict], remote: list[dict]) -> list[dict]:
-    """Pro Slug (Vereinigung aus lokal entdeckten und remote gemeldeten Slugs)
-    Trigger (``schedule``/``at``) + Payload vergleichen → identisch/
-    unterschiedlich/nur lokal/nur remote (PLAN-17 Befund 2 Punkt 2). Reine
-    Vergleichsfunktion, kein Datenbankzugriff — ``local``/``remote`` sind schon
-    fertige Dicts (Discovery bzw. ``/-/schedule``)."""
-    remote_by_slug = {r["slug"]: r for r in remote}
-    slugs = sorted(set(local) | set(remote_by_slug))
-    rows = []
-    for slug in slugs:
-        l, r = local.get(slug), remote_by_slug.get(slug)
-        if l and r:
-            l_trigger = l.get("schedule") or l.get("at") or ""
-            r_trigger = r.get("trigger") or ""
-            l_payload = l.get("payload") or ""
-            r_payload = r.get("payload") or ""
-            if l_trigger == r_trigger and l_payload == r_payload:
-                compare, hint = "same", ""
-            else:
-                compare = "diff"
-                hint = (f'schedule: "{l_trigger}" → "{r_trigger}"' if l_trigger != r_trigger
-                       else "payload unterschiedlich")
-        elif l:
-            compare, hint = "local_only", ""
-        else:
-            compare, hint = "remote_only", ""
-        rows.append({"slug": slug, "local": l, "remote": r, "compare": compare, "diff_hint": hint})
-    return rows
-
-
 def _jobs_row(row: dict, local_runs: dict[str, dict], now: float) -> str:
+    """Eine Zeile: Slug, Git-Status, letzter lokaler Lauf, Start-CTA (PLAN-21
+    Befund 10 — löst die vorherige Lokal/Remote/Abgleich-Zeile ab, kein
+    Remote-Bezug mehr). Slug und Status verlinken auf die lokale Lauf-Detail-
+    Seite (/-/ui/run/{jid}), sofern schon mal gelaufen — sonst reiner Text,
+    es gibt noch nichts zu zeigen."""
     slug = row["slug"]
     s = _e(slug)
-    local, remote = row["local"], row["remote"]
+    lr = local_runs.get(slug)
+    jid = lr.get("id") if lr else None
 
-    if local is not None:
-        lr = local_runs.get(slug)
-        if lr:
-            local_cell = f'<span class="st {_e(lr["status"])}">{_e(lr["status"])}</span>'
-        else:
-            local_cell = '<span class="side-empty">noch nie lokal gelaufen</span>'
+    if jid is not None:
+        slug_cell = f'<a class="slug" href="/-/ui/run/{jid}">{s}</a>'
+        status_cell = (f'<a class="rowlink" href="/-/ui/run/{jid}">'
+                       f'<span class="st {_e(lr["status"])}">{_e(lr["status"])}</span></a>')
     else:
-        local_cell = '<span class="side-empty">—</span>'
+        slug_cell = f'<span class="slug">{s}</span>'
+        status_cell = '<span class="side-empty">noch nie lokal gelaufen</span>'
 
-    if remote is not None:
-        status = remote.get("last_status") or "—"
-        nxt = remote.get("next_fire_at")
-        suffix = f" · nächster {_until(nxt, now)}" if nxt else ""
-        remote_cell = f'<span class="st {_e(status)}">{_e(status)}</span>{suffix}'
-    else:
-        remote_cell = '<span class="side-empty">—</span>'
+    cls, label = _GIT_STATUS_LABEL.get(row.get("git_status", "clean"),
+                                       ("chip", _e(str(row.get("git_status", "—")))))
+    git_cell = f'<span class="{cls}">{label}</span>'
 
-    cls, label = _COMPARE_LABEL[row["compare"]]
-    hint = f'<div class="diffhint">{_e(row["diff_hint"])}</div>' if row["diff_hint"] else ""
-    compare_cell = f'<span class="{cls}">{label}</span>{hint}'
-
-    if local is not None:
-        btn_attrs = (f'hx-post="/-/ui/jobs/start/{s}" hx-target="#jobsboard" hx-swap="outerHTML" '
-                    f'title="/run {s} sofort auf diesem Rechner"')
-    else:
-        btn_attrs = ('disabled title="Keine lokale MD gefunden — nicht per /run startbar"')
+    btn_attrs = (f'hx-post="/-/ui/jobs/start/{s}" hx-target="#jobsboard" hx-swap="outerHTML" '
+                f'title="/run {s} sofort auf diesem Rechner"')
     start_cell = f'<button class="startbtn" {btn_attrs}>▶ Start</button>'
 
-    return (f'<tr><td><a class="slug" href="/-/ui/schedule/{s}">{s}</a></td>'
-            f"<td>{local_cell}</td><td>{remote_cell}</td><td>{compare_cell}</td>"
+    return (f"<tr><td>{slug_cell}</td><td>{git_cell}</td><td>{status_cell}</td>"
             f"<td>{start_cell}</td></tr>")
 
 
 def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float) -> str:
     if not rows:
-        return '<p class="out-empty">— keine Schedules (weder lokal noch remote) —</p>'
+        return '<p class="out-empty">— keine Job-MDs im Repository gefunden —</p>'
     body = "".join(_jobs_row(r, local_runs, now) for r in rows)
     return (
-        '<table><thead><tr><th>Slug</th><th>Lokal</th><th>Remote</th>'
-        "<th>Abgleich</th><th></th></tr></thead>"
+        '<table><thead><tr><th>Slug</th><th>Git</th><th>Letzter Lauf</th>'
+        "<th></th></tr></thead>"
         f"<tbody>{body}</tbody></table>"
     )
 
@@ -991,9 +958,15 @@ def _run_hist_row(r: dict, now: float) -> str:
     exit_txt = f" · exit {exit_code}" if exit_code is not None else ""
     dur = _duration_cell(r)
     dur_txt = f" · {dur}" if dur != "—" else ""
-    return (f'<div class="row"><span class="t">{_e(t)}</span>'
-            f'<span class="st {_e(status)}">{_e(status)}</span>'
-            f'<span>{_e(r.get("slug"))}{exit_txt}{dur_txt}</span></div>')
+    body = (f'<span class="t">{_e(t)}</span>'
+           f'<span class="st {_e(status)}">{_e(status)}</span>'
+           f'<span>{_e(r.get("slug"))}{exit_txt}{dur_txt}</span>')
+    jid = r.get("id")
+    # PLAN-21 Befund 10: jeder lokale Lauf verlinkt jetzt auf seine eigene
+    # Detail-Seite (/-/ui/run/{jid}, rollenunabhängig dank Fallback-Route).
+    if jid is not None:
+        return f'<a class="row rowlink" href="/-/ui/run/{jid}">{body}</a>'
+    return f'<div class="row">{body}</div>'
 
 
 def _run_history(runs: list[dict], now: float) -> str:
@@ -1003,31 +976,25 @@ def _run_history(runs: list[dict], now: float) -> str:
 
 
 def jobs_fragment(
-    compared: list[dict], local_runs: dict[str, dict], runs: list[dict],
-    *, scheduler_url: str | None = None, now: float | None = None,
+    rows: list[dict], local_runs: dict[str, dict], runs: list[dict],
+    *, now: float | None = None,
 ) -> str:
-    """Der austauschbare Jobs-Kern (``#jobsboard``): Lokal/Remote-Tabelle +
-    Start-Button je Zeile + lokale Lauf-Historie. Self-pollt wie die anderen
-    Screens (PLAN-17 Stufe 17.2) — eine Aktion (Start) swapt sofort dasselbe
-    Fragment zurück, damit der neue Lauf ohne Warten auf den nächsten Poll
-    sichtbar wird."""
+    """Der austauschbare Jobs-Kern (``#jobsboard``): lokale Job-MDs + Git-
+    Status + Start-Button je Zeile + lokale Lauf-Historie (PLAN-21 Befund 10
+    — löst die vorherige Lokal/Remote-Abgleich-Tabelle ab, kein Netzaufruf/
+    Remote-Bezug mehr, dient ausschließlich dem Review der lokalen
+    Repository-Realität). Self-pollt wie die anderen Screens (PLAN-17 Stufe
+    17.2) — eine Aktion (Start) swapt sofort dasselbe Fragment zurück, damit
+    der neue Lauf ohne Warten auf den nächsten Poll sichtbar wird."""
     now = time.time() if now is None else now
-    link = ""
-    if scheduler_url:
-        u = _e(scheduler_url.rstrip("/") + "/-/ui/schedules")
-        link = (f'<div class="hostlink">Vollständige Remote-Sicht (alle Knoten, '
-               f'Journal-Historie): <a href="{u}" target="_blank" rel="noopener">'
-               f"{u} ↗</a></div>")
     return (
         f'<div id="jobsboard" hx-get="/-/ui/jobs/board" hx-trigger="{_POLL}" hx-swap="outerHTML">'
-        '<h2>Lokal ↔ Remote</h2>'
-        '<div class="note">„Lokal" = per <code>/run</code> auf diesem Rechner '
-        "ausführbar/ausgeführt (aus den <code>vault/case/</code>-MDs dieses "
-        'Checkouts gescannt). „Remote" = was der Scheduler tatsächlich '
-        "registriert hat. Abgleich vergleicht Schedule + Payload beider "
-        "Seiten.</div>"
-        f"{_jobs_table(compared, local_runs, now)}"
-        f"{link}"
+        '<h2>Jobs im Repository</h2>'
+        '<div class="note">Lokal per <code>discovery.discover()</code> entdeckte '
+        "Job-MDs (aus den <code>vault/case/</code>-MDs dieses Checkouts) mit "
+        "ihrem echten Git-Status. Gelöschte MDs verschwinden von selbst — "
+        "diese Ansicht bildet nur ab, was gerade im Repository liegt.</div>"
+        f"{_jobs_table(rows, local_runs, now)}"
         '<h2>Lokale Läufe</h2>'
         f"{_run_history(runs, now)}"
         "</div>"
@@ -1035,14 +1002,13 @@ def jobs_fragment(
 
 
 def jobs_page(
-    compared: list[dict], local_runs: dict[str, dict], runs: list[dict],
-    *, scheduler_url: str | None = None, daemon_status: dict | None = None,
-    now: float | None = None,
+    rows: list[dict], local_runs: dict[str, dict], runs: list[dict],
+    *, daemon_status: dict | None = None, now: float | None = None,
 ) -> str:
-    """Jobs-Screen (PLAN-17 Stufe 17.2): Lokal/Remote-Abgleich + Start-Button je
-    Zeile + lokale Lauf-Historie. Funktioniert auch auf einem reinen Client
-    (kein Scheduler/Worker im Ruhezustand) — Lokal via Discovery-Scan, Remote
-    via ``RemoteScheduler`` gegen die konfigurierte Scheduler-URL."""
+    """Jobs-Screen (PLAN-17 Stufe 17.2, umgebaut PLAN-21 Befund 10): lokale
+    Repository-Realität + Git-Status + Start-Button je Zeile + lokale Lauf-
+    Historie. Rein lokal — funktioniert auch auf einem reinen Client (kein
+    Scheduler/Worker im Ruhezustand), ohne je den Scheduler zu kontaktieren."""
     now = time.time() if now is None else now
     status = daemon_status or {}
     return (
@@ -1055,7 +1021,7 @@ def jobs_page(
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Jobs', status)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"{jobs_fragment(compared, local_runs, runs, scheduler_url=scheduler_url, now=now)}"
+        f"{jobs_fragment(rows, local_runs, runs, now=now)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
@@ -2020,24 +1986,35 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
     run_id = _e(e.get("run_id") or "—")
     slug = _e(e.get("slug") or "")
     st = _e(e.get("status") or "")
-    # Breadcrumb statt eigenem "bibi ·"-Header (User-Feedback 2026-07-01: doppeltes
-    # "bibi" + verschachtelte Nav) — derselbe Aufbau wie schedule_detail_page().
-    back = (f'<a class="back" href="/-/ui/schedule/{slug}">← {slug}</a>'
-            if slug else '<a class="back" href="/-/">← zurück</a>')
     out = output_block(events, e.get("kind") or kind)
     jid = e.get("id")
-    # Follow-up (User-Feedback): "auch bei archivierten Jobs im Journal eine
-    # Möglichkeit, den Original Output zu sehen" — roher Zugriff neben dem
-    # formatierten Output (/-/journal/{jid}/out|err|stream, PLAN-14 Stufe 14.0).
-    # target=_blank (User-Feedback 2026-07-01): roher Output soll die formatierte
-    # Ansicht nicht verdrängen.
-    raw_links = (
-        f' <span class="muted">roh: '
-        f'<a class="back" href="/-/journal/{jid}/out" target="_blank" rel="noopener">out</a> · '
-        f'<a class="back" href="/-/journal/{jid}/err" target="_blank" rel="noopener">err</a> · '
-        f'<a class="back" href="/-/journal/{jid}/stream" target="_blank" rel="noopener">stream</a></span>'
-        if jid is not None else ""
-    )
+    if e.get("domain") == "local":
+        # Lokaler /run-Lauf (PLAN-21 Befund 10): "zurück zum Schedule" wäre die
+        # scheduler-gated Remote-Detailseite (auf einem reinen Client 404) —
+        # zurück zum Jobs-Screen stattdessen. Kein roher out/err/stream-Link:
+        # dafür gibt es keine rollenunabhängige Route (nur /-/run/journal/{id}
+        # + .../output, symmetrisch zu /-/journal — die drei Sub-Routen wurden
+        # bewusst nicht dupliziert, der formatierte Output deckt den Bedarf).
+        back = '<a class="back" href="/-/ui/jobs">← Jobs</a>'
+        raw_links = ""
+    else:
+        # Breadcrumb statt eigenem "bibi ·"-Header (User-Feedback 2026-07-01:
+        # doppeltes "bibi" + verschachtelte Nav) — derselbe Aufbau wie
+        # schedule_detail_page().
+        back = (f'<a class="back" href="/-/ui/schedule/{slug}">← {slug}</a>'
+                if slug else '<a class="back" href="/-/">← zurück</a>')
+        # Follow-up (User-Feedback): "auch bei archivierten Jobs im Journal eine
+        # Möglichkeit, den Original Output zu sehen" — roher Zugriff neben dem
+        # formatierten Output (/-/journal/{jid}/out|err|stream, PLAN-14 Stufe
+        # 14.0). target=_blank (User-Feedback 2026-07-01): roher Output soll
+        # die formatierte Ansicht nicht verdrängen.
+        raw_links = (
+            f' <span class="muted">roh: '
+            f'<a class="back" href="/-/journal/{jid}/out" target="_blank" rel="noopener">out</a> · '
+            f'<a class="back" href="/-/journal/{jid}/err" target="_blank" rel="noopener">err</a> · '
+            f'<a class="back" href="/-/journal/{jid}/stream" target="_blank" rel="noopener">stream</a></span>'
+            if jid is not None else ""
+        )
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'

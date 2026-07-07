@@ -75,6 +75,15 @@ class ControllerClient:
     def run_output(self, journal_id: int) -> dict:
         return self._get(f"/-/journal/{journal_id}/output") or {}
 
+    def local_run_entry(self, journal_id: int) -> dict:
+        # PLAN-21 Befund 10: Gegenstück zu journal_entry(), aber rollenunabhängig
+        # (/-/run/journal/{id} statt des scheduler-gated /-/journal/{id}) — nur
+        # domain="local", für die eigene Lauf-Historie-Detailseite eines Clients.
+        return self._get(f"/-/run/journal/{journal_id}") or {}
+
+    def local_run_output(self, journal_id: int) -> dict:
+        return self._get(f"/-/run/journal/{journal_id}/output") or {}
+
     def job_output(self, job_id: str) -> dict:
         # Live-Output eines laufenden Jobs (getypte Events) — /-/job/{id}/output.
         return self._get(f"/-/job/{job_id}/output") or {}

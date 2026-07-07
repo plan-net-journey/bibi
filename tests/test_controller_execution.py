@@ -18,12 +18,12 @@ from bibi.daemon.app import create_app
 def _entry(*, jid=1, run_id="Witz:54", slug="Witz", kind="claude", status="complete",
            exit_code=0, started_at=1000.0, finished_at=1012.0, host="mac",
            worker="mac", commit_sha=None, branch=None, reason=None,
-           exec_runtime=None) -> dict:
+           exec_runtime=None, domain="scheduled") -> dict:
     return {"id": jid, "run_id": run_id, "slug": slug, "kind": kind, "status": status,
             "reason": reason, "started_at": started_at, "finished_at": finished_at,
             "exit_code": exit_code, "exec_runtime": exec_runtime, "host": host,
             "worker": worker, "output_ref": f"data/job/{run_id}/output.jsonl",
-            "commit_sha": commit_sha, "branch": branch, "domain": "scheduled"}
+            "commit_sha": commit_sha, "branch": branch, "domain": domain}
 
 
 # ── pure Renderer ─────────────────────────────────────────────────────────────
@@ -49,6 +49,17 @@ def test_execution_detail_links_to_raw_journal_stream():
     # Route (/-/journal/{jid}/out|err|stream), aber nirgends verlinkt.
     html = render.execution_detail_page(_entry(jid=7), events=[], kind="claude")
     assert 'href="/-/journal/7/stream"' in html
+
+
+def test_execution_detail_local_domain_links_back_to_jobs_not_raw_journal():
+    # PLAN-21 Befund 10: ein lokaler /run-Lauf hat keine scheduler-gated
+    # /-/journal/{jid}/out|err|stream-Route — kein roher Link, "zurück" führt
+    # zum Jobs-Screen statt zur (auf Clients 404en) Schedule-Detailseite.
+    html = render.execution_detail_page(
+        _entry(jid=7, slug="mein-testjob", domain="local"), events=[], kind="job")
+    assert 'href="/-/ui/jobs"' in html
+    assert 'href="/-/ui/schedule/mein-testjob"' not in html
+    assert "/-/journal/7/stream" not in html
 
 
 def test_execution_detail_output_job_preformatted():
@@ -178,6 +189,47 @@ def test_ui_run_detail_route(team_repo: Path):
         r = c.get("/-/ui/run/7")
         assert r.status_code == 200
         assert "Witz:54" in r.text and "ein witz" in r.text
+
+
+class _NoSchedulerRoleClient:
+    """Simuliert einen Client-Knoten ohne scheduler-Rolle (PLAN-21 Befund 10):
+    journal_entry()/run_output() (scheduler-gated /-/journal/*) werfen wie
+    ein echter 501-HTTPError, local_run_entry()/local_run_output() (rollen-
+    unabhängig /-/run/journal/*) liefern die tatsächlichen Daten."""
+
+    def __init__(self, entry: dict, output: dict) -> None:
+        self._e, self._o = entry, output
+
+    def journal_entry(self, jid: int) -> dict:
+        raise RuntimeError("501 not implemented (keine scheduler-Rolle)")
+
+    def run_output(self, jid: int) -> dict:
+        raise RuntimeError("501 not implemented (keine scheduler-Rolle)")
+
+    def local_run_entry(self, jid: int) -> dict:
+        return self._e
+
+    def local_run_output(self, jid: int) -> dict:
+        return self._o
+
+    def schedule_config(self, slug: str) -> dict:
+        return {}
+
+
+def test_ui_run_detail_route_falls_back_to_local_journal_without_scheduler_role(team_repo: Path):
+    # PLAN-21 Befund 10: auf einem reinen Client (kein --scheduler) ist
+    # /-/journal/{jid} ein 501-Stub — die Route fällt auf die rollenunabhängige
+    # /-/run/journal/{jid} zurück, damit lokale /run-Läufe trotzdem eine
+    # Detailseite haben.
+    client = _NoSchedulerRoleClient(
+        _entry(jid=9, run_id="mein-testjob:1", slug="mein-testjob", kind="job", domain="local"),
+        {"id": 9, "kind": "job", "events": [{"t": 1, "s": "out", "line": "lokal gelaufen"}]})
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/run/9")
+        assert r.status_code == 200
+        assert "mein-testjob:1" in r.text and "lokal gelaufen" in r.text
+        assert 'href="/-/ui/jobs"' in r.text  # "zurück" führt zum Jobs-Screen, nicht zum (404) Schedule
 
 
 def test_ui_run_detail_route_shows_schedule_ref(team_repo: Path):
