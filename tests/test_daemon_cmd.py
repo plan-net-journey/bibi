@@ -55,6 +55,40 @@ def test_resolve_role_from_env(env_iso, monkeypatch: pytest.MonkeyPatch):
     assert r.synchronizer is True and errs == []
 
 
+# --- _apply_auto_sync_default (User-Fund 2026-07-07, scheduler-Default) --------
+
+
+def test_apply_auto_sync_default_turns_on_for_fresh_scheduler(env_iso):
+    from bibi import state
+    r, errs = daemon_cmd.resolve_from_args(_args(synchronizer=True, scheduler=True))
+    assert errs == []
+    assert state.get_auto_sync() is False
+    daemon_cmd._apply_auto_sync_default(r)
+    assert state.get_auto_sync() is True
+
+
+def test_apply_auto_sync_default_respects_explicit_off_on_scheduler(env_iso):
+    from bibi import state
+    state.set_auto_sync(False)   # bewusst abgeschaltet, nicht nur Werkseinstellung
+    r, _errs = daemon_cmd.resolve_from_args(_args(synchronizer=True, scheduler=True))
+    daemon_cmd._apply_auto_sync_default(r)
+    assert state.get_auto_sync() is False
+
+
+def test_apply_auto_sync_default_does_not_touch_non_scheduler(env_iso):
+    from bibi import state
+    r, _errs = daemon_cmd.resolve_from_args(_args(synchronizer=True))
+    daemon_cmd._apply_auto_sync_default(r)
+    assert state.get_auto_sync() is False
+
+
+def test_apply_auto_sync_default_push_flag_wins_regardless_of_scheduler(env_iso):
+    from bibi import state
+    r, _errs = daemon_cmd.resolve_from_args(_args(synchronizer=True, push=True))
+    daemon_cmd._apply_auto_sync_default(r)
+    assert state.get_auto_sync() is True
+
+
 def test_run_returns_2_on_validation_error(env_iso):
     # main() parst + ruft run(); validierungsbedingter Frühausstieg (vor uvicorn).
     # scheduler⊥connect ist eine harte Invariante (§4.2) → Frühausstieg.

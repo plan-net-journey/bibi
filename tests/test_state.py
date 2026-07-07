@@ -45,6 +45,23 @@ def test_auto_sync_roundtrip(team_repo: Path):
     assert state.get_auto_sync() is False
 
 
+def test_auto_sync_was_never_set_true_before_any_write(team_repo: Path):
+    assert state.auto_sync_was_never_set() is True
+
+
+def test_auto_sync_was_never_set_false_after_explicit_off(team_repo: Path):
+    # Wichtig: auch ein bewusstes "off" zählt als "gesetzt" — der
+    # scheduler-Default (daemon_cmd.py) darf ein explizites Abschalten nicht
+    # überschreiben, nur die stille Werkseinstellung.
+    state.set_auto_sync(False)
+    assert state.auto_sync_was_never_set() is False
+
+
+def test_auto_sync_was_never_set_false_after_explicit_on(team_repo: Path):
+    state.set_auto_sync(True)
+    assert state.auto_sync_was_never_set() is False
+
+
 def test_sync_conflict_roundtrip(team_repo: Path):
     assert state.get_sync_conflict() is False
     state.set_sync_conflict(True)

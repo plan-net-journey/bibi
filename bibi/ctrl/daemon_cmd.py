@@ -42,6 +42,23 @@ def resolve_from_args(args: argparse.Namespace) -> tuple[R.Roles, list[str]]:
     return r, errs
 
 
+def _apply_auto_sync_default(r: R.Roles) -> None:
+    """Setzt ``auto_sync`` beim Daemon-Start, wo ein „off"-Default riskant wäre —
+    getrennt von ``run()`` gehalten, damit die Entscheidung ohne echten
+    uvicorn-Start testbar bleibt."""
+    if r.push:
+        state.set_auto_sync(True)   # --push = stehende Push-Zustimmung an (§4.9)
+    elif r.scheduler and state.auto_sync_was_never_set():
+        # Der Scheduler ist der EINE zentrale Knoten (DESIGN §4.2: "scheduler
+        # exactly 1") — andere Knoten/Klone verlassen sich auf sein Origin als
+        # Wahrheit. Überall sonst defaultet auto_sync auf "off"; hier wäre das
+        # riskant (User-Fund 2026-07-07: Merge-Sweep-Commits blieben auf
+        # sarasate unbegrenzt liegen, u. a. weil niemand je "sync on" gesetzt
+        # hatte). Sicherer Default statt Hardcode — bewusstes "sync off" bleibt
+        # weiterhin möglich, wird hier nur nicht mehr stillschweigend geerbt.
+        state.set_auto_sync(True)
+
+
 def run(args: argparse.Namespace) -> int:
     r, errs = resolve_from_args(args)
     if errs:
@@ -57,8 +74,7 @@ def run(args: argparse.Namespace) -> int:
     synchronizer = None
     if r.synchronizer:
         from bibi.daemon.synchronizer import Synchronizer
-        if r.push:
-            state.set_auto_sync(True)   # --push = stehende Push-Zustimmung an (§4.9)
+        _apply_auto_sync_default(r)
         # Push-Fähigkeit immer an; der tatsächliche Push ist an auto_sync gegated.
         synchronizer = Synchronizer(push=True, pull=True, consent=state.get_auto_sync,
                                     lock=sync_lock, repo_root=repo.root())

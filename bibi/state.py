@@ -69,6 +69,15 @@ def set_auto_sync(value: bool) -> None:
     patch(auto_sync="on" if value else "off")
 
 
+def auto_sync_was_never_set() -> bool:
+    """True, wenn ``auto_sync`` noch nie explizit geschrieben wurde (weder per
+    ``set_auto_sync()`` noch von Hand in ``.state.md``) — im Unterschied zu
+    ``get_auto_sync()``, das immer den (ggf. defaulteten) Wert liefert. Für den
+    scheduler-Default (``daemon_cmd.py``, User-Fund 2026-07-07): der Default
+    soll nur greifen, solange niemand je bewusst umgeschaltet hat."""
+    return "auto_sync" not in frontmatter.read(repo.state_path())
+
+
 def get_sync_conflict() -> bool:
     return bool(read().get("sync_conflict", False))
 
