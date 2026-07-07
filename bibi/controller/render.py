@@ -53,6 +53,7 @@ td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
 .toggle:hover { text-decoration: underline; }
 .toggle.on { color: #5fb37a; }
 .toggle.warn { color: #d6a23e; }
+.toggle.bad { color: #e06c5a; }
 a.slug { font-weight: 600; text-decoration: none; }
 a.slug:hover { text-decoration: underline; }
 .sched a { text-decoration: none; }
@@ -141,6 +142,12 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .card .cardline.bad, .card a.bad { color: #e06c5a; }
 .card a { text-decoration: none; }
 .card a:hover { text-decoration: underline; }
+/* Key/Value-Label je Zeile (PLAN-20 Befund 2, User-Fund: "clean"/"sync" ganz
+   ohne Beschriftung war unklar, WAS da eigentlich steht) — kleines, gedimmtes
+   Label vor dem eigentlichen (weiterhin farbig hervorgehobenen) Wert. */
+.card .cardline .k { font-size: .72rem; font-weight: 400; color: #888;
+                     text-transform: uppercase; letter-spacing: .03em;
+                     margin-right: .4em; }
 .side-empty { color: #888; font-size: .82rem; }
 .chip { font-family: ui-monospace, monospace; font-size: .7rem; font-weight: 700;
         padding: .1rem .45rem; border-radius: .3rem; display: inline-block; white-space: nowrap; }
@@ -406,17 +413,30 @@ def _filter_bar(typ: str | None, status: str | None) -> str:
     )
 
 
-def _screen_nav(active: str) -> str:
-    """Screen-Tabs (Feed · Schedules · Jobs · Live-Log · API-Docs); der aktive
-    ohne Link. **Home ist jetzt Feed** (PLAN-18 Stufe 18.3, löst die
+def _screen_nav(active: str, roles: list[str] | None = None) -> str:
+    """Screen-Tabs (Feed · [Schedules] · [Jobs] · Live-Log · API-Docs); der
+    aktive ohne Link. **Home ist jetzt Feed** (PLAN-18 Stufe 18.3, löst die
     2026-07-04-Entscheidung „Home = Schedules" bewusst ab) — Schedules bleibt
     unter seiner eigenen Route erreichbar, ist nur nicht mehr ``/-/`` selbst.
     Jobs (PLAN-17 Stufe 17.2) zeigt den Lokal/Remote-Abgleich + Start-Button für
     /run. Daemon-Tab entfernt (PLAN-18 Stufe 18.4) — sein Inhalt (Status-
     Kacheln) lebt jetzt im Feed-Header, ``daemon_page()``/``_status_cards()``
-    bleiben als Bausteine bestehen, nur die eigene Seite/der Tab fallen weg."""
-    tabs = [("Feed", "/-/"), ("Schedules", "/-/ui/schedules"), ("Jobs", "/-/ui/jobs"),
-            ("Live-Log", "/-/ui/logs"), ("API-Docs", "/-/docs")]
+    bleiben als Bausteine bestehen, nur die eigene Seite/der Tab fallen weg.
+
+    Schedules/Jobs sind rollenabhängig ausgeblendet (PLAN-20 Befund 6):
+    Schedules nur mit ``scheduler``-Rolle (die zugrundeliegenden ``/-/schedule``-
+    Routen existieren serverseitig nur dann, s. ``app.py::_add_scheduler_routes``
+    — ohne Rolle wäre die Seite ohnehin nur ein 404). Jobs nur mit ``connect``-
+    Rolle (User-Entscheidung trotz Rückfrage: bewusst NICHT zusätzlich für
+    reine Scheduler-Knoten wie sarasate — auch wenn der Screen dort technisch
+    funktionieren würde)."""
+    roles = roles or []
+    tabs = [("Feed", "/-/")]
+    if "scheduler" in roles:
+        tabs.append(("Schedules", "/-/ui/schedules"))
+    if "connect" in roles:
+        tabs.append(("Jobs", "/-/ui/jobs"))
+    tabs += [("Live-Log", "/-/ui/logs"), ("API-Docs", "/-/docs")]
     def _tab(t: str, h: str) -> str:
         if t == active:
             return t
@@ -481,14 +501,19 @@ _THEME_JS = """
 """
 
 
-def _header(active: str, status: dict | None = None) -> str:
+def _header(active: str, status: dict | None = None, git_status: dict | None = None) -> str:
     """Gemeinsame obere Navigationsleiste: Titel + Live-Uhr + Tab-Leiste + FOLLOW-
     + THEME-Toggle + Ops-Handles (RESCAN/MAINT). Ein Baustein für jeden Screen
     (User-Feedback 2026-07-04: "ziehe Rescan und Maintenance CTA auf die obere
     Navigationsleiste mit FOLLOW on/off" — dadurch auch auf Live-Log sichtbar,
-    vorher pro Screen separat bzw. gar nicht eingebunden)."""
-    return (f'<header><h1>bibi</h1>{_live_clock()} {_screen_nav(active)} '
-            f'{_follow_toggle()}{_theme_toggle()}{_ops_handles(status)}</header>')
+    vorher pro Screen separat bzw. gar nicht eingebunden). ``git_status`` ist
+    optional (PLAN-20 Befund 5) — nur der Feed-Screen liefert ihn bisher, alle
+    anderen Screens zeigen weiterhin das generische RESCAN. Rollen für
+    ``_screen_nav()`` (PLAN-20 Befund 6) kommen aus ``status["roles"]`` — schon
+    vorhanden (``/-/status``), keine neue Datenquelle nötig."""
+    roles = (status or {}).get("roles")
+    return (f'<header><h1>bibi</h1>{_live_clock()} {_screen_nav(active, roles)} '
+            f'{_follow_toggle()}{_theme_toggle()}{_ops_handles(status, git_status)}</header>')
 
 
 def schedules_page(schedules: list[dict], typ: str | None = None,
@@ -731,7 +756,16 @@ def _host_card(status: dict, host_url: str | None, now: float) -> str:
     ... zum Host `/-/` Endpunkt"), grün wenn verbunden, verlinkt zum
     Host-eigenen `/-/`. Hostname aus derselben Scheduler-URL abgeleitet, die
     auch der Jobs-Screen-Hostlink nutzt (``_scheduler_url()``, keine neue
-    Datenquelle)."""
+    Datenquelle).
+
+    ``status["connect"]`` fehlt genau dann, wenn dieser Knoten keine
+    connect-Rolle aktiv hat (``app.py``: nur gesetzt ``if heartbeat is not
+    None``) — unabhängig davon, wie ``BIBI_SCHEDULER_URL`` lautet. Auf einem
+    Knoten, der sein eigener Scheduler ist, zeigt diese oft selbstreferenziell
+    auf sich selbst (z. B. „localhost") — den rohen Hostnamen dann trotzdem
+    anzuzeigen wäre irreführend, es gibt ja keine echte Verbindung (PLAN-20
+    Befund 4, User-Fund: „bei Host steht bei sarasate localhost und sonst
+    nichts")."""
     hostname = None
     if host_url:
         from urllib.parse import urlparse
@@ -739,7 +773,9 @@ def _host_card(status: dict, host_url: str | None, now: float) -> str:
     if hostname is None:
         return _lines_card("Host", ["—"])
     conn = status.get("connect")
-    ok = conn.get("ok") if conn else None
+    if conn is None:
+        return _lines_card("Host", ["lokal"])
+    ok = conn.get("ok")
     cls = "ok" if ok else ("bad" if ok is False else "")
     href = _e(host_url.rstrip("/") + "/-/")
     link = f'<a class="{cls}" href="{href}" target="_blank" rel="noopener">{_e(hostname)}</a>'
@@ -757,10 +793,13 @@ def _mode_card(status: dict, now: float) -> str:
     auto_sync = bool(status.get("auto_sync"))
     maint = bool(status.get("maintenance"))
     lines = [
-        f'<span class="{"ok" if auto_sync else ""}">auto-sync {"an" if auto_sync else "aus"}</span>',
-        f'<span class="{"bad" if maint else ""}">maintenance {"an" if maint else "aus"}</span>',
+        f'<span class="k">Auto-Sync</span>'
+        f'<span class="{"ok" if auto_sync else ""}">{"an" if auto_sync else "aus"}</span>',
+        f'<span class="k">Maintenance</span>'
+        f'<span class="{"bad" if maint else ""}">{"an" if maint else "aus"}</span>',
     ]
-    return _lines_card("Mode", lines, sub=f"up {_uptime_label(status.get('started_at'), now)}")
+    return _lines_card("Mode", lines,
+                       sub=f"Uptime {_uptime_label(status.get('started_at'), now)}")
 
 
 def _git_segment_card(git_status: dict | None) -> str:
@@ -774,10 +813,13 @@ def _git_segment_card(git_status: dict | None) -> str:
         return _lines_card("Git", ["—"])
     tree, sync = git_status["tree"], git_status["sync"]
     lines = [
+        f'<span class="k">Tree</span>'
         f'<span class="{_TREE_LABEL_CLASS[tree]}">{_e(tree)}</span>',
+        f'<span class="k">Sync</span>'
         f'<span class="{_SYNC_LABEL_CLASS[sync]}">{_e(sync)}</span>',
     ]
-    return _lines_card("Git", lines, sub=git_status.get("branch") or "")
+    branch = git_status.get("branch")
+    return _lines_card("Git", lines, sub=f"Branch {branch}" if branch else "")
 
 
 def _feed_status_cards(
@@ -1086,10 +1128,12 @@ def _feed_row(e: dict, now: float, *, commit_base_url: str | None = None) -> str
 _FEED_FILTER_JS = """
 function bibiApplyFeedFilters(){
   const kind = document.getElementById('feedkind').value;
-  const hideAgents = document.getElementById('feedhideagents').checked;
+  const agent = document.getElementById('feedagent').value;
   document.querySelectorAll('#feedlist .frow').forEach(row => {
     const matchKind = kind === 'alle' || row.dataset.kind === kind;
-    const matchAgent = !(hideAgents && row.dataset.agent === '1');
+    const matchAgent = agent === 'alle'
+      || (agent === 'agents' && row.dataset.agent === '1')
+      || (agent === 'team' && row.dataset.agent === '0');
     row.style.display = (matchKind && matchAgent) ? '' : 'none';
   });
 }
@@ -1097,14 +1141,18 @@ function bibiApplyFeedFilters(){
 
 
 def _feed_filter_bar() -> str:
+    # 3-State statt Checkbox (User-Fund 2026-07-07: "Agents ausblenden" war
+    # nur binär — Alle/Nur Agents/Nur Team im selben Dropdown-Stil wie "Ebene").
     return (
         '<div class="filterbar">'
         '<label>Ebene <select id="feedkind" onchange="bibiApplyFeedFilters()">'
         '<option value="alle">alle</option><option value="case">case</option>'
         '<option value="vault">vault</option><option value="system">system</option>'
         "</select></label>"
-        '<label class="chk"><input type="checkbox" id="feedhideagents" '
-        'onchange="bibiApplyFeedFilters()"> Agents ausblenden</label>'
+        '<label>Wer <select id="feedagent" onchange="bibiApplyFeedFilters()">'
+        '<option value="alle">alle</option><option value="agents">nur Agents</option>'
+        '<option value="team">nur Team</option>'
+        "</select></label>"
         "</div>"
     )
 
@@ -1116,14 +1164,31 @@ def _feed_list(entities: list[dict], now: float, *, commit_base_url: str | None 
         _feed_row(e, now, commit_base_url=commit_base_url) for e in entities) + "</div>"
 
 
-def feed_fragment(feed_data: dict, *, days: int | None = None, now: float | None = None) -> str:
+def _feed_board_url(days: int | None, weeks: int | None) -> str:
+    parts = []
+    if days is not None:
+        parts.append(f"days={days}")
+    if weeks is not None:
+        parts.append(f"weeks={weeks}")
+    return "/-/ui/feed/board" + ("?" + "&".join(parts) if parts else "")
+
+
+def feed_fragment(feed_data: dict, *, days: int | None = None, weeks: int | None = None,
+                  now: float | None = None) -> str:
     """Der austauschbare Feed-Kern (``#feedboard``): Filterleiste + Heatmap +
-    aggregierte Änderungsliste + „mehr laden" (lineares Tagesfenster, PLAN-18
-    Design-Pass: einfacher wachsender Zähler statt fester Tier-Liste)."""
+    aggregierte Änderungsliste + je ein „mehr laden" für Liste (Tage) und
+    Heatmap (Wochen) — **entkoppelt** (PLAN-20 Befund 3, User-Fund: „Heatmap
+    immer um eine Woche nachladen"; PLAN-18 Design-Pass: einfacher wachsender
+    Zähler statt fester Tier-Liste). Jeder Button hält das jeweils andere
+    Fenster über ``_feed_board_url()`` konstant, damit ein Klick nicht das
+    zuvor schon nachgeladene Fenster der anderen Komponente zurücksetzt."""
     now = time.time() if now is None else now
     entities = feed_data.get("entities") or []
     grid = feed_data.get("heatmap") or []
     commit_base_url = feed_data.get("commit_base_url")
+    # Aktuelles Wochen-Fenster (für beide Buttons konstant zu halten): explizit
+    # übergeben, sonst aus der schon abgerufenen Grid-Länge abgeleitet.
+    cur_weeks = weeks if weeks is not None else (len(grid) if grid else None)
     if days is None:
         # Schon "gesamte Historie" — nichts mehr zu laden. days=0 ist das
         # explizite Sentinel dafür (siehe __init__.py::_effective_days);
@@ -1132,15 +1197,27 @@ def feed_fragment(feed_data: dict, *, days: int | None = None, now: float | None
         load_more = ""
     else:
         next_days = days + 1
+        url = _feed_board_url(next_days, cur_weeks)
         load_more = (
             f'<div class="loadmore">'
-            f'<button hx-get="/-/ui/feed/board?days={next_days}" hx-target="#feedboard" '
+            f'<button hx-get="{url}" hx-target="#feedboard" '
             f'hx-swap="outerHTML">mehr laden ({next_days} Tage)</button>'
+            f"</div>"
+        )
+    heatmap_load_more = ""
+    if grid:
+        next_weeks = cur_weeks + 1
+        hm_url = _feed_board_url(days, next_weeks)
+        heatmap_load_more = (
+            f'<div class="loadmore">'
+            f'<button hx-get="{hm_url}" hx-target="#feedboard" '
+            f'hx-swap="outerHTML">mehr laden ({next_weeks} Wochen)</button>'
             f"</div>"
         )
     return (
         '<div id="feedboard">'
         f"{_heatmap_html(grid, now)}"
+        f"{heatmap_load_more}"
         '<h2>Änderungen</h2>'
         f"{_feed_filter_bar()}"
         f"{_feed_list(entities, now, commit_base_url=commit_base_url)}"
@@ -1152,7 +1229,8 @@ def feed_fragment(feed_data: dict, *, days: int | None = None, now: float | None
 
 def feed_page(
     feed_data: dict, *, git_status: dict | None = None, host_url: str | None = None,
-    days: int | None = None, daemon_status: dict | None = None, now: float | None = None,
+    days: int | None = None, weeks: int | None = None,
+    daemon_status: dict | None = None, now: float | None = None,
 ) -> str:
     """Feed-Screen — jetzt Home (``/-/``): fixierte Status-Kacheln (Host/Mode/
     Git, PLAN-19 Befund 4) + Heatmap + aggregierte Änderungsliste. Kein
@@ -1167,32 +1245,49 @@ def feed_page(
         f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Feed', status)}"
+        f"{_header('Feed', status, git_status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{_feed_status_cards(status, git_status, host_url, now)}"
-        f"{feed_fragment(feed_data, days=days, now=now)}"
+        f"{feed_fragment(feed_data, days=days, weeks=weeks, now=now)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
 
 
-def _ops_handles(status: dict | None = None) -> str:
-    """Ops-Bedienelemente: RESCAN, MAINT-Toggle (spiegelt ``status.maintenance``).
+#: Git-``sync``-Wert → Toggle-Zustandsklasse, dieselben Farben wie die Git-
+#: Karte (``_SYNC_LABEL_CLASS``, PLAN-20 Befund 5: "Sync" als CTA in der
+#: Nav-Zeile, nicht nur passive Kachel-Anzeige).
+_SYNC_TOGGLE_CLASS = {"synced": "on", "ahead": "warn", "behind": "bad", "conflict": "bad"}
+
+
+def _ops_handles(status: dict | None = None, git_status: dict | None = None) -> str:
+    """Ops-Bedienelemente: RESCAN/SYNC, MAINT-Toggle (spiegelt ``status.maintenance``).
     Ursprünglich Feed-exklusiv, jetzt auch auf Schedules-Liste und Job-Detail
     (User-Feedback 2026-07-03: "brauchen den Rescan und Maintenance Button auf
     Schedule Screen"). FOLLOW sitzt seit einem früheren Follow-up im gemeinsamen
     ``_header()`` (jeder Screen) — hier nicht mehr doppelt. Plain-JS
     (``_OPS_HANDLES_JS``) statt htmx — funktioniert dadurch identisch auf jeder
-    Seite, ohne pro Screen ein eigenes hx-target verdrahten zu müssen."""
+    Seite, ohne pro Screen ein eigenes hx-target verdrahten zu müssen.
+
+    Der RESCAN-Button zeigt, wenn ``git_status`` vorliegt, den aktuellen
+    Sync-Zustand statt der generischen Beschriftung (PLAN-20 Befund 5,
+    User-Fund: "maintenance und sync zu einem CTA machen, das gleich
+    ausgerichtet wie in der Nav-Zeile" — Klick löst weiterhin RESCAN aus,
+    nur die Beschriftung wird informativ)."""
     maint = bool((status or {}).get("maintenance"))
     mcls = "toggle warn" if maint else "toggle"
     mlabel = "MAINT: AN" if maint else "MAINT: aus"
-    on = bool((status or {}).get("maintenance"))
-    hide = "" if on else ' style="display:none"'
+    hide = "" if maint else ' style="display:none"'
+    sync = (git_status or {}).get("sync")
+    if sync:
+        rcls = f"toggle {_SYNC_TOGGLE_CLASS.get(sync, '')}".strip()
+        rlabel = f"SYNC: {sync}"
+    else:
+        rcls, rlabel = "toggle", "RESCAN"
     return (
         '<nav class="handles">'
-        '<button id="rescan" class="toggle">RESCAN</button>'
+        f'<button id="rescan" class="{rcls}">{rlabel}</button>'
         f'<button id="maint" class="{mcls}">{mlabel}</button>'
         f'<span id="maintbanner" class="banner bad"{hide}>Wartungsmodus aktiv</span>'
         "</nav>"
@@ -1206,12 +1301,15 @@ def _ops_handles(status: dict | None = None) -> str:
 _OPS_HANDLES_JS = """
 (function(){
   const rescan = document.getElementById('rescan');
-  if (rescan) rescan.addEventListener('click', async () => {
-    rescan.disabled = true; rescan.textContent = 'RESCAN…';
-    try { await fetch('/-/rescan', {method:'POST'}); } catch(_){}
-    rescan.textContent = 'RESCAN ✓';
-    setTimeout(() => { rescan.textContent = 'RESCAN'; rescan.disabled = false; }, 1200);
-  });
+  if (rescan) {
+    const idleLabel = rescan.textContent;   // "RESCAN" oder "SYNC: <zustand>"
+    rescan.addEventListener('click', async () => {
+      rescan.disabled = true; rescan.textContent = 'RESCAN…';
+      try { await fetch('/-/rescan', {method:'POST'}); } catch(_){}
+      rescan.textContent = idleLabel + ' ✓';
+      setTimeout(() => { rescan.textContent = idleLabel; rescan.disabled = false; }, 1200);
+    });
+  }
   const maint = document.getElementById('maint');
   const banner = document.getElementById('maintbanner');
   function setMaint(on){

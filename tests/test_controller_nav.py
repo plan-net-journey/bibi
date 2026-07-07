@@ -29,6 +29,47 @@ def test_header_includes_ops_handles():
     assert 'id="maint"' in html and "MAINT: AN" in html
 
 
+# --- Sync-CTA (PLAN-20 Befund 5) ------------------------------------------------
+
+
+def test_ops_handles_shows_generic_rescan_without_git_status():
+    html = render._ops_handles({}, None)
+    assert 'id="rescan" class="toggle">RESCAN<' in html
+
+
+def test_ops_handles_shows_sync_label_when_git_status_given():
+    html = render._ops_handles({}, {"tree": "clean", "sync": "synced", "branch": "trunk"})
+    assert 'id="rescan" class="toggle on">SYNC: synced<' in html
+
+
+def test_ops_handles_sync_ahead_is_warn_colored():
+    html = render._ops_handles({}, {"tree": "clean", "sync": "ahead", "branch": "trunk"})
+    assert 'id="rescan" class="toggle warn">SYNC: ahead<' in html
+
+
+def test_ops_handles_sync_behind_is_bad_colored():
+    html = render._ops_handles({}, {"tree": "clean", "sync": "behind", "branch": "trunk"})
+    assert 'id="rescan" class="toggle bad">SYNC: behind<' in html
+
+
+def test_ops_handles_js_restores_idle_label_not_hardcoded_rescan():
+    # Vorher hardcodete das Klick-Handler-JS "RESCAN" nach der Klick-Animation
+    # zurück — hätte ein "SYNC: synced"-Label nach dem ersten Klick dauerhaft
+    # auf "RESCAN" zurückgesetzt (Bug, den die neue Sync-Beschriftung sonst
+    # eingeführt hätte).
+    js = render._OPS_HANDLES_JS
+    assert "const idleLabel = rescan.textContent" in js
+    assert "rescan.textContent = idleLabel" in js
+    assert "rescan.textContent = 'RESCAN';" not in js
+
+
+def test_feed_header_passes_git_status_to_ops_handles():
+    feed_data = {"entities": [], "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
+    html = render.feed_page(
+        feed_data, git_status={"tree": "clean", "sync": "ahead", "branch": "trunk"}, now=100.0)
+    assert 'id="rescan" class="toggle warn">SYNC: ahead<' in html
+
+
 def test_toggles_styled_as_text_links_not_boxed_buttons():
     # PLAN-19 Befund 7, User-Fund: FOLLOW/THEME/RESCAN/MAINT sollen wie die
     # Nav-Tabs aussehen (reine Text-Links), keine Buttons mit Box/Rahmen mehr.
@@ -44,10 +85,25 @@ def test_toggles_styled_as_text_links_not_boxed_buttons():
 
 def test_screen_nav_feed_tab_is_home():
     # PLAN-18 Stufe 18.3: Feed ist zurück und jetzt der Home-Screen (/-/),
-    # Schedules zieht auf seine eigene Route um.
-    html = render._screen_nav("Live-Log")
+    # Schedules zieht auf seine eigene Route um. Schedules nur mit
+    # scheduler-Rolle sichtbar (PLAN-20 Befund 6).
+    html = render._screen_nav("Live-Log", roles=["scheduler"])
     assert 'href="/-/">Feed' in html
     assert 'href="/-/ui/schedules">Schedules' in html
+
+
+def test_screen_nav_hides_schedules_without_scheduler_role():
+    html = render._screen_nav("Live-Log", roles=["connect"])
+    assert 'href="/-/ui/schedules"' not in html
+
+
+def test_screen_nav_hides_schedules_and_jobs_without_any_role():
+    html = render._screen_nav("Live-Log")
+    assert 'href="/-/ui/schedules"' not in html
+    assert 'href="/-/ui/jobs"' not in html
+    # Rollenunabhängige Tabs bleiben immer da.
+    assert 'href="/-/">Feed' in html and 'href="/-/ui/logs">Live-Log' not in html
+    assert "Live-Log" in html  # aktiver Tab, ohne Link
 
 
 def test_ops_handles_no_longer_duplicates_follow_button():

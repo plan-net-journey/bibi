@@ -306,6 +306,47 @@ def test_feed_endpoint_days_param(repo: Path, monkeypatch):
         assert len(r.json()["entities"]) == 3
 
 
+def test_feed_endpoint_weeks_param_decoupled_from_days(repo: Path, monkeypatch):
+    # PLAN-20 Befund 3, User-Fund: Heatmap unabhängig von der Liste nachladbar
+    # — weeks steuert NUR die Heatmap-Zeilenzahl, days bleibt unverändert das
+    # Fenster der Änderungsliste. Ein kleines days-Fenster darf die Heatmap
+    # nicht (mehr) leerfegen, wenn weeks größer gewählt ist.
+    from fastapi.testclient import TestClient
+
+    from bibi.daemon import roles
+    from bibi.daemon.app import create_app
+
+    monkeypatch.chdir(repo)
+    from bibi import repo as repo_mod
+    repo_mod._root_of.cache_clear()
+
+    app = create_app(roles.resolve(set()))
+    with TestClient(app) as c:
+        r = c.get("/-/feed", params={"days": 1, "weeks": 8})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["since_days"] == 1
+        assert body["weeks"] == 8
+        assert len(body["heatmap"]) == 8
+
+
+def test_feed_endpoint_weeks_defaults_to_heatmap_weeks(repo: Path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from bibi.daemon import roles
+    from bibi.daemon.app import create_app
+    from bibi.feed import HEATMAP_WEEKS
+
+    monkeypatch.chdir(repo)
+    from bibi import repo as repo_mod
+    repo_mod._root_of.cache_clear()
+
+    app = create_app(roles.resolve(set()))
+    with TestClient(app) as c:
+        r = c.get("/-/feed")
+        assert r.json()["weeks"] == HEATMAP_WEEKS
+
+
 # --- remote_commit_base_url ----------------------------------------------------
 
 

@@ -96,9 +96,16 @@ def add_controller_routes(
         User-Entscheidung) — kein Weg mehr zu einem unbegrenzten Fenster."""
         return 1 if days is None else days
 
-    def _feed_data(days: int | None) -> dict:
+    def _effective_weeks(weeks: int | None) -> int:
+        # weeks entkoppelt von days (PLAN-20 Befund 3) — eigenes Default aus
+        # bibi.feed.HEATMAP_WEEKS, damit Route + Fragment denselben Default
+        # kennen, ohne die Konstante zu duplizieren.
+        from bibi.feed import HEATMAP_WEEKS
+        return weeks if weeks is not None else HEATMAP_WEEKS
+
+    def _feed_data(days: int | None, weeks: int | None = None) -> dict:
         try:
-            return client.feed(days=days)
+            return client.feed(days=days, weeks=weeks)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             activity.emit(log, logging.WARNING, "controller.feed_unreachable",
                          "Feed-Selbstaufruf fehlgeschlagen (Timeout/Fehler?) — "
@@ -119,22 +126,26 @@ def add_controller_routes(
         return {"tree": s.tree, "sync": s.sync, "branch": s.branch}
 
     @app.get("/-/", include_in_schema=False)
-    def root(request: Request, days: int | None = None):
+    def root(request: Request, days: int | None = None, weeks: int | None = None):
         # Home = Feed (PLAN-18 Stufe 18.3, löst 2026-07-04 "Home = Schedules"
         # bewusst ab). Browser → Feed-Screen; Nicht-Browser → JSON-Deskriptor
         # (§1.1 bleibt an der Wurzel gewahrt). Schedules bleibt unter
         # /-/ui/schedules erreichbar, unverändert.
         if _wants_html(request):
-            eff = _effective_days(days)
+            eff_days = _effective_days(days)
+            eff_weeks = _effective_weeks(weeks)
             return HTMLResponse(render.feed_page(
-                _feed_data(eff), git_status=_feed_git_status(), host_url=_scheduler_url(),
-                days=eff, daemon_status=_status()))
+                _feed_data(eff_days, eff_weeks), git_status=_feed_git_status(),
+                host_url=_scheduler_url(), days=eff_days, weeks=eff_weeks,
+                daemon_status=_status()))
         return JSONResponse(service_descriptor(roles))
 
     @app.get("/-/ui/feed/board", include_in_schema=False)
-    def feed_board(days: int | None = None):
-        eff = _effective_days(days)
-        return HTMLResponse(render.feed_fragment(_feed_data(eff), days=eff))
+    def feed_board(days: int | None = None, weeks: int | None = None):
+        eff_days = _effective_days(days)
+        eff_weeks = _effective_weeks(weeks)
+        return HTMLResponse(render.feed_fragment(
+            _feed_data(eff_days, eff_weeks), days=eff_days, weeks=eff_weeks))
 
     @app.get("/-/ui/schedules", include_in_schema=False)
     def schedules_screen(typ: str | None = None, status: str | None = None):

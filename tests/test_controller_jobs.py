@@ -134,8 +134,14 @@ def test_jobs_page_has_header_and_nav():
 
 
 def test_screen_nav_includes_jobs_tab():
-    html = render._screen_nav("Schedules")
+    # Jobs nur mit connect-Rolle sichtbar (PLAN-20 Befund 6).
+    html = render._screen_nav("Schedules", roles=["connect"])
     assert 'href="/-/ui/jobs"' in html and "Jobs" in html
+
+
+def test_screen_nav_hides_jobs_tab_without_connect_role():
+    html = render._screen_nav("Schedules", roles=["scheduler"])
+    assert 'href="/-/ui/jobs"' not in html
 
 
 # ── Route (gefakter Client + echtes Vault-Discovery) ─────────────────────────

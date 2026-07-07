@@ -26,6 +26,14 @@ def test_git_segment_card_clean_synced():
     assert "·" not in html  # kein Trenner mehr (User-Fund 2026-07-06)
 
 
+def test_git_segment_card_lines_are_labeled():
+    # PLAN-20 Befund 2, User-Fund: "clean"/"sync" ganz ohne Beschriftung.
+    html = render._git_segment_card({"tree": "clean", "sync": "synced", "branch": "trunk"})
+    assert '<span class="k">Tree</span>' in html
+    assert '<span class="k">Sync</span>' in html
+    assert "Branch trunk" in html
+
+
 def test_git_segment_card_modified_ahead():
     html = render._git_segment_card({"tree": "modified", "sync": "ahead", "branch": "trunk"})
     assert 'class="tree-modified"' in html and 'class="sync-ahead"' in html
@@ -62,20 +70,32 @@ def test_host_card_dash_without_scheduler_url():
     assert ">—<" in html
 
 
+def test_host_card_shows_local_placeholder_without_connect_role():
+    # PLAN-20 Befund 4, User-Fund: "bei Host steht bei sarasate localhost und
+    # sonst nichts" — sarasate zeigt selbst auf http://localhost:8780
+    # (BIBI_SCHEDULER_URL), hat aber keine connect-Rolle aktiv (status hat
+    # dann gar keinen "connect"-Key, s. app.py). Roher Hostname wäre hier
+    # irreführend, da keine echte Verbindung existiert.
+    html = render._host_card({}, "http://localhost:8780", now=100.0)
+    assert "lokal" in html
+    assert "localhost" not in html
+    assert "<a " not in html  # keine Verlinkung auf sich selbst
+
+
 # --- Mode-Kachel (PLAN-19 Befund 4: Auto-Sync+Maintenance+Uptime zusammen) ------
 
 
 def test_mode_card_shows_all_three_values():
     html = render._mode_card(
         {"auto_sync": True, "maintenance": False, "started_at": 0.0}, now=3600.0)
-    assert "auto-sync an" in html and 'class="ok"' in html
-    assert "maintenance aus" in html
-    assert "up 1 h" in html
+    assert '<span class="k">Auto-Sync</span><span class="ok">an</span>' in html
+    assert '<span class="k">Maintenance</span><span class="">aus</span>' in html
+    assert "Uptime 1 h" in html
 
 
 def test_mode_card_maintenance_on_is_bad():
     html = render._mode_card({"auto_sync": False, "maintenance": True}, now=100.0)
-    assert "maintenance an" in html and 'class="bad"' in html
+    assert '<span class="k">Maintenance</span><span class="bad">an</span>' in html
 
 
 # --- Feed-Kachel-Grid: jetzt 3 statt 6 (PLAN-19 Befund 4) -----------------------
@@ -136,6 +156,28 @@ def test_heatmap_col_labels_last_column_is_todays_weekday():
     labels = render._heatmap_col_labels(now)
     assert labels[-1] == "Mi"
     assert labels == ["Do", "Fr", "Sa", "So", "Mo", "Di", "Mi"]
+
+
+# --- Feed-Filter (PLAN-20 Befund 1: 3-State statt Checkbox) --------------------
+
+
+def test_feed_filter_bar_has_three_state_agent_select():
+    html = render._feed_filter_bar()
+    assert '<select id="feedagent"' in html
+    assert '<option value="alle">alle</option>' in html
+    assert '<option value="agents">nur Agents</option>' in html
+    assert '<option value="team">nur Team</option>' in html
+    assert "feedhideagents" not in html  # alte Checkbox weg
+
+
+def test_feed_filter_js_matches_agents_only():
+    js = render._FEED_FILTER_JS
+    assert "agent === 'agents'" in js and "row.dataset.agent === '1'" in js
+
+
+def test_feed_filter_js_matches_team_only():
+    js = render._FEED_FILTER_JS
+    assert "agent === 'team'" in js and "row.dataset.agent === '0'" in js
 
 
 # --- Feed-Zeilen -----------------------------------------------------------------
@@ -211,10 +253,36 @@ def test_feed_fragment_hides_load_more_without_days():
     assert "gesamte Historie" not in html
 
 
+# --- Heatmap-Nachladen, entkoppelt von days (PLAN-20 Befund 3) -----------------
+
+
+def test_feed_fragment_heatmap_has_own_load_more_button():
+    feed_data = {"entities": [], "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
+    html = render.feed_fragment(feed_data, days=3, now=100.0)
+    assert "mehr laden (6 Wochen)" in html
+    assert 'hx-get="/-/ui/feed/board?days=3&weeks=6"' in html
+    # Liste-Button hält das aktuelle (aus der Grid-Länge abgeleitete) Wochen-
+    # Fenster konstant, statt es beim Nachladen zurückzusetzen.
+    assert 'hx-get="/-/ui/feed/board?days=4&weeks=5"' in html
+
+
+def test_feed_fragment_heatmap_load_more_uses_explicit_weeks_over_grid_length():
+    feed_data = {"entities": [], "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
+    html = render.feed_fragment(feed_data, days=3, weeks=8, now=100.0)
+    assert 'hx-get="/-/ui/feed/board?days=3&weeks=9"' in html
+
+
+def test_feed_fragment_no_heatmap_load_more_when_grid_empty():
+    html = render.feed_fragment({"entities": [], "heatmap": []}, days=3, now=100.0)
+    assert html.count("mehr laden (") == 1  # nur der Tage-Button, kein Wochen-Button
+    assert 'hx-get="/-/ui/feed/board?days=4"' in html  # kein weeks= ohne Grid-Daten
+
+
 def test_feed_page_has_header_nav_and_status_cards():
     feed_data = {"entities": [], "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
     html = render.feed_page(feed_data, git_status={"tree": "clean", "sync": "synced",
-                                                   "branch": "trunk"}, now=100.0)
+                                                   "branch": "trunk"},
+                            daemon_status={"roles": ["scheduler", "connect"]}, now=100.0)
     assert 'href="/-/ui/jobs"' in html and 'href="/-/ui/schedules"' in html
     assert "<title>bibi · Feed</title>" in html
     assert 'class="statuscards"' in html

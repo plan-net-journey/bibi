@@ -605,17 +605,27 @@ def create_app(
     # funktioniert auf jedem Knoten, auch einem reinen Client ohne Scheduler/
     # Worker. Eigenständig abfragbar (User-Wunsch "Heatmap auch query-fähig
     # machen"), nicht nur ins Feed-HTML gebacken.
+    #
+    # ``weeks`` ist **entkoppelt** von ``days`` (PLAN-20 Befund 3, User-Fund:
+    # "Heatmap immer um eine Woche nachladen") — eigener ``collect_commits()``-
+    # Aufruf mit eigenem Zeitfenster, nicht dieselbe (an ``days`` gebundene)
+    # Commit-Liste wie die Änderungsliste. Sonst wäre die 5-Wochen-Heatmap beim
+    # Default-Seitenaufruf (``days=1``) fast leer, weil sie nur die Commits
+    # sähe, die die Liste ohnehin schon geladen hat.
     @app.get("/-/feed", tags=["daemon"])
-    def feed(days: int | None = None):
+    def feed(days: int | None = None, weeks: int | None = None):
         from bibi import feed as feed_mod
         root = repo.root()
         commits = feed_mod.collect_commits(root, since_days=days)
         agent_shas = feed_mod.agent_commit_shas(root, since_days=days)
         entities = feed_mod.group_entities(commits, agent_shas,
                                            case_dir_name=repo.case_dir_name())
-        grid = feed_mod.heatmap_buckets(commits)
+        eff_weeks = weeks if weeks is not None else feed_mod.HEATMAP_WEEKS
+        heatmap_commits = feed_mod.collect_commits(root, since_days=eff_weeks * 7)
+        grid = feed_mod.heatmap_buckets(heatmap_commits, weeks=eff_weeks)
         return {
             "since_days": days,
+            "weeks": eff_weeks,
             "commit_base_url": feed_mod.remote_commit_base_url(root),
             "entities": [
                 {"kind": e.kind, "name": e.name, "last_changed": e.last_changed,
