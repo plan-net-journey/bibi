@@ -32,7 +32,7 @@ def test_wal_mode(conn):
 
 def test_tables_exist(conn):
     names = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"jobs", "journal"} <= names
+    assert {"jobs", "journal", "transitions"} <= names
 
 
 def test_connect_idempotent(tmp_path: Path):
@@ -564,6 +564,39 @@ def test_migration_v12_to_v13_adds_jobs_active(tmp_path: Path):
     conn2 = job_db.connect(p)
     cols = {r["name"] for r in conn2.execute("PRAGMA table_info(jobs)")}
     assert "active" in cols
+    assert conn2.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
+    conn2.close()
+
+
+def test_migration_v13_to_v14_adds_transitions_table(tmp_path: Path):
+    """User-Feedback 2026-07-07: bestehende v13-DB bekommt die transitions-Tabelle
+    per Migration, ohne bestehende Daten anzufassen."""
+    import sqlite3 as _sqlite3
+    p = tmp_path / "old.sqlite"
+    c = _sqlite3.connect(p)
+    c.row_factory = _sqlite3.Row
+    c.execute("PRAGMA journal_mode = WAL")
+    c.execute("""
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE,
+            schedule_ref TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', active INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+    c.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    c.execute("CREATE TABLE journal (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, "
+              "slug TEXT, kind TEXT, status TEXT, archived_at REAL NOT NULL, "
+              "snapshot TEXT NOT NULL DEFAULT '{}', domain TEXT NOT NULL DEFAULT 'scheduled', "
+              "payload TEXT)")
+    c.execute("PRAGMA user_version = 13")
+    c.commit()
+    c.close()
+
+    conn2 = job_db.connect(p)
+    tables = {r["name"] for r in conn2.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "transitions" in tables
+    cols = {r["name"] for r in conn2.execute("PRAGMA table_info(transitions)")}
+    assert cols == {"id", "job_id", "slug", "from_status", "to_status", "ts"}
     assert conn2.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
     conn2.close()
 

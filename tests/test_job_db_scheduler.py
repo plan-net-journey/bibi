@@ -245,6 +245,67 @@ def test_report_status_clears_stale_next_fire_at_for_terminal(conn, source, targ
     assert row["next_fire_at"] is None
 
 
+# ── Transitions (Lifecycle-Zeitreihe, User-Feedback 2026-07-07) ─────────────
+
+
+def test_reserve_next_logs_transition_to_running(conn):
+    jid = _insert(conn, "a", 0, time.time())
+    job_db.reserve_next(conn, now=100.0)
+    rows = job_db.list_transitions(conn)
+    assert len(rows) == 1
+    assert rows[0] == {
+        "job_id": jid, "slug": "a", "from_status": "pending",
+        "to_status": "running", "ts": 100.0,
+    }
+
+
+def test_report_status_logs_transition(conn):
+    jid = _insert(conn, "a", 0, time.time())
+    job_db.reserve_next(conn, now=100.0)
+    job_db.report_status(conn, jid, status="awaiting", now=150.0)
+    rows = job_db.list_transitions(conn)
+    assert [r["to_status"] for r in rows] == ["running", "awaiting"]
+    assert rows[1] == {
+        "job_id": jid, "slug": "a", "from_status": "running",
+        "to_status": "awaiting", "ts": 150.0,
+    }
+
+
+def test_report_status_same_terminal_status_does_not_double_log_transition(conn):
+    # Spiegelt test_report_status_same_terminal_status_is_noop: ein
+    # wiederholter Terminal-Report darf keine zweite Transition erzeugen.
+    jid = _insert(conn, "a", 0, time.time())
+    job_db.reserve_next(conn, now=100.0)
+    job_db.report_status(conn, jid, status="killed", now=200.0)
+    before = len(job_db.list_transitions(conn))
+    job_db.report_status(conn, jid, status="killed", now=300.0)
+    assert len(job_db.list_transitions(conn)) == before
+
+
+def test_report_status_invalid_transition_does_not_log(conn):
+    jid = _insert(conn, "a", 0, time.time())  # bleibt pending — kein reserve_next
+    assert job_db.report_status(conn, jid, status="complete") == "invalid"
+    assert job_db.list_transitions(conn) == []
+
+
+def test_list_transitions_since_filters_and_orders(conn):
+    jid = _insert(conn, "a", 0, time.time())
+    job_db.reserve_next(conn, now=100.0)
+    job_db.report_status(conn, jid, status="complete", now=200.0)
+    rows = job_db.list_transitions(conn, since=150.0)
+    assert [r["ts"] for r in rows] == [200.0]
+
+
+def test_sweep_prunes_old_transitions(conn):
+    jid = _insert(conn, "a", 0, time.time())
+    job_db.reserve_next(conn, now=100.0)
+    assert len(job_db.list_transitions(conn)) == 1
+    far_future = 100.0 + job_db.TRANSITIONS_RETENTION_S + 3600
+    result = job_db.sweep(conn, now=far_future)
+    assert result["pruned_transitions"] == 1
+    assert job_db.list_transitions(conn) == []
+
+
 # ── Concurrency: n parallele /next → disjunkt (§3.2/§3.8) ─────────────────────
 
 

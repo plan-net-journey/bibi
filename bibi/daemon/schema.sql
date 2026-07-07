@@ -104,6 +104,24 @@ CREATE TABLE IF NOT EXISTS journal (
 CREATE INDEX IF NOT EXISTS journal_slug_idx
     ON journal (slug, archived_at DESC);
 
+-- Append-only Lifecycle-Übergänge (Schema v14) — anders als journal (nur der
+-- Terminal-Übergang) jeder Statuswechsel, inkl. running/awaiting/failed/
+-- deferred/pending. Grundlage für rückblickende Zeitreihen (z. B. "wie viele
+-- Jobs waren je Status über die letzten 24h aktiv") — journal allein kann das
+-- nicht: es hat nur eine Zeile pro Lauf mit Endstatus, Zwischenzustände wie
+-- eine mehrstündige awaiting-Phase gehen dort verloren.
+CREATE TABLE IF NOT EXISTS transitions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      TEXT NOT NULL,
+    slug        TEXT NOT NULL,
+    from_status TEXT,                          -- NULL bei Neuanlage (erster Zustand)
+    to_status   TEXT NOT NULL,
+    ts          REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS transitions_ts_idx
+    ON transitions (ts);
+
 -- Scheduler-Zustand als key/value (Schema v2). Hält u. a. den Fairness-Cursor
 -- `dispatcher_offset` (§4.4) — ein read-modify-write, das in der Reservierungs-
 -- Transaktion (BEGIN IMMEDIATE) mit der Job-Auswahl serialisiert wird.

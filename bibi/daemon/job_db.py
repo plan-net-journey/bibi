@@ -28,7 +28,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -121,6 +121,23 @@ def _mig_jobs_active(conn: sqlite3.Connection) -> None:  # v12 → v13
         conn.execute("ALTER TABLE jobs ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
 
 
+def _mig_transitions(conn: sqlite3.Connection) -> None:  # v13 → v14
+    # User-Feedback 2026-07-07 (Lauf-Historie-Chart): journal hat nur eine
+    # Zeile pro Lauf mit Endstatus, Zwischenzustände (z. B. eine mehrstündige
+    # awaiting-Phase) gehen verloren. transitions loggt jeden Statuswechsel.
+    conn.executescript(
+        "CREATE TABLE IF NOT EXISTS transitions ("
+        "    id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "    job_id      TEXT NOT NULL,"
+        "    slug        TEXT NOT NULL,"
+        "    from_status TEXT,"
+        "    to_status   TEXT NOT NULL,"
+        "    ts          REAL NOT NULL"
+        ");"
+        "CREATE INDEX IF NOT EXISTS transitions_ts_idx ON transitions (ts);"
+    )
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -137,6 +154,7 @@ _MIGRATIONS: dict[int, list] = {
     10: [_mig_jobs_ping_demand],
     11: [_mig_journal_payload],
     12: [_mig_jobs_active],
+    13: [_mig_transitions],
 }
 
 
@@ -612,7 +630,7 @@ def reserve_next(
         # fällig, Versuche übrig), fällige deferred (resume) und fällige complete
         # (lazy Rearm — der Job bleibt bis hierhin sichtbar `complete`), §5.4.
         rows = conn.execute(
-            "SELECT id, priority, enqueued_at, rowid AS seq FROM jobs "
+            "SELECT id, slug, status, priority, enqueued_at, rowid AS seq FROM jobs "
             "WHERE active=1 AND locked_at IS NULL AND ("
             "  (status='pending' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='failed' AND attempt < attempts "
@@ -648,6 +666,7 @@ def reserve_next(
             conn.execute("ROLLBACK")
             return None
         _set_offset(conn, new_offset)
+        _write_transition(conn, chosen["id"], chosen["slug"], chosen["status"], "running", now)
         row = conn.execute("SELECT * FROM jobs WHERE id=?", (chosen["id"],)).fetchone()
         conn.execute("COMMIT")
         return reservation_view(row)
@@ -668,7 +687,7 @@ def report_status(
     """Worker meldet einen Zustandswechsel (§4.4, output-frei). Rückgabe:
     ``ok`` | ``invalid`` (verbotener Übergang, §5.4) | ``not_found``."""
     now = time.time() if now is None else now
-    row = conn.execute("SELECT status, kind, schedule FROM jobs WHERE id=?", (job_id,)).fetchone()
+    row = conn.execute("SELECT status, kind, schedule, slug FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return "not_found"
     current = Status(row["status"])
@@ -759,6 +778,7 @@ def report_status(
         assignments += ", fire=fire+1"
     fields["id"] = job_id
     conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
+    _write_transition(conn, job_id, row["slug"], current.value, target.value, now)
 
     # Terminal-Übergang → eine Journal-Zeile (disponierte Domäne, §1.4). complete
     # rearmt NICHT mehr sofort hier — das übernimmt reserve_next() lazy, sobald der
@@ -792,7 +812,8 @@ def sweep(conn: sqlite3.Connection, now: float | None = None) -> dict:
     ).fetchall():
         report_status(conn, r["id"], status="inactive", reason="deferred_expired", now=now)
         inactivated += 1
-    return {"errored": errored, "inactivated": inactivated}
+    pruned = _prune_transitions(conn, now)
+    return {"errored": errored, "inactivated": inactivated, "pruned_transitions": pruned}
 
 
 def fire_startup(conn: sqlite3.Connection, now: float | None = None) -> int:
@@ -934,6 +955,49 @@ def reconcile_startup_orphans(
             )
         n += 1
     return n
+
+
+# ── Transitions (Lifecycle-Zeitreihe, User-Feedback 2026-07-07) ─────────────
+
+#: Wie lange transitions-Zeilen aufbewahrt werden, bevor sweep() sie prunt.
+#: Puffer über das geplante 24h-Chart-Fenster hinaus.
+TRANSITIONS_RETENTION_S = 48 * 3600
+
+
+def _write_transition(
+    conn: sqlite3.Connection, job_id: str, slug: str,
+    from_status: str | None, to_status: str, ts: float,
+) -> None:
+    """Einen Lifecycle-Übergang append-only loggen — anders als journal (nur
+    der Terminal-Übergang) jeder Statuswechsel, damit sich rückblickend eine
+    Zeitreihe zeichnen lässt (journal allein verliert Zwischenzustände wie
+    eine mehrstündige awaiting-Phase)."""
+    conn.execute(
+        "INSERT INTO transitions (job_id, slug, from_status, to_status, ts) "
+        "VALUES (:job_id, :slug, :from_status, :to_status, :ts)",
+        {"job_id": job_id, "slug": slug, "from_status": from_status,
+         "to_status": to_status, "ts": ts},
+    )
+
+
+def list_transitions(conn: sqlite3.Connection, *, since: float | None = None) -> list[dict]:
+    """Transition-Log ab ``since`` (Epoch, inklusiv), älteste zuerst."""
+    q = "SELECT job_id, slug, from_status, to_status, ts FROM transitions"
+    params: dict = {}
+    if since is not None:
+        q += " WHERE ts >= :since"
+        params["since"] = since
+    q += " ORDER BY ts ASC"
+    return [dict(r) for r in conn.execute(q, params).fetchall()]
+
+
+def _prune_transitions(conn: sqlite3.Connection, now: float) -> int:
+    """Zeilen älter als :data:`TRANSITIONS_RETENTION_S` löschen (§periodischer sweep)."""
+    cur = conn.execute(
+        "DELETE FROM transitions WHERE ts < :cutoff",
+        {"cutoff": now - TRANSITIONS_RETENTION_S},
+    )
+    return cur.rowcount
 
 
 # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────────
