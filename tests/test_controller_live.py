@@ -110,6 +110,17 @@ def test_live_js_marks_thinking_stream_with_own_class():
     assert "'thinking'" in render._LIVE_JS
 
 
+def test_live_js_scrolls_to_bottom_on_initial_bind():
+    # PLAN-19 Befund 2, live reproduziert 2026-07-06: eine Box mit bereits
+    # überfüllendem Seed-Inhalt hat scrollTop=0 beim ersten attach() — atBottom()
+    # liefert dann von Anfang an "false" und FOLLOW greift für den Rest der
+    # Seiten-Lebenszeit nie mehr, egal wie viel neuer Output ankommt. Fix: sofort
+    # ans Ende springen, bevor der erste EventSource-Event überhaupt eintrifft.
+    js = render._LIVE_JS
+    bind_section = js.split("bound.add(box);")[1].split("const id = box.dataset.job")[0]
+    assert "box.scrollTop = box.scrollHeight;" in bind_section
+
+
 def test_live_js_preserves_liveclamp_scroll_across_poll():
     # User-Feedback: .liveclamp (awaiting/terminal-Output) hat kein hx-preserve
     # wie .liveterm — der 2s-#live-Poll ersetzt es per outerHTML, ein frisches

@@ -1321,6 +1321,11 @@ _LIVE_JS = """
     document.querySelectorAll('.liveterm[data-job]').forEach(box => {
       if (bound.has(box)) return;
       bound.add(box);
+      // Seed-Inhalt (server-seitig gerendert) kann die Box bereits vor dem
+      // ersten Event überfüllen — ohne dies bleibt scrollTop bei 0 und
+      // atBottom() liefert ab dem allerersten Check "false" (Follow-up-Bug,
+      // live reproduziert 2026-07-06: FOLLOW bleibt danach dauerhaft wirkungslos).
+      box.scrollTop = box.scrollHeight;
       const id = box.dataset.job, from = box.dataset.from || '0';
       const es = new EventSource('/-/job/'+encodeURIComponent(id)+'/output/stream?from='+from);
       box._bibiEs = es;
