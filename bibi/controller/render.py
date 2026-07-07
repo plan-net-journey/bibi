@@ -404,36 +404,76 @@ _STATUS_GROUP = {
 _WAITING_STATUSES = ("pending", "failed", "deferred", "awaiting")
 _HALT_STATUSES = ("error", "inactive", "zombie", "killed")
 
+#: Bucket-Breite (User-Fund 2026-07-07: mit stündlichen Buckets traf ein kurzer
+#: Lauf so gut wie nie einen der 24 Zeitpunkte und verschwand nach seinem
+#: Statuswechsel spurlos, statt als Balken "über die x-Achse zu wandern" — 15min
+#: macht die Wanderbewegung auf normaler Beobachtungs-Zeitskala sichtbar,
+#: bleibt aber innerhalb der Plan-Vorgabe ("24 Stundenbuckets oder feiner").
+_CHART_HOURS = 24
+_CHART_BUCKET_MINUTES = 15
 
-def _timeseries_buckets(transitions: list[dict], *, now: float, hours: int = 24) -> list[dict[str, int]]:
-    """``hours`` stündliche Buckets, ältester links, ``now`` exakt am rechten
-    Rand (rollierendes Fenster relativ zu ``now``, kein Kalenderstunden-Raster
-    — "jetzt" bleibt so immer rechts, auch mitten in einer Stunde). Pro Bucket:
-    wie viele Jobs waren zu dessen Ende in welcher Gruppe (waiting/running/halt)
-    — aus dem letzten vor diesem Zeitpunkt bekannten Status je ``job_id``.
-    ``transitions`` sollte weiter zurückreichen als ``hours`` (die vollen 48h
-    Retention, s. ``job_db.TRANSITIONS_RETENTION_S``), sonst fehlt Jobs, die
-    schon vor dem sichtbaren Fenster in einem Zustand hingen, ihr Startpunkt."""
-    bucket_s = 3600
-    boundaries = [now - (hours - i) * bucket_s for i in range(1, hours + 1)]
-    rows = sorted(transitions, key=lambda t: t["ts"])
-    current: dict[str, str] = {}
+
+def _job_segments(transitions: list[dict], *, now: float) -> dict[str, list[tuple[float, float, str]]]:
+    """Pro ``job_id`` eine Liste ``(start, end, status)`` — ``end`` ist die
+    nächste Transition desselben Jobs oder ``now``, wenn er noch in diesem
+    Zustand ist. Grundlage der Bucket-Aggregation: ein Job zählt in jedem
+    Bucket, dessen Zeitfenster sein Segment überlappt, nicht nur in dem, das
+    exakt auf einen Übergangs-Zeitpunkt trifft (s. ``_timeseries_buckets``)."""
+    by_job: dict[str, list[dict]] = {}
+    for t in sorted(transitions, key=lambda t: t["ts"]):
+        by_job.setdefault(t["job_id"], []).append(t)
+    segments: dict[str, list[tuple[float, float, str]]] = {}
+    for job_id, rows in by_job.items():
+        segs = []
+        for i, row in enumerate(rows):
+            start = row["ts"]
+            end = rows[i + 1]["ts"] if i + 1 < len(rows) else now
+            segs.append((start, end, row["to_status"]))
+        segments[job_id] = segs
+    return segments
+
+
+def _timeseries_buckets(transitions: list[dict], *, now: float, hours: int = _CHART_HOURS,
+                        bucket_minutes: int = _CHART_BUCKET_MINUTES) -> list[dict[str, int]]:
+    """``hours`` in ``bucket_minutes``-Fenstern, ältestes links, ``now`` exakt
+    am rechten Rand (rollierendes Fenster relativ zu ``now``, kein
+    Kalenderraster). Pro Bucket: wie viele Jobs waren *irgendwann während
+    dieses Zeitfensters* in welcher Gruppe (waiting/running/halt) — per
+    Segment-Überlappung (``_job_segments``), nicht nur zu dessen Ende. So
+    bleibt ein kurzer Lauf als historische Markierung an seinem Bucket stehen
+    und wandert mit fortschreitender Zeit nach links, statt nach seinem
+    Statuswechsel spurlos zu verschwinden. ``transitions`` sollte weiter
+    zurückreichen als ``hours`` (die vollen 48h Retention, s.
+    ``job_db.TRANSITIONS_RETENTION_S``), sonst fehlt Jobs, die schon vor dem
+    sichtbaren Fenster in einem Zustand hingen, ihr Startpunkt."""
+    bucket_s = bucket_minutes * 60
+    n = int(hours * 60 / bucket_minutes)
+    # +1s-Nudge nur auf die Bucket-Kanten (nicht auf die Segment-Enden in
+    # _job_segments): ein Übergang mit ts==now landet sonst exakt auf der
+    # rechten Kante des letzten, noch offenen ("halb offenen") Buckets und
+    # fällt durch den Vergleich raus — für den Bruchteil einer Sekunde bis zum
+    # nächsten 2s-Poll unsichtbar. Verschiebt keine sichtbare Grenze (< 1s bei
+    # 15min-Buckets), macht den Rand aber robust gegen exakte Gleichstände.
+    edges = [(now + 1.0) - (n - i) * bucket_s for i in range(n + 1)]
+    segments = _job_segments(transitions, now=now)
     out: list[dict[str, int]] = []
-    idx, n = 0, len(rows)
-    for boundary in boundaries:
-        while idx < n and rows[idx]["ts"] <= boundary:
-            current[rows[idx]["job_id"]] = rows[idx]["to_status"]
-            idx += 1
+    for i in range(n):
+        b_start, b_end = edges[i], edges[i + 1]
         counts = {"waiting": 0, "running": 0, "halt": 0}
-        for status in current.values():
-            group = _STATUS_GROUP.get(status)
-            if group:
-                counts[group] += 1
+        seen: set[tuple[str, str]] = set()
+        for job_id, segs in segments.items():
+            for seg_start, seg_end, status in segs:
+                if seg_start < b_end and seg_end > b_start:
+                    group = _STATUS_GROUP.get(status)
+                    if group and (job_id, group) not in seen:
+                        counts[group] += 1
+                        seen.add((job_id, group))
         out.append(counts)
     return out
 
 
-def _timeseries_html(buckets: list[dict[str, int]]) -> str:
+def _timeseries_html(buckets: list[dict[str, int]],
+                     bucket_minutes: int = _CHART_BUCKET_MINUTES) -> str:
     """Gestapelte CSS-Balken (dieselbe div+CSS-Klasse-Konvention wie die
     Heatmap-Zellen, kein SVG) — Höhe je Segment relativ zum größten
     Bucket-Gesamt (y-Achse an maximaler paralleler Lauf-Zahl orientiert)."""
@@ -443,8 +483,9 @@ def _timeseries_html(buckets: list[dict[str, int]]) -> str:
     n = len(buckets)
     cols = []
     for i, b in enumerate(buckets):
-        hours_ago = n - i
-        title = (f"vor {hours_ago}–{hours_ago - 1}h · "
+        end_min = (n - i) * bucket_minutes
+        start_min = end_min - bucket_minutes
+        title = (f"vor {start_min}–{end_min}min · "
                 f"warten {b['waiting']} · aktiv {b['running']} · halt {b['halt']}")
         segs = "".join(
             f'<div class="seg {grp}" style="height:{b[grp] / maxtotal * 100:.1f}%"></div>'

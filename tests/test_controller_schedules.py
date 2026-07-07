@@ -128,9 +128,9 @@ def test_timeseries_buckets_counts_current_status_per_hour():
     transitions = [
         _trans("j1", "running", now - 23 * 3600 - 1),  # kurz vor dem Fenster
     ]
-    buckets = render._timeseries_buckets(transitions, now=now, hours=24)
+    buckets = render._timeseries_buckets(transitions, now=now, hours=24, bucket_minutes=60)
     assert len(buckets) == 24
-    # j1 lief schon vor dem ersten Bucket-Ende → zählt in JEDEM Bucket mit.
+    # j1 lief schon vor dem ersten Bucket-Start → überlappt JEDEN Bucket.
     assert all(b["running"] == 1 for b in buckets)
     assert all(b["waiting"] == 0 and b["halt"] == 0 for b in buckets)
 
@@ -141,10 +141,11 @@ def test_timeseries_buckets_status_change_moves_job_between_groups():
         _trans("j1", "running", now - 10 * 3600),
         _trans("j1", "awaiting", now - 5 * 3600),  # waiting ab hier
     ]
-    buckets = render._timeseries_buckets(transitions, now=now, hours=24)
+    buckets = render._timeseries_buckets(transitions, now=now, hours=24, bucket_minutes=60)
     # 9h vor "jetzt" (Bucket-Index 24-9=15, 0-basiert): noch running.
     assert buckets[14]["running"] == 1
-    # 4h vor "jetzt": schon awaiting (waiting-Gruppe).
+    # 4h vor "jetzt": schon awaiting (waiting-Gruppe), running-Segment endet
+    # exakt an der Bucket-Grenze und überlappt daher nicht mehr.
     assert buckets[19]["waiting"] == 1
     assert buckets[19]["running"] == 0
 
@@ -155,16 +156,42 @@ def test_timeseries_buckets_complete_hides_job():
         _trans("j1", "running", now - 10 * 3600),
         _trans("j1", "complete", now - 5 * 3600),
     ]
-    buckets = render._timeseries_buckets(transitions, now=now, hours=24)
+    buckets = render._timeseries_buckets(transitions, now=now, hours=24, bucket_minutes=60)
     assert buckets[19]["running"] == 0 and buckets[19]["waiting"] == 0 and buckets[19]["halt"] == 0
 
 
 def test_timeseries_buckets_future_job_not_yet_counted():
     now = 100_000.0
     buckets = render._timeseries_buckets(
-        [_trans("j1", "running", now)], now=now, hours=24)
+        [_trans("j1", "running", now)], now=now, hours=24, bucket_minutes=60)
     assert buckets[0]["running"] == 0  # existiert erst am rechten Rand
     assert buckets[-1]["running"] == 1
+
+
+def test_timeseries_buckets_short_run_stays_visible_and_wanders_left():
+    # User-Fund 2026-07-07: ein kurzer Lauf (Sekunden) durfte nicht nach seinem
+    # Statuswechsel spurlos verschwinden, sondern muss als Markierung an seinem
+    # Zeit-Bucket stehen bleiben und mit fortschreitendem "jetzt" nach links
+    # wandern — Kern der Regression (Punkt-Schnappschuss → Zeitfenster-Overlap).
+    t0 = 100_000.0
+    transitions = [
+        _trans("j1", "running", t0),
+        _trans("j1", "complete", t0 + 10),  # 10s später fertig
+    ]
+    right_away = render._timeseries_buckets(transitions, now=t0 + 10, hours=24, bucket_minutes=60)
+    assert right_away[-1]["running"] == 1  # noch sichtbar direkt danach
+
+    much_later = render._timeseries_buckets(
+        transitions, now=t0 + 5 * 3600 + 10, hours=24, bucket_minutes=60)
+    # 5h später: die Markierung ist nicht verschwunden, sondern 5 Buckets nach
+    # links gewandert (steht jetzt dort, wo der Lauf tatsächlich stattfand).
+    assert much_later[-1]["running"] == 0
+    assert much_later[-6]["running"] == 1
+
+
+def test_timeseries_buckets_default_is_96_buckets_of_15min():
+    buckets = render._timeseries_buckets([], now=1_000_000.0)
+    assert len(buckets) == 96
 
 
 def test_timeseries_html_has_24_cols_and_axis_labels():
