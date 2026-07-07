@@ -45,11 +45,14 @@ td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
 .kind { font-family: ui-monospace, monospace; font-size: .82rem; color: #999; }
 .handles { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center;
            margin: 1rem 0 .25rem; }
-.handles a, .handles button { font: inherit; font-size: .82rem; text-decoration: none;
-           color: inherit; background: #8882; border: 1px solid #8884;
-           border-radius: .35rem; padding: .15rem .5rem; cursor: pointer; }
-.handles .handle.on { background: #1a7f3733; border-color: #1a7f3766; }
-.handles .handle.warn { background: #d6a23e33; border-color: #d6a23e88; }
+/* Toggles (FOLLOW/THEME/RESCAN/MAINT) wie Nav-Text-Links, keine Buttons mehr
+   (PLAN-19 Befund 7, User-Fund: "nicht Buttons und Text Links gemischt") —
+   überschreibt das globale button{...} gezielt nur für diese Klasse. */
+.toggle { font: inherit; font-size: .85rem; text-decoration: none; color: #888;
+          background: none; border: none; padding: 0; cursor: pointer; }
+.toggle:hover { text-decoration: underline; }
+.toggle.on { color: #5fb37a; }
+.toggle.warn { color: #d6a23e; }
 a.slug { font-weight: 600; text-decoration: none; }
 a.slug:hover { text-decoration: underline; }
 .sched a { text-decoration: none; }
@@ -442,15 +445,17 @@ _CLOCK_JS = """
 def _follow_toggle() -> str:
     """FOLLOW-Button (pausiert Live-Updates, ``window.bibiFollow``) — Teil des
     gemeinsamen Headers (Follow-up: war zuvor nur auf dem Feed-Screen
-    sichtbar/steuerbar, jetzt auf jedem Screen)."""
-    return '<button id="follow" class="handle on" onclick="bibiToggleFollow()">FOLLOW: AN</button>'
+    sichtbar/steuerbar, jetzt auf jedem Screen). Als Text-Link gestylt, kein
+    Button-Look mehr (PLAN-19 Befund 7)."""
+    return '<button id="follow" class="toggle on" onclick="bibiToggleFollow()">FOLLOW: AN</button>'
 
 
 def _theme_toggle() -> str:
     """DARK/LIGHT-Button — Teil des gemeinsamen Headers, neben FOLLOW
     (User-Feedback 2026-07-04). Startlabel per ``_THEME_JS`` gesetzt (Default =
-    System-Präferenz), damit hier kein Server-seitiger Theme-State nötig ist."""
-    return '<button id="theme" class="handle" onclick="bibiToggleTheme()">THEME</button>'
+    System-Präferenz), damit hier kein Server-seitiger Theme-State nötig ist.
+    Als Text-Link gestylt, kein Button-Look mehr (PLAN-19 Befund 7)."""
+    return '<button id="theme" class="toggle" onclick="bibiToggleTheme()">THEME</button>'
 
 
 #: DARK/LIGHT-Toggle: überschreibt ``color-scheme`` explizit via ``data-theme``
@@ -522,7 +527,7 @@ function bibiToggleFollow(){
   localStorage.setItem('bibiFollow', window.bibiFollow ? '1' : '0');
   const b = document.getElementById('follow');
   b.textContent = 'FOLLOW: ' + (window.bibiFollow ? 'AN' : 'aus');
-  b.className = 'handle ' + (window.bibiFollow ? 'on' : '');
+  b.className = 'toggle ' + (window.bibiFollow ? 'on' : '');
   // Wieder-Einschalten muss sofort ans Ende springen — sonst bleibt die Box
   // bis zum nächsten Append "stick=false" (atBottom() prüft die aktuelle
   // Scroll-Position, die während FOLLOW=aus eingefroren war) und folgt nie
@@ -535,7 +540,7 @@ function bibiToggleFollow(){
 }
 document.addEventListener('DOMContentLoaded', () => {
   const b = document.getElementById('follow');
-  if (b && !window.bibiFollow){ b.textContent = 'FOLLOW: aus'; b.className = 'handle'; }
+  if (b && !window.bibiFollow){ b.textContent = 'FOLLOW: aus'; b.className = 'toggle'; }
 });
 """
 
@@ -1131,8 +1136,6 @@ def feed_fragment(feed_data: dict, *, days: int | None = None, now: float | None
             f'<div class="loadmore">'
             f'<button hx-get="/-/ui/feed/board?days={next_days}" hx-target="#feedboard" '
             f'hx-swap="outerHTML">mehr laden ({next_days} Tage)</button>'
-            f'<button hx-get="/-/ui/feed/board?days=0" hx-target="#feedboard" '
-            f'hx-swap="outerHTML">gesamte Historie</button>'
             f"</div>"
         )
     return (
@@ -1183,13 +1186,13 @@ def _ops_handles(status: dict | None = None) -> str:
     (``_OPS_HANDLES_JS``) statt htmx — funktioniert dadurch identisch auf jeder
     Seite, ohne pro Screen ein eigenes hx-target verdrahten zu müssen."""
     maint = bool((status or {}).get("maintenance"))
-    mcls = "handle warn" if maint else "handle"
+    mcls = "toggle warn" if maint else "toggle"
     mlabel = "MAINT: AN" if maint else "MAINT: aus"
     on = bool((status or {}).get("maintenance"))
     hide = "" if on else ' style="display:none"'
     return (
         '<nav class="handles">'
-        '<button id="rescan" class="handle">RESCAN</button>'
+        '<button id="rescan" class="toggle">RESCAN</button>'
         f'<button id="maint" class="{mcls}">{mlabel}</button>'
         f'<span id="maintbanner" class="banner bad"{hide}>Wartungsmodus aktiv</span>'
         "</nav>"

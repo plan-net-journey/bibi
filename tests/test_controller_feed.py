@@ -202,22 +202,13 @@ def test_feed_fragment_includes_heatmap_list_and_load_more():
     assert 'id="feedboard"' in html
     assert "System" in html
     assert "mehr laden (4 Tage)" in html
-    assert "gesamte Historie" in html
+    assert "gesamte Historie" not in html  # Fähigkeit gestrichen (PLAN-19 Befund 7)
 
 
-def test_feed_fragment_hides_load_more_when_full_history_shown():
-    # days=None heißt jetzt "gesamte Historie bereits gezeigt" (Sentinel-
-    # Auflösung passiert in __init__.py::_effective_days, nicht hier) —
-    # nichts mehr zu laden, kein "mehr laden"/"gesamte Historie" mehr nötig.
+def test_feed_fragment_hides_load_more_without_days():
     html = render.feed_fragment({"entities": [], "heatmap": []}, days=None, now=100.0)
     assert "mehr laden" not in html
     assert "gesamte Historie" not in html
-
-
-def test_feed_fragment_gesamte_historie_button_sends_days_zero_sentinel():
-    feed_data = {"entities": [], "heatmap": []}
-    html = render.feed_fragment(feed_data, days=3, now=100.0)
-    assert 'hx-get="/-/ui/feed/board?days=0"' in html
 
 
 def test_feed_page_has_header_nav_and_status_cards():

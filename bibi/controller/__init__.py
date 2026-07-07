@@ -91,12 +91,10 @@ def add_controller_routes(
         (PLAN-18 Design-Pass), nicht unbegrenzt — ein voller, unbegrenzter Log
         über die echte bibi-notes-Historie brauchte live 5,7s, über dem
         5s-Timeout des Controller-Selbstaufrufs (User-Fund 2026-07-06, „Feed
-        ist auf einmal leer"). ``days=0`` ist das explizite Signal des
-        „gesamte Historie"-Buttons (der sonst nicht von einem frischen
-        Seitenaufruf unterscheidbar wäre) → kein Zeitfenster."""
-        if days is None:
-            return 1
-        return None if days == 0 else days
+        ist auf einmal leer"). Die „gesamte Historie"-Fähigkeit (vormals über
+        ein explizites ``days=0``-Sentinel) ist gestrichen (PLAN-19 Befund 7,
+        User-Entscheidung) — kein Weg mehr zu einem unbegrenzten Fenster."""
+        return 1 if days is None else days
 
     def _feed_data(days: int | None) -> dict:
         try:

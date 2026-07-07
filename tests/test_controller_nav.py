@@ -29,6 +29,19 @@ def test_header_includes_ops_handles():
     assert 'id="maint"' in html and "MAINT: AN" in html
 
 
+def test_toggles_styled_as_text_links_not_boxed_buttons():
+    # PLAN-19 Befund 7, User-Fund: FOLLOW/THEME/RESCAN/MAINT sollen wie die
+    # Nav-Tabs aussehen (reine Text-Links), keine Buttons mit Box/Rahmen mehr.
+    # Bleiben funktional <button>-Elemente (JS-Handler), nur CSS-Klasse ändert
+    # sich von "handle" auf "toggle" — kein "handle" mehr irgendwo im Markup.
+    html = render._header("Schedules", {"maintenance": True})
+    assert 'class="handle"' not in html and 'class="handle ' not in html
+    assert 'class="toggle on"' in html  # FOLLOW startet an
+    assert 'class="toggle"' in html  # THEME + RESCAN
+    assert 'class="toggle warn"' in html  # MAINT an
+    assert ".toggle {" in render._CSS
+
+
 def test_screen_nav_feed_tab_is_home():
     # PLAN-18 Stufe 18.3: Feed ist zurück und jetzt der Home-Screen (/-/),
     # Schedules zieht auf seine eigene Route um.
