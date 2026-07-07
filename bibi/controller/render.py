@@ -22,7 +22,9 @@ _CSS = """
 :root[data-theme="dark"] { color-scheme: dark; }
 body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem;
        max-width: 64rem; margin-inline: auto; }
-header { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; }
+header { display: flex; align-items: baseline; justify-content: space-between;
+         gap: .75rem; flex-wrap: wrap; }
+.nav-left, .nav-right { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; }
 header .handles { margin: 0; }
 h1 { font-size: 1.4rem; margin: 0; }
 .muted { color: #888; font-size: .85rem; }
@@ -447,8 +449,11 @@ def _screen_nav(active: str, roles: list[str] | None = None) -> str:
 
 
 def _live_clock() -> str:
-    """Tickende Lebendigkeits-Anzeige (Feedback Z. 2) — von ``_CLOCK_JS`` gesetzt."""
-    return '<span class="liveclock" id="liveclock">● live --:--:--</span>'
+    """Tickende Lebendigkeits-Anzeige (Feedback Z. 2) — von ``_CLOCK_JS`` gesetzt.
+    Rechts-Gruppe der Nav (PLAN-21 Befund 1, User-Fund: "Datum, Uhrzeit, Theme
+    hätte ich gerne abgegrenzt rechts ausgerichtet") — zeigt seither Datum +
+    Uhrzeit statt nur Uhrzeit."""
+    return '<span class="liveclock" id="liveclock">● live --.--.---- --:--:--</span>'
 
 
 #: Setzt die Uhr sekündlich (rein client-seitig) — „wir leben noch".
@@ -456,31 +461,37 @@ _CLOCK_JS = """
 (function(){
   const c = document.getElementById('liveclock');
   if (!c) return;
-  const tick = () => { c.textContent = '● live ' + new Date().toLocaleTimeString(); };
+  const tick = () => {
+    const now = new Date();
+    c.textContent = '● live ' + now.toLocaleDateString('de-DE') + ' ' + now.toLocaleTimeString('de-DE');
+  };
   tick(); setInterval(tick, 1000);
 })();
 """
 
 
 def _follow_toggle() -> str:
-    """FOLLOW-Button (pausiert Live-Updates, ``window.bibiFollow``) — Teil des
-    gemeinsamen Headers (Follow-up: war zuvor nur auf dem Feed-Screen
-    sichtbar/steuerbar, jetzt auf jedem Screen). Als Text-Link gestylt, kein
-    Button-Look mehr (PLAN-19 Befund 7)."""
+    """FOLLOW-Button (pausiert Live-Updates, ``window.bibiFollow``) — Teil der
+    linken Nav-Gruppe (PLAN-21 Befund 1: klickbar wie bisher, optisch wie ein
+    Tab neben Feed/Schedules/…). Als Text-Link gestylt, kein Button-Look mehr
+    (PLAN-19 Befund 7)."""
     return '<button id="follow" class="toggle on" onclick="bibiToggleFollow()">FOLLOW: AN</button>'
 
 
 def _theme_toggle() -> str:
-    """DARK/LIGHT-Button — Teil des gemeinsamen Headers, neben FOLLOW
-    (User-Feedback 2026-07-04). Startlabel per ``_THEME_JS`` gesetzt (Default =
-    System-Präferenz), damit hier kein Server-seitiger Theme-State nötig ist.
-    Als Text-Link gestylt, kein Button-Look mehr (PLAN-19 Befund 7)."""
-    return '<button id="theme" class="toggle" onclick="bibiToggleTheme()">THEME</button>'
+    """DARK/LIGHT-Button — Teil der rechten Nav-Gruppe (PLAN-21 Befund 1,
+    User-Fund: "Theme als Symbol LIGHT/DARK" statt Textlabel). Startsymbol per
+    ``_THEME_JS`` gesetzt (Default = System-Präferenz), damit hier kein
+    Server-seitiger Theme-State nötig ist. Als Text-Link gestylt, kein
+    Button-Look (PLAN-19 Befund 7)."""
+    return '<button id="theme" class="toggle" onclick="bibiToggleTheme()">☾</button>'
 
 
 #: DARK/LIGHT-Toggle: überschreibt ``color-scheme`` explizit via ``data-theme``
 #: auf <html> (s. _CSS), Default = System-Präferenz (``prefers-color-scheme``),
-#: persistiert in localStorage — analog zu _FOLLOW_JS.
+#: persistiert in localStorage — analog zu _FOLLOW_JS. Symbol statt Text
+#: (PLAN-21 Befund 1): ☀ (hell → Klick wechselt zu dunkel) / ☾ (dunkel →
+#: Klick wechselt zu hell), zeigt also das jeweils erreichbare Ziel-Theme.
 _THEME_JS = """
 (function(){
   const KEY = 'bibiTheme';
@@ -488,7 +499,7 @@ _THEME_JS = """
   function apply(theme){
     root.setAttribute('data-theme', theme);
     const b = document.getElementById('theme');
-    if (b) b.textContent = 'THEME: ' + theme.toUpperCase();
+    if (b) b.textContent = theme === 'dark' ? '☀' : '☾';
   }
   window.bibiToggleTheme = function(){
     const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
@@ -501,19 +512,22 @@ _THEME_JS = """
 """
 
 
-def _header(active: str, status: dict | None = None, git_status: dict | None = None) -> str:
-    """Gemeinsame obere Navigationsleiste: Titel + Live-Uhr + Tab-Leiste + FOLLOW-
-    + THEME-Toggle + Ops-Handles (RESCAN/MAINT). Ein Baustein für jeden Screen
-    (User-Feedback 2026-07-04: "ziehe Rescan und Maintenance CTA auf die obere
-    Navigationsleiste mit FOLLOW on/off" — dadurch auch auf Live-Log sichtbar,
-    vorher pro Screen separat bzw. gar nicht eingebunden). ``git_status`` ist
-    optional (PLAN-20 Befund 5) — nur der Feed-Screen liefert ihn bisher, alle
-    anderen Screens zeigen weiterhin das generische RESCAN. Rollen für
+def _header(active: str, status: dict | None = None) -> str:
+    """Gemeinsame obere Navigationsleiste: links Titel + Tab-Leiste + FOLLOW +
+    Ops-Handles (RESCAN/MAINT), rechts Datum/Uhrzeit + THEME (PLAN-21 Befund 1,
+    User-Fund: "links ausgerichtet: bibi/Feed/…/Follow/Maintenance, rechts
+    ausgerichtet: Datum/Uhrzeit/Theme" — löst die bisherige einzeilige
+    Linksbündig-Reihe ab). ``git_status`` fällt hier weg (PLAN-21 Befund 2,
+    Sync-Dopplung: der Sync-Zustand steht jetzt nur noch in der Git-Karte,
+    RESCAN zeigt wieder die generische Beschriftung). Rollen für
     ``_screen_nav()`` (PLAN-20 Befund 6) kommen aus ``status["roles"]`` — schon
     vorhanden (``/-/status``), keine neue Datenquelle nötig."""
     roles = (status or {}).get("roles")
-    return (f'<header><h1>bibi</h1>{_live_clock()} {_screen_nav(active, roles)} '
-            f'{_follow_toggle()}{_theme_toggle()}{_ops_handles(status, git_status)}</header>')
+    left = (f'<h1>bibi</h1>{_screen_nav(active, roles)} '
+            f'{_follow_toggle()}{_ops_handles(status)}')
+    right = f'{_live_clock()}{_theme_toggle()}'
+    return (f'<header><div class="nav-left">{left}</div>'
+            f'<div class="nav-right">{right}</div></header>')
 
 
 def schedules_page(schedules: list[dict], typ: str | None = None,
@@ -1245,7 +1259,7 @@ def feed_page(
         f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Feed', status, git_status)}"
+        f"{_header('Feed', status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{_feed_status_cards(status, git_status, host_url, now)}"
         f"{feed_fragment(feed_data, days=days, weeks=weeks, now=now)}"
@@ -1255,14 +1269,8 @@ def feed_page(
     )
 
 
-#: Git-``sync``-Wert → Toggle-Zustandsklasse, dieselben Farben wie die Git-
-#: Karte (``_SYNC_LABEL_CLASS``, PLAN-20 Befund 5: "Sync" als CTA in der
-#: Nav-Zeile, nicht nur passive Kachel-Anzeige).
-_SYNC_TOGGLE_CLASS = {"synced": "on", "ahead": "warn", "behind": "bad", "conflict": "bad"}
-
-
-def _ops_handles(status: dict | None = None, git_status: dict | None = None) -> str:
-    """Ops-Bedienelemente: RESCAN/SYNC, MAINT-Toggle (spiegelt ``status.maintenance``).
+def _ops_handles(status: dict | None = None) -> str:
+    """Ops-Bedienelemente: RESCAN, MAINT-Toggle (spiegelt ``status.maintenance``).
     Ursprünglich Feed-exklusiv, jetzt auch auf Schedules-Liste und Job-Detail
     (User-Feedback 2026-07-03: "brauchen den Rescan und Maintenance Button auf
     Schedule Screen"). FOLLOW sitzt seit einem früheren Follow-up im gemeinsamen
@@ -1270,26 +1278,19 @@ def _ops_handles(status: dict | None = None, git_status: dict | None = None) -> 
     (``_OPS_HANDLES_JS``) statt htmx — funktioniert dadurch identisch auf jeder
     Seite, ohne pro Screen ein eigenes hx-target verdrahten zu müssen.
 
-    Der RESCAN-Button zeigt, wenn ``git_status`` vorliegt, den aktuellen
-    Sync-Zustand statt der generischen Beschriftung (PLAN-20 Befund 5,
-    User-Fund: "maintenance und sync zu einem CTA machen, das gleich
-    ausgerichtet wie in der Nav-Zeile" — Klick löst weiterhin RESCAN aus,
-    nur die Beschriftung wird informativ)."""
+    RESCAN zeigt bewusst wieder die generische Beschriftung, kein Sync-Label
+    mehr (PLAN-21 Befund 2, revidiert PLAN-20 Befund 5: der Sync-Zustand stand
+    dadurch gleichzeitig im Button UND in der Git-Karte — echte Dopplung, per
+    Screenshot bestätigt. Bleibt jetzt nur noch in der Git-Karte). Kein
+    "Wartungsmodus aktiv"-Banner mehr (PLAN-21 Befund 3: reine Redundanz zum
+    längst aussagekräftigen MAINT-Toggle, keine Zusatzinfo)."""
     maint = bool((status or {}).get("maintenance"))
     mcls = "toggle warn" if maint else "toggle"
     mlabel = "MAINT: AN" if maint else "MAINT: aus"
-    hide = "" if maint else ' style="display:none"'
-    sync = (git_status or {}).get("sync")
-    if sync:
-        rcls = f"toggle {_SYNC_TOGGLE_CLASS.get(sync, '')}".strip()
-        rlabel = f"SYNC: {sync}"
-    else:
-        rcls, rlabel = "toggle", "RESCAN"
     return (
         '<nav class="handles">'
-        f'<button id="rescan" class="{rcls}">{rlabel}</button>'
+        '<button id="rescan" class="toggle">RESCAN</button>'
         f'<button id="maint" class="{mcls}">{mlabel}</button>'
-        f'<span id="maintbanner" class="banner bad"{hide}>Wartungsmodus aktiv</span>'
         "</nav>"
     )
 
@@ -1302,7 +1303,7 @@ _OPS_HANDLES_JS = """
 (function(){
   const rescan = document.getElementById('rescan');
   if (rescan) {
-    const idleLabel = rescan.textContent;   // "RESCAN" oder "SYNC: <zustand>"
+    const idleLabel = rescan.textContent;   // "RESCAN"
     rescan.addEventListener('click', async () => {
       rescan.disabled = true; rescan.textContent = 'RESCAN…';
       try { await fetch('/-/rescan', {method:'POST'}); } catch(_){}
@@ -1311,11 +1312,9 @@ _OPS_HANDLES_JS = """
     });
   }
   const maint = document.getElementById('maint');
-  const banner = document.getElementById('maintbanner');
   function setMaint(on){
     maint.classList.toggle('warn', on);
     maint.textContent = on ? 'MAINT: AN' : 'MAINT: aus';
-    if (banner) banner.style.display = on ? '' : 'none';
   }
   if (maint) maint.addEventListener('click', async () => {
     const on = maint.classList.contains('warn');

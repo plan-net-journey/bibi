@@ -29,45 +29,68 @@ def test_header_includes_ops_handles():
     assert 'id="maint"' in html and "MAINT: AN" in html
 
 
-# --- Sync-CTA (PLAN-20 Befund 5) ------------------------------------------------
+# --- RESCAN generisch, keine Sync-Dopplung mehr (PLAN-21 Befund 2, revidiert
+# --- PLAN-20 Befund 5: SYNC stand gleichzeitig im Button UND in der Git-Karte)
 
 
-def test_ops_handles_shows_generic_rescan_without_git_status():
-    html = render._ops_handles({}, None)
+def test_ops_handles_rescan_is_always_generic():
+    html = render._ops_handles({})
     assert 'id="rescan" class="toggle">RESCAN<' in html
 
 
-def test_ops_handles_shows_sync_label_when_git_status_given():
-    html = render._ops_handles({}, {"tree": "clean", "sync": "synced", "branch": "trunk"})
-    assert 'id="rescan" class="toggle on">SYNC: synced<' in html
-
-
-def test_ops_handles_sync_ahead_is_warn_colored():
-    html = render._ops_handles({}, {"tree": "clean", "sync": "ahead", "branch": "trunk"})
-    assert 'id="rescan" class="toggle warn">SYNC: ahead<' in html
-
-
-def test_ops_handles_sync_behind_is_bad_colored():
-    html = render._ops_handles({}, {"tree": "clean", "sync": "behind", "branch": "trunk"})
-    assert 'id="rescan" class="toggle bad">SYNC: behind<' in html
-
-
-def test_ops_handles_js_restores_idle_label_not_hardcoded_rescan():
-    # Vorher hardcodete das Klick-Handler-JS "RESCAN" nach der Klick-Animation
-    # zurück — hätte ein "SYNC: synced"-Label nach dem ersten Klick dauerhaft
-    # auf "RESCAN" zurückgesetzt (Bug, den die neue Sync-Beschriftung sonst
-    # eingeführt hätte).
+def test_ops_handles_js_restores_idle_label():
     js = render._OPS_HANDLES_JS
     assert "const idleLabel = rescan.textContent" in js
     assert "rescan.textContent = idleLabel" in js
-    assert "rescan.textContent = 'RESCAN';" not in js
 
 
-def test_feed_header_passes_git_status_to_ops_handles():
+def test_feed_header_rescan_ignores_git_status():
+    # Regressionstest für PLAN-21 Befund 2: git_status darf die RESCAN-
+    # Beschriftung nicht mehr beeinflussen, egal wie der Sync-Zustand steht —
+    # der lebt jetzt ausschließlich in der Git-Karte.
     feed_data = {"entities": [], "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
     html = render.feed_page(
         feed_data, git_status={"tree": "clean", "sync": "ahead", "branch": "trunk"}, now=100.0)
-    assert 'id="rescan" class="toggle warn">SYNC: ahead<' in html
+    assert 'id="rescan" class="toggle">RESCAN<' in html
+    assert "SYNC: ahead" not in html.split('<div class="statuscards">')[0]  # nicht in der Nav
+
+
+# --- Kein "Wartungsmodus aktiv"-Banner mehr (PLAN-21 Befund 3) -----------------
+
+
+def test_ops_handles_has_no_maintenance_banner():
+    html = render._ops_handles({"maintenance": True})
+    assert "Wartungsmodus aktiv" not in html
+    assert "maintbanner" not in html
+    assert 'id="maint"' in html and "MAINT: AN" in html  # Toggle bleibt die einzige Anzeige
+
+
+# --- Links/Rechts-Gruppen (PLAN-21 Befund 1) -----------------------------------
+
+
+def test_header_splits_left_and_right_nav_groups():
+    html = render._header("Schedules", {"maintenance": False})
+    left = html.split('<div class="nav-left">')[1].split("</div>")[0]
+    right = html.split('<div class="nav-right">')[1].split("</div>")[0]
+    assert "bibi" in left and 'id="follow"' in left and 'id="rescan"' in left
+    assert 'id="liveclock"' in right and 'id="theme"' in right
+    assert 'id="follow"' not in right and 'id="theme"' not in left
+
+
+def test_theme_toggle_uses_symbol_not_text_label():
+    html = render._theme_toggle()
+    assert ">THEME<" not in html
+    assert 'id="theme"' in html and "bibiToggleTheme" in html
+
+
+def test_live_clock_placeholder_includes_date():
+    html = render._live_clock()
+    assert "--.--.----" in html  # Datum-Platzhalter, vorher nur Uhrzeit
+
+
+def test_clock_js_renders_date_and_time():
+    js = render._CLOCK_JS
+    assert "toLocaleDateString" in js and "toLocaleTimeString" in js
 
 
 def test_toggles_styled_as_text_links_not_boxed_buttons():
