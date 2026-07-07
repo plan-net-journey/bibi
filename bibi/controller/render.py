@@ -1412,6 +1412,15 @@ def live_output_box(job_id: str, events: list[dict] | None = None,
 #: (neue Boxen); ``hx-preserve`` sorgt dafür, dass bestehende Boxen + Streams bleiben
 #: (WeakSet verhindert Doppel-Abos). Der Server schließt den Stream bei terminal →
 #: ``onerror`` schließt clientseitig (kein Reconnect/Dup).
+#: ``hx-preserve`` hält Inhalt + EventSource über den 2s-#live-Poll am Leben, aber
+#: NICHT den Scroll-Zustand — das erneute Einhängen des (unveränderten) Elements in
+#: den DOM-Baum setzt ``scrollTop`` browserseitig auf 0 zurück. Live gemessen
+#: 2026-07-07: derselbe Node (gleiche id, offene EventSource, wachsender Inhalt)
+#: sprang trotzdem alle ~2s auf ``scrollTop=0`` zurück; die ``onmessage``-Stick-Logik
+#: unten korrigiert das nur reaktiv bei der nächsten SSE-Nachricht — dazwischen bleibt
+#: die Box oben hängen, obwohl FOLLOW an ist (User-Feedback: "ich muss manuell
+#: herunterscrollen"). Fix analog zum ``.liveclamp``-Mechanismus weiter unten, siehe
+#: dort.
 _LIVE_JS = """
 (function(){
   const bound = new WeakSet();
@@ -1494,6 +1503,28 @@ _LIVE_JS = """
     const box = live && live.querySelector('.liveclamp');
     if (box) box.scrollTop = saved;
     saved = null;
+  });
+})();
+// Scroll-Erhalt für .liveterm (running, SSE via hx-preserve — Inhalt + EventSource
+// überleben den 2s-#live-Poll, scrollTop aber nicht, s. Kommentar oben bei _LIVE_JS).
+// Anders als .liveclamp hier keine absolute Positions-Wiederherstellung: eine laufende
+// Live-Box soll dem NEUEN Ende folgen (falls man vor dem Swap unten war), nicht zur
+// alten Pixel-Position zurückspringen.
+(function(){
+  let wasAtBottom = null;
+  document.body.addEventListener('htmx:beforeSwap', (ev) => {
+    const t = ev.detail && ev.detail.target;
+    if (t && t.id === 'live') {
+      const box = t.querySelector('.liveterm[data-job]');
+      wasAtBottom = box ? (box.scrollTop + box.clientHeight >= box.scrollHeight - 24) : null;
+    }
+  });
+  document.body.addEventListener('htmx:afterSettle', () => {
+    if (wasAtBottom == null) return;
+    const live = document.getElementById('live');
+    const box = live && live.querySelector('.liveterm[data-job]');
+    if (box && wasAtBottom) box.scrollTop = box.scrollHeight;
+    wasAtBottom = null;
   });
 })();
 """

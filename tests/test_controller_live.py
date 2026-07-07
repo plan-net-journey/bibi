@@ -130,3 +130,20 @@ def test_live_js_preserves_liveclamp_scroll_across_poll():
     assert "htmx:beforeSwap" in js and "htmx:afterSettle" in js
     assert ".liveclamp" in js
     assert "box.scrollTop = saved" in js
+
+
+def test_live_js_resticks_liveterm_to_bottom_across_poll():
+    # User-Feedback 2026-07-07 ("ich muss manuell herunterscrollen"), live im DOM
+    # gemessen: trotz hx-preserve setzt der 2s-#live-Poll scrollTop einer laufenden
+    # .liveterm-Box auf 0 zurück (Browser-Nebeneffekt beim Re-Attach desselben
+    # Elements) — Inhalt + EventSource überleben, der Scroll-Zustand nicht. Die
+    # onmessage-Stick-Logik korrigiert das nur reaktiv bei der nächsten SSE-
+    # Nachricht, dazwischen bleibt FOLLOW wirkungslos. Analog zum .liveclamp-Fix,
+    # aber mit "war ich unten?"-Semantik statt absoluter Positions-Wiederherstellung
+    # (die Box soll dem neuen Ende folgen, nicht zur alten Pixel-Position zurück).
+    js = render._LIVE_JS
+    assert js.count("htmx:beforeSwap") == 2 and js.count("htmx:afterSettle") == 2
+    liveterm_section = js.split(".liveclamp'")[-1]
+    assert "'.liveterm[data-job]'" in liveterm_section
+    assert "wasAtBottom" in liveterm_section
+    assert "box.scrollTop = box.scrollHeight" in liveterm_section
