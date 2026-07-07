@@ -1915,21 +1915,51 @@ _ATTR_ORDER = [
     "host", "worker", "branch", "commit_sha", "output_ref",
     "archived_at",
 ]
-#: kind/status/exec_runtime/started_at/finished_at/schedule_ref stehen bereits
-#: breit in _exec_summary() (User-Feedback 2026-07-01: wichtigste Attribute
-#: breit statt in der langen vertikalen Tabelle) — hier nicht doppeln. snapshot
-#: bekommt eine eigene, geparste Sektion (_run_config_section(), User-Feedback
-#: 2026-07-03) statt als abgeschnittener JSON-String in dieser Tabelle zu stehen.
-_ATTR_HIDDEN = {"kind", "status", "exec_runtime", "started_at", "finished_at",
-                "schedule_ref", "snapshot"}
+#: kind/status/exit_code/started_at/finished_at/exec_runtime/schedule_ref
+#: werden vorab als eigene, kompakte Zeilen gerendert (s. _attr_table())
+#: statt hier nochmal generisch durchzulaufen. snapshot bekommt eigene Zeilen
+#: (_run_config_rows()) statt als abgeschnittener JSON-String zu stehen.
+_ATTR_HIDDEN = {"kind", "status", "exit_code", "exec_runtime", "started_at",
+                "finished_at", "schedule_ref", "snapshot"}
 
 
 def _attr_table(e: dict) -> str:
+    """Alle Attribute dieses Laufs in **einer** Tabelle (PLAN-21 Befund 9,
+    User-Entscheidung: Zusammenlegung trotz ursprünglicher Empfehlung —
+    "der Snapshot besagt nur, dass diese Attribut-Werte unveränderlich
+    sind"). Löst die frühere separate Kopfzeile ab (vormals ``_exec_summary()``,
+    duplizierte host/worker/exit_code mit dieser Tabelle, User-Feedback
+    2026-07-01 wollte sie ursprünglich breit *statt* in der Tabelle). Die zum
+    Dispatch-Zeitpunkt eingefrorene Konfiguration (vormals eigene
+    ``_run_config_section()``) hängt jetzt als eigener, durch eine Trennzeile
+    abgesetzter Block an derselben Tabelle — "Dieser Lauf" (was passiert ist)
+    bleibt dadurch weiterhin von "Konfiguration bei Start" (womit er lief,
+    kann vom heutigen Schedule-Stand abweichen) unterscheidbar."""
     import datetime as _dt
     rows = []
+    if e.get("kind"):
+        rows.append(f'<tr><td><b>kind</b></td><td>{_e(str(e["kind"]))}</td></tr>')
+    st = e.get("status")
+    if st:
+        rows.append(f'<tr><td><b>status</b></td>'
+                    f'<td><span class="st {_e(st)}">{_e(st)}</span></td></tr>')
+    if e.get("exit_code") is not None:
+        rows.append(f'<tr><td><b>exit_code</b></td><td>{e["exit_code"]}</td></tr>')
+    rt = e.get("exec_runtime")
+    s, f = e.get("started_at"), e.get("finished_at")
+    if rt is None and s is not None and f is not None:
+        rt = f - s
+    if s is not None and f is not None:
+        s_str = _dt.datetime.fromtimestamp(s).strftime("%Y-%m-%d %H:%M:%S")
+        f_str = _dt.datetime.fromtimestamp(f).strftime("%H:%M:%S")
+        dauer = f" (Dauer {round(rt)} s)" if rt is not None else ""
+        rows.append(f'<tr><td><b>Lauf</b></td><td>{_e(s_str)} → {_e(f_str)}{dauer}</td></tr>')
+    elif rt is not None:
+        rows.append(f'<tr><td><b>exec_runtime</b></td><td>{rt:.1f} s</td></tr>')
+
     seen = set(_ATTR_HIDDEN)
     for key in _ATTR_ORDER:
-        if key not in e:
+        if key not in e or key in seen:
             continue
         seen.add(key)
         val = e[key]
@@ -1937,17 +1967,24 @@ def _attr_table(e: dict) -> str:
             continue
         if key in _TS_FIELDS and isinstance(val, (int, float)):
             val = _dt.datetime.fromtimestamp(val).strftime("%Y-%m-%d %H:%M:%S")
-        elif key == "exec_runtime" and isinstance(val, (int, float)):
-            val = f"{val:.1f} s"
         elif key == "commit_sha" and isinstance(val, str) and len(val) > 7:
             branch = _e(e.get("branch") or "")
             val = f"{val[:7]} ({branch})" if branch else val[:7]
         rows.append(f"<tr><td><b>{_e(key)}</b></td><td>{_e(str(val))}</td></tr>")
+    if e.get("schedule_ref"):
+        rows.append(f'<tr><td><b>schedule_ref</b></td>'
+                    f'<td><code>{_e(str(e["schedule_ref"]))}</code></td></tr>')
     # Restliche Felder die nicht in _ATTR_ORDER stehen
     for key, val in sorted(e.items()):
         if key in seen or val is None:
             continue
         rows.append(f"<tr><td><b>{_e(key)}</b></td><td>{_e(str(val))}</td></tr>")
+
+    config_rows = _run_config_rows(e)
+    if config_rows:
+        rows.append('<tr class="subhead"><td colspan="2">Konfiguration bei Start</td></tr>')
+        rows.extend(config_rows)
+
     return (
         '<table class="attrtable">'
         "<thead><tr><th>Attribut</th><th>Wert</th></tr></thead>"
@@ -1955,57 +1992,23 @@ def _attr_table(e: dict) -> str:
     )
 
 
-def _run_config_section(e: dict) -> str:
-    """Die zum Laufzeitpunkt eingefrorene Konfiguration (``journal.snapshot``,
-    voll via job_full_view() seit User-Feedback 2026-07-03: "ein Schedule oder
-    Attempts kann sich ändern, deshalb müssen alle Werte ... als Attribut am
-    Lauf hängen"). Nur für die disponierte Domäne — lokale ``/run``-Läufe (kein
-    Schedule) haben nur einen minimalen Snapshot ohne echte Konfig-Felder."""
+def _run_config_rows(e: dict) -> list[str]:
+    """Zeilen der zum Laufzeitpunkt eingefrorenen Konfiguration
+    (``journal.snapshot``, voll via job_full_view() seit User-Feedback
+    2026-07-03: "ein Schedule oder Attempts kann sich ändern, deshalb müssen
+    alle Werte ... als Attribut am Lauf hängen"). Nur für die disponierte
+    Domäne — lokale ``/run``-Läufe (kein Schedule) haben nur einen minimalen
+    Snapshot ohne echte Konfig-Felder."""
     import json
     if e.get("domain") != "scheduled":
-        return ""
+        return []
     try:
         snap = json.loads(e.get("snapshot") or "{}")
     except ValueError:
-        return ""
+        return []
     if not snap.get("schedule_ref"):
-        return ""
-    return _attrs_section("Konfiguration (zu diesem Lauf)", _ATTRS_CONFIG_ORDER, snap)
-
-
-def _exec_summary(e: dict) -> str:
-    """Breite Kompakt-Zeile mit den wichtigsten Attributen: kind · Status ·
-    exit · Start → Ende (Dauer) · host · worker · schedule_ref (User-Feedback
-    2026-07-01: "eher breit als hoch die wichtigsten Attribute", statt sie nur
-    in der langen vertikalen Tabelle zu verstecken)."""
-    import datetime as _dt
-    parts = []
-    if e.get("kind"):
-        parts.append(f'<span class="kind">{_e(str(e["kind"]))}</span>')
-    st = e.get("status")
-    if st:
-        parts.append(f'<span class="st {_e(st)}">{_e(st)}</span>')
-    ec = e.get("exit_code")
-    if ec is not None:
-        parts.append(f"exit {ec}")
-    rt = e.get("exec_runtime")
-    s, f = e.get("started_at"), e.get("finished_at")
-    if rt is None and s is not None and f is not None:
-        rt = f - s
-    if s is not None and f is not None:
-        s_str = _dt.datetime.fromtimestamp(s).strftime("%H:%M:%S")
-        f_str = _dt.datetime.fromtimestamp(f).strftime("%H:%M:%S")
-        dauer = f" (Dauer {round(rt)} s)" if rt is not None else ""
-        parts.append(f"{s_str} → {f_str}{dauer}")
-    elif rt is not None:
-        parts.append(f"Dauer {round(rt)} s")
-    if e.get("host"):
-        parts.append(f"host {_e(str(e['host']))}")
-    if e.get("worker"):
-        parts.append(f"worker {_e(str(e['worker']))}")
-    if e.get("schedule_ref"):
-        parts.append(f'schedule_ref <code>{_e(str(e["schedule_ref"]))}</code>')
-    return f'<p class="muted">{"  ·  ".join(parts)}</p>' if parts else ""
+        return []
+    return _attrs_rows(_ATTRS_CONFIG_ORDER, snap)
 
 
 def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
@@ -2045,13 +2048,17 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         ".attrtable { width: auto; margin: .75rem 0; font-size: .85rem; }"
         ".attrtable td:first-child { padding-right: 1.5rem; white-space: nowrap; }"
         ".attrtable td { padding: .15rem .3rem; vertical-align: top; }"
+        # Trennzeile "Konfiguration bei Start" (PLAN-21 Befund 9) — hebt den
+        # Snapshot-Block optisch vom Lauf-Ergebnis ab, ohne eine zweite Tabelle
+        # zu brauchen.
+        ".attrtable tr.subhead td { padding-top: .6rem; font-size: .72rem; "
+        "color: #888; text-transform: uppercase; letter-spacing: .03em; "
+        "border-bottom: 1px solid #8883; }"
         "</style></head><body>"
         f"{_header('', daemon_status)}"
         f'<div style="display:flex;gap:.75rem;align-items:baseline">{back}</div>'
         f'<h1><span class="st {st}">{run_id}</span></h1>'
-        f"{_exec_summary(e)}"
         f"{_attr_table(e)}"
-        f"{_run_config_section(e)}"
         f"<h2>Output</h2>{raw_links}"
         f'<div class="outscroll">{out}</div>'
         f"<script>{_CLOCK_JS}</script>"
@@ -2080,12 +2087,13 @@ _ATTRS_RUNTIME_ORDER = ["id", "next_fire_at", "fire"]
 _ATTRS_TS = {"enqueued_at", "started_at", "finished_at", "next_fire_at", "deferred_at"}
 
 
-def _attrs_section(title: str, keys: list[str], data: dict) -> str:
+def _attrs_rows(keys: list[str], data: dict) -> list[str]:
+    """``<tr>``-Zeilen für ``keys`` aus ``data`` — Baustein, geteilt zwischen
+    ``_attrs_section()`` (eigene Seite) und der zusammengelegten Lauf-
+    Attribut-Tabelle (PLAN-21 Befund 9, ``_attr_table()``)."""
     import datetime as _dt
     rows = []
-    seen: set[str] = set()
     for key in keys:
-        seen.add(key)
         val = data.get(key)
         if val is None:
             cell = '<span class="muted">—</span>'
@@ -2096,11 +2104,15 @@ def _attrs_section(title: str, keys: list[str], data: dict) -> str:
         else:
             cell = f"<code>{_e(str(val))}</code>"
         rows.append(f"<tr><td><b>{_e(key)}</b></td><td>{cell}</td></tr>")
+    return rows
+
+
+def _attrs_section(title: str, keys: list[str], data: dict) -> str:
     return (
         f"<h2>{title}</h2>"
         '<table class="attrtable">'
         "<thead><tr><th>Attribut</th><th>Wert</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>"
+        f"<tbody>{''.join(_attrs_rows(keys, data))}</tbody></table>"
     )
 
 

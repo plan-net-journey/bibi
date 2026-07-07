@@ -35,8 +35,9 @@ def test_execution_detail_meta():
     assert html.lower().startswith("<!doctype html>")
     assert "Witz:54" in html
     assert 'class="st complete"' in html
-    assert "exit 0" in html and "Dauer 12 s" in html
-    assert "host mac" in html and "worker mac" in html
+    assert "<td><b>exit_code</b></td><td>0</td>" in html and "Dauer 12 s" in html
+    assert "<td><b>host</b></td><td>mac</td>" in html
+    assert "<td><b>worker</b></td><td>mac</td>" in html
     assert "094df71" in html
     assert 'href="/-/ui/schedule/Witz"' in html      # zurück zum Schedule
     assert 'href="/-/"' in html                      # zurück zur Home (Schedules)
@@ -66,25 +67,26 @@ def test_execution_detail_output_claude_uses_same_renderer_as_live():
     assert 'class="lts"' in html
 
 
-def test_execution_detail_summary_shows_kind_status_and_range_wide():
-    # User-Feedback 2026-07-01: kind/status/Start->Ende sollen breit in der
-    # Summary-Zeile stehen statt nur in der langen vertikalen Tabelle.
+def test_execution_detail_attrs_show_kind_status_and_range_in_one_table():
+    # PLAN-21 Befund 9, User-Entscheidung (revidiert 2026-07-01s "breite
+    # Summary-Zeile statt Tabelle"): kind/status/Start->Ende jetzt als Zeilen
+    # in derselben Attribut-Tabelle, keine separate Kopfzeile mehr.
     html = render.execution_detail_page(_entry(kind="claude", status="complete"),
                                         events=[], kind="claude")
-    assert 'class="kind">claude<' in html
-    assert 'class="st complete">complete<' in html
+    assert "<td><b>kind</b></td><td>claude</td>" in html
+    assert '<td><b>status</b></td><td><span class="st complete">complete</span></td>' in html
     assert "→" in html  # Start -> Ende
 
 
-def test_execution_detail_attr_table_does_not_duplicate_summary_fields():
-    # kind/status/exec_runtime/started_at/finished_at stehen jetzt nur noch in
-    # der Summary-Zeile, nicht mehr zusätzlich in der langen Attribut-Tabelle.
-    html = render.execution_detail_page(_entry(kind="claude", status="complete"),
-                                        events=[], kind="claude")
+def test_execution_detail_attr_table_has_no_duplicate_fields():
+    # kind/status/exit_code/host/worker dürfen nur je einmal vorkommen — vorher
+    # gab es sie doppelt (separate Summary-Zeile + Attribut-Tabelle), das war
+    # der eigentliche Auslöser für PLAN-21 Befund 9.
+    html = render.execution_detail_page(
+        _entry(kind="claude", status="complete"), events=[], kind="claude")
     attrs_html = html.split("<h2>Output</h2>")[0]
-    assert "<td><b>kind</b></td>" not in attrs_html
-    assert "<td><b>status</b></td>" not in attrs_html
-    assert "<td><b>started_at</b></td>" not in attrs_html
+    for key in ("kind", "status", "exit_code", "host", "worker"):
+        assert attrs_html.count(f"<td><b>{key}</b></td>") == 1, key
 
 
 def test_execution_detail_header_has_no_duplicate_bibi_prefix():
@@ -99,12 +101,17 @@ def test_execution_detail_header_has_no_duplicate_bibi_prefix():
 
 
 def test_execution_detail_shows_run_config_snapshot():
+    # PLAN-21 Befund 9: die eingefrorene Konfiguration hängt jetzt als eigener,
+    # per Trennzeile abgesetzter Block an derselben Attribut-Tabelle (statt
+    # einer zweiten `<table>` mit eigener "Konfiguration (zu diesem Lauf)"-
+    # Überschrift).
     import json
     snap = json.dumps({"schedule_ref": "x.md", "attempts": 5, "backoff": "exponential",
                        "model": "claude-opus-4-8", "schedule": "0 */4 * * *"})
     entry = {**_entry(), "snapshot": snap}
     html = render.execution_detail_page(entry, events=[], kind="claude")
-    assert "Konfiguration (zu diesem Lauf)" in html
+    assert "Konfiguration bei Start" in html
+    assert html.count("<table") == 1  # eine Tabelle, kein zweites <table>
     assert "<td><b>attempts</b></td>" in html and "<code>5</code>" in html
     assert "<code>exponential</code>" in html
     assert "<code>claude-opus-4-8</code>" in html
@@ -116,14 +123,14 @@ def test_execution_detail_hides_run_config_for_local_domain():
     snap = json.dumps({"slug": "x", "kind": "job", "status": "complete", "exit_code": 0})
     entry = {**_entry(), "domain": "local", "snapshot": snap}
     html = render.execution_detail_page(entry, events=[], kind="job")
-    assert "Konfiguration (zu diesem Lauf)" not in html
+    assert "Konfiguration bei Start" not in html
 
 
 def test_execution_detail_hides_run_config_when_snapshot_missing():
     # Ältere Journal-Zeilen (vor dem Fix) oder fehlender Snapshot — kein Crash,
     # einfach keine Sektion.
     html = render.execution_detail_page(_entry(), events=[], kind="claude")
-    assert "Konfiguration (zu diesem Lauf)" not in html
+    assert "Konfiguration bei Start" not in html
 
 
 def test_attr_table_no_longer_shows_raw_snapshot_row():
