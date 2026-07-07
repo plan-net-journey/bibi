@@ -200,6 +200,73 @@ def test_tick_merge_sweep_merges_unmerged_branches(tmp_path):
     assert not wt.is_ahead(repo_root=root, branch="agent/x", trunk="trunk")  # gemergt
 
 
+def test_merge_sweep_pushes_immediately_after_merge(tmp_path):
+    # Bug 2026-07-07 (User-Fund: "warum steht bei sarasate SYNC: ahead") — der
+    # Push-Debouncer beobachtet nur den Working-Tree-Diff; ein Merge-Commit
+    # hinterlässt sofort wieder einen sauberen Tree, der ihn nie auslöst.
+    # diff_stat liefert hier bewusst "sauber" (leerer Tree), damit der Test
+    # NUR den neuen push_now()-Aufruf in _merge_sweep() prüft, nicht den
+    # Debounce-Pfad (der ohne den Fix bei sauberem Tree nie pushen würde).
+    import subprocess
+
+    from bibi.daemon import worktree as wt
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+    p = wt.prepare(repo_root=root, work_dir=root / "data" / "wt", slug="x")
+    (p / "n.md").write_text("hi\n")
+    wt.commit(worktree=p, message="run", slug="x")
+
+    calls = {"push": 0}
+
+    def push_fn():
+        calls["push"] += 1
+        return (True, [], None)
+
+    s = Synchronizer(push=True, repo_root=root, diff_stat=lambda: ("", 0),
+                     push_fn=push_fn, pull_fn=lambda: (True, None))
+    s.tick(0.0)
+    assert calls["push"] == 1
+
+
+def test_merge_sweep_does_not_push_when_nothing_merged(tmp_path):
+    import subprocess
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+
+    calls = {"push": 0}
+
+    def push_fn():
+        calls["push"] += 1
+        return (True, [], None)
+
+    s = Synchronizer(push=True, repo_root=root, diff_stat=lambda: ("", 0),
+                     push_fn=push_fn, pull_fn=lambda: (True, None))
+    s.tick(0.0)   # keine agent/*-Branches vorhanden ⇒ nichts gemergt
+    assert calls["push"] == 0
+
+
 def test_tick_merge_sweep_logs_stuck_conflict(tmp_path, caplog):
     """Bugfix 2026-07-05: ein Konflikt beim Merge-back darf nicht stumm
     verschwinden (verschleierte den dirty-trunk-Fund lange, s. Migration.md)."""

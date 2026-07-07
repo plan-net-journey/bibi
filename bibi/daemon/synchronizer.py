@@ -244,6 +244,15 @@ class Synchronizer:
         if merged:
             activity.emit(log, logging.INFO, "merge.sweep", role="synchronizer",
                           merged=len(merged), branches=",".join(merged))
+            # Bug 2026-07-07 (User-Fund: "warum steht bei sarasate SYNC: ahead"):
+            # ein Merge-Commit hinterlässt einen sofort wieder sauberen Tree — der
+            # Push-Debouncer (der NUR den Working-Tree-Diff beobachtet, s.
+            # push_now()-Docstring) sieht dort nie etwas, das "idle" werden könnte,
+            # und pusht deshalb nie von selbst. Jeder stündliche Sweep häufte so
+            # unbemerkt einen weiteren unpushten Commit an (live beobachtet: 8
+            # Commits Rückstand). push_now() respektiert Push-Rolle/Zustimmung/Lock
+            # selbst — hier bewusst ungated aufgerufen, kein zusätzliches Gate nötig.
+            self.push_now()
         # Bisher stumm: ein liegengebliebener agent/*-Branch (Konflikt/Fehler)
         # verschwand ohne jede Spur im Log (verschleierte den dirty-trunk-Fund
         # 2026-07-05 lange) — jetzt sichtbar, damit ein hängender Mergeback
