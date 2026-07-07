@@ -125,13 +125,23 @@ def diff_stat() -> tuple[str, int]:
     return signal, lines
 
 
-def stage_and_commit(scope: Path | None, message: str) -> bool:
+def stage_and_commit(scope: Path | None, message: str,
+                     identity: tuple[str, str] | None = None) -> bool:
     """Stagen (scope-begrenzt oder ganzes Repo) und committen, falls dirty.
 
     ``scope=None`` → ``git add -A`` (ganzes Repo, A10 „kein aktiver Case").
     ``scope=<path>`` → nur dieser Pfad (A10 „aktiver Case"); andere
     Working-Tree-Änderungen bleiben ungestaged. Gibt True zurück, wenn ein
     Commit entstanden ist.
+
+    ``identity`` (PLAN-21 Befund 8) — ``(name, email)``, überschreibt die
+    ambiente Git-Config für genau diesen Commit. ``None`` (Default, für
+    ``/save``/``/close``/``/done``/``/sync`` — egal ob der User selbst tippt
+    oder Claude Code es in seinem Auftrag ausführt, gilt beides als „Mensch",
+    User-Entscheidung): unverändertes bisheriges Verhalten, committet unter
+    der lokalen System-Identität. Gesetzt (der Synchronizer-Hintergrund-Push,
+    ``daemon/synchronizer.py``): committet als bibi, weil dort nie ein Mensch
+    zusieht.
     """
     if scope is None:
         _git(["add", "-A"])
@@ -140,7 +150,11 @@ def stage_and_commit(scope: Path | None, message: str) -> bool:
         _git(["add", "-A", "--", rel])
     if not _has_staged():
         return False
-    _git(["commit", "-m", message])
+    args = []
+    if identity is not None:
+        name, email = identity
+        args += ["-c", f"user.name={name}", "-c", f"user.email={email}"]
+    _git([*args, "commit", "-m", message])
     return True
 
 
@@ -253,15 +267,16 @@ def push(branch: str) -> tuple[bool, str]:
 
 # --- Orchestrierung (§4.9: commit → integrate → push/ask) ---
 
-def commit_and_push(scope: Path | None, message: str,
-                    do_push: bool) -> tuple[bool, list[str], str | None]:
+def commit_and_push(scope: Path | None, message: str, do_push: bool,
+                    identity: tuple[str, str] | None = None) -> tuple[bool, list[str], str | None]:
     """Vollständiger Schreibpfad. Gibt (ok, log, kind) zurück.
 
     ``do_push`` spiegelt die Sync-Matrix: an → pushen; aus → committen +
     integrieren, aber **nicht** pushen (der Skill fragt dann nach).
+    ``identity``: s. ``stage_and_commit()`` (PLAN-21 Befund 8).
     """
     log: list[str] = []
-    committed = stage_and_commit(scope, message)
+    committed = stage_and_commit(scope, message, identity)
     log.append(f"committed: {message}" if committed else "nothing to commit")
 
     branch = current_branch()

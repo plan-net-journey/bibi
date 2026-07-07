@@ -3,7 +3,13 @@
 Jeder Job läuft in einem **frischen Worktree** auf Branch ``agent/<slug>`` (von
 trunk-HEAD) — kein Job schreibt direkt in ``trunk`` (Worktree-Isolation §1.3).
 Der Branch wird wiederverwendet, der Worktree pro Run neu erstellt; Commits
-laufen als **Bibi**. Portiert + verschlankt aus bibi3 ``git_worktree.py``.
+laufen als **bibi/<slug>** (PLAN-21 Befund 8, User-Entscheidung: 2 Git-
+Identitäten — Mensch für alles interaktive, ``bibi/<slug>`` für alles
+unbeaufsichtigt Automatisierte; dynamischer Name statt der vorherigen festen
+"Bibi", damit Log/Blame den auslösenden Job unterscheidbar machen, ohne
+einen Gitea-Account pro Job anzulegen — Gitea gruppiert ohnehin über die
+konstante Email zu einer Bot-Identität). Portiert + verschlankt aus bibi3
+``git_worktree.py``.
 
 Defensiv: Fehler tragen die git-stderr als ``GitOpError`` nach oben.
 """
@@ -15,8 +21,14 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-BOT_NAME = "Bibi"
 BOT_EMAIL = "bibi@local"
+
+
+def bot_identity(slug: str = "") -> tuple[str, str]:
+    """``(name, email)`` der bibi-Bot-Identität für einen Job-Commit — der Name
+    trägt den Slug (PLAN-21 Befund 8), die Email bleibt konstant (Gitea
+    gruppiert darüber zu einer Bot-Identität)."""
+    return (f"bibi/{slug}" if slug else "bibi"), BOT_EMAIL
 
 
 class GitOpError(RuntimeError):
@@ -93,15 +105,17 @@ def remove(*, repo_root: Path, worktree: Path) -> None:
 
 
 def commit(*, worktree: Path, message: str, slug: str = "") -> str:
-    """Alle Änderungen stagen + als Bibi committen. Voll-SHA, oder "" wenn clean.
+    """Alle Änderungen stagen + als ``bibi/<slug>`` committen. Voll-SHA, oder ""
+    wenn clean.
 
     Output liegt in ``data/`` (gitignored, §4.4) — ein reiner ``echo``-Job ändert
     nichts und liefert daher "" (kein neuer Commit, der Branch existiert dennoch)."""
     _git(["add", "-A"], cwd=worktree)
     if not _git(["status", "--porcelain"], cwd=worktree).stdout.strip():
         return ""
+    name, email = bot_identity(slug)
     _git(
-        ["-c", f"user.name={BOT_NAME}", "-c", f"user.email={BOT_EMAIL}",
+        ["-c", f"user.name={name}", "-c", f"user.email={email}",
          "commit", "-m", message, "-m", f"slug: {slug}"],
         cwd=worktree,
     )

@@ -60,9 +60,25 @@ def test_commit_returns_sha_on_change(repo: Path):
     (path / "new.txt").write_text("hi\n")
     sha = wt.commit(worktree=path, message="add", slug="run1")
     assert len(sha) == 40
-    # als Bibi committet
+    # PLAN-21 Befund 8: dynamischer bibi/<slug>-Name statt der vorherigen
+    # festen "Bibi" — im Log/Blame je Job unterscheidbar, konstante Email
+    # gruppiert bei Gitea trotzdem zu einer Bot-Identität.
+    author = _git(path, "log", "-1", "--format=%an <%ae>")
+    assert author == "bibi/run1 <bibi@local>"
+
+
+def test_commit_without_slug_falls_back_to_plain_bibi(repo: Path):
+    work = repo / "data" / "worktrees"
+    path = wt.prepare(repo_root=repo, work_dir=work, slug="run1")
+    (path / "new.txt").write_text("hi\n")
+    wt.commit(worktree=path, message="add")  # kein slug übergeben
     author = _git(path, "log", "-1", "--format=%an")
-    assert author == "Bibi"
+    assert author == "bibi"
+
+
+def test_bot_identity_with_and_without_slug():
+    assert wt.bot_identity("Witz") == ("bibi/Witz", "bibi@local")
+    assert wt.bot_identity() == ("bibi", "bibi@local")
 
 
 def test_prepare_refuses_unmerged_branch(repo: Path):

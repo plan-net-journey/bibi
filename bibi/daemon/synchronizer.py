@@ -94,8 +94,13 @@ def _default_diff_stat() -> tuple[str, int]:
 
 def _default_push() -> tuple[bool, list[str], str | None]:
     # commit (auto-sync) → integrate → push; transiente Message (A9), kein KI-Aufruf.
+    # PLAN-21 Befund 8: läuft unbeaufsichtigt (niemand tippt hier je etwas) —
+    # bibi-Identität statt der ambienten (bisher fälschlich menschlichen)
+    # Git-Config, damit Commits aus diesem Hintergrund-Sweep im Log/Blame von
+    # tatsächlich vom User selbst ausgelösten Commits unterscheidbar sind.
     from bibi import git_ops
-    return git_ops.commit_and_push(None, git_ops.auto_commit_message(), do_push=True)
+    return git_ops.commit_and_push(
+        None, git_ops.auto_commit_message(), do_push=True, identity=("bibi/sync", "bibi@local"))
 
 
 def _default_pull() -> tuple[bool, str | None]:

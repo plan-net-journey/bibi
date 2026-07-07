@@ -18,7 +18,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from bibi.daemon.worktree import branch_name
+from bibi.daemon.worktree import bot_identity, branch_name
 
 # status: "merged" | "up_to_date" | "conflict" | "error"
 
@@ -49,7 +49,17 @@ def _merge_locked(*, repo_root: Path, slug: str, trunk: str) -> MergeResult:
     if _git(["rev-parse", "--verify", "--quiet", branch], cwd=repo_root).returncode != 0:
         return MergeResult("error", detail=f"branch {branch} fehlt")
 
-    proc = _git(["merge", "--no-ff", "--no-edit", branch], cwd=repo_root)
+    # PLAN-21 Befund 8: Merge-back läuft unbeaufsichtigt (Worker-Report oder
+    # Synchronizer-Sweep, nie ein Mensch) — bibi-Identität statt der
+    # ambienten (bisher fälschlich menschlichen) Git-Config. Derselbe
+    # dynamische bibi/<slug>-Name wie der Job-Commit selbst, den dieser
+    # Merge nach trunk holt.
+    name, email = bot_identity(slug)
+    proc = _git(
+        ["-c", f"user.name={name}", "-c", f"user.email={email}",
+         "merge", "--no-ff", "--no-edit", branch],
+        cwd=repo_root,
+    )
     head = _git(["rev-parse", "HEAD"], cwd=repo_root).stdout.strip()
     if proc.returncode == 0:
         out = (proc.stdout + proc.stderr).lower()
