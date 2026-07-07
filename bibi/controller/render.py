@@ -192,7 +192,7 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
         border-bottom: 1px solid #8881; }
 .frow.is-agent { opacity: .55; }
 .frow .t { color: #888; font-family: ui-monospace, monospace; font-size: .78rem;
-           flex: 0 0 6.4rem; }
+           flex: 0 0 8.5rem; }
 .lvl { font-family: ui-monospace, monospace; font-size: .68rem; font-weight: 700;
        padding: .05rem .4rem; border-radius: .25rem; flex: 0 0 auto;
        text-transform: uppercase; letter-spacing: .02em; }
@@ -1064,7 +1064,9 @@ def _feed_row(e: dict, now: float, *, commit_base_url: str | None = None) -> str
     kind, name = e["kind"], e["name"]
     is_agent = bool(e.get("all_agent"))
     cls = "frow is-agent" if is_agent else "frow"
-    t = _ago(e.get("last_changed"), now)
+    # PLAN-19 Befund 6, User-Fund: absolute Zeit statt "vor 4 h" (schon
+    # verfügbar, dieselbe Funktion wie die Journal-Liste andernorts nutzt).
+    t = _abs_datetime(e.get("last_changed"), now)
     authors = ", ".join(e.get("authors") or []) or "—"
     commit = _feed_commit_cell(e.get("last_commit_sha"), commit_base_url)
     return (f'<div class="{cls}" data-kind="{_e(kind)}" data-agent="{"1" if is_agent else "0"}">'

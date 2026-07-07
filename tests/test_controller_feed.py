@@ -150,6 +150,18 @@ def test_feed_row_shows_kind_badge_and_authors():
     assert 'data-agent="0"' in html
 
 
+def test_feed_row_shows_absolute_time_not_relative():
+    # PLAN-19 Befund 6, User-Fund: absolutes Datum+Uhrzeit statt "vor 4 h".
+    import datetime
+    now = datetime.datetime(2026, 7, 8, 14, 0).timestamp()
+    changed = datetime.datetime(2026, 7, 8, 10, 0).timestamp()  # heute
+    e = {"kind": "vault", "name": "x.md", "last_changed": changed,
+        "authors": ["Alice"], "all_agent": False}
+    html = render._feed_row(e, now=now)
+    assert "10:00" in html
+    assert "vor " not in html
+
+
 def test_feed_row_links_commit_hash_when_base_url_given():
     e = {"kind": "case", "name": "x", "last_changed": 90.0, "authors": ["Alice"],
         "all_agent": False, "last_commit_sha": "cf88e049ed9504cc045edb2b40ef5d476422e8fd"}
