@@ -209,30 +209,43 @@ def _c(dt: datetime.datetime) -> CommitInfo:
     return CommitInfo(sha="x", author="a", epoch=dt.timestamp(), paths=())
 
 
-def test_heatmap_places_commit_in_correct_cell():
+def test_heatmap_today_is_always_last_column():
+    # PLAN-19 Befund 5, User-Entscheidung: rollierendes Fenster statt Mo-So —
+    # "heute" (2026-07-08, ein Mittwoch) landet in Spalte 6 (letzte), egal
+    # welcher Wochentag das gerade ist.
     grid = heatmap_buckets([_c(datetime.datetime(2026, 7, 8, 10, 0))], now=_NOW)
-    assert grid[0][2][3] == 1  # Woche 0, Mittwoch (idx 2), Stunde 10 → Bucket 3 (09-12h)
+    assert grid[0][6][3] == 1  # Woche 0, Spalte 6 (heute), Stunde 10 → Bucket 3
 
 
-def test_heatmap_monday_start_of_week_is_hour_bucket_zero():
-    grid = heatmap_buckets([_c(datetime.datetime(2026, 7, 6, 0, 0))], now=_NOW)
+def test_heatmap_six_days_ago_is_first_column():
+    grid = heatmap_buckets([_c(datetime.datetime(2026, 7, 2, 0, 0))], now=_NOW)
     assert grid[0][0][0] == 1
 
 
-def test_heatmap_sunday_end_of_week_is_last_bucket():
-    grid = heatmap_buckets([_c(datetime.datetime(2026, 7, 12, 23, 30))], now=_NOW)
-    assert grid[0][6][7] == 1
+def test_heatmap_seven_days_ago_starts_next_row_same_column():
+    # 7 Tage vor heute = dieselbe Spalten-Position (6) wie heute, aber eine
+    # Zeile weiter zurück (Woche 1) — Spalten sind relative Positionen zu
+    # heute, keine festen Wochentage.
+    grid = heatmap_buckets([_c(datetime.datetime(2026, 7, 1, 23, 30))], now=_NOW)
+    assert grid[1][6][7] == 1
 
 
-def test_heatmap_last_week_monday():
-    grid = heatmap_buckets([_c(datetime.datetime(2026, 6, 29, 0, 0))], now=_NOW)
+def test_heatmap_thirteen_days_ago_is_first_column_of_second_row():
+    grid = heatmap_buckets([_c(datetime.datetime(2026, 6, 25, 0, 0))], now=_NOW)
     assert grid[1][0][0] == 1
 
 
 def test_heatmap_drops_commits_outside_window():
-    # 5 Wochen vor dieser Woche (Woche-Index 5) liegt außerhalb des 5-Wochen-Fensters.
+    # 35+ Tage vor heute liegt außerhalb des 5-Wochen-Fensters (Woche-Index 5).
     grid = heatmap_buckets([_c(datetime.datetime(2026, 6, 1, 0, 0))], now=_NOW,
                           weeks=5)
+    assert sum(sum(day) for week in grid for day in week) == 0
+
+
+def test_heatmap_drops_future_commits_without_crashing():
+    # Uhr-Drift zwischen Knoten (oder ein Commit "in der Zukunft" relativ zu
+    # `now`) darf nicht negativ indizieren — einfach ignorieren.
+    grid = heatmap_buckets([_c(datetime.datetime(2026, 7, 9, 0, 0))], now=_NOW)
     assert sum(sum(day) for week in grid for day in week) == 0
 
 
@@ -240,7 +253,7 @@ def test_heatmap_counts_multiple_commits_in_same_cell():
     commits = [_c(datetime.datetime(2026, 7, 8, 10, 0)),
               _c(datetime.datetime(2026, 7, 8, 11, 0))]
     grid = heatmap_buckets(commits, now=_NOW)
-    assert grid[0][2][3] == 2
+    assert grid[0][6][3] == 2
 
 
 def test_heatmap_shape_default_five_weeks():

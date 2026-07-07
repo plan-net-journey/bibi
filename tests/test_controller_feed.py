@@ -112,7 +112,10 @@ def test_heatmap_level_thresholds():
 def test_heatmap_html_has_day_labels_and_correct_cell_count():
     grid = [[[0] * 8 for _ in range(7)] for _ in range(5)]
     grid[0][2][3] = 7
-    html = render._heatmap_html(grid)
+    html = render._heatmap_html(grid, now=100.0)
+    # Alle 7 Wochentagsnamen tauchen irgendwo auf (rollierend, PLAN-19 Befund 5
+    # — Reihenfolge/Position hängt jetzt vom Wochentag von "heute" ab, nicht
+    # mehr fix Mo-So).
     for d in ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"):
         assert f">{d}<" in html
     assert html.count('class="hm-cell"') == 5 * 7 * 8 + 5  # + 5 Legende-Zellen
@@ -121,8 +124,18 @@ def test_heatmap_html_has_day_labels_and_correct_cell_count():
 
 def test_heatmap_html_week_label_for_this_week():
     grid = [[[0] * 8 for _ in range(7)] for _ in range(5)]
-    html = render._heatmap_html(grid)
+    html = render._heatmap_html(grid, now=100.0)
     assert "diese Woche" in html
+
+
+def test_heatmap_col_labels_last_column_is_todays_weekday():
+    # PLAN-19 Befund 5, User-Entscheidung: Wochentag-Labels relativ zu heute.
+    # 2026-07-08 10:30 ist ein Mittwoch ("Mi").
+    import datetime
+    now = datetime.datetime(2026, 7, 8, 10, 30).timestamp()
+    labels = render._heatmap_col_labels(now)
+    assert labels[-1] == "Mi"
+    assert labels == ["Do", "Fr", "Sa", "So", "Mo", "Di", "Mi"]
 
 
 # --- Feed-Zeilen -----------------------------------------------------------------

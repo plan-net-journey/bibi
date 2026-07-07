@@ -208,20 +208,25 @@ _BUCKET_HOURS = 3
 def heatmap_buckets(
     commits: list[CommitInfo], *, weeks: int = HEATMAP_WEEKS, now: float | None = None,
 ) -> list[list[list[int]]]:
-    """Commit-Zähler je Zelle, ``grid[week][weekday][hour_bucket]``. Woche 0 =
-    aktuelle Kalenderwoche (Montag–Sonntag), absteigend in die Vergangenheit;
-    Tag 0 = Montag. Dieselbe Commit-Liste wie ``aggregate_feed()`` — kein
-    zweiter Git-Aufruf, nur anders aggregiert (PLAN-18 Befund 2)."""
+    """Commit-Zähler je Zelle, ``grid[week][col][hour_bucket]``. **Rollierendes
+    Fenster** (PLAN-19 Befund 5, User-Entscheidung: „letzter Tag soll IMMER
+    heute sein, nicht Mo-So") — Spalte 6 (letzte) ist immer heute, Spalte 0
+    sechs Tage davor; Woche 0 = die letzten 7 Tage inkl. heute, Woche 1 die
+    7 Tage davor, usw. — **keine** Kalenderwochen-Ausrichtung mehr. Dieselbe
+    Commit-Liste wie ``aggregate_feed()`` — kein zweiter Git-Aufruf, nur
+    anders aggregiert (PLAN-18 Befund 2)."""
     now_dt = datetime.datetime.fromtimestamp(now if now is not None else time.time())
-    monday = (now_dt - datetime.timedelta(days=now_dt.weekday())).date()
+    today = now_dt.date()
 
     grid = [[[0] * (24 // _BUCKET_HOURS) for _ in range(7)] for _ in range(weeks)]
     for c in commits:
         dt = datetime.datetime.fromtimestamp(c.epoch)
-        days_since_monday = (dt.date() - monday).days
-        week_idx = -(days_since_monday // 7)
-        if not (0 <= week_idx < weeks):
+        days_ago = (today - dt.date()).days
+        if days_ago < 0:
+            continue  # Uhr-Drift/Zukunft — ignorieren statt negativ zu indizieren
+        week_idx = days_ago // 7
+        if week_idx >= weeks:
             continue
-        weekday_idx = days_since_monday % 7
-        grid[week_idx][weekday_idx][dt.hour // _BUCKET_HOURS] += 1
+        col_idx = 6 - (days_ago % 7)
+        grid[week_idx][col_idx][dt.hour // _BUCKET_HOURS] += 1
     return grid

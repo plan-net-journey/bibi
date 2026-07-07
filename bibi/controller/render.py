@@ -165,18 +165,21 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .filterbar select { font: inherit; padding: .2rem .45rem; color: inherit;
           background: #8881; border: 1px solid #8884; border-radius: .3rem; }
 .filterbar label.chk { display: flex; align-items: center; gap: .35rem; cursor: pointer; }
-.heatmap-wrap { overflow-x: auto; padding-bottom: .3rem; }
-.heatmap2 { display: flex; flex-direction: column; gap: 3px; width: max-content; }
+/* Volle Breite, dynamisch (PLAN-19 Befund 5, User-Fund: Heatmap zog vorher
+   nur eine feste Pixelbreite, viel Leerraum daneben) — Tag-Gruppen UND
+   Zellen wachsen jetzt per flex mit der verfügbaren Breite statt fester px. */
+.heatmap-wrap { padding-bottom: .3rem; }
+.heatmap2 { display: flex; flex-direction: column; gap: 3px; width: 100%; }
 .hm2-header, .hm2-subheader, .hm2-row { display: flex; align-items: center; gap: .5rem; }
 .hm2-subheader { margin-bottom: .1rem; }
 .hm2-wlabel { flex: 0 0 5.2rem; font-size: .72rem; color: #888; text-align: right; }
 .hm2-daylabel { font-size: .68rem; color: #888; text-align: center; width: 100%; font-weight: 600; }
 .hm2-day-group { display: flex; gap: 2px; padding: 0 .3rem; border-right: 1px solid #8882;
-                 width: 103px; box-sizing: border-box; justify-content: center; }
+                 flex: 1; min-width: 0; box-sizing: border-box; justify-content: center; }
 .hm2-day-group:last-child { border-right: none; }
-.hm2-hourtick { width: 10px; font-size: .55rem; color: #888; text-align: center;
+.hm2-hourtick { flex: 1; font-size: .55rem; color: #888; text-align: center;
                 font-family: ui-monospace, monospace; }
-.hm-cell { width: 10px; height: 14px; border-radius: 2px; background: #8882; }
+.hm-cell { flex: 1; height: 14px; min-width: 4px; border-radius: 2px; background: #8882; }
 .hm-cell[data-lvl="1"] { background: #5a9fe044; }
 .hm-cell[data-lvl="2"] { background: #5a9fe088; }
 .hm-cell[data-lvl="3"] { background: #5a9fe0cc; }
@@ -996,29 +999,43 @@ def _heatmap_level(count: int) -> int:
     return 4
 
 
-def _heatmap_html(grid: list[list[list[int]]]) -> str:
+def _heatmap_col_labels(now: float) -> list[str]:
+    """Spalten-Beschriftung relativ zu heute (PLAN-19 Befund 5, User-
+    Entscheidung: rollierendes Fenster statt Mo-So-Kalenderwoche, aber
+    weiterhin Wochentagsnamen statt Datum) — Spalte 6 (letzte) ist immer der
+    heutige Wochentag, Spalte 0 der Wochentag sechs Tage davor."""
+    import datetime
+    today_weekday = datetime.datetime.fromtimestamp(now).weekday()
+    return [_HM_DAYS[(today_weekday + c - 6) % 7] for c in range(7)]
+
+
+def _heatmap_html(grid: list[list[list[int]]], now: float | None = None) -> str:
     """5×7×8-Grid (``bibi.feed.heatmap_buckets()``) → dasselbe DOM-Layout wie
     das im Browser verifizierte Wireframe (``wireframes/feed.html``), hier
-    serverseitig aus echten Zählungen statt Zufallswerten gerendert."""
+    serverseitig aus echten Zählungen statt Zufallswerten gerendert. Spalten
+    sind seit PLAN-19 Befund 5 rollierend (letzte Spalte = heute) — die
+    Wochentag-Labels wandern deshalb mit statt fix Mo-So zu sein."""
+    now = time.time() if now is None else now
+    col_labels = _heatmap_col_labels(now)
     header = ('<div class="hm2-header"><span class="hm2-wlabel"></span>' + "".join(
         f'<div class="hm2-day-group"><span class="hm2-daylabel">{d}</span></div>'
-        for d in _HM_DAYS) + "</div>")
+        for d in col_labels) + "</div>")
     ticks = "".join(
         f'<span class="hm2-hourtick">{b * 3:02d}</span>' if b % 2 == 0
         else '<span class="hm2-hourtick"></span>'
         for b in range(8))
     subheader = ('<div class="hm2-subheader"><span class="hm2-wlabel"></span>'
-                + f'<div class="hm2-day-group">{ticks}</div>' * len(_HM_DAYS) + "</div>")
+                + f'<div class="hm2-day-group">{ticks}</div>' * len(col_labels) + "</div>")
 
     rows = []
     for week_idx, week in enumerate(grid):
         label = (_HM_WEEK_LABELS[week_idx] if week_idx < len(_HM_WEEK_LABELS)
                  else f"vor {week_idx} Wochen")
         groups = []
-        for day_idx, day in enumerate(week):
+        for col_idx, day in enumerate(week):
             cells = "".join(
                 f'<span class="hm-cell" data-lvl="{_heatmap_level(n)}" '
-                f'title="{_e(label)} · {_HM_DAYS[day_idx]} {b * 3:02d}–{b * 3 + 3:02d} Uhr '
+                f'title="{_e(label)} · {col_labels[col_idx]} {b * 3:02d}–{b * 3 + 3:02d} Uhr '
                 f'— {n} Änderung(en)"></span>'
                 for b, n in enumerate(day))
             groups.append(f'<div class="hm2-day-group">{cells}</div>')
@@ -1118,7 +1135,7 @@ def feed_fragment(feed_data: dict, *, days: int | None = None, now: float | None
         )
     return (
         '<div id="feedboard">'
-        f"{_heatmap_html(grid)}"
+        f"{_heatmap_html(grid, now)}"
         '<h2>Änderungen</h2>'
         f"{_feed_filter_bar()}"
         f"{_feed_list(entities, now, commit_base_url=commit_base_url)}"
