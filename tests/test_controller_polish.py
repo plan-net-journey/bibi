@@ -40,3 +40,17 @@ def test_log_page_has_nav_and_clock():
 def test_log_links_slug_to_schedule_detail():
     # Die Log-Zeilen-JS baut slug als Link zum Schedule-Detail.
     assert "/-/ui/schedule/" in render.log_page()
+
+
+# ── Terminal-Kontrast (PLAN-19 Stufe 19.1) ───────────────────────────────────
+
+
+def test_term_and_logbox_stay_dark_regardless_of_theme():
+    # User-Fund 2026-07-06: #0008 (halbtransparentes Schwarz) ergab im
+    # Light-Mode nur mittelgrau statt dunkel, dazu erbte unfarbiger Text die
+    # Body-Textfarbe (dunkel im Light-Mode) — auf jetzt dunklem Grund
+    # unleserlich. Fester Hintergrund + feste helle Textfarbe, unabhängig von
+    # :root[data-theme].
+    assert ".term { background: #1a1a1a; color: #ddd;" in render._CSS
+    assert ".logbox { height: 72vh; overflow-y: auto; background: #1a1a1a; color: #ddd;" in render._CSS
+    assert ".md pre { background: #1a1a1a; color: #ddd;" in render._CSS

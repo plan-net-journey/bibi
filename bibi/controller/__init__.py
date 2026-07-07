@@ -129,8 +129,8 @@ def add_controller_routes(
         if _wants_html(request):
             eff = _effective_days(days)
             return HTMLResponse(render.feed_page(
-                _feed_data(eff), git_status=_feed_git_status(), days=eff,
-                daemon_status=_status()))
+                _feed_data(eff), git_status=_feed_git_status(), host_url=_scheduler_url(),
+                days=eff, daemon_status=_status()))
         return JSONResponse(service_descriptor(roles))
 
     @app.get("/-/ui/feed/board", include_in_schema=False)

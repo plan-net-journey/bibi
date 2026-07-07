@@ -58,14 +58,19 @@ a.slug:hover { text-decoration: underline; }
 h2 { font-size: .95rem; color: #888; margin: 1.5rem 0 .4rem; font-weight: 600; }
 .back { color: #888; text-decoration: none; font-size: .85rem; }
 .meta { color: #aaa; font-size: .9rem; margin: .2rem 0 1rem; }
-.term { background: #0008; border: 1px solid #8883; border-radius: .4rem;
+/* Terminal-Boxen bleiben theme-unabhängig dunkel (PLAN-19 Befund 3, User-Fund:
+   Light-Mode unleserlich) — vorher halbtransparentes Schwarz über dem
+   wechselnden Seitenhintergrund, im Light-Mode nur mittelgrau statt dunkel;
+   Text ohne eigene Farbe erbte zudem die Body-Textfarbe (im Light-Mode dunkel
+   auf jetzt dunklem Grund). Fester Hintergrund + feste helle Standardfarbe. */
+.term { background: #1a1a1a; color: #ddd; border: 1px solid #8883; border-radius: .4rem;
         padding: .6rem .8rem; overflow-x: auto; font-family: ui-monospace, monospace;
         font-size: .82rem; line-height: 1.45; white-space: pre-wrap; }
 .term .err { color: #e06c5a; }
 .term .thinking { color: #888; font-style: italic; }
 .term .phase { color: #5a9fe0; font-style: italic; }
 .md { font-size: .92rem; }
-.md pre { background: #0008; border: 1px solid #8883; border-radius: .4rem;
+.md pre { background: #1a1a1a; color: #ddd; border: 1px solid #8883; border-radius: .4rem;
           padding: .6rem .8rem; overflow-x: auto; }
 .md code { font-family: ui-monospace, monospace; font-size: .85em; }
 .out-empty { color: #888; font-size: .85rem; font-style: italic; }
@@ -88,8 +93,9 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .logbar select, .logbar input { font: inherit; padding: .2rem .45rem; color: inherit;
           background: #8881; border: 1px solid #8884; border-radius: .3rem; }
 .logbar input { flex: 1; min-width: 8rem; }
-.logbox { height: 72vh; overflow-y: auto; background: #0008; border: 1px solid #8883;
-          border-radius: .4rem; padding: .6rem .8rem; font-family: ui-monospace, monospace;
+.logbox { height: 72vh; overflow-y: auto; background: #1a1a1a; color: #ddd;
+          border: 1px solid #8883; border-radius: .4rem; padding: .6rem .8rem;
+          font-family: ui-monospace, monospace;
           font-size: .82rem; line-height: 1.5; white-space: pre-wrap; }
 .logbox .ln.warning { color: #d6a23e; }
 .logbox .ln.error   { color: #e06c5a; }
@@ -124,6 +130,14 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .card .value.ok { color: #5fb37a; }
 .card .value.bad { color: #e06c5a; }
 .card .sub { font-size: .75rem; color: #888; margin-top: .15rem; }
+/* Mehrzeilige Karten (PLAN-19 Befund 4, User-Entscheidung: Git UND Mode im
+   selben 3-Zeilen-Stil, kein Trenner-Punkt mehr) — Host/Mode/Git ersetzen die
+   bisherigen 6 Kacheln des Feed-Headers. */
+.card .cardline { font-size: 1.05rem; font-weight: 600; margin-top: .1rem; }
+.card .cardline.ok, .card a.ok { color: #5fb37a; }
+.card .cardline.bad, .card a.bad { color: #e06c5a; }
+.card a { text-decoration: none; }
+.card a:hover { text-decoration: underline; }
 .side-empty { color: #888; font-size: .82rem; }
 .chip { font-family: ui-monospace, monospace; font-size: .7rem; font-weight: 700;
         padding: .1rem .45rem; border-radius: .3rem; display: inline-block; white-space: nowrap; }
@@ -693,30 +707,82 @@ _SYNC_LABEL_CLASS = {"synced": "sync-synced", "ahead": "sync-ahead",
                      "behind": "sync-behind", "conflict": "sync-conflict"}
 
 
+def _lines_card(label: str, lines: list[str], sub: str = "") -> str:
+    """Karte mit mehreren linksbündigen Zeilen statt einem einzelnen Wert
+    (PLAN-19 Befund 4) — ``lines`` sind bereits fertiges HTML (Farb-Spans/
+    Links), werden hier nicht mehr escaped. Baustein für Host/Mode/Git im
+    neuen 3-Karten-Feed-Header."""
+    sub_html = f'<div class="sub">{_e(sub)}</div>' if sub else ""
+    body = "".join(f'<div class="cardline">{ln}</div>' for ln in lines)
+    return f'<div class="card"><div class="label">{_e(label)}</div>{body}{sub_html}</div>'
+
+
+def _host_card(status: dict, host_url: str | None, now: float) -> str:
+    """Host-Verbindung: Hostname statt „verbunden" (PLAN-19 Befund 4,
+    User-Fund: „hier Hostnamen anzeigen ... in Grün wenn connected mit Link
+    ... zum Host `/-/` Endpunkt"), grün wenn verbunden, verlinkt zum
+    Host-eigenen `/-/`. Hostname aus derselben Scheduler-URL abgeleitet, die
+    auch der Jobs-Screen-Hostlink nutzt (``_scheduler_url()``, keine neue
+    Datenquelle)."""
+    hostname = None
+    if host_url:
+        from urllib.parse import urlparse
+        hostname = urlparse(host_url).hostname
+    if hostname is None:
+        return _lines_card("Host", ["—"])
+    conn = status.get("connect")
+    ok = conn.get("ok") if conn else None
+    cls = "ok" if ok else ("bad" if ok is False else "")
+    href = _e(host_url.rstrip("/") + "/-/")
+    link = f'<a class="{cls}" href="{href}" target="_blank" rel="noopener">{_e(hostname)}</a>'
+    sub = ""
+    if conn and conn.get("last_at") is not None:
+        sub = f"Heartbeat {_ago(conn['last_at'], now)}"
+    return _lines_card("Host", [link], sub=sub)
+
+
+def _mode_card(status: dict, now: float) -> str:
+    """MODE-Kachel: Auto-Sync + Maintenance + Uptime zusammengefasst (PLAN-19
+    Befund 4, User-Vorgabe „so stellen wir auch den Modus gemeinsam dar" —
+    3 linksbündige Zeilen wie die Git-Kachel, Uptime als kleinere Sub-Zeile
+    wie ``trunk`` bei Git)."""
+    auto_sync = bool(status.get("auto_sync"))
+    maint = bool(status.get("maintenance"))
+    lines = [
+        f'<span class="{"ok" if auto_sync else ""}">auto-sync {"an" if auto_sync else "aus"}</span>',
+        f'<span class="{"bad" if maint else ""}">maintenance {"an" if maint else "aus"}</span>',
+    ]
+    return _lines_card("Mode", lines, sub=f"up {_uptime_label(status.get('started_at'), now)}")
+
+
 def _git_segment_card(git_status: dict | None) -> str:
-    """Git-Segment-Kachel (PLAN-18 Stufe 18.3, User-Entscheidung: zweigeteilt
-    wie die CLI-Statusline, nicht ein einzelner ``_card()``-Wert). ``git_status``
-    ist bereits ein Dict (``{"tree", "sync", "branch"}``, aus
+    """Git-Kachel: 3 linksbündige Zeilen (tree, sync, branch), kein
+    Trenner-Punkt mehr (PLAN-19 Befund 4, User-Fund: „nimm den Punkt hinter
+    modified weg und stelle einfach 3 Zeilen links ausgerichtet dar").
+    ``git_status`` ist bereits ein Dict (``{"tree", "sync", "branch"}``, aus
     ``bibi.git_status.working_tree_status()`` — rein lokal, kein Heartbeat/
     Netzwerk nötig). ``None`` (kein Git-Repo) → leere Kachel mit „—"."""
     if git_status is None:
-        return _card("Git", "—")
+        return _lines_card("Git", ["—"])
     tree, sync = git_status["tree"], git_status["sync"]
-    value = (f'<span class="{_TREE_LABEL_CLASS[tree]}">{_e(tree)}</span>'
-            f'<span class="sep"> · </span>'
-            f'<span class="{_SYNC_LABEL_CLASS[sync]}">{_e(sync)}</span>')
-    branch = git_status.get("branch")
-    return (f'<div class="card"><div class="label">Git</div>'
-           f'<div class="value gitsegment">{value}</div>'
-           f'{f"<div class=\"sub\">{_e(branch)}</div>" if branch else ""}</div>')
+    lines = [
+        f'<span class="{_TREE_LABEL_CLASS[tree]}">{_e(tree)}</span>',
+        f'<span class="{_SYNC_LABEL_CLASS[sync]}">{_e(sync)}</span>',
+    ]
+    return _lines_card("Git", lines, sub=git_status.get("branch") or "")
 
 
-def _feed_status_cards(status: dict, git_status: dict | None, now: float) -> str:
-    """Wie ``_status_cards()``, plus die Git-Segment-Kachel — nur für den
-    Feed-Header (PLAN-18 Stufe 18.3). ``_status_cards()`` selbst bleibt
-    unverändert (weiterhin der Daemon-Screen-Baustein... bis dessen Rückbau,
-    Stufe 18.4)."""
-    cards = _status_card_list(status, now) + [_git_segment_card(git_status)]
+def _feed_status_cards(
+    status: dict, git_status: dict | None, host_url: str | None, now: float,
+) -> str:
+    """Die 3 Feed-Header-Kacheln (PLAN-19 Befund 4: Host-Connection, Mode,
+    Git — löst die bisherigen 6 Kacheln von PLAN-18 Stufe 18.3 ab, u. a. fällt
+    die Rollen-Kachel weg, deckungsgleich mit der ursprünglichen Umbau-Vorgabe
+    „Rollen sind eh klar"). Baut **nicht** mehr auf ``_status_card_list()``
+    auf (die bleibt unverändert für ``_status_cards()``/``daemon_page()`` als
+    Baustein bestehen, auch ohne eigene Route seit PLAN-18 Stufe 18.4)."""
+    cards = [_host_card(status, host_url, now), _mode_card(status, now),
+             _git_segment_card(git_status)]
     return '<div class="statuscards">' + "".join(cards) + "</div>"
 
 
@@ -1063,13 +1129,12 @@ def feed_fragment(feed_data: dict, *, days: int | None = None, now: float | None
 
 
 def feed_page(
-    feed_data: dict, *, git_status: dict | None = None, days: int | None = None,
-    daemon_status: dict | None = None, now: float | None = None,
+    feed_data: dict, *, git_status: dict | None = None, host_url: str | None = None,
+    days: int | None = None, daemon_status: dict | None = None, now: float | None = None,
 ) -> str:
-    """Feed-Screen (PLAN-18 Stufe 18.3) — jetzt Home (``/-/``): fixierte
-    Status-Kacheln (inkl. Git-Segment) + Heatmap + aggregierte Änderungsliste.
-    Kein Daemon-Log hier (User-Entscheidung, Rückmeldung 11) — dafür bleibt
-    vorerst `/-/ui/logs`/`/-/ui/daemon` (Rückbau erst Stufe 18.4)."""
+    """Feed-Screen — jetzt Home (``/-/``): fixierte Status-Kacheln (Host/Mode/
+    Git, PLAN-19 Befund 4) + Heatmap + aggregierte Änderungsliste. Kein
+    Daemon-Log hier (User-Entscheidung, PLAN-18 Rückmeldung 11)."""
     now = time.time() if now is None else now
     status = daemon_status or {}
     return (
@@ -1082,7 +1147,7 @@ def feed_page(
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Feed', status)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"{_feed_status_cards(status, git_status, now)}"
+        f"{_feed_status_cards(status, git_status, host_url, now)}"
         f"{feed_fragment(feed_data, days=days, now=now)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"

@@ -16,13 +16,14 @@ from bibi.daemon import roles
 from bibi.daemon.app import create_app
 
 
-# --- Git-Segment-Kachel ---------------------------------------------------------
+# --- Git-Kachel (PLAN-19 Befund 4: 3 Zeilen, kein Trenner) ----------------------
 
 
 def test_git_segment_card_clean_synced():
     html = render._git_segment_card({"tree": "clean", "sync": "synced", "branch": "trunk"})
     assert 'class="tree-clean"' in html and 'class="sync-synced"' in html
     assert "trunk" in html
+    assert "·" not in html  # kein Trenner mehr (User-Fund 2026-07-06)
 
 
 def test_git_segment_card_modified_ahead():
@@ -35,11 +36,59 @@ def test_git_segment_card_none_shows_dash():
     assert ">—<" in html
 
 
-def test_feed_status_cards_has_five_cards():
+# --- Host-Kachel (PLAN-19 Befund 4: Hostname statt "verbunden", Link) -----------
+
+
+def test_host_card_shows_hostname_link_when_connected():
+    html = render._host_card(
+        {"connect": {"ok": True, "last_at": 96.0}},
+        "http://sarasate.tail9f9173.ts.net:8780", now=100.0)
+    assert 'class="ok"' in html
+    assert 'href="http://sarasate.tail9f9173.ts.net:8780/-/"' in html
+    assert ">sarasate.tail9f9173.ts.net<" in html
+    assert "verbunden" not in html
+    assert "Heartbeat vor 4s" in html
+
+
+def test_host_card_disconnected_shows_bad():
+    html = render._host_card(
+        {"connect": {"ok": False, "last_at": 90.0}},
+        "http://sarasate.tail9f9173.ts.net:8780", now=100.0)
+    assert 'class="bad"' in html
+
+
+def test_host_card_dash_without_scheduler_url():
+    html = render._host_card({}, None, now=100.0)
+    assert ">—<" in html
+
+
+# --- Mode-Kachel (PLAN-19 Befund 4: Auto-Sync+Maintenance+Uptime zusammen) ------
+
+
+def test_mode_card_shows_all_three_values():
+    html = render._mode_card(
+        {"auto_sync": True, "maintenance": False, "started_at": 0.0}, now=3600.0)
+    assert "auto-sync an" in html and 'class="ok"' in html
+    assert "maintenance aus" in html
+    assert "up 1 h" in html
+
+
+def test_mode_card_maintenance_on_is_bad():
+    html = render._mode_card({"auto_sync": False, "maintenance": True}, now=100.0)
+    assert "maintenance an" in html and 'class="bad"' in html
+
+
+# --- Feed-Kachel-Grid: jetzt 3 statt 6 (PLAN-19 Befund 4) -----------------------
+
+
+def test_feed_status_cards_has_three_cards_no_rollen():
     html = render._feed_status_cards(
-        {"roles": ["connect"]}, {"tree": "clean", "sync": "synced", "branch": "trunk"}, now=100.0)
-    assert html.count('<div class="card">') == 5
-    assert "Rollen" in html and "Git" in html
+        {"roles": ["connect"], "connect": {"ok": True, "last_at": 99.0}},
+        {"tree": "clean", "sync": "synced", "branch": "trunk"},
+        "http://sarasate.tail9f9173.ts.net:8780", now=100.0)
+    assert html.count('<div class="card">') == 3
+    assert "Rollen" not in html
+    assert "Host" in html and "Mode" in html and "Git" in html
 
 
 def test_status_cards_unchanged_after_refactor():
