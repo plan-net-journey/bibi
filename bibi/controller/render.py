@@ -144,12 +144,19 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .card .cardline.bad, .card a.bad { color: #e06c5a; }
 .card a { text-decoration: none; }
 .card a:hover { text-decoration: underline; }
-/* Key/Value-Label je Zeile (PLAN-20 Befund 2, User-Fund: "clean"/"sync" ganz
-   ohne Beschriftung war unklar, WAS da eigentlich steht) — kleines, gedimmtes
-   Label vor dem eigentlichen (weiterhin farbig hervorgehobenen) Wert. */
-.card .cardline .k { font-size: .72rem; font-weight: 400; color: #888;
-                     text-transform: uppercase; letter-spacing: .03em;
-                     margin-right: .4em; }
+/* Key/Value als echtes 2-Spalten-Grid (PLAN-21 Befund 7, User-Fund: "als
+   Grid" mit `| KEY | value |`-Codeblock-Beispiel — löst das PLAN-20-Befund-2-
+   Muster ab, bei dem Label+Wert zwar beschriftet, aber nicht spaltenweise
+   ausgerichtet waren). Werte einer Karte richten sich jetzt untereinander
+   aus (Mode-/Git-Karte); Host/Client bleiben bei `.cardline` (freie Zeile,
+   kein Key/Value-Paar). */
+.card .kvgrid { display: grid; grid-template-columns: auto 1fr; row-gap: .2rem;
+                column-gap: .6em; margin-top: .15rem; }
+.card .kvgrid .k { font-size: .72rem; font-weight: 400; color: #888;
+                   text-transform: uppercase; letter-spacing: .03em; align-self: center; }
+.card .kvgrid .v { font-size: 1.05rem; font-weight: 600; }
+.card .kvgrid .v.ok { color: #5fb37a; }
+.card .kvgrid .v.bad { color: #e06c5a; }
 .side-empty { color: #888; font-size: .82rem; }
 .chip { font-family: ui-monospace, monospace; font-size: .7rem; font-weight: 700;
         padding: .1rem .45rem; border-radius: .3rem; display: inline-block; white-space: nowrap; }
@@ -196,9 +203,14 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .hm-cell[data-lvl="2"] { background: #5a9fe088; }
 .hm-cell[data-lvl="3"] { background: #5a9fe0cc; }
 .hm-cell[data-lvl="4"] { background: #5a9fe0; }
-.heatmap-legend { display: flex; align-items: center; gap: .3rem; font-size: .75rem;
-                  color: #888; margin-top: .35rem; }
-.heatmap-legend .hm-cell { width: 9px; height: 9px; }
+/* PLAN-21 Befund 4, User-Fund: die Legende (5 kleine Farbblöcke "wenig →
+   viel") zog trotz fester width auf die volle Zeilenbreite — Root Cause: die
+   geerbte Basis-Regel .hm-cell{flex:1} gewinnt in einem Flex-Container gegen
+   die explizite width. `flex: none` hier überschreibt das gezielt, nur für
+   die Legende (die eigentliche Heatmap bleibt bei PLAN-19s voller Breite). */
+.heatmap-legend { display: flex; align-items: center; justify-content: flex-end;
+                  gap: .3rem; font-size: .75rem; color: #888; margin-top: .35rem; }
+.heatmap-legend .hm-cell { flex: none; width: 9px; height: 9px; }
 .feedlist { display: flex; flex-direction: column; gap: 0; font-size: .88rem; }
 .frow { display: flex; gap: .6rem; align-items: baseline; padding: .38rem 0;
         border-bottom: 1px solid #8881; }
@@ -765,75 +777,85 @@ def _lines_card(label: str, lines: list[str], sub: str = "") -> str:
 
 
 def _host_card(status: dict, host_url: str | None, now: float) -> str:
-    """Host-Verbindung: Hostname statt „verbunden" (PLAN-19 Befund 4,
-    User-Fund: „hier Hostnamen anzeigen ... in Grün wenn connected mit Link
-    ... zum Host `/-/` Endpunkt"), grün wenn verbunden, verlinkt zum
-    Host-eigenen `/-/`. Hostname aus derselben Scheduler-URL abgeleitet, die
-    auch der Jobs-Screen-Hostlink nutzt (``_scheduler_url()``, keine neue
-    Datenquelle).
+    """Host- vs. Client-Karte, unterschieden nach Rolle (PLAN-21 Befund 6,
+    revidiert PLAN-20 Befund 4 — User-Fund per Screenshot: der bisherige
+    "lokal"-Platzhalter auf dem Host selbst war nicht gewollt, "beim Host
+    anzeigen: Host > Hostname"; auf einem Client soll die Karte "Client"
+    heißen statt "Host", Rendering (Hostname-Link + Heartbeat) unverändert).
 
     ``status["connect"]`` fehlt genau dann, wenn dieser Knoten keine
     connect-Rolle aktiv hat (``app.py``: nur gesetzt ``if heartbeat is not
-    None``) — unabhängig davon, wie ``BIBI_SCHEDULER_URL`` lautet. Auf einem
-    Knoten, der sein eigener Scheduler ist, zeigt diese oft selbstreferenziell
-    auf sich selbst (z. B. „localhost") — den rohen Hostnamen dann trotzdem
-    anzuzeigen wäre irreführend, es gibt ja keine echte Verbindung (PLAN-20
-    Befund 4, User-Fund: „bei Host steht bei sarasate localhost und sonst
-    nichts")."""
+    None``) — das ist die Host-Rolle, zeigt jetzt ``status["hostname"]``
+    (eigener ``socket.gethostname()``, PLAN-21 neu im ``/-/status``-Payload).
+    Mit ``connect`` ist es die Client-Rolle: Hostname aus der Scheduler-URL
+    abgeleitet (dieselbe, die auch der Jobs-Screen-Hostlink nutzt,
+    ``_scheduler_url()``, keine neue Datenquelle), grün wenn verbunden,
+    verlinkt zum Host-eigenen `/-/`."""
+    conn = status.get("connect")
+    if conn is None:
+        own = status.get("hostname")
+        return _lines_card("Host", [_e(own)] if own else ["—"])
     hostname = None
     if host_url:
         from urllib.parse import urlparse
         hostname = urlparse(host_url).hostname
     if hostname is None:
-        return _lines_card("Host", ["—"])
-    conn = status.get("connect")
-    if conn is None:
-        return _lines_card("Host", ["lokal"])
+        return _lines_card("Client", ["—"])
     ok = conn.get("ok")
     cls = "ok" if ok else ("bad" if ok is False else "")
     href = _e(host_url.rstrip("/") + "/-/")
     link = f'<a class="{cls}" href="{href}" target="_blank" rel="noopener">{_e(hostname)}</a>'
     sub = ""
-    if conn and conn.get("last_at") is not None:
+    if conn.get("last_at") is not None:
         sub = f"Heartbeat {_ago(conn['last_at'], now)}"
-    return _lines_card("Host", [link], sub=sub)
+    return _lines_card("Client", [link], sub=sub)
+
+
+def _kv_card(label: str, rows: list[tuple[str, str, str]], sub: str = "") -> str:
+    """Karte mit Key/Value-Zeilen als echtes 2-Spalten-Grid (PLAN-21 Befund 7)
+    — anders als ``_lines_card()``s freien Zeilen richten sich die Werte
+    mehrerer Zeilen hier untereinander aus. ``rows``: ``(key, value,
+    value_css_class)``, ``value`` wird escaped (immer Klartext bei Mode/Git,
+    kein HTML nötig)."""
+    sub_html = f'<div class="sub">{_e(sub)}</div>' if sub else ""
+    body = "".join(
+        f'<div class="k">{_e(k)}</div><div class="v {cls}">{_e(v)}</div>'
+        for k, v, cls in rows
+    )
+    return (f'<div class="card"><div class="label">{_e(label)}</div>'
+            f'<div class="kvgrid">{body}</div>{sub_html}</div>')
 
 
 def _mode_card(status: dict, now: float) -> str:
-    """MODE-Kachel: Auto-Sync + Maintenance + Uptime zusammengefasst (PLAN-19
-    Befund 4, User-Vorgabe „so stellen wir auch den Modus gemeinsam dar" —
-    3 linksbündige Zeilen wie die Git-Kachel, Uptime als kleinere Sub-Zeile
-    wie ``trunk`` bei Git)."""
+    """MODE-Kachel: Auto-Sync + Maintenance als Key/Value-Grid + Uptime als
+    Sub-Zeile (PLAN-19 Befund 4, verfeinert PLAN-21 Befund 7: Grid-Optik statt
+    gestapelter Label/Wert-Zeilen, User-Fund mit Codeblock-Beispiel)."""
     auto_sync = bool(status.get("auto_sync"))
     maint = bool(status.get("maintenance"))
-    lines = [
-        f'<span class="k">Auto-Sync</span>'
-        f'<span class="{"ok" if auto_sync else ""}">{"an" if auto_sync else "aus"}</span>',
-        f'<span class="k">Maintenance</span>'
-        f'<span class="{"bad" if maint else ""}">{"an" if maint else "aus"}</span>',
+    rows = [
+        ("Auto-Sync", "an" if auto_sync else "aus", "ok" if auto_sync else ""),
+        ("Maintenance", "an" if maint else "aus", "bad" if maint else ""),
     ]
-    return _lines_card("Mode", lines,
-                       sub=f"Uptime {_uptime_label(status.get('started_at'), now)}")
+    return _kv_card("Mode", rows,
+                    sub=f"Uptime {_uptime_label(status.get('started_at'), now)}")
 
 
 def _git_segment_card(git_status: dict | None) -> str:
-    """Git-Kachel: 3 linksbündige Zeilen (tree, sync, branch), kein
-    Trenner-Punkt mehr (PLAN-19 Befund 4, User-Fund: „nimm den Punkt hinter
-    modified weg und stelle einfach 3 Zeilen links ausgerichtet dar").
-    ``git_status`` ist bereits ein Dict (``{"tree", "sync", "branch"}``, aus
-    ``bibi.git_status.working_tree_status()`` — rein lokal, kein Heartbeat/
-    Netzwerk nötig). ``None`` (kein Git-Repo) → leere Kachel mit „—"."""
+    """Git-Kachel: Tree + Sync als Key/Value-Grid, Branch als Sub-Zeile
+    (PLAN-19 Befund 4, verfeinert PLAN-21 Befund 7: Grid-Optik statt
+    gestapelter Zeilen). ``git_status`` ist bereits ein Dict (``{"tree",
+    "sync", "branch"}``, aus ``bibi.git_status.working_tree_status()`` — rein
+    lokal, kein Heartbeat/Netzwerk nötig). ``None`` (kein Git-Repo) → leere
+    Kachel mit „—"."""
     if git_status is None:
         return _lines_card("Git", ["—"])
     tree, sync = git_status["tree"], git_status["sync"]
-    lines = [
-        f'<span class="k">Tree</span>'
-        f'<span class="{_TREE_LABEL_CLASS[tree]}">{_e(tree)}</span>',
-        f'<span class="k">Sync</span>'
-        f'<span class="{_SYNC_LABEL_CLASS[sync]}">{_e(sync)}</span>',
+    rows = [
+        ("Tree", tree, _TREE_LABEL_CLASS[tree]),
+        ("Sync", sync, _SYNC_LABEL_CLASS[sync]),
     ]
     branch = git_status.get("branch")
-    return _lines_card("Git", lines, sub=f"Branch {branch}" if branch else "")
+    return _kv_card("Git", rows, sub=f"Branch {branch}" if branch else "")
 
 
 def _feed_status_cards(
@@ -1043,7 +1065,6 @@ def jobs_page(
 # ── Feed-Screen (PLAN-18 Stufe 18.3) — jetzt Home (``/-/``) ──────────────────
 
 _HM_DAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
-_HM_WEEK_LABELS = ["diese Woche", "vor 1 Woche", "vor 2 Wochen", "vor 3 Wochen", "vor 4 Wochen"]
 
 
 def _heatmap_level(count: int) -> int:
@@ -1070,6 +1091,19 @@ def _heatmap_col_labels(now: float) -> list[str]:
     return [_HM_DAYS[(today_weekday + c - 6) % 7] for c in range(7)]
 
 
+def _heatmap_row_labels(now: float, weeks: int) -> list[str]:
+    """Datum des Wochenstarts je Zeile (PLAN-21 Befund 5, User-Fund: "Datum
+    des Wochenstarts anzeigen, also die erste in den Tagesspalten" statt
+    relativer "vor N Wochen"-Angabe) — Spalte 0 jeder Zeile ist der älteste
+    Tag ihrer rollierenden 7-Tage-Gruppe, exakt dieselbe Formel wie
+    ``heatmap_buckets()``/``_heatmap_col_labels()`` (kein neues Datum nötig,
+    nur anders formatiert)."""
+    import datetime
+    today = datetime.datetime.fromtimestamp(now).date()
+    return [(today - datetime.timedelta(days=week_idx * 7 + 6)).strftime("%d.%m.")
+            for week_idx in range(weeks)]
+
+
 def _heatmap_html(grid: list[list[list[int]]], now: float | None = None) -> str:
     """5×7×8-Grid (``bibi.feed.heatmap_buckets()``) → dasselbe DOM-Layout wie
     das im Browser verifizierte Wireframe (``wireframes/feed.html``), hier
@@ -1078,6 +1112,7 @@ def _heatmap_html(grid: list[list[list[int]]], now: float | None = None) -> str:
     Wochentag-Labels wandern deshalb mit statt fix Mo-So zu sein."""
     now = time.time() if now is None else now
     col_labels = _heatmap_col_labels(now)
+    row_labels = _heatmap_row_labels(now, len(grid))
     header = ('<div class="hm2-header"><span class="hm2-wlabel"></span>' + "".join(
         f'<div class="hm2-day-group"><span class="hm2-daylabel">{d}</span></div>'
         for d in col_labels) + "</div>")
@@ -1090,8 +1125,7 @@ def _heatmap_html(grid: list[list[list[int]]], now: float | None = None) -> str:
 
     rows = []
     for week_idx, week in enumerate(grid):
-        label = (_HM_WEEK_LABELS[week_idx] if week_idx < len(_HM_WEEK_LABELS)
-                 else f"vor {week_idx} Wochen")
+        label = row_labels[week_idx]
         groups = []
         for col_idx, day in enumerate(week):
             cells = "".join(

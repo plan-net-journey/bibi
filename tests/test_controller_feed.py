@@ -21,22 +21,23 @@ from bibi.daemon.app import create_app
 
 def test_git_segment_card_clean_synced():
     html = render._git_segment_card({"tree": "clean", "sync": "synced", "branch": "trunk"})
-    assert 'class="tree-clean"' in html and 'class="sync-synced"' in html
+    assert 'class="v tree-clean"' in html and 'class="v sync-synced"' in html
     assert "trunk" in html
     assert "·" not in html  # kein Trenner mehr (User-Fund 2026-07-06)
 
 
 def test_git_segment_card_lines_are_labeled():
     # PLAN-20 Befund 2, User-Fund: "clean"/"sync" ganz ohne Beschriftung.
+    # PLAN-21 Befund 7: Key/Value jetzt als Grid-Divs statt Spans.
     html = render._git_segment_card({"tree": "clean", "sync": "synced", "branch": "trunk"})
-    assert '<span class="k">Tree</span>' in html
-    assert '<span class="k">Sync</span>' in html
+    assert '<div class="k">Tree</div>' in html
+    assert '<div class="k">Sync</div>' in html
     assert "Branch trunk" in html
 
 
 def test_git_segment_card_modified_ahead():
     html = render._git_segment_card({"tree": "modified", "sync": "ahead", "branch": "trunk"})
-    assert 'class="tree-modified"' in html and 'class="sync-ahead"' in html
+    assert 'class="v tree-modified"' in html and 'class="v sync-ahead"' in html
 
 
 def test_git_segment_card_none_shows_dash():
@@ -58,6 +59,21 @@ def test_host_card_shows_hostname_link_when_connected():
     assert "Heartbeat vor 4s" in html
 
 
+def test_host_card_labeled_client_with_connect_role():
+    # PLAN-21 Befund 6: mit connect-Rolle heißt die Karte "Client", nicht
+    # mehr "Host" — Rendering (Hostname-Link+Heartbeat) bleibt unverändert.
+    html = render._host_card(
+        {"connect": {"ok": True, "last_at": 96.0}},
+        "http://sarasate.tail9f9173.ts.net:8780", now=100.0)
+    assert '<div class="label">Client</div>' in html
+    assert '<div class="label">Host</div>' not in html
+
+
+def test_host_card_labeled_host_without_connect_role():
+    html = render._host_card({"hostname": "sarasate"}, "http://localhost:8780", now=100.0)
+    assert '<div class="label">Host</div>' in html
+
+
 def test_host_card_disconnected_shows_bad():
     html = render._host_card(
         {"connect": {"ok": False, "last_at": 90.0}},
@@ -70,32 +86,48 @@ def test_host_card_dash_without_scheduler_url():
     assert ">—<" in html
 
 
-def test_host_card_shows_local_placeholder_without_connect_role():
-    # PLAN-20 Befund 4, User-Fund: "bei Host steht bei sarasate localhost und
-    # sonst nichts" — sarasate zeigt selbst auf http://localhost:8780
-    # (BIBI_SCHEDULER_URL), hat aber keine connect-Rolle aktiv (status hat
-    # dann gar keinen "connect"-Key, s. app.py). Roher Hostname wäre hier
-    # irreführend, da keine echte Verbindung existiert.
-    html = render._host_card({}, "http://localhost:8780", now=100.0)
-    assert "lokal" in html
-    assert "localhost" not in html
+def test_host_card_shows_own_hostname_without_connect_role():
+    # PLAN-21 Befund 6, revidiert PLAN-20 Befund 4 (User-Fund per Screenshot:
+    # der "lokal"-Platzhalter auf dem Host selbst war nicht gewollt — "beim
+    # Host anzeigen: Host > Hostname"). Ohne connect-Rolle (status hat dann
+    # keinen "connect"-Key, s. app.py) zeigt die Karte jetzt status["hostname"]
+    # (eigener socket.gethostname(), unabhängig von host_url/BIBI_SCHEDULER_URL).
+    html = render._host_card({"hostname": "sarasate"}, "http://localhost:8780", now=100.0)
+    assert "sarasate" in html
+    assert "lokal" not in html
     assert "<a " not in html  # keine Verlinkung auf sich selbst
+
+
+def test_host_card_dash_without_hostname_and_without_connect_role():
+    html = render._host_card({}, "http://localhost:8780", now=100.0)
+    assert ">—<" in html
 
 
 # --- Mode-Kachel (PLAN-19 Befund 4: Auto-Sync+Maintenance+Uptime zusammen) ------
 
 
 def test_mode_card_shows_all_three_values():
+    # PLAN-21 Befund 7: Key/Value als Grid-Divs statt gestapelter Spans.
     html = render._mode_card(
         {"auto_sync": True, "maintenance": False, "started_at": 0.0}, now=3600.0)
-    assert '<span class="k">Auto-Sync</span><span class="ok">an</span>' in html
-    assert '<span class="k">Maintenance</span><span class="">aus</span>' in html
+    assert '<div class="k">Auto-Sync</div><div class="v ok">an</div>' in html
+    assert '<div class="k">Maintenance</div><div class="v ">aus</div>' in html
     assert "Uptime 1 h" in html
 
 
 def test_mode_card_maintenance_on_is_bad():
     html = render._mode_card({"auto_sync": False, "maintenance": True}, now=100.0)
-    assert '<span class="k">Maintenance</span><span class="bad">an</span>' in html
+    assert '<div class="k">Maintenance</div><div class="v bad">an</div>' in html
+
+
+def test_mode_and_git_card_use_kvgrid_container():
+    # PLAN-21 Befund 7, User-Fund: Werte sollen sich wie ein Grid/Tabelle
+    # ausrichten, nicht nur gelabelt-aber-gestapelt sein.
+    mode_html = render._mode_card({"auto_sync": True, "maintenance": False}, now=100.0)
+    git_html = render._git_segment_card({"tree": "clean", "sync": "synced", "branch": "trunk"})
+    assert '<div class="kvgrid">' in mode_html
+    assert '<div class="kvgrid">' in git_html
+    assert ".kvgrid {" in render._CSS
 
 
 # --- Feed-Kachel-Grid: jetzt 3 statt 6 (PLAN-19 Befund 4) -----------------------
@@ -108,7 +140,8 @@ def test_feed_status_cards_has_three_cards_no_rollen():
         "http://sarasate.tail9f9173.ts.net:8780", now=100.0)
     assert html.count('<div class="card">') == 3
     assert "Rollen" not in html
-    assert "Host" in html and "Mode" in html and "Git" in html
+    # PLAN-21 Befund 6: mit connect-Rolle heißt die erste Karte "Client".
+    assert "Client" in html and "Mode" in html and "Git" in html
 
 
 def test_status_cards_unchanged_after_refactor():
@@ -142,10 +175,21 @@ def test_heatmap_html_has_day_labels_and_correct_cell_count():
     assert 'data-lvl="3"' in html  # 7 Änderungen → Stufe 3
 
 
-def test_heatmap_html_week_label_for_this_week():
+def test_heatmap_html_row_label_is_week_start_date():
+    # PLAN-21 Befund 5, User-Fund: Datum des Wochenstarts statt "vor N
+    # Wochen". 2026-07-08 ist ein Mittwoch; Woche 0 beginnt 6 Tage davor.
+    import datetime
+    now = datetime.datetime(2026, 7, 8, 10, 30).timestamp()
     grid = [[[0] * 8 for _ in range(7)] for _ in range(5)]
-    html = render._heatmap_html(grid, now=100.0)
-    assert "diese Woche" in html
+    html = render._heatmap_html(grid, now=now)
+    assert ">02.07.<" in html
+    assert "diese Woche" not in html
+
+
+def test_heatmap_row_labels_are_rolling_week_starts():
+    import datetime
+    now = datetime.datetime(2026, 7, 8, 10, 30).timestamp()
+    assert render._heatmap_row_labels(now, 3) == ["02.07.", "25.06.", "18.06."]
 
 
 def test_heatmap_col_labels_last_column_is_todays_weekday():

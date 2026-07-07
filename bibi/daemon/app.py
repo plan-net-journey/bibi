@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import time
 from contextlib import asynccontextmanager
 
@@ -532,6 +533,9 @@ def create_app(
             "sync_conflict": state.get_sync_conflict(),
             "maintenance": state.get_maintenance(),
             "started_at": started_at,
+            # Eigener Hostname (PLAN-21 Befund 6) — die Host-Karte zeigt ihn auf
+            # Knoten ohne connect-Rolle statt des früheren "lokal"-Platzhalters.
+            "hostname": socket.gethostname(),
         }
         if synchronizer is not None:
             out["synchronizer"] = synchronizer.status()
