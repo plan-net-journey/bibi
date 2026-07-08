@@ -318,7 +318,7 @@ def test_schedule_detail_route_has_rescan_and_reflects_maintenance(app_with):
         r = c.get("/-/ui/schedule/boom")
         assert r.status_code == 200
         assert 'id="rescan"' in r.text
-        assert "MAINT: AN" in r.text
+        assert "MAINT: ON" in r.text
 
 
 def test_schedule_detail_route_shows_output_for_terminal_job(app_with):
@@ -442,7 +442,7 @@ def test_detail_shows_live_panel_for_last_terminal_run():
     job = {"id": "j", "slug": "a", "status": "complete", "finished_at": 2.0}
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
     assert 'class="live"' in html and 'class="st complete">complete' in html
-    assert "letzter Lauf" in html and "beendet vor 3s" in html
+    assert "letzter Lauf" in html and "finished 3s ago" in html
 
 
 def test_detail_self_polls_under_follow():

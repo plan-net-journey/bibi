@@ -56,7 +56,7 @@ def test_host_card_shows_hostname_link_when_connected():
     assert 'href="http://sarasate.tail9f9173.ts.net:8780/-/"' in html
     assert ">sarasate.tail9f9173.ts.net<" in html
     assert "verbunden" not in html
-    assert "Heartbeat vor 4s" in html
+    assert "Heartbeat 4s ago" in html
 
 
 def test_host_card_labeled_client_with_connect_role():

@@ -29,7 +29,7 @@ def _sched(slug, *, kind="job", trigger="now", last_status="pending",
 
 
 def test_schedule_list_empty():
-    assert "keine Schedules" in render.schedule_list([])
+    assert "no schedules" in render.schedule_list([])
 
 
 def test_schedule_list_active_rows_and_links():
@@ -63,8 +63,8 @@ def test_schedule_list_next_is_future_worded():
     past = render.schedule_list(
         [_sched("done", trigger="0 9 * * *", last_status="complete",
                 next_fire_at=100.0)], now=300.0)
-    # in der nächster-Spalte kein „vor …" mehr
-    assert "vor 3 min" not in past.split("nächster", 1)[1]
+    # in der next-Spalte kein „X min ago" mehr
+    assert "3 min ago" not in past.split(">next<", 1)[1]
 
 
 def test_schedule_list_escapes_slug():
@@ -85,7 +85,7 @@ def test_sched_row_has_kind_and_last_status():
     items = [_sched("nightly", payload="claude: tu was", last_status="complete",
                     last_run_at=100.0, next_fire_at=200.0)]
     html = render.schedule_list(items, now=300.0)
-    assert '<th>Art</th>' in html
+    assert '<th>Type</th>' in html
     assert '>claude<' in html
     assert 'class="st complete">complete<' in html
 
@@ -97,9 +97,9 @@ def test_sched_row_status_and_ago_link_to_run_detail():
                     last_run_at=100.0, last_run_id=42, next_fire_at=360.0)]
     html = render.schedule_list(items, now=300.0)
     assert 'href="/-/ui/run/42">complete<' in html
-    assert '>vor' in html and 'href="/-/ui/run/42">vor' in html
+    assert 'href="/-/ui/run/42">3 min ago<' in html
     assert 'href="/-/ui/schedule/nightly">nightly<' in html
-    assert 'href="/-/ui/schedule/nightly">in ' in html  # "nächster" verlinkt
+    assert 'href="/-/ui/schedule/nightly">in ' in html  # "next" verlinkt
 
 
 def test_sched_row_status_and_ago_plain_without_run_id():

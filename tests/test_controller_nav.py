@@ -26,7 +26,7 @@ def test_header_includes_ops_handles():
     # RESCAN/MAINT sitzen jetzt direkt im Header, nicht mehr als separater Aufruf.
     html = render._header("Schedules", {"maintenance": True})
     assert 'id="rescan"' in html
-    assert 'id="maint"' in html and "MAINT: AN" in html
+    assert 'id="maint"' in html and "MAINT: ON" in html
 
 
 # --- RESCAN generisch, keine Sync-Dopplung mehr (PLAN-21 Befund 2, revidiert
@@ -62,7 +62,7 @@ def test_ops_handles_has_no_maintenance_banner():
     html = render._ops_handles({"maintenance": True})
     assert "Wartungsmodus aktiv" not in html
     assert "maintbanner" not in html
-    assert 'id="maint"' in html and "MAINT: AN" in html  # Toggle bleibt die einzige Anzeige
+    assert 'id="maint"' in html and "MAINT: ON" in html  # Toggle bleibt die einzige Anzeige
 
 
 # --- Links/Rechts-Gruppen (PLAN-21 Befund 1) -----------------------------------
@@ -121,12 +121,12 @@ def test_screen_nav_hides_schedules_without_scheduler_role():
 
 
 def test_screen_nav_hides_schedules_and_jobs_without_any_role():
-    html = render._screen_nav("Live-Log")
+    html = render._screen_nav("Live Log")
     assert 'href="/-/ui/schedules"' not in html
     assert 'href="/-/ui/jobs"' not in html
     # Rollenunabhängige Tabs bleiben immer da.
-    assert 'href="/-/">Feed' in html and 'href="/-/ui/logs">Live-Log' not in html
-    assert "Live-Log" in html  # aktiver Tab, ohne Link
+    assert 'href="/-/">Feed' in html and 'href="/-/ui/logs">Live Log' not in html
+    assert "Live Log" in html  # aktiver Tab, ohne Link
 
 
 def test_ops_handles_no_longer_duplicates_follow_button():
@@ -168,14 +168,14 @@ def test_schedule_detail_page_has_rescan_and_maint():
         {"slug": "a", "kind": "job"}, [], None, slug="a",
         daemon_status={"maintenance": True})
     assert 'id="rescan"' in html
-    assert 'id="maint"' in html and "MAINT: AN" in html
+    assert 'id="maint"' in html and "MAINT: ON" in html
     assert render._OPS_HANDLES_JS in html
 
 
 def test_schedules_page_has_rescan_and_maint():
     html = render.schedules_page([], daemon_status={"maintenance": False})
     assert 'id="rescan"' in html
-    assert 'id="maint"' in html and "MAINT: aus" in html
+    assert 'id="maint"' in html and "MAINT: OFF" in html
     assert render._OPS_HANDLES_JS in html
 
 
@@ -195,7 +195,7 @@ def test_execution_detail_page_has_rescan_and_maint():
              "started_at": 1.0, "finished_at": 2.0, "domain": "scheduled"}
     html = render.execution_detail_page(entry, [], "job", daemon_status={"maintenance": True})
     assert 'id="rescan"' in html
-    assert 'id="maint"' in html and "MAINT: AN" in html
+    assert 'id="maint"' in html and "MAINT: ON" in html
 
 
 def test_log_page_has_rescan_maint_and_follow():
@@ -204,6 +204,6 @@ def test_log_page_has_rescan_maint_and_follow():
     # (_FOLLOW_JS fehlte).
     html = render.log_page(daemon_status={"maintenance": True})
     assert 'id="rescan"' in html
-    assert 'id="maint"' in html and "MAINT: AN" in html
+    assert 'id="maint"' in html and "MAINT: ON" in html
     assert 'id="follow"' in html and "bibiToggleFollow" in html
     assert render._FOLLOW_JS in html

@@ -57,7 +57,7 @@ def test_status_cards_connected_shows_ok_and_last_heartbeat():
     html = render._status_cards(
         {"roles": ["connect"], "connect": {"ok": True, "last_at": 96.0}}, now=100.0)
     assert "Host-Verbindung" in html and "verbunden" in html
-    assert "vor 4s" in html
+    assert "4s ago" in html
 
 
 def test_status_cards_disconnected_shows_bad():
@@ -85,7 +85,7 @@ def test_daemon_page_has_header_nav_status_and_log():
 def test_daemon_page_has_rescan_and_maint():
     html = render.daemon_page({"maintenance": True}, now=100.0)
     assert 'id="rescan"' in html
-    assert 'id="maint"' in html and "MAINT: AN" in html
+    assert 'id="maint"' in html and "MAINT: ON" in html
 
 
 def test_log_page_unchanged_after_refactor():

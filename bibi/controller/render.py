@@ -230,8 +230,11 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
    dieselben Farben wie die Chart-Segmente und übernehmen die Legenden-
    Funktion), Chart deutlich größer, Karte spannt dieselbe Breite wie die
    Schedule-Tabelle darunter statt eines schmalen 640px-Kastens. */
-.timeseries-card { border: 1px solid #8883; border-radius: .4rem; padding: .7rem 1rem .6rem;
-                    margin: .5rem 0 1rem; }
+/* .panel-card: generischer Rahmen, wiederverwendet für Lauf-Historie UND die
+   Schedule-Liste (User-Fund 2026-07-08, 5. Runde: "den Rahmen auch um die
+   Schedules und die Inaktiven"). */
+.panel-card { border: 1px solid #8883; border-radius: .4rem; padding: .7rem 1rem .6rem;
+              margin: .5rem 0 1rem; }
 .ts-head { display: flex; align-items: baseline; justify-content: space-between;
            flex-wrap: wrap; gap: .4rem 1rem; }
 .ts-head h3 { margin: 0; font-size: .95rem; }
@@ -273,12 +276,12 @@ def _ago(ts: float | None, now: float) -> str:
         return "—"
     d = max(0, int(now - ts))
     if d < 60:
-        return f"vor {d}s"
+        return f"{d}s ago"
     if d < 3600:
-        return f"vor {d // 60} min"
+        return f"{d // 60} min ago"
     if d < 86400:
-        return f"vor {d // 3600} h"
-    return f"vor {d // 86400} d"
+        return f"{d // 3600} h ago"
+    return f"{d // 86400} d ago"
 
 
 def _until(ts: float | None, now: float) -> str:
@@ -365,8 +368,8 @@ def _sched_row(s: dict, now: float) -> str:
 
 def _sched_table(items: list[dict], now: float) -> str:
     rows = "".join(_sched_row(s, now) for s in items)
-    return ('<table class="sched"><thead><tr><th>Schedule</th><th>Art</th><th>Status</th>'
-            f'<th>letzter / seit</th><th>nächster</th></tr></thead><tbody>{rows}'
+    return ('<table class="sched"><thead><tr><th>Schedule</th><th>Type</th><th>Status</th>'
+            f'<th>last / since</th><th>next</th></tr></thead><tbody>{rows}'
             "</tbody></table>")
 
 
@@ -378,14 +381,14 @@ def schedule_list(schedules: list[dict], now: float | None = None) -> str:
     now = time.time() if now is None else now
     head = f'<h2>Schedules ({len(schedules)})</h2>'
     if not schedules:
-        return head + '<p class="out-empty">— keine Schedules —</p>'
+        return head + '<p class="out-empty">— no schedules —</p>'
     active, inactive, journaled = _group_schedules(schedules)
     body = (_sched_table(active, now) if active
-            else '<p class="out-empty">— keine aktiven Schedules —</p>')
+            else '<p class="out-empty">— no active schedules —</p>')
     if inactive:
-        body += f'<h3>Inaktiv — MD entfernt ({len(inactive)})</h3>' + _sched_table(inactive, now)
+        body += f'<h3>Inactive — MD removed ({len(inactive)})</h3>' + _sched_table(inactive, now)
     if journaled:
-        body += f'<h3>Journal — nur Historie ({len(journaled)})</h3>' + _sched_table(journaled, now)
+        body += f'<h3>Journal — history only ({len(journaled)})</h3>' + _sched_table(journaled, now)
     return head + body
 
 
@@ -399,7 +402,8 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
     qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status))
                   if v and v != "alle")
     url = "/-/ui/schedules/list" + (f"?{qs}" if qs else "")
-    attrs = (f'id="schedules" hx-get="{url}" hx-trigger="{_POLL}" hx-swap="outerHTML"')
+    attrs = (f'id="schedules" class="panel-card" hx-get="{url}" '
+            f'hx-trigger="{_POLL}" hx-swap="outerHTML"')
     return f"<div {attrs}>{schedule_list(schedules, now)}</div>"
 
 
@@ -536,7 +540,7 @@ def _current_state_chips(counts: dict[str, int], running_since_uptime: int) -> s
         n = counts.get(status, 0)
         if n:
             chips.append(f'<span class="ts-chip" style="color:{_WAITING_COLOR}">{n} {status}</span>')
-    chips.append(f'<span class="ts-chip ts-dim">{running_since_uptime} seit Start</span>')
+    chips.append(f'<span class="ts-chip ts-dim">{running_since_uptime} since start</span>')
     return f'<div class="ts-chips">{"".join(chips)}</div>'
 
 
@@ -573,12 +577,12 @@ def timeseries_fragment(landings: list[dict], job_stats: dict | None = None,
     running_since_uptime = job_stats.get("running_since_uptime", 0)
     labels, bucket_counts = _landings_buckets(landings, now=now, bucket_minutes=bucket_minutes)
     body = (
-        f'<div class="ts-head"><h3>Lauf-Historie</h3>{_resolution_links(bucket_minutes)}</div>'
+        f'<div class="ts-head"><h3>Run History</h3>{_resolution_links(bucket_minutes)}</div>'
         + _current_state_chips(counts, running_since_uptime)
         + _landings_chart_html(labels, bucket_counts)
     )
     url = f"/-/ui/schedules/timeseries?res={bucket_minutes}"
-    attrs = (f'id="timeseries" class="timeseries-card" hx-get="{url}" '
+    attrs = (f'id="timeseries" class="panel-card" hx-get="{url}" '
             f'hx-trigger="{_CHART_POLL}" hx-swap="outerHTML"')
     return f"<div {attrs}>{body}</div>"
 
@@ -625,7 +629,9 @@ def filter_schedules(schedules: list[dict], *, typ: str | None = None,
 def _filter_bar(typ: str | None, status: str | None) -> str:
     def _opts(values: tuple, cur: str | None) -> str:
         cur = cur or "alle"
-        parts = [f'<option value="alle"{" selected" if cur == "alle" else ""}>alle</option>']
+        # value bleibt "alle" (interner Sentinel, s. filter_schedules()), nur
+        # der sichtbare Text ist englisch (User-Fund 2026-07-08, 5. Runde).
+        parts = [f'<option value="alle"{" selected" if cur == "alle" else ""}>all</option>']
         for v in values:
             parts.append(f'<option value="{v}"{" selected" if cur == v else ""}>{v}</option>')
         return "".join(parts)
@@ -634,7 +640,7 @@ def _filter_bar(typ: str | None, status: str | None) -> str:
               'hx-include="[name=\'typ\'],[name=\'status\']"')
     return (
         '<div class="logbar">'
-        f'<label>Typ <select name="typ" {common}>{_opts(_SCHED_TYPES, typ)}</select></label>'
+        f'<label>Type <select name="typ" {common}>{_opts(_SCHED_TYPES, typ)}</select></label>'
         f'<label>Status <select name="status" {common}>{_opts(_SCHED_STATUSES, status)}</select></label>'
         '</div>'
     )
@@ -663,11 +669,11 @@ def _screen_nav(active: str, roles: list[str] | None = None) -> str:
         tabs.append(("Schedules", "/-/ui/schedules"))
     if "connect" in roles:
         tabs.append(("Jobs", "/-/ui/jobs"))
-    tabs += [("Live-Log", "/-/ui/logs"), ("API-Docs", "/-/docs")]
+    tabs += [("Live Log", "/-/ui/logs"), ("API Docs", "/-/docs")]
     def _tab(t: str, h: str) -> str:
         if t == active:
             return t
-        extra = ' target="_blank" rel="noopener"' if t == "API-Docs" else ""
+        extra = ' target="_blank" rel="noopener"' if t == "API Docs" else ""
         return f'<a class="back" href="{h}"{extra}>{t}</a>'
     items = [_tab(t, h) for t, h in tabs]
     return '<span class="muted">' + " · ".join(items) + "</span>"
@@ -688,7 +694,7 @@ _CLOCK_JS = """
   if (!c) return;
   const tick = () => {
     const now = new Date();
-    c.textContent = '● live ' + now.toLocaleDateString('de-DE') + ' ' + now.toLocaleTimeString('de-DE');
+    c.textContent = '● live ' + now.toLocaleDateString('en-GB') + ' ' + now.toLocaleTimeString('en-GB');
   };
   tick(); setInterval(tick, 1000);
 })();
@@ -700,7 +706,7 @@ def _follow_toggle() -> str:
     linken Nav-Gruppe (PLAN-21 Befund 1: klickbar wie bisher, optisch wie ein
     Tab neben Feed/Schedules/…). Als Text-Link gestylt, kein Button-Look mehr
     (PLAN-19 Befund 7)."""
-    return '<button id="follow" class="toggle on" onclick="bibiToggleFollow()">FOLLOW: AN</button>'
+    return '<button id="follow" class="toggle on" onclick="bibiToggleFollow()">FOLLOW: ON</button>'
 
 
 def _theme_toggle() -> str:
@@ -770,7 +776,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
     daemon_status = daemon_status or {}
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
+        '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Schedules</title>"
         f"<script>{_FOLLOW_JS}</script>"
@@ -796,7 +802,7 @@ function bibiToggleFollow(){
   window.bibiFollow = !window.bibiFollow;
   localStorage.setItem('bibiFollow', window.bibiFollow ? '1' : '0');
   const b = document.getElementById('follow');
-  b.textContent = 'FOLLOW: ' + (window.bibiFollow ? 'AN' : 'aus');
+  b.textContent = 'FOLLOW: ' + (window.bibiFollow ? 'ON' : 'OFF');
   b.className = 'toggle ' + (window.bibiFollow ? 'on' : '');
   // Wieder-Einschalten muss sofort ans Ende springen — sonst bleibt die Box
   // bis zum nächsten Append "stick=false" (atBottom() prüft die aktuelle
@@ -810,7 +816,7 @@ function bibiToggleFollow(){
 }
 document.addEventListener('DOMContentLoaded', () => {
   const b = document.getElementById('follow');
-  if (b && !window.bibiFollow){ b.textContent = 'FOLLOW: aus'; b.className = 'toggle'; }
+  if (b && !window.bibiFollow){ b.textContent = 'FOLLOW: OFF'; b.className = 'toggle'; }
 });
 """
 
@@ -910,7 +916,7 @@ def log_page(daemon_status: dict | None = None) -> str:
         "<title>bibi · Live-Log</title>"
         f"<script>{_FOLLOW_JS}</script>"
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Live-Log', daemon_status)}"
+        f"{_header('Live Log', daemon_status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{_log_panel()}"
         f"<script>{_OPS_HANDLES_JS}</script>"
@@ -1504,7 +1510,7 @@ def _ops_handles(status: dict | None = None) -> str:
     längst aussagekräftigen MAINT-Toggle, keine Zusatzinfo)."""
     maint = bool((status or {}).get("maintenance"))
     mcls = "toggle warn" if maint else "toggle"
-    mlabel = "MAINT: AN" if maint else "MAINT: aus"
+    mlabel = "MAINT: ON" if maint else "MAINT: OFF"
     return (
         '<nav class="handles">'
         '<button id="rescan" class="toggle">RESCAN</button>'
@@ -1532,7 +1538,7 @@ _OPS_HANDLES_JS = """
   const maint = document.getElementById('maint');
   function setMaint(on){
     maint.classList.toggle('warn', on);
-    maint.textContent = on ? 'MAINT: AN' : 'MAINT: aus';
+    maint.textContent = on ? 'MAINT: ON' : 'MAINT: OFF';
   }
   if (maint) maint.addEventListener('click', async () => {
     const on = maint.classList.contains('warn');
@@ -1901,11 +1907,11 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
     bits = []
     if is_terminal:
         if job.get("finished_at"):
-            bits.append(f"beendet {_ago(job['finished_at'], now)}")
+            bits.append(f"finished {_ago(job['finished_at'], now)}")
     elif job.get("started_at"):
-        bits.append(f"seit {_ago(job['started_at'], now)}")
+        bits.append(f"since {_ago(job['started_at'], now)}")
     if job.get("status") == "pending" and job.get("next_fire_at"):
-        bits.append(f"nächster Lauf {_until(job.get('next_fire_at'), now)}")
+        bits.append(f"next run {_until(job.get('next_fire_at'), now)}")
     if job.get("reason"):
         bits.append(_e(job.get("reason")))
     tail = (" · " + " · ".join(bits)) if bits else ""

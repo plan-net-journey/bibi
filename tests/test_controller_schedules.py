@@ -32,14 +32,14 @@ def test_schedule_list_groups_by_active_flag():
     items = [_sched("a", active=True), _sched("b", active=False),
              _sched("c", active=None)]
     html = render.schedule_list(items, now=1000.0)
-    assert 'href="/-/ui/schedule/a"' in html.split("Inaktiv")[0]
-    assert "Inaktiv" in html and 'href="/-/ui/schedule/b"' in html.split("Inaktiv")[1].split("Journal")[0]
+    assert 'href="/-/ui/schedule/a"' in html.split("Inactive")[0]
+    assert "Inactive" in html and 'href="/-/ui/schedule/b"' in html.split("Inactive")[1].split("Journal")[0]
     assert "Journal" in html and 'href="/-/ui/schedule/c"' in html.split("Journal")[1]
 
 
 def test_schedule_list_no_inactive_or_journal_heading_when_all_active():
     html = render.schedule_list([_sched("a", active=True)], now=1000.0)
-    assert "Inaktiv" not in html and "Journal —" not in html
+    assert "Inactive" not in html and "Journal —" not in html
 
 
 def test_schedule_list_default_active_true_when_key_missing():
@@ -48,7 +48,7 @@ def test_schedule_list_default_active_true_when_key_missing():
     item = _sched("a")
     del item["active"]
     html = render.schedule_list([item], now=1000.0)
-    assert "Inaktiv" not in html and "Journal —" not in html
+    assert "Inactive" not in html and "Journal —" not in html
     assert 'href="/-/ui/schedule/a"' in html
 
 
@@ -102,7 +102,7 @@ def test_schedules_page_has_filter_and_nav():
     assert 'name="typ"' in html and 'name="status"' in html
     assert "/-/ui/schedules/list" in html      # Filter-Ziel + Self-Poll
     assert 'id="schedules"' in html and "daily" in html
-    assert "Live-Log" in html
+    assert "Live Log" in html
 
 
 def test_schedules_fragment_polls_list_with_filter():
@@ -111,7 +111,7 @@ def test_schedules_fragment_polls_list_with_filter():
 
 
 def test_sched_table_column_header_combined():
-    assert "letzter / seit" in render.schedule_list([_sched("a")], now=300.0)
+    assert "last / since" in render.schedule_list([_sched("a")], now=300.0)
 
 
 # ── Lauf-Historie-Chart (PLAN-21 Befund 11 v2, pure) ─────────────────────────
@@ -179,7 +179,7 @@ def test_current_state_chips_only_shows_nonzero_statuses():
     for hidden in ("failed", "awaiting", "inactive", "zombie", "killed"):
         assert hidden not in html
     assert "3 running" in html
-    assert "7 seit Start" in html
+    assert "7 since start" in html
 
 
 def test_current_state_chips_colors_match_chart_palette():
@@ -200,7 +200,7 @@ def test_current_state_chips_running_uses_live_color_only_when_nonzero():
 
 def test_current_state_chips_empty_state_is_minimal():
     html = render._current_state_chips({}, running_since_uptime=0)
-    assert "0 running" in html and "0 seit Start" in html
+    assert "0 running" in html and "0 since start" in html
     # keine einzige Farb-Chip-Zeile für die neun Namen-Status:
     for s in ("pending", "failed", "deferred", "awaiting",
              "error", "inactive", "zombie", "killed"):
@@ -231,7 +231,7 @@ def test_schedules_page_includes_timeseries_fragment():
         daemon_status={"job_stats": {"counts": {"running": 1}, "running_since_uptime": 2}},
         landings=[_landing("complete", 250.0)])
     assert 'id="timeseries"' in html
-    assert "2 seit Start" in html
+    assert "2 since start" in html
     assert "chart.js" in html.lower()
 
 
@@ -272,7 +272,7 @@ def test_ui_schedules_screen_route_has_rescan_and_reflects_maintenance(team_repo
         r = c.get("/-/ui/schedules")
         assert r.status_code == 200
         assert 'id="rescan"' in r.text
-        assert "MAINT: AN" in r.text
+        assert "MAINT: ON" in r.text
 
 
 def test_ui_schedules_list_filters_problem(team_repo: Path):
@@ -295,7 +295,7 @@ def test_ui_schedules_screen_includes_timeseries(team_repo: Path):
         r = c.get("/-/ui/schedules")
         assert r.status_code == 200
         assert 'id="timeseries"' in r.text
-        assert "5 seit Start" in r.text
+        assert "5 since start" in r.text
 
 
 def test_ui_schedules_timeseries_fragment_route(team_repo: Path):
@@ -307,7 +307,7 @@ def test_ui_schedules_timeseries_fragment_route(team_repo: Path):
         r = c.get("/-/ui/schedules/timeseries")
         assert r.status_code == 200
         assert 'id="timeseries"' in r.text
-        assert "1 seit Start" in r.text
+        assert "1 since start" in r.text
 
 
 def test_ui_schedules_timeseries_fragment_route_honors_resolution_param(team_repo: Path):
