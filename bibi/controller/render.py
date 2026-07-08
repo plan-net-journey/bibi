@@ -243,7 +243,7 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .res-link { font-size: .7rem; color: #888; text-decoration: none; cursor: pointer; }
 .res-link:hover { color: inherit; }
 .res-link.active { color: inherit; text-decoration: underline; font-weight: 600; }
-.chart-wrap { height: 74px; }  /* User-Fund 2026-07-08 (3. Runde): 220px war zu groß, 1/3 reicht */
+.chart-wrap { height: 148px; }  /* User-Fund 2026-07-08 (4. Runde): 74px war zu klein, doppelt so hoch */
 .feedlist { display: flex; flex-direction: column; gap: 0; font-size: .88rem; }
 .frow { display: flex; gap: .6rem; align-items: baseline; padding: .38rem 0;
         border-bottom: 1px solid #8881; }
