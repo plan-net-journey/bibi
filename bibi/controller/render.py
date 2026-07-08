@@ -18,6 +18,15 @@ _HTMX = "https://unpkg.com/htmx.org@1.9.12"
 #: (``window.bibiFollow``). Zentral, damit das Intervall an einer Stelle hängt.
 _POLL = "every 2s [window.bibiFollow]"
 
+#: Eigener, langsamerer Poll fürs Lauf-Historie-Chart (PLAN-21 Befund 11,
+#: User-Fund 2026-07-08 "wackelt"): der generische 2s-Takt (für Live-Output/
+#: Job-Listen gedacht) hat das Chart bei JEDEM Tick komplett neu instanziiert
+#: (Canvas weg, Chart.js neu, Achsenbeschriftung neu berechnet) — sichtbares
+#: Flackern, obwohl sich "wie viele Läufe sind terminal gelandet" in der
+#: Praxis nicht alle 2s ändert. 20s behebt die Ursache (unnötig häufige
+#: Neuerstellung), nicht nur das Symptom.
+_CHART_POLL = "every 20s [window.bibiFollow]"
+
 _CSS = """
 :root { color-scheme: light dark; }
 :root[data-theme="light"] { color-scheme: light; }
@@ -214,19 +223,32 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .heatmap-legend { display: flex; align-items: center; justify-content: flex-end;
                   gap: .3rem; font-size: .75rem; color: #888; margin-top: .35rem; }
 .heatmap-legend .hm-cell { flex: none; width: 9px; height: 9px; }
-/* Lauf-Historie-Chart (PLAN-21 Befund 11) — Stat-Grid (div+Klasse, wie
-   überall sonst) + Landungs-Histogramm (Chart.js-Canvas, s. render.py). */
-.job-stats-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 1.2rem;
-                   align-items: center; padding: .4rem 0 .6rem; }
-.jsg-col { display: flex; flex-direction: column; gap: .15rem; }
-.jsg-row { display: flex; justify-content: space-between; gap: .6rem; font-size: .78rem; }
+/* Lauf-Historie-Chart (PLAN-21 Befund 11) — eine Karte (Stat-Grid + Auflösungs-
+   Links + Landungs-Histogramm, Chart.js-Canvas, s. render.py), User-Fund
+   2026-07-08: vorher liefen die drei Bausteine ohne Rahmen über die volle
+   Breite auseinander, und Null-Werte leuchteten in derselben Signalfarbe wie
+   echte Befunde ("Wand aus roten Nullen") — beides bewusst zurückgenommen. */
+.timeseries-card { border: 1px solid #8883; border-radius: .4rem;
+                    padding: .65rem .9rem .5rem; max-width: 640px; margin: .5rem 0 1rem; }
+.timeseries-card h3 { margin: 0 0 .5rem; font-size: .72rem; color: #888;
+                       text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+.job-stats-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: .8rem;
+                   align-items: center; padding-bottom: .5rem; }
+.jsg-col { display: flex; flex-direction: column; gap: .1rem; }
+.jsg-row { display: flex; justify-content: space-between; gap: .6rem; font-size: .76rem; }
 .jsg-label { color: #888; }
-.jsg-waiting .jsg-count { color: #d6a23e; font-weight: 700; }
-.jsg-halt .jsg-count { color: #e06c5a; font-weight: 700; }
+.jsg-count { color: #8886; font-weight: 600; }  /* 0 = gedimmt, kein Alarm-Look */
+.jsg-waiting .jsg-count.nonzero { color: #d6a23e; font-weight: 700; }
+.jsg-halt .jsg-count.nonzero { color: #e06c5a; font-weight: 700; }
 .jsg-running { align-items: center; text-align: center; }
-.jsg-running .jsg-big { font-size: 1.8rem; font-weight: 700; color: #5fb37a; line-height: 1; }
-.jsg-running .jsg-sub { font-size: .68rem; color: #888; }
-.chart-wrap { padding-bottom: .3rem; height: 100px; }
+.jsg-running .jsg-big { font-size: 1.6rem; font-weight: 700; color: #8886; line-height: 1; }
+.jsg-running .jsg-big.nonzero { color: #5fb37a; }
+.jsg-running .jsg-sub { font-size: .66rem; color: #888; }
+.res-links { display: flex; gap: .9rem; padding: 0 0 .35rem; }
+.res-link { font-size: .7rem; color: #888; text-decoration: none; cursor: pointer; }
+.res-link:hover { color: inherit; }
+.res-link.active { color: inherit; text-decoration: underline; font-weight: 600; }
+.chart-wrap { height: 74px; }
 .feedlist { display: flex; flex-direction: column; gap: 0; font-size: .88rem; }
 .frow { display: flex; gap: .6rem; align-items: baseline; padding: .38rem 0;
         border-bottom: 1px solid #8881; }
@@ -484,59 +506,69 @@ def _landings_chart_html(labels: list[float], counts: dict[str, list[int]],
 def _job_stats_grid(counts: dict[str, int], running_since_uptime: int) -> str:
     """3-Spalten-Stat-Grid (PLAN-21 Befund 11): 4 Waiting- + 4 Halt-Zustände
     untereinander links/rechts, ``running`` als mittlere Spalte mit der
-    Gesamtzahl seit Prozessstart klein dazu."""
+    Gesamtzahl seit Prozessstart klein dazu. Null-Werte bleiben gedimmt (User-
+    Fund 2026-07-08: acht rot/orange leuchtende Nullen sahen wie ein Alarm
+    aus, obwohl nichts los war) — Farbe blitzt erst bei einem echten Befund auf."""
     def _rows(statuses: tuple[str, ...]) -> str:
         return "".join(
             f'<div class="jsg-row"><span class="jsg-label">{s}</span>'
-            f'<span class="jsg-count">{counts.get(s, 0)}</span></div>'
+            f'<span class="jsg-count{" nonzero" if counts.get(s, 0) else ""}">'
+            f'{counts.get(s, 0)}</span></div>'
             for s in statuses
         )
     running = counts.get("running", 0)
+    big_cls = "jsg-big nonzero" if running else "jsg-big"
     return (
         '<div class="job-stats-grid">'
         f'<div class="jsg-col jsg-waiting">{_rows(_WAITING_STATUSES)}</div>'
         '<div class="jsg-col jsg-running">'
-        f'<div class="jsg-big">{running}</div><div class="jsg-label">running</div>'
+        f'<div class="{big_cls}">{running}</div><div class="jsg-label">running</div>'
         f'<div class="jsg-sub">{running_since_uptime} seit Start</div></div>'
         f'<div class="jsg-col jsg-halt">{_rows(_HALT_STATUSES)}</div>'
         "</div>"
     )
 
 
-def _resolution_bar(bucket_minutes: int) -> str:
-    """Auflösungs-Dropdown fürs Chart — dieselbe Filter-Dropdown-Konvention
-    wie ``_filter_bar`` (Typ/Status), eigenes Ziel (``#timeseries``, nicht
-    ``#schedules``)."""
-    opts = "".join(
-        f'<option value="{m}"{" selected" if m == bucket_minutes else ""}>{_RESOLUTION_LABEL[m]}</option>'
+def _resolution_links(bucket_minutes: int) -> str:
+    """Auflösungs-Wahl als kleine Link-Zeile (User-Fund 2026-07-08: "statt
+    Drop-down einfach Links, klein, mit dem aktuellen Zeitfenster
+    unterstrichen") statt Dropdown — dieselbe hx-get/Ziel-Idee wie zuvor,
+    andere Optik."""
+    links = "".join(
+        f'<a class="res-link{" active" if m == bucket_minutes else ""}" '
+        f'hx-get="/-/ui/schedules/timeseries?res={m}" '
+        f'hx-target="#timeseries" hx-swap="outerHTML">{_RESOLUTION_LABEL[m]}</a>'
         for m in _RESOLUTION_WINDOWS
     )
-    common = ('hx-get="/-/ui/schedules/timeseries" hx-target="#timeseries" hx-swap="outerHTML"')
-    return f'<div class="logbar"><label>Auflösung <select name="res" {common}>{opts}</select></label></div>'
+    return f'<div class="res-links">{links}</div>'
 
 
 def timeseries_fragment(landings: list[dict], job_stats: dict | None = None,
                         now: float | None = None, *,
                         bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES) -> str:
-    """Self-pollender Wrapper um Stat-Grid + Landungs-Histogramm. Ziel =
-    ``/-/ui/schedules/timeseries`` — eigener Poll, getrennt von der
-    Schedule-Liste (``schedules_fragment``): andere Datenquelle
-    (``journal_landings``/``job_stats`` statt ``/-/schedule``), gleicher
-    ``_POLL``-Takt (§ real-time, kein neues Verfahren). Der Self-Poll trägt
-    die aktuelle Auflösung in der URL, damit sie den 2s-Tick überlebt
-    (dieselbe Idee wie ``schedules_fragment``s Filter-Querystring)."""
+    """Self-pollender Wrapper um Stat-Grid + Landungs-Histogramm, in einer
+    Karte (User-Fund 2026-07-08: vorher liefen die Bausteine randlos über die
+    volle Breite auseinander). Ziel = ``/-/ui/schedules/timeseries`` — eigener
+    Poll, getrennt von der Schedule-Liste (``schedules_fragment``): andere
+    Datenquelle (``journal_landings``/``job_stats`` statt ``/-/schedule``),
+    eigener (langsamerer) Takt ``_CHART_POLL`` statt ``_POLL`` (s. dort — das
+    "wackelt"-Fund 2026-07-08). Der Self-Poll trägt die aktuelle Auflösung in
+    der URL, damit sie den Tick überlebt (dieselbe Idee wie
+    ``schedules_fragment``s Filter-Querystring)."""
     now = time.time() if now is None else now
     job_stats = job_stats or {}
     counts = job_stats.get("counts") or {}
     running_since_uptime = job_stats.get("running_since_uptime", 0)
     labels, bucket_counts = _landings_buckets(landings, now=now, bucket_minutes=bucket_minutes)
     body = (
-        _job_stats_grid(counts, running_since_uptime)
-        + _resolution_bar(bucket_minutes)
+        "<h3>Lauf-Historie</h3>"
+        + _job_stats_grid(counts, running_since_uptime)
+        + _resolution_links(bucket_minutes)
         + _landings_chart_html(labels, bucket_counts)
     )
     url = f"/-/ui/schedules/timeseries?res={bucket_minutes}"
-    attrs = (f'id="timeseries" hx-get="{url}" hx-trigger="{_POLL}" hx-swap="outerHTML"')
+    attrs = (f'id="timeseries" class="timeseries-card" hx-get="{url}" '
+            f'hx-trigger="{_CHART_POLL}" hx-swap="outerHTML"')
     return f"<div {attrs}>{body}</div>"
 
 

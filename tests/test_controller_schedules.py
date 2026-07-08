@@ -175,26 +175,39 @@ def test_job_stats_grid_shows_all_nine_states_and_uptime_counter():
     for status in ("pending", "failed", "deferred", "awaiting",
                   "error", "inactive", "zombie", "killed"):
         assert status in html
-    assert "jsg-big\">3<" in html  # running gross in der Mitte
+    assert 'jsg-big nonzero">3<' in html  # running gross in der Mitte, nicht-null
     assert "7 seit Start" in html
+
+
+def test_job_stats_grid_zero_values_stay_dimmed_not_nonzero():
+    # User-Fund 2026-07-08: Null-Werte bekommen keine Signalfarben-Klasse —
+    # sonst sieht eine "Wand aus Nullen" wie ein Alarm aus.
+    html = render._job_stats_grid({}, running_since_uptime=0)
+    assert "nonzero" not in html
+    assert 'class="jsg-big">0<' in html  # running-Zahl ebenso gedimmt
 
 
 def test_job_stats_grid_defaults_missing_status_to_zero():
     html = render._job_stats_grid({}, running_since_uptime=0)
-    assert "jsg-big\">0<" in html
+    assert 'class="jsg-big">0<' in html
 
 
 def test_timeseries_fragment_is_self_polling_own_target():
+    # Eigener, langsamerer Takt als der generische _POLL (User-Fund
+    # 2026-07-08 "wackelt" — s. _CHART_POLL-Docstring).
     frag = render.timeseries_fragment([], {"counts": {}, "running_since_uptime": 0}, now=1.0)
     assert 'id="timeseries"' in frag
     assert 'hx-get="/-/ui/schedules/timeseries?res=15"' in frag
-    assert "every 2s" in frag
+    assert "every 20s" in frag
 
 
-def test_timeseries_fragment_has_resolution_dropdown():
+def test_timeseries_fragment_has_resolution_links_not_dropdown():
+    # User-Fund 2026-07-08: "statt Drop-down einfach Links, klein, mit dem
+    # aktuellen Zeitfenster unterstrichen".
     frag = render.timeseries_fragment([], now=1.0, bucket_minutes=5)
-    assert 'name="res"' in frag
-    assert '<option value="5" selected>' in frag
+    assert "<select" not in frag
+    assert 'class="res-link active"' in frag
+    assert render._RESOLUTION_LABEL[5] in frag
 
 
 def test_schedules_page_includes_timeseries_fragment():
@@ -288,7 +301,8 @@ def test_ui_schedules_timeseries_fragment_route_honors_resolution_param(team_rep
     with TestClient(app) as c:
         r = c.get("/-/ui/schedules/timeseries", params={"res": 5})
         assert r.status_code == 200
-        assert 'value="5" selected' in r.text
+        assert 'class="res-link active"' in r.text
+        assert render._RESOLUTION_LABEL[5] in r.text
         assert 'hx-get="/-/ui/schedules/timeseries?res=5"' in r.text
 
 
