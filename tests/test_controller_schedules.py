@@ -168,28 +168,43 @@ def test_landings_chart_html_empty_shows_placeholder():
     assert "keine Daten" in render._landings_chart_html([], {})
 
 
-def test_job_stats_grid_shows_all_nine_states_and_uptime_counter():
+def test_current_state_chips_only_shows_nonzero_statuses():
+    # User-Fund 2026-07-08 (2. Runde): kein Stat-Grid mehr — nur Chips für
+    # tatsächlich nicht-null Zustände, der Rest wird gar nicht erst gerendert.
     counts = {"pending": 2, "failed": 0, "deferred": 1, "awaiting": 0,
              "running": 3, "error": 1, "inactive": 0, "zombie": 0, "killed": 0}
-    html = render._job_stats_grid(counts, running_since_uptime=7)
-    for status in ("pending", "failed", "deferred", "awaiting",
-                  "error", "inactive", "zombie", "killed"):
-        assert status in html
-    assert 'jsg-big nonzero">3<' in html  # running gross in der Mitte, nicht-null
+    html = render._current_state_chips(counts, running_since_uptime=7)
+    for shown in ("pending", "deferred", "error", "running"):
+        assert shown in html
+    for hidden in ("failed", "awaiting", "inactive", "zombie", "killed"):
+        assert hidden not in html
+    assert "3 running" in html
     assert "7 seit Start" in html
 
 
-def test_job_stats_grid_zero_values_stay_dimmed_not_nonzero():
-    # User-Fund 2026-07-08: Null-Werte bekommen keine Signalfarben-Klasse —
-    # sonst sieht eine "Wand aus Nullen" wie ein Alarm aus.
-    html = render._job_stats_grid({}, running_since_uptime=0)
-    assert "nonzero" not in html
-    assert 'class="jsg-big">0<' in html  # running-Zahl ebenso gedimmt
+def test_current_state_chips_colors_match_chart_palette():
+    # Kern des User-Funds: dieselbe Farbe wie im Chart macht die Legende
+    # redundant — hier konkret geprüft für error/killed.
+    counts = {"error": 1, "killed": 2}
+    html = render._current_state_chips(counts, running_since_uptime=0)
+    assert f'color:{render._LANDING_COLOR["error"]}' in html
+    assert f'color:{render._LANDING_COLOR["killed"]}' in html
 
 
-def test_job_stats_grid_defaults_missing_status_to_zero():
-    html = render._job_stats_grid({}, running_since_uptime=0)
-    assert 'class="jsg-big">0<' in html
+def test_current_state_chips_running_uses_live_color_only_when_nonzero():
+    dimmed = render._current_state_chips({}, running_since_uptime=0)
+    assert "<span class=\"ts-chip\">0 running</span>" in dimmed
+    lit = render._current_state_chips({"running": 1}, running_since_uptime=0)
+    assert f'color:{render._LIVE_COLOR}">1 running' in lit
+
+
+def test_current_state_chips_empty_state_is_minimal():
+    html = render._current_state_chips({}, running_since_uptime=0)
+    assert "0 running" in html and "0 seit Start" in html
+    # keine einzige Farb-Chip-Zeile für die neun Namen-Status:
+    for s in ("pending", "failed", "deferred", "awaiting",
+             "error", "inactive", "zombie", "killed"):
+        assert s not in html
 
 
 def test_timeseries_fragment_is_self_polling_own_target():

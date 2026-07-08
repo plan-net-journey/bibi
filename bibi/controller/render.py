@@ -223,32 +223,27 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .heatmap-legend { display: flex; align-items: center; justify-content: flex-end;
                   gap: .3rem; font-size: .75rem; color: #888; margin-top: .35rem; }
 .heatmap-legend .hm-cell { flex: none; width: 9px; height: 9px; }
-/* Lauf-Historie-Chart (PLAN-21 Befund 11) — eine Karte (Stat-Grid + Auflösungs-
-   Links + Landungs-Histogramm, Chart.js-Canvas, s. render.py), User-Fund
-   2026-07-08: vorher liefen die drei Bausteine ohne Rahmen über die volle
-   Breite auseinander, und Null-Werte leuchteten in derselben Signalfarbe wie
-   echte Befunde ("Wand aus roten Nullen") — beides bewusst zurückgenommen. */
-.timeseries-card { border: 1px solid #8883; border-radius: .4rem;
-                    padding: .65rem .9rem .5rem; max-width: 640px; margin: .5rem 0 1rem; }
-.timeseries-card h3 { margin: 0 0 .5rem; font-size: .72rem; color: #888;
-                       text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
-.job-stats-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: .8rem;
-                   align-items: center; padding-bottom: .5rem; }
-.jsg-col { display: flex; flex-direction: column; gap: .1rem; }
-.jsg-row { display: flex; justify-content: space-between; gap: .6rem; font-size: .76rem; }
-.jsg-label { color: #888; }
-.jsg-count { color: #8886; font-weight: 600; }  /* 0 = gedimmt, kein Alarm-Look */
-.jsg-waiting .jsg-count.nonzero { color: #d6a23e; font-weight: 700; }
-.jsg-halt .jsg-count.nonzero { color: #e06c5a; font-weight: 700; }
-.jsg-running { align-items: center; text-align: center; }
-.jsg-running .jsg-big { font-size: 1.6rem; font-weight: 700; color: #8886; line-height: 1; }
-.jsg-running .jsg-big.nonzero { color: #5fb37a; }
-.jsg-running .jsg-sub { font-size: .66rem; color: #888; }
-.res-links { display: flex; gap: .9rem; padding: 0 0 .35rem; }
+/* Lauf-Historie-Chart (PLAN-21 Befund 11) — eine Karte über die volle Breite
+   (Kopf mit Titel+Auflösung, Zustands-Chips, Chart.js-Canvas, s. render.py).
+   User-Fund 2026-07-08 (2. Runde, "gefällt mir an Variante C"): kein
+   separates Stat-Grid mehr, keine Chart-Legende mehr (die Chips tragen
+   dieselben Farben wie die Chart-Segmente und übernehmen die Legenden-
+   Funktion), Chart deutlich größer, Karte spannt dieselbe Breite wie die
+   Schedule-Tabelle darunter statt eines schmalen 640px-Kastens. */
+.timeseries-card { border: 1px solid #8883; border-radius: .4rem; padding: .7rem 1rem .6rem;
+                    margin: .5rem 0 1rem; }
+.ts-head { display: flex; align-items: baseline; justify-content: space-between;
+           flex-wrap: wrap; gap: .4rem 1rem; }
+.ts-head h3 { margin: 0; font-size: .95rem; }
+.ts-chips { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: baseline;
+            font-family: ui-monospace, monospace; font-size: .8rem; font-weight: 700;
+            color: #8886; margin: .35rem 0 .7rem; }  /* Default = gedimmt (running=0) */
+.ts-chip.ts-dim { color: #888; font-weight: 400; }
+.res-links { display: flex; gap: .9rem; }
 .res-link { font-size: .7rem; color: #888; text-decoration: none; cursor: pointer; }
 .res-link:hover { color: inherit; }
 .res-link.active { color: inherit; text-decoration: underline; font-weight: 600; }
-.chart-wrap { height: 74px; }
+.chart-wrap { height: 220px; }
 .feedlist { display: flex; flex-direction: column; gap: 0; font-size: .88rem; }
 .frow { display: flex; gap: .6rem; align-items: baseline; padding: .38rem 0;
         border-bottom: 1px solid #8881; }
@@ -427,13 +422,25 @@ from bibi.schedule.lifecycle import TERMINAL as _TERMINAL_STATUSES
 _WAITING_STATUSES = ("pending", "failed", "deferred", "awaiting")
 _HALT_STATUSES = ("error", "inactive", "zombie", "killed")
 
-#: Anzeige-Reihenfolge + Farbe je Terminal-Status (Chart.js-Datasets, gestapelt).
+#: Live-Farbe (running) — dieselbe wie die bestehende .st.running-Badge-
+#: Konvention (Schedule-Tabelle), damit "läuft" app-weit immer blau ist.
+_LIVE_COLOR = "#5a9fe0"
+#: Eigener Ton für die vier nicht-terminalen "wartet noch"-Zustände (pending/
+#: failed/deferred/awaiting) — die tauchen im Chart nie auf, brauchen also
+#: keine Chart-Farbe, nur einen von allen Chart-Tönen unterscheidbaren.
+_WAITING_COLOR = "#d6a23e"
+
+#: Anzeige-Reihenfolge + Farbe je Terminal-Status (Chart.js-Datasets, gestapelt,
+#: UND Zustands-Chips im Chart-Kopf — dieselbe Farbe an beiden Stellen macht
+#: eine separate Legende redundant, User-Fund 2026-07-08). Sechs klar
+#: unterscheidbare Töne — vorher teilten sich error/zombie sowie killed/
+#: _WAITING_COLOR versehentlich denselben Hex-Wert.
 _LANDING_ORDER = ("complete", "error", "zombie", "killed", "inactive")
 _LANDING_COLOR = {
     "complete": "#5fb37a",   # grün — Erfolg
     "error": "#e06c5a",      # rot — endgültig gescheitert (Retries erschöpft)
-    "zombie": "#e06c5a",     # rot — Silence-Timeout, ebenso ein Fehlschlag
-    "killed": "#d6a23e",     # orange — User-/System-Abbruch, nicht zwingend "Fehler"
+    "zombie": "#e0567f",     # rose — Silence-Timeout, eigener Ton statt Dublette zu error
+    "killed": "#e08a3e",     # orange — User-/System-Abbruch, eigener Ton statt Dublette zu waiting
     "inactive": "#8888a0",   # grau — administrativ (Schedule entfernt), kein Lauf-Ausgang
 }
 
@@ -476,10 +483,14 @@ def _landings_buckets(landings: list[dict], *, now: float,
 def _landings_chart_html(labels: list[float], counts: dict[str, list[int]],
                          chart_id: str = "landingsChart") -> str:
     """``<canvas>`` + Chart.js-Init-Script (gestapelter Bar-Chart). Wird bei
-    jedem 2s-htmx-Swap des umgebenden Fragments neu instanziiert (htmx führt
+    jedem Poll-Swap des umgebenden Fragments neu instanziiert (htmx führt
     ``<script>``-Tags in geswapptem Content per Default aus) — dieselbe
     "ganzes Fragment ersetzen"-Konvention wie überall sonst im Code, kein
-    Diffing/Update-in-place nötig."""
+    Diffing/Update-in-place nötig. Kein eigenes Chart.js-Legend-Plugin mehr
+    (User-Fund 2026-07-08): die Zustands-Chips im Chart-Kopf
+    (``_current_state_chips``) tragen dieselben Farben und übernehmen die
+    Legenden-Funktion — pro Balkensegment zeigt Chart.js' Standard-Tooltip
+    beim Hover trotzdem den Status-Namen."""
     if not labels:
         return '<div class="chart-wrap"><p class="out-empty">— noch keine Daten —</p></div>'
     tick_labels = [datetime.datetime.fromtimestamp(t).strftime("%H:%M") for t in labels]
@@ -489,7 +500,7 @@ def _landings_chart_html(labels: list[float], counts: dict[str, list[int]],
     ]
     payload = json.dumps({"labels": tick_labels, "datasets": datasets})
     return (
-        f'<div class="chart-wrap"><canvas id="{chart_id}" height="90"></canvas></div>'
+        f'<div class="chart-wrap"><canvas id="{chart_id}"></canvas></div>'
         "<script>(function(){"
         f"const d={payload};"
         f'const el=document.getElementById("{chart_id}");'
@@ -497,36 +508,36 @@ def _landings_chart_html(labels: list[float], counts: dict[str, list[int]],
         "new Chart(el,{type:'bar',data:d,options:{"
         "responsive:true,maintainAspectRatio:false,animation:false,"
         "scales:{x:{stacked:true},y:{stacked:true,beginAtZero:true,ticks:{precision:0}}},"
-        "plugins:{legend:{labels:{boxWidth:12,font:{size:11}}}}"
+        "plugins:{legend:{display:false}}"
         "}});"
         "})();</script>"
     )
 
 
-def _job_stats_grid(counts: dict[str, int], running_since_uptime: int) -> str:
-    """3-Spalten-Stat-Grid (PLAN-21 Befund 11): 4 Waiting- + 4 Halt-Zustände
-    untereinander links/rechts, ``running`` als mittlere Spalte mit der
-    Gesamtzahl seit Prozessstart klein dazu. Null-Werte bleiben gedimmt (User-
-    Fund 2026-07-08: acht rot/orange leuchtende Nullen sahen wie ein Alarm
-    aus, obwohl nichts los war) — Farbe blitzt erst bei einem echten Befund auf."""
-    def _rows(statuses: tuple[str, ...]) -> str:
-        return "".join(
-            f'<div class="jsg-row"><span class="jsg-label">{s}</span>'
-            f'<span class="jsg-count{" nonzero" if counts.get(s, 0) else ""}">'
-            f'{counts.get(s, 0)}</span></div>'
-            for s in statuses
-        )
+def _current_state_chips(counts: dict[str, int], running_since_uptime: int) -> str:
+    """Kompakte Inline-Zeile im Chart-Kopf statt eines eigenen Stat-Grids
+    (User-Fund 2026-07-08, Variante C: "kein separates Stat-Grid mehr, nur
+    Inline-Zahlen neben dem Titel"). Zeigt nur, was gerade tatsächlich
+    passiert — Nullen werden gar nicht erst als Chip gerendert (nicht mal
+    gedimmt) statt eine Wand aus Nullen zu zeigen. Jeder Chip trägt dieselbe
+    Farbe wie sein Pendant im Chart (``_LANDING_COLOR``) — das lehrt die
+    Farb-Bedeutung nebenbei, eine separate Chart-Legende wird dadurch
+    redundant (User-Fund: "mit der richtigen Farbgebung können wir die
+    Legende weglassen")."""
     running = counts.get("running", 0)
-    big_cls = "jsg-big nonzero" if running else "jsg-big"
-    return (
-        '<div class="job-stats-grid">'
-        f'<div class="jsg-col jsg-waiting">{_rows(_WAITING_STATUSES)}</div>'
-        '<div class="jsg-col jsg-running">'
-        f'<div class="{big_cls}">{running}</div><div class="jsg-label">running</div>'
-        f'<div class="jsg-sub">{running_since_uptime} seit Start</div></div>'
-        f'<div class="jsg-col jsg-halt">{_rows(_HALT_STATUSES)}</div>'
-        "</div>"
-    )
+    style = f' style="color:{_LIVE_COLOR}"' if running else ""
+    chips = [f'<span class="ts-chip"{style}>{running} running</span>']
+    for status in _HALT_STATUSES:  # error/inactive/zombie/killed — Chart-Farben
+        n = counts.get(status, 0)
+        if n:
+            color = _LANDING_COLOR.get(status, _WAITING_COLOR)
+            chips.append(f'<span class="ts-chip" style="color:{color}">{n} {status}</span>')
+    for status in _WAITING_STATUSES:  # pending/failed/deferred/awaiting — eigener Ton
+        n = counts.get(status, 0)
+        if n:
+            chips.append(f'<span class="ts-chip" style="color:{_WAITING_COLOR}">{n} {status}</span>')
+    chips.append(f'<span class="ts-chip ts-dim">{running_since_uptime} seit Start</span>')
+    return f'<div class="ts-chips">{"".join(chips)}</div>'
 
 
 def _resolution_links(bucket_minutes: int) -> str:
@@ -546,24 +557,24 @@ def _resolution_links(bucket_minutes: int) -> str:
 def timeseries_fragment(landings: list[dict], job_stats: dict | None = None,
                         now: float | None = None, *,
                         bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES) -> str:
-    """Self-pollender Wrapper um Stat-Grid + Landungs-Histogramm, in einer
-    Karte (User-Fund 2026-07-08: vorher liefen die Bausteine randlos über die
-    volle Breite auseinander). Ziel = ``/-/ui/schedules/timeseries`` — eigener
-    Poll, getrennt von der Schedule-Liste (``schedules_fragment``): andere
-    Datenquelle (``journal_landings``/``job_stats`` statt ``/-/schedule``),
-    eigener (langsamerer) Takt ``_CHART_POLL`` statt ``_POLL`` (s. dort — das
-    "wackelt"-Fund 2026-07-08). Der Self-Poll trägt die aktuelle Auflösung in
-    der URL, damit sie den Tick überlebt (dieselbe Idee wie
-    ``schedules_fragment``s Filter-Querystring)."""
+    """Self-pollender Wrapper um Chart-Kopf (Titel + Auflösung) + Zustands-
+    Chips + Landungs-Histogramm, in einer Karte über die volle Breite (User-
+    Fund 2026-07-08, Variante C: "vereinigt", kein separates Stat-Grid, keine
+    Chart-Legende mehr, Chart deutlich größer). Ziel =
+    ``/-/ui/schedules/timeseries`` — eigener Poll, getrennt von der Schedule-
+    Liste (``schedules_fragment``): andere Datenquelle (``journal_landings``/
+    ``job_stats`` statt ``/-/schedule``), eigener (langsamerer) Takt
+    ``_CHART_POLL`` statt ``_POLL`` (s. dort — das "wackelt"-Fund 2026-07-08).
+    Der Self-Poll trägt die aktuelle Auflösung in der URL, damit sie den Tick
+    überlebt (dieselbe Idee wie ``schedules_fragment``s Filter-Querystring)."""
     now = time.time() if now is None else now
     job_stats = job_stats or {}
     counts = job_stats.get("counts") or {}
     running_since_uptime = job_stats.get("running_since_uptime", 0)
     labels, bucket_counts = _landings_buckets(landings, now=now, bucket_minutes=bucket_minutes)
     body = (
-        "<h3>Lauf-Historie</h3>"
-        + _job_stats_grid(counts, running_since_uptime)
-        + _resolution_links(bucket_minutes)
+        f'<div class="ts-head"><h3>Lauf-Historie</h3>{_resolution_links(bucket_minutes)}</div>'
+        + _current_state_chips(counts, running_since_uptime)
         + _landings_chart_html(labels, bucket_counts)
     )
     url = f"/-/ui/schedules/timeseries?res={bucket_minutes}"
