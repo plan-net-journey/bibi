@@ -211,7 +211,7 @@ def test_status_verdict_absent_without_scheduler_role(team_repo):
         assert "verdict" not in client.get("/-/status").json()
 
 
-# ── /-/status-job_stats + /-/transitions (PLAN-21 Befund 11 Chart) ───────────
+# ── /-/status-job_stats + /-/landings (PLAN-21 Befund 11 v2 Chart) ───────────
 
 
 def test_status_job_stats_counts_and_running_since_uptime(sched):
@@ -230,20 +230,22 @@ def test_status_job_stats_absent_without_scheduler_role(team_repo):
         assert "job_stats" not in client.get("/-/status").json()
 
 
-def test_transitions_route_returns_log(sched):
+def test_landings_route_returns_terminal_journal_entries(sched):
     client, root = sched
     _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
-    client.post("/-/scheduler/next")  # a → running, loggt eine Transition
-    rows = client.get("/-/transitions").json()
+    jid = client.post("/-/scheduler/next").json()["id"]
+    client.post(f"/-/scheduler/status/{jid}", json={"status": "complete", "exit_code": 0})
+    rows = client.get("/-/landings").json()
     assert len(rows) == 1
-    assert rows[0]["to_status"] == "running"
+    assert rows[0]["status"] == "complete"
 
 
-def test_transitions_route_since_filters(sched):
+def test_landings_route_since_filters(sched):
     client, root = sched
     _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
-    client.post("/-/scheduler/next")
+    jid = client.post("/-/scheduler/next").json()["id"]
+    client.post(f"/-/scheduler/status/{jid}", json={"status": "complete", "exit_code": 0})
     future = 9999999999.0
-    assert client.get("/-/transitions", params={"since": future}).json() == []
+    assert client.get("/-/landings", params={"since": future}).json() == []

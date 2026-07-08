@@ -65,10 +65,10 @@ class ControllerClient:
         data = self._get("/-/schedule") or {}
         return data.get("schedules", []) if isinstance(data, dict) else []
 
-    def transitions(self, *, since: float | None = None) -> list[dict]:
-        # Lauf-Historie-Chart (PLAN-21 Befund 11) — scheduler-gated, 501 ohne
-        # Scheduler-Rolle (der Aufrufer fängt das ab, s. controller/__init__.py).
-        return self._get("/-/transitions", {"since": since}) or []
+    def landings(self, *, since: float | None = None) -> list[dict]:
+        # Lauf-Historie-Chart (PLAN-21 Befund 11 v2) — scheduler-gated, 501
+        # ohne Scheduler-Rolle (der Aufrufer fängt das ab, s. controller/__init__.py).
+        return self._get("/-/landings", {"since": since}) or []
 
     def schedule_config(self, slug: str) -> dict:
         return self._get(f"/-/schedule/{urllib.parse.quote(slug, safe='')}") or {}

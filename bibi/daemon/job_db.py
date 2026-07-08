@@ -674,7 +674,8 @@ def reserve_next(
             conn.execute("ROLLBACK")
             return None
         _set_offset(conn, new_offset)
-        _write_transition(conn, chosen["id"], chosen["slug"], chosen["status"], "running", now)
+        global _dispatch_count
+        _dispatch_count += 1
         row = conn.execute("SELECT * FROM jobs WHERE id=?", (chosen["id"],)).fetchone()
         conn.execute("COMMIT")
         return reservation_view(row)
@@ -786,7 +787,6 @@ def report_status(
         assignments += ", fire=fire+1"
     fields["id"] = job_id
     conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
-    _write_transition(conn, job_id, row["slug"], current.value, target.value, now)
 
     # Terminal-Übergang → eine Journal-Zeile (disponierte Domäne, §1.4). complete
     # rearmt NICHT mehr sofort hier — das übernimmt reserve_next() lazy, sobald der
@@ -820,8 +820,7 @@ def sweep(conn: sqlite3.Connection, now: float | None = None) -> dict:
     ).fetchall():
         report_status(conn, r["id"], status="inactive", reason="deferred_expired", now=now)
         inactivated += 1
-    pruned = _prune_transitions(conn, now)
-    return {"errored": errored, "inactivated": inactivated, "pruned_transitions": pruned}
+    return {"errored": errored, "inactivated": inactivated}
 
 
 def fire_startup(conn: sqlite3.Connection, now: float | None = None) -> int:
@@ -965,47 +964,26 @@ def reconcile_startup_orphans(
     return n
 
 
-# ── Transitions (Lifecycle-Zeitreihe, User-Feedback 2026-07-07) ─────────────
+# ── Dispatch-Zähler (PLAN-21 Befund 11 v2, User-Redesign 2026-07-08) ────────
+#
+# Die frühere transitions-Tabelle (Lifecycle-Zeitreihe, User-Feedback
+# 2026-07-07) ist zurückgebaut — das neue Chart zählt nur noch Landungen in
+# Terminal-Zuständen (aus journal, s. journal_landings()), das brauchte keine
+# eigene Zwischenzustands-Historie mehr. Schema (Migration v14, Tabelle
+# ``transitions``) bleibt unangetastet (kein Rückwärts-Migrationsaufwand für
+# eine leere/ungenutzte Tabelle) — nur die Schreib-/Lese-Funktionen und ihre
+# Aufrufer fallen weg. Einzig verbliebener Konsument war
+# job_stats.running_since_uptime; der zieht jetzt aus diesem simplen
+# In-Memory-Zähler statt aus einer Transitions-Abfrage — sogar präziser
+# (keine 48h-Kappung mehr).
 
-#: Wie lange transitions-Zeilen aufbewahrt werden, bevor sweep() sie prunt.
-#: Puffer über das geplante 24h-Chart-Fenster hinaus.
-TRANSITIONS_RETENTION_S = 48 * 3600
-
-
-def _write_transition(
-    conn: sqlite3.Connection, job_id: str, slug: str,
-    from_status: str | None, to_status: str, ts: float,
-) -> None:
-    """Einen Lifecycle-Übergang append-only loggen — anders als journal (nur
-    der Terminal-Übergang) jeder Statuswechsel, damit sich rückblickend eine
-    Zeitreihe zeichnen lässt (journal allein verliert Zwischenzustände wie
-    eine mehrstündige awaiting-Phase)."""
-    conn.execute(
-        "INSERT INTO transitions (job_id, slug, from_status, to_status, ts) "
-        "VALUES (:job_id, :slug, :from_status, :to_status, :ts)",
-        {"job_id": job_id, "slug": slug, "from_status": from_status,
-         "to_status": to_status, "ts": ts},
-    )
+_dispatch_count = 0
 
 
-def list_transitions(conn: sqlite3.Connection, *, since: float | None = None) -> list[dict]:
-    """Transition-Log ab ``since`` (Epoch, inklusiv), älteste zuerst."""
-    q = "SELECT job_id, slug, from_status, to_status, ts FROM transitions"
-    params: dict = {}
-    if since is not None:
-        q += " WHERE ts >= :since"
-        params["since"] = since
-    q += " ORDER BY ts ASC"
-    return [dict(r) for r in conn.execute(q, params).fetchall()]
-
-
-def _prune_transitions(conn: sqlite3.Connection, now: float) -> int:
-    """Zeilen älter als :data:`TRANSITIONS_RETENTION_S` löschen (§periodischer sweep)."""
-    cur = conn.execute(
-        "DELETE FROM transitions WHERE ts < :cutoff",
-        {"cutoff": now - TRANSITIONS_RETENTION_S},
-    )
-    return cur.rowcount
+def dispatch_count() -> int:
+    """Anzahl erfolgreicher ``reserve_next()``-Dispatches seit Prozessstart
+    (In-Memory, kein DB-State) — Basis für ``job_stats.running_since_uptime``."""
+    return _dispatch_count
 
 
 # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────────
@@ -1140,6 +1118,21 @@ def list_journal(
         sql += " LIMIT ? OFFSET ?"
         params += [limit, offset or 0]
     return [journal_view(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def journal_landings(conn: sqlite3.Connection, *, since: float | None = None) -> list[dict]:
+    """Dünn projizierte Landungen (``status``+``finished_at``) für das
+    Lauf-Historie-Chart (PLAN-21 Befund 11 v2) — ``journal`` ist per
+    Konstruktion schon terminal-only (``_write_journal`` feuert nur bei
+    ``target in lifecycle.TERMINAL``), darum reicht ein simpler Zeitfilter
+    ohne die volle ``journal_view()``-Projektion (Snapshot/Payload etc.)."""
+    q = "SELECT status, finished_at FROM journal WHERE finished_at IS NOT NULL"
+    params: dict = {}
+    if since is not None:
+        q += " AND finished_at >= :since"
+        params["since"] = since
+    q += " ORDER BY finished_at ASC"
+    return [dict(r) for r in conn.execute(q, params).fetchall()]
 
 
 #: Live-Zustände, die als **Abweichung** zählen (PLAN-4 §3/§4.1): „lief nicht".

@@ -97,12 +97,12 @@ def add_controller_routes(
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             return []
 
-    def _transitions() -> list:
-        # /-/transitions ist scheduler-gated (501 ohne scheduler-Rolle, PLAN-21
+    def _landings() -> list:
+        # /-/landings ist scheduler-gated (501 ohne scheduler-Rolle, PLAN-21
         # Befund 11) — auf einem reinen Client bleibt das Chart dann leer statt
         # den Screen zu brechen (§2.7, wie _status()/_schedules() oben).
         try:
-            return client.transitions()
+            return client.landings()
         except Exception:  # noqa: BLE001
             return []
 
@@ -169,12 +169,12 @@ def add_controller_routes(
 
     @app.get("/-/ui/schedules", include_in_schema=False)
     def schedules_screen(typ: str | None = None, status: str | None = None):
-        # Der Schedules-Screen (Seite): Nav + Ops-Handles + Stat-Grid/24h-Chart
-        # (PLAN-21 Befund 11) + Filter + gefilterte, self-pollende Liste.
+        # Der Schedules-Screen (Seite): Nav + Ops-Handles + Stat-Grid/Landungs-
+        # Histogramm (PLAN-21 Befund 11) + Filter + gefilterte, self-pollende Liste.
         items = render.filter_schedules(_schedules(), typ=typ, status=status)
         return HTMLResponse(render.schedules_page(
             items, typ=typ, status=status, daemon_status=_status(),
-            transitions=_transitions()))
+            landings=_landings()))
 
     @app.get("/-/ui/schedules/list", include_in_schema=False)
     def schedules_list_fragment(typ: str | None = None, status: str | None = None):
@@ -183,11 +183,13 @@ def add_controller_routes(
         return HTMLResponse(render.schedules_fragment(items, typ=typ, status=status))
 
     @app.get("/-/ui/schedules/timeseries", include_in_schema=False)
-    def schedules_timeseries_fragment():
+    def schedules_timeseries_fragment(res: int = render._DEFAULT_RESOLUTION_MINUTES):
         # Self-Poll-Ziel des Stat-Grid/Charts — eigene Route, eigene
-        # Datenquelle (transitions/job_stats statt /-/schedule).
+        # Datenquelle (journal_landings/job_stats statt /-/schedule). ``res``
+        # trägt die vom User gewählte Auflösung (Bucket-Minuten) über den
+        # 2s-Poll hinweg (s. render.timeseries_fragment()'s Self-Poll-URL).
         return HTMLResponse(render.timeseries_fragment(
-            _transitions(), _status().get("job_stats")))
+            _landings(), _status().get("job_stats"), bucket_minutes=res))
 
     @app.get("/-/ui/logs", include_in_schema=False)
     def logs_page():

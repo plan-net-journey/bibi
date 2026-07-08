@@ -245,65 +245,51 @@ def test_report_status_clears_stale_next_fire_at_for_terminal(conn, source, targ
     assert row["next_fire_at"] is None
 
 
-# ── Transitions (Lifecycle-Zeitreihe, User-Feedback 2026-07-07) ─────────────
+# ── dispatch_count (PLAN-21 Befund 11 v2, running_since_uptime) ─────────────
 
 
-def test_reserve_next_logs_transition_to_running(conn):
-    jid = _insert(conn, "a", 0, time.time())
+def test_dispatch_count_increments_per_successful_reserve(conn):
+    assert job_db.dispatch_count() == 0
+    _insert(conn, "a", 0, time.time())
+    _insert(conn, "b", 0, time.time())
     job_db.reserve_next(conn, now=100.0)
-    rows = job_db.list_transitions(conn)
-    assert len(rows) == 1
-    assert rows[0] == {
-        "job_id": jid, "slug": "a", "from_status": "pending",
-        "to_status": "running", "ts": 100.0,
-    }
+    assert job_db.dispatch_count() == 1
+    job_db.reserve_next(conn, now=101.0)
+    assert job_db.dispatch_count() == 2
 
 
-def test_report_status_logs_transition(conn):
-    jid = _insert(conn, "a", 0, time.time())
-    job_db.reserve_next(conn, now=100.0)
-    job_db.report_status(conn, jid, status="awaiting", now=150.0)
-    rows = job_db.list_transitions(conn)
-    assert [r["to_status"] for r in rows] == ["running", "awaiting"]
-    assert rows[1] == {
-        "job_id": jid, "slug": "a", "from_status": "running",
-        "to_status": "awaiting", "ts": 150.0,
-    }
+def test_dispatch_count_unchanged_when_nothing_to_reserve(conn):
+    job_db.reserve_next(conn, now=100.0)  # keine Jobs vorhanden
+    assert job_db.dispatch_count() == 0
 
 
-def test_report_status_same_terminal_status_does_not_double_log_transition(conn):
-    # Spiegelt test_report_status_same_terminal_status_is_noop: ein
-    # wiederholter Terminal-Report darf keine zweite Transition erzeugen.
-    jid = _insert(conn, "a", 0, time.time())
-    job_db.reserve_next(conn, now=100.0)
-    job_db.report_status(conn, jid, status="killed", now=200.0)
-    before = len(job_db.list_transitions(conn))
-    job_db.report_status(conn, jid, status="killed", now=300.0)
-    assert len(job_db.list_transitions(conn)) == before
+# ── journal_landings (PLAN-21 Befund 11 v2, Lauf-Historie-Chart) ────────────
 
 
-def test_report_status_invalid_transition_does_not_log(conn):
-    jid = _insert(conn, "a", 0, time.time())  # bleibt pending — kein reserve_next
-    assert job_db.report_status(conn, jid, status="complete") == "invalid"
-    assert job_db.list_transitions(conn) == []
-
-
-def test_list_transitions_since_filters_and_orders(conn):
+def test_journal_landings_returns_status_and_finished_at(conn):
     jid = _insert(conn, "a", 0, time.time())
     job_db.reserve_next(conn, now=100.0)
     job_db.report_status(conn, jid, status="complete", now=200.0)
-    rows = job_db.list_transitions(conn, since=150.0)
-    assert [r["ts"] for r in rows] == [200.0]
+    rows = job_db.journal_landings(conn)
+    assert rows == [{"status": "complete", "finished_at": 200.0}]
 
 
-def test_sweep_prunes_old_transitions(conn):
+def test_journal_landings_since_filters(conn):
     jid = _insert(conn, "a", 0, time.time())
     job_db.reserve_next(conn, now=100.0)
-    assert len(job_db.list_transitions(conn)) == 1
-    far_future = 100.0 + job_db.TRANSITIONS_RETENTION_S + 3600
-    result = job_db.sweep(conn, now=far_future)
-    assert result["pruned_transitions"] == 1
-    assert job_db.list_transitions(conn) == []
+    job_db.report_status(conn, jid, status="killed", now=200.0)
+    assert job_db.journal_landings(conn, since=250.0) == []
+    assert job_db.journal_landings(conn, since=150.0) == [
+        {"status": "killed", "finished_at": 200.0}]
+
+
+def test_journal_landings_excludes_non_terminal_status(conn):
+    # awaiting ist kein Terminal-Status — journal bekommt dafür nie eine Zeile
+    # (_write_journal feuert nur bei target in lifecycle.TERMINAL).
+    jid = _insert(conn, "a", 0, time.time())
+    job_db.reserve_next(conn, now=100.0)
+    job_db.report_status(conn, jid, status="awaiting", now=150.0)
+    assert job_db.journal_landings(conn) == []
 
 
 # ── status_counts (PLAN-21 Befund 11 Stat-Grid) ──────────────────────────────

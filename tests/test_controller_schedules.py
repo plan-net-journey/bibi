@@ -114,103 +114,58 @@ def test_sched_table_column_header_combined():
     assert "letzter / seit" in render.schedule_list([_sched("a")], now=300.0)
 
 
-# ── Lauf-Historie-Chart (PLAN-21 Befund 11, pure) ─────────────────────────────
+# ── Lauf-Historie-Chart (PLAN-21 Befund 11 v2, pure) ─────────────────────────
 
 
-def _trans(job_id: str, to_status: str, ts: float, *, slug: str = "a",
-          from_status: str | None = "pending") -> dict:
-    return {"job_id": job_id, "slug": slug, "from_status": from_status,
-            "to_status": to_status, "ts": ts}
+def _landing(status: str, finished_at: float) -> dict:
+    return {"status": status, "finished_at": finished_at}
 
 
-def test_timeseries_buckets_counts_current_status_per_hour():
+def test_landings_buckets_counts_events_by_status_and_time():
     now = 100_000.0
-    transitions = [
-        _trans("j1", "running", now - 23 * 3600 - 1),  # kurz vor dem Fenster
+    landings = [
+        _landing("complete", now - 10 * 60),   # 10min her → letzter Bucket (15min)
+        _landing("error", now - 20 * 60),      # 20min her → vorletzter Bucket
     ]
-    buckets = render._timeseries_buckets(transitions, now=now, hours=24, bucket_minutes=60)
-    assert len(buckets) == 24
-    # j1 lief schon vor dem ersten Bucket-Start → überlappt JEDEN Bucket.
-    assert all(b["running"] == 1 for b in buckets)
-    assert all(b["waiting"] == 0 and b["halt"] == 0 for b in buckets)
+    labels, counts = render._landings_buckets(landings, now=now, bucket_minutes=15)
+    assert len(labels) == 96  # Default-Fenster 24h / 15min
+    assert counts["complete"][-1] == 1
+    assert counts["error"][-2] == 1
 
 
-def test_timeseries_buckets_status_change_moves_job_between_groups():
+def test_landings_buckets_ignores_non_terminal_or_out_of_window():
     now = 100_000.0
-    transitions = [
-        _trans("j1", "running", now - 10 * 3600),
-        _trans("j1", "awaiting", now - 5 * 3600),  # waiting ab hier
+    landings = [
+        _landing("running", now - 60),        # kein Terminal-Status → ignoriert
+        _landing("complete", now - 100 * 3600),  # weit vor dem Fenster → ignoriert
     ]
-    buckets = render._timeseries_buckets(transitions, now=now, hours=24, bucket_minutes=60)
-    # 9h vor "jetzt" (Bucket-Index 24-9=15, 0-basiert): noch running.
-    assert buckets[14]["running"] == 1
-    # 4h vor "jetzt": schon awaiting (waiting-Gruppe), running-Segment endet
-    # exakt an der Bucket-Grenze und überlappt daher nicht mehr.
-    assert buckets[19]["waiting"] == 1
-    assert buckets[19]["running"] == 0
+    _, counts = render._landings_buckets(landings, now=now, bucket_minutes=15)
+    assert sum(counts["complete"]) == 0
+    assert "running" not in counts
 
 
-def test_timeseries_buckets_complete_hides_job():
-    now = 100_000.0
-    transitions = [
-        _trans("j1", "running", now - 10 * 3600),
-        _trans("j1", "complete", now - 5 * 3600),
-    ]
-    buckets = render._timeseries_buckets(transitions, now=now, hours=24, bucket_minutes=60)
-    assert buckets[19]["running"] == 0 and buckets[19]["waiting"] == 0 and buckets[19]["halt"] == 0
+def test_landings_buckets_resolution_window_pairs():
+    # Auflösung bestimmt automatisch das Fenster (_RESOLUTION_WINDOWS) —
+    # 1min-Auflösung bleibt so bei ~120 statt 1440 Buckets über 24h.
+    labels_1h, _ = render._landings_buckets([], now=1_000_000.0, bucket_minutes=60)
+    labels_5m, _ = render._landings_buckets([], now=1_000_000.0, bucket_minutes=5)
+    labels_1m, _ = render._landings_buckets([], now=1_000_000.0, bucket_minutes=1)
+    assert len(labels_1h) == 24    # 60min × 24 = 24h Fenster
+    assert len(labels_5m) == 96    # 5min × 96 = 8h Fenster
+    assert len(labels_1m) == 120   # 1min × 120 = 2h Fenster
 
 
-def test_timeseries_buckets_future_job_not_yet_counted():
-    now = 100_000.0
-    buckets = render._timeseries_buckets(
-        [_trans("j1", "running", now)], now=now, hours=24, bucket_minutes=60)
-    assert buckets[0]["running"] == 0  # existiert erst am rechten Rand
-    assert buckets[-1]["running"] == 1
+def test_landings_chart_html_has_canvas_and_chartjs_init():
+    labels, counts = render._landings_buckets(
+        [_landing("complete", 100_000.0 - 60)], now=100_000.0, bucket_minutes=15)
+    html = render._landings_chart_html(labels, counts)
+    assert '<canvas id="landingsChart"' in html
+    assert "new Chart(" in html
+    assert "complete" in html and "#5fb37a" in html  # grün
 
 
-def test_timeseries_buckets_short_run_stays_visible_and_wanders_left():
-    # User-Fund 2026-07-07: ein kurzer Lauf (Sekunden) durfte nicht nach seinem
-    # Statuswechsel spurlos verschwinden, sondern muss als Markierung an seinem
-    # Zeit-Bucket stehen bleiben und mit fortschreitendem "jetzt" nach links
-    # wandern — Kern der Regression (Punkt-Schnappschuss → Zeitfenster-Overlap).
-    t0 = 100_000.0
-    transitions = [
-        _trans("j1", "running", t0),
-        _trans("j1", "complete", t0 + 10),  # 10s später fertig
-    ]
-    right_away = render._timeseries_buckets(transitions, now=t0 + 10, hours=24, bucket_minutes=60)
-    assert right_away[-1]["running"] == 1  # noch sichtbar direkt danach
-
-    much_later = render._timeseries_buckets(
-        transitions, now=t0 + 5 * 3600 + 10, hours=24, bucket_minutes=60)
-    # 5h später: die Markierung ist nicht verschwunden, sondern 5 Buckets nach
-    # links gewandert (steht jetzt dort, wo der Lauf tatsächlich stattfand).
-    assert much_later[-1]["running"] == 0
-    assert much_later[-6]["running"] == 1
-
-
-def test_timeseries_buckets_default_is_96_buckets_of_15min():
-    buckets = render._timeseries_buckets([], now=1_000_000.0)
-    assert len(buckets) == 96
-
-
-def test_timeseries_html_has_24_cols_and_axis_labels():
-    buckets = [{"waiting": 0, "running": 0, "halt": 0}] * 24
-    html = render._timeseries_html(buckets)
-    assert html.count('class="chart-col"') == 24
-    assert "vor 24h" in html and "jetzt" in html
-
-
-def test_timeseries_html_empty_buckets_shows_placeholder():
-    assert "keine Daten" in render._timeseries_html([])
-
-
-def test_timeseries_html_scales_segments_to_bucket_maximum():
-    buckets = [{"waiting": 0, "running": 2, "halt": 0},
-               {"waiting": 0, "running": 4, "halt": 0}]
-    html = render._timeseries_html(buckets)
-    assert "height:50.0%" in html  # 2/4
-    assert "height:100.0%" in html  # 4/4
+def test_landings_chart_html_empty_shows_placeholder():
+    assert "keine Daten" in render._landings_chart_html([], {})
 
 
 def test_job_stats_grid_shows_all_nine_states_and_uptime_counter():
@@ -232,17 +187,24 @@ def test_job_stats_grid_defaults_missing_status_to_zero():
 def test_timeseries_fragment_is_self_polling_own_target():
     frag = render.timeseries_fragment([], {"counts": {}, "running_since_uptime": 0}, now=1.0)
     assert 'id="timeseries"' in frag
-    assert 'hx-get="/-/ui/schedules/timeseries"' in frag
+    assert 'hx-get="/-/ui/schedules/timeseries?res=15"' in frag
     assert "every 2s" in frag
+
+
+def test_timeseries_fragment_has_resolution_dropdown():
+    frag = render.timeseries_fragment([], now=1.0, bucket_minutes=5)
+    assert 'name="res"' in frag
+    assert '<option value="5" selected>' in frag
 
 
 def test_schedules_page_includes_timeseries_fragment():
     html = render.schedules_page(
         [_sched("daily")], now=300.0,
         daemon_status={"job_stats": {"counts": {"running": 1}, "running_since_uptime": 2}},
-        transitions=[_trans("j1", "running", 250.0)])
+        landings=[_landing("complete", 250.0)])
     assert 'id="timeseries"' in html
     assert "2 seit Start" in html
+    assert "chart.js" in html.lower()
 
 
 # ── Routen ────────────────────────────────────────────────────────────────────
@@ -250,10 +212,10 @@ def test_schedules_page_includes_timeseries_fragment():
 
 class FakeClient:
     def __init__(self, schedules: list[dict], *, status: dict | None = None,
-                transitions: list[dict] | None = None) -> None:
+                landings: list[dict] | None = None) -> None:
         self._s = schedules
         self._status = status or {}
-        self._transitions = transitions or []
+        self._landings = landings or []
 
     def schedules(self) -> list[dict]:
         return self._s
@@ -261,8 +223,8 @@ class FakeClient:
     def status(self) -> dict:
         return self._status
 
-    def transitions(self, *, since: float | None = None) -> list[dict]:
-        return self._transitions
+    def landings(self, *, since: float | None = None) -> list[dict]:
+        return self._landings
 
 
 def test_ui_schedules_screen_route(team_repo: Path):
@@ -299,8 +261,7 @@ def test_ui_schedules_list_filters_problem(team_repo: Path):
 def test_ui_schedules_screen_includes_timeseries(team_repo: Path):
     client = FakeClient(
         [], status={"job_stats": {"counts": {"running": 2}, "running_since_uptime": 5}},
-        transitions=[{"job_id": "j1", "slug": "a", "from_status": "pending",
-                     "to_status": "running", "ts": 1.0}])
+        landings=[{"status": "complete", "finished_at": 1.0}])
     app = create_app(roles.resolve({"controller"}), controller_client=client)
     with TestClient(app) as c:
         r = c.get("/-/ui/schedules")
@@ -312,8 +273,7 @@ def test_ui_schedules_screen_includes_timeseries(team_repo: Path):
 def test_ui_schedules_timeseries_fragment_route(team_repo: Path):
     client = FakeClient(
         [], status={"job_stats": {"counts": {"running": 1}, "running_since_uptime": 1}},
-        transitions=[{"job_id": "j1", "slug": "a", "from_status": "pending",
-                     "to_status": "running", "ts": 1.0}])
+        landings=[{"status": "complete", "finished_at": 1.0}])
     app = create_app(roles.resolve({"controller"}), controller_client=client)
     with TestClient(app) as c:
         r = c.get("/-/ui/schedules/timeseries")
@@ -322,11 +282,21 @@ def test_ui_schedules_timeseries_fragment_route(team_repo: Path):
         assert "1 seit Start" in r.text
 
 
-def test_ui_schedules_screen_survives_transitions_fetch_failure(team_repo: Path):
-    # /-/transitions ist scheduler-gated (501 ohne Rolle) — der Screen darf
+def test_ui_schedules_timeseries_fragment_route_honors_resolution_param(team_repo: Path):
+    client = FakeClient([], status={"job_stats": {"counts": {}, "running_since_uptime": 0}})
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/schedules/timeseries", params={"res": 5})
+        assert r.status_code == 200
+        assert 'value="5" selected' in r.text
+        assert 'hx-get="/-/ui/schedules/timeseries?res=5"' in r.text
+
+
+def test_ui_schedules_screen_survives_landings_fetch_failure(team_repo: Path):
+    # /-/landings ist scheduler-gated (501 ohne Rolle) — der Screen darf
     # trotzdem laden, nur ohne Chart-Daten (§2.7, wie schedules()/status()).
     class BoomClient(FakeClient):
-        def transitions(self, *, since=None):
+        def landings(self, *, since=None):
             raise RuntimeError("501")
 
     client = BoomClient([_sched("daily")])

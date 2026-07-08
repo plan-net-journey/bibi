@@ -48,6 +48,17 @@ def _init_repo(root: Path, branch: str = "trunk") -> None:
 
 
 @pytest.fixture(autouse=True)
+def _reset_dispatch_count():
+    """``job_db._dispatch_count`` ist ein Prozesslaufzeit-Zähler (PLAN-21
+    Befund 11 v2, ``job_stats.running_since_uptime``) — ohne Reset würden sich
+    ``reserve_next()``-Aufrufe früherer Tests im selben pytest-Prozess
+    aufsummieren und einzelne Zähler-Assertions verfälschen."""
+    from bibi.daemon import job_db
+    job_db._dispatch_count = 0
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_node_config(tmp_path_factory, monkeypatch: pytest.MonkeyPatch):
     """Tests nie gegen die **echte** ``~/.config/bibi/env`` laufen lassen — sonst
     leaken Knoten-Settings (BIBI_EXEC_MODE=container, Auth-Token, BIBI_CLAUDE_BIN …)

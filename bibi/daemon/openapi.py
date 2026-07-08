@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 from bibi.schedule.models import Kind, Reason, Status
 
 #: Vertrags-Version — bei Änderungen am ``/-/``-Vertrag bewusst hochzählen (§1.1).
-CONTRACT_VERSION = "3.2"
+CONTRACT_VERSION = "3.3"
 
 
 # ── Schemata (§4.4/§4.5/§1.4) ───────────────────────────────────────────────
@@ -258,6 +258,6 @@ def add_contract_routes(app: FastAPI) -> None:
         return _todo("DELETE /-/journal/{id}")
 
     # ── Lifecycle-Zeitreihe (PLAN-21 Befund 11) ───────────────────────────────
-    @app.get("/-/transitions", tags=["journal"])
-    def transitions_list(since: float | None = None):  # noqa: ARG001
-        return _todo("GET /-/transitions")
+    @app.get("/-/landings", tags=["journal"])
+    def landings_list(since: float | None = None):  # noqa: ARG001
+        return _todo("GET /-/landings")

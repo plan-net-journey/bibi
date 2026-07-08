@@ -4,7 +4,9 @@ damit voll unit-testbar. Look: Terminal/Konsole-nah, minimal (§2.5)."""
 
 from __future__ import annotations
 
+import datetime
 import html
+import json
 import re
 import time
 
@@ -212,8 +214,8 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .heatmap-legend { display: flex; align-items: center; justify-content: flex-end;
                   gap: .3rem; font-size: .75rem; color: #888; margin-top: .35rem; }
 .heatmap-legend .hm-cell { flex: none; width: 9px; height: 9px; }
-/* Lauf-Historie-Chart (PLAN-21 Befund 11) — Stat-Grid + gestapelte CSS-Balken,
-   dieselbe div+Klasse-Konvention wie die Heatmap-Zellen (kein SVG). */
+/* Lauf-Historie-Chart (PLAN-21 Befund 11) — Stat-Grid (div+Klasse, wie
+   überall sonst) + Landungs-Histogramm (Chart.js-Canvas, s. render.py). */
 .job-stats-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 1.2rem;
                    align-items: center; padding: .4rem 0 .6rem; }
 .jsg-col { display: flex; flex-direction: column; gap: .15rem; }
@@ -224,15 +226,7 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .jsg-running { align-items: center; text-align: center; }
 .jsg-running .jsg-big { font-size: 1.8rem; font-weight: 700; color: #5fb37a; line-height: 1; }
 .jsg-running .jsg-sub { font-size: .68rem; color: #888; }
-.chart-wrap { padding-bottom: .3rem; }
-.chart-bars { display: flex; gap: 2px; height: 80px; border-bottom: 1px solid #8884; }
-.chart-col { flex: 1; min-width: 3px; display: flex; flex-direction: column-reverse; height: 100%; }
-.chart-col .seg { width: 100%; }
-.chart-col .seg.running { background: #5fb37a; }
-.chart-col .seg.waiting { background: #d6a23e; }
-.chart-col .seg.halt { background: #e06c5a; }
-.chart-axis { display: flex; justify-content: space-between; font-size: .68rem;
-              color: #888; margin-top: .2rem; }
+.chart-wrap { padding-bottom: .3rem; height: 100px; }
 .feedlist { display: flex; flex-direction: column; gap: 0; font-size: .88rem; }
 .frow { display: flex; gap: .6rem; align-items: baseline; padding: .38rem 0;
         border-bottom: 1px solid #8881; }
@@ -392,109 +386,98 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
     return f"<div {attrs}>{schedule_list(schedules, now)}</div>"
 
 
-# ── Lauf-Historie-Chart (PLAN-21 Befund 11) ──────────────────────────────────
+# ── Lauf-Historie-Chart (PLAN-21 Befund 11, v2 — User-Redesign 2026-07-08) ───
+#
+# v1 (Zeitfenster-Overlap über waiting/running/halt, s. git-Historie) wurde
+# verworfen: Concurrency-Ansicht mit gemischter y-Achse, die kaum etwas über
+# Systemgesundheit aussagte, und Quelle einer eigenen "Wander"-Bug-Klasse.
+# v2 zählt stattdessen **Landungen in einem finalen Zustand** je Zeit-Bucket
+# ("wie viele Läufe endeten womit in diesem Fenster") — ein reines
+# Event-Histogramm (kein Zeitfenster-Overlap, keine Segmente nötig), exakt das
+# Muster, das ``journal`` per Konstruktion schon liefert (nur Terminal-
+# Übergänge, ``status``+``finished_at``). Die frühere ``transitions``-Tabelle
+# wird dafür nicht mehr gebraucht (zurückgebaut, s. job_db.py) — sie war nur
+# für Zwischenzustände wie eine mehrstündige awaiting-Phase nötig, die dieses
+# Chart bewusst nicht mehr zeigt (dafür bleibt das Stat-Grid/live).
 
-#: Gruppierung je Status fürs Chart (User-Tabelle) — "complete" bewusst nicht
-#: gemappt, es wird ausgeblendet statt in einer Gruppe mitgezählt.
-_STATUS_GROUP = {
-    "pending": "waiting", "failed": "waiting", "deferred": "waiting", "awaiting": "waiting",
-    "running": "running",
-    "error": "halt", "inactive": "halt", "zombie": "halt", "killed": "halt",
-}
+from bibi.schedule.lifecycle import TERMINAL as _TERMINAL_STATUSES
+
 _WAITING_STATUSES = ("pending", "failed", "deferred", "awaiting")
 _HALT_STATUSES = ("error", "inactive", "zombie", "killed")
 
-#: Bucket-Breite (User-Fund 2026-07-07: mit stündlichen Buckets traf ein kurzer
-#: Lauf so gut wie nie einen der 24 Zeitpunkte und verschwand nach seinem
-#: Statuswechsel spurlos, statt als Balken "über die x-Achse zu wandern" — 15min
-#: macht die Wanderbewegung auf normaler Beobachtungs-Zeitskala sichtbar,
-#: bleibt aber innerhalb der Plan-Vorgabe ("24 Stundenbuckets oder feiner").
-_CHART_HOURS = 24
-_CHART_BUCKET_MINUTES = 15
+#: Anzeige-Reihenfolge + Farbe je Terminal-Status (Chart.js-Datasets, gestapelt).
+_LANDING_ORDER = ("complete", "error", "zombie", "killed", "inactive")
+_LANDING_COLOR = {
+    "complete": "#5fb37a",   # grün — Erfolg
+    "error": "#e06c5a",      # rot — endgültig gescheitert (Retries erschöpft)
+    "zombie": "#e06c5a",     # rot — Silence-Timeout, ebenso ein Fehlschlag
+    "killed": "#d6a23e",     # orange — User-/System-Abbruch, nicht zwingend "Fehler"
+    "inactive": "#8888a0",   # grau — administrativ (Schedule entfernt), kein Lauf-Ausgang
+}
+
+#: Auflösungs-Presets (Bucket-Minuten → Fenster in Stunden) — Bucket-Zahl bleibt
+#: dabei über alle Presets ähnlich groß (~96), sonst würde z. B. 1min-Auflösung
+#: über 24h zu 1440 kaum noch unterscheidbaren Balken führen.
+_RESOLUTION_WINDOWS = {60: 24, 15: 24, 5: 8, 1: 2}
+_RESOLUTION_LABEL = {60: "1h/24h", 15: "15min/24h", 5: "5min/8h", 1: "1min/2h"}
+_DEFAULT_RESOLUTION_MINUTES = 15
+
+#: Chart.js UMD-Bundle (CDN, wie htmx per <script>-Tag — kein Build-Step nötig).
+_CHARTJS = "https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"
 
 
-def _job_segments(transitions: list[dict], *, now: float) -> dict[str, list[tuple[float, float, str]]]:
-    """Pro ``job_id`` eine Liste ``(start, end, status)`` — ``end`` ist die
-    nächste Transition desselben Jobs oder ``now``, wenn er noch in diesem
-    Zustand ist. Grundlage der Bucket-Aggregation: ein Job zählt in jedem
-    Bucket, dessen Zeitfenster sein Segment überlappt, nicht nur in dem, das
-    exakt auf einen Übergangs-Zeitpunkt trifft (s. ``_timeseries_buckets``)."""
-    by_job: dict[str, list[dict]] = {}
-    for t in sorted(transitions, key=lambda t: t["ts"]):
-        by_job.setdefault(t["job_id"], []).append(t)
-    segments: dict[str, list[tuple[float, float, str]]] = {}
-    for job_id, rows in by_job.items():
-        segs = []
-        for i, row in enumerate(rows):
-            start = row["ts"]
-            end = rows[i + 1]["ts"] if i + 1 < len(rows) else now
-            segs.append((start, end, row["to_status"]))
-        segments[job_id] = segs
-    return segments
-
-
-def _timeseries_buckets(transitions: list[dict], *, now: float, hours: int = _CHART_HOURS,
-                        bucket_minutes: int = _CHART_BUCKET_MINUTES) -> list[dict[str, int]]:
-    """``hours`` in ``bucket_minutes``-Fenstern, ältestes links, ``now`` exakt
-    am rechten Rand (rollierendes Fenster relativ zu ``now``, kein
-    Kalenderraster). Pro Bucket: wie viele Jobs waren *irgendwann während
-    dieses Zeitfensters* in welcher Gruppe (waiting/running/halt) — per
-    Segment-Überlappung (``_job_segments``), nicht nur zu dessen Ende. So
-    bleibt ein kurzer Lauf als historische Markierung an seinem Bucket stehen
-    und wandert mit fortschreitender Zeit nach links, statt nach seinem
-    Statuswechsel spurlos zu verschwinden. ``transitions`` sollte weiter
-    zurückreichen als ``hours`` (die vollen 48h Retention, s.
-    ``job_db.TRANSITIONS_RETENTION_S``), sonst fehlt Jobs, die schon vor dem
-    sichtbaren Fenster in einem Zustand hingen, ihr Startpunkt."""
+def _landings_buckets(landings: list[dict], *, now: float,
+                      bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES,
+                      hours: float | None = None) -> tuple[list[float], dict[str, list[int]]]:
+    """``landings`` (``{"status", "finished_at"}``, z. B. aus
+    ``job_db.journal_landings()``) → Bucket-Start-Zeitstempel + Zählung je
+    Terminal-Status. Reines Event-Histogramm: ein Lauf landet in **genau
+    einem** Bucket (dem, der seine ``finished_at`` enthält), keine
+    Zeitfenster-Overlap-Logik nötig."""
+    hours = _RESOLUTION_WINDOWS.get(bucket_minutes, 24) if hours is None else hours
     bucket_s = bucket_minutes * 60
-    n = int(hours * 60 / bucket_minutes)
-    # +1s-Nudge nur auf die Bucket-Kanten (nicht auf die Segment-Enden in
-    # _job_segments): ein Übergang mit ts==now landet sonst exakt auf der
-    # rechten Kante des letzten, noch offenen ("halb offenen") Buckets und
-    # fällt durch den Vergleich raus — für den Bruchteil einer Sekunde bis zum
-    # nächsten 2s-Poll unsichtbar. Verschiebt keine sichtbare Grenze (< 1s bei
-    # 15min-Buckets), macht den Rand aber robust gegen exakte Gleichstände.
-    edges = [(now + 1.0) - (n - i) * bucket_s for i in range(n + 1)]
-    segments = _job_segments(transitions, now=now)
-    out: list[dict[str, int]] = []
-    for i in range(n):
-        b_start, b_end = edges[i], edges[i + 1]
-        counts = {"waiting": 0, "running": 0, "halt": 0}
-        seen: set[tuple[str, str]] = set()
-        for job_id, segs in segments.items():
-            for seg_start, seg_end, status in segs:
-                if seg_start < b_end and seg_end > b_start:
-                    group = _STATUS_GROUP.get(status)
-                    if group and (job_id, group) not in seen:
-                        counts[group] += 1
-                        seen.add((job_id, group))
-        out.append(counts)
-    return out
+    n = int(hours * 3600 / bucket_s)
+    start = now - n * bucket_s
+    counts: dict[str, list[int]] = {s: [0] * n for s in _LANDING_ORDER}
+    for row in landings:
+        status = row.get("status")
+        ts = row.get("finished_at")
+        if status not in counts or ts is None:
+            continue
+        idx = int((ts - start) // bucket_s)
+        if 0 <= idx < n:
+            counts[status][idx] += 1
+    labels = [start + i * bucket_s for i in range(n)]
+    return labels, counts
 
 
-def _timeseries_html(buckets: list[dict[str, int]],
-                     bucket_minutes: int = _CHART_BUCKET_MINUTES) -> str:
-    """Gestapelte CSS-Balken (dieselbe div+CSS-Klasse-Konvention wie die
-    Heatmap-Zellen, kein SVG) — Höhe je Segment relativ zum größten
-    Bucket-Gesamt (y-Achse an maximaler paralleler Lauf-Zahl orientiert)."""
-    if not buckets:
+def _landings_chart_html(labels: list[float], counts: dict[str, list[int]],
+                         chart_id: str = "landingsChart") -> str:
+    """``<canvas>`` + Chart.js-Init-Script (gestapelter Bar-Chart). Wird bei
+    jedem 2s-htmx-Swap des umgebenden Fragments neu instanziiert (htmx führt
+    ``<script>``-Tags in geswapptem Content per Default aus) — dieselbe
+    "ganzes Fragment ersetzen"-Konvention wie überall sonst im Code, kein
+    Diffing/Update-in-place nötig."""
+    if not labels:
         return '<div class="chart-wrap"><p class="out-empty">— noch keine Daten —</p></div>'
-    maxtotal = max((b["waiting"] + b["running"] + b["halt"] for b in buckets), default=0) or 1
-    n = len(buckets)
-    cols = []
-    for i, b in enumerate(buckets):
-        end_min = (n - i) * bucket_minutes
-        start_min = end_min - bucket_minutes
-        title = (f"vor {start_min}–{end_min}min · "
-                f"warten {b['waiting']} · aktiv {b['running']} · halt {b['halt']}")
-        segs = "".join(
-            f'<div class="seg {grp}" style="height:{b[grp] / maxtotal * 100:.1f}%"></div>'
-            for grp in ("running", "waiting", "halt") if b[grp]
-        )
-        cols.append(f'<div class="chart-col" title="{_e(title)}">{segs}</div>')
+    tick_labels = [datetime.datetime.fromtimestamp(t).strftime("%H:%M") for t in labels]
+    datasets = [
+        {"label": status, "data": counts[status], "backgroundColor": _LANDING_COLOR[status]}
+        for status in _LANDING_ORDER
+    ]
+    payload = json.dumps({"labels": tick_labels, "datasets": datasets})
     return (
-        '<div class="chart-wrap"><div class="chart-bars">' + "".join(cols) + "</div>"
-        '<div class="chart-axis"><span>vor 24h</span><span>jetzt</span></div></div>'
+        f'<div class="chart-wrap"><canvas id="{chart_id}" height="90"></canvas></div>'
+        "<script>(function(){"
+        f"const d={payload};"
+        f'const el=document.getElementById("{chart_id}");'
+        "if(!el)return;"
+        "new Chart(el,{type:'bar',data:d,options:{"
+        "responsive:true,maintainAspectRatio:false,animation:false,"
+        "scales:{x:{stacked:true},y:{stacked:true,beginAtZero:true,ticks:{precision:0}}},"
+        "plugins:{legend:{labels:{boxWidth:12,font:{size:11}}}}"
+        "}});"
+        "})();</script>"
     )
 
 
@@ -520,21 +503,40 @@ def _job_stats_grid(counts: dict[str, int], running_since_uptime: int) -> str:
     )
 
 
-def timeseries_fragment(transitions: list[dict], job_stats: dict | None = None,
-                        now: float | None = None) -> str:
-    """Self-pollender Wrapper um Stat-Grid + 24h-Chart. Ziel =
+def _resolution_bar(bucket_minutes: int) -> str:
+    """Auflösungs-Dropdown fürs Chart — dieselbe Filter-Dropdown-Konvention
+    wie ``_filter_bar`` (Typ/Status), eigenes Ziel (``#timeseries``, nicht
+    ``#schedules``)."""
+    opts = "".join(
+        f'<option value="{m}"{" selected" if m == bucket_minutes else ""}>{_RESOLUTION_LABEL[m]}</option>'
+        for m in _RESOLUTION_WINDOWS
+    )
+    common = ('hx-get="/-/ui/schedules/timeseries" hx-target="#timeseries" hx-swap="outerHTML"')
+    return f'<div class="logbar"><label>Auflösung <select name="res" {common}>{opts}</select></label></div>'
+
+
+def timeseries_fragment(landings: list[dict], job_stats: dict | None = None,
+                        now: float | None = None, *,
+                        bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES) -> str:
+    """Self-pollender Wrapper um Stat-Grid + Landungs-Histogramm. Ziel =
     ``/-/ui/schedules/timeseries`` — eigener Poll, getrennt von der
     Schedule-Liste (``schedules_fragment``): andere Datenquelle
-    (``transitions``/``job_stats`` statt ``/-/schedule``), gleicher
-    ``_POLL``-Takt (§ real-time, kein neues Verfahren)."""
+    (``journal_landings``/``job_stats`` statt ``/-/schedule``), gleicher
+    ``_POLL``-Takt (§ real-time, kein neues Verfahren). Der Self-Poll trägt
+    die aktuelle Auflösung in der URL, damit sie den 2s-Tick überlebt
+    (dieselbe Idee wie ``schedules_fragment``s Filter-Querystring)."""
     now = time.time() if now is None else now
     job_stats = job_stats or {}
     counts = job_stats.get("counts") or {}
     running_since_uptime = job_stats.get("running_since_uptime", 0)
-    buckets = _timeseries_buckets(transitions, now=now)
-    body = _job_stats_grid(counts, running_since_uptime) + _timeseries_html(buckets)
-    attrs = ('id="timeseries" hx-get="/-/ui/schedules/timeseries" '
-            f'hx-trigger="{_POLL}" hx-swap="outerHTML"')
+    labels, bucket_counts = _landings_buckets(landings, now=now, bucket_minutes=bucket_minutes)
+    body = (
+        _job_stats_grid(counts, running_since_uptime)
+        + _resolution_bar(bucket_minutes)
+        + _landings_chart_html(labels, bucket_counts)
+    )
+    url = f"/-/ui/schedules/timeseries?res={bucket_minutes}"
+    attrs = (f'id="timeseries" hx-get="{url}" hx-trigger="{_POLL}" hx-swap="outerHTML"')
     return f"<div {attrs}>{body}</div>"
 
 
@@ -713,12 +715,12 @@ def _header(active: str, status: dict | None = None) -> str:
 def schedules_page(schedules: list[dict], typ: str | None = None,
                    status: str | None = None, now: float | None = None,
                    *, daemon_status: dict | None = None,
-                   transitions: list[dict] | None = None) -> str:
+                   landings: list[dict] | None = None) -> str:
     """Der Schedules-Screen: Nav + Ops-Handles (RESCAN/MAINT, User-Feedback
-    2026-07-03) + Stat-Grid/24h-Chart (PLAN-21 Befund 11) + Filterleiste +
-    (gefilterte) self-pollende Liste. ``schedules`` ist bereits gefiltert;
-    ``typ``/``status`` spiegeln die Auswahl — ``status`` ist hier der
-    Filterwert (z. B. "error"), nicht zu verwechseln mit ``daemon_status``
+    2026-07-03) + Stat-Grid/Landungs-Histogramm (PLAN-21 Befund 11) +
+    Filterleiste + (gefilterte) self-pollende Liste. ``schedules`` ist bereits
+    gefiltert; ``typ``/``status`` spiegeln die Auswahl — ``status`` ist hier
+    der Filterwert (z. B. "error"), nicht zu verwechseln mit ``daemon_status``
     (``/-/status``-JSON für den MAINT-Toggle **und** die Stat-Grid-Zählung,
     ``daemon_status["job_stats"]``)."""
     now = time.time() if now is None else now
@@ -730,9 +732,10 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         "<title>bibi · Schedules</title>"
         f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
+        f'<script src="{_CHARTJS}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Schedules', daemon_status)}"
-        f"{timeseries_fragment(transitions or [], daemon_status.get('job_stats'), now)}"
+        f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now)}"
         f"{_filter_bar(typ, status)}"
         f"{schedules_fragment(schedules, now, typ=typ, status=status)}"
         f"<script>{_CLOCK_JS}</script>"
