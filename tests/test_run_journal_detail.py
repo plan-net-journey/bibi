@@ -98,3 +98,46 @@ def test_run_journal_detail_works_alongside_scheduler_role(team_repo: Path):
         _seed_local_run(team_repo, slug="mein-testjob")
         jid = c.get("/-/run/journal").json()[0]["id"]
         assert c.get(f"/-/run/journal/{jid}").status_code == 200
+
+
+# ── GET /-/run/journal?slug=... (PLAN-21 Befund 10-Nachtrag) ────────────────
+
+
+def test_run_journal_list_filters_by_slug(client_only):
+    c, root = client_only
+    _seed_local_run(root, slug="a", out_rel="data/job/a/output.jsonl")
+    _seed_local_run(root, slug="b", out_rel="data/job/b/output.jsonl")
+    rows = c.get("/-/run/journal", params={"slug": "a"}).json()
+    assert len(rows) == 1 and rows[0]["slug"] == "a"
+
+
+# ── DELETE /-/run/journal/{jid} (PLAN-21 Befund 10-Nachtrag) ────────────────
+
+
+def test_run_journal_delete_removes_local_entry(client_only):
+    c, root = client_only
+    _seed_local_run(root, slug="mein-testjob")
+    jid = c.get("/-/run/journal").json()[0]["id"]
+    r = c.delete(f"/-/run/journal/{jid}")
+    assert r.status_code == 200 and r.json() == {"deleted": jid}
+    assert c.get(f"/-/run/journal/{jid}").status_code == 404
+
+
+def test_run_journal_delete_404_for_unknown_id(client_only):
+    c, _ = client_only
+    assert c.delete("/-/run/journal/99999").status_code == 404
+
+
+def test_run_journal_delete_404_for_scheduled_domain(client_only):
+    # Kein Leck disponierter Läufe über diese rollenfreie Route — auch beim
+    # Löschen nicht: ein Client darf über sie keinen Scheduler-Journal-
+    # Eintrag entsorgen können.
+    c, root = client_only
+    jid = _seed_scheduled_run(root)
+    assert c.delete(f"/-/run/journal/{jid}").status_code == 404
+    # Und tatsächlich nicht gelöscht — via scheduler-seitiger Route noch da.
+    conn = job_db.connect()
+    try:
+        assert job_db.get_journal(conn, jid) is not None
+    finally:
+        conn.close()

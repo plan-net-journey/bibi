@@ -48,10 +48,12 @@ class ControllerClient:
         return self._get(
             "/-/journal", {"slug": slug, "host": host, "limit": limit, "offset": offset}) or []
 
-    def run_journal(self, *, limit: int | None = None, offset: int | None = None) -> list[dict]:
+    def run_journal(self, *, slug: str | None = None, limit: int | None = None,
+                    offset: int | None = None) -> list[dict]:
         # Rollenunabhängiges Gegenstück zu journal() (PLAN-17 Stufe 17.1): nur
         # domain="local", funktioniert auch ohne scheduler-Rolle (/-/run/journal).
-        return self._get("/-/run/journal", {"limit": limit, "offset": offset}) or []
+        return self._get(
+            "/-/run/journal", {"slug": slug, "limit": limit, "offset": offset}) or []
 
     def run(self, *, slug: str | None = None, cmd: str | None = None) -> dict:
         # Lokaler On-Demand-Lauf auf DIESEM Knoten (/-/run, PLAN-3 §3.3b) — der
@@ -88,6 +90,11 @@ class ControllerClient:
 
     def local_run_output(self, journal_id: int) -> dict:
         return self._get(f"/-/run/journal/{journal_id}/output") or {}
+
+    def local_run_delete(self, journal_id: int) -> dict:
+        # Gegenstück zu delete_journal(), aber rollenunabhängig (nur
+        # domain="local") — die Jobs-Detailseite eines reinen Clients.
+        return self._request("DELETE", f"/-/run/journal/{journal_id}") or {}
 
     def job_output(self, job_id: str) -> dict:
         # Live-Output eines laufenden Jobs (getypte Events) — /-/job/{id}/output.

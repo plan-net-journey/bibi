@@ -619,10 +619,11 @@ def create_app(
     # zu /-/run selbst rollenunabhängig — ein reiner Client kann seine eigene
     # Lauf-Historie damit lesen, ohne je die scheduler-Rolle zu tragen.
     @app.get("/-/run/journal", tags=["job"])
-    def run_journal(limit: int | None = None, offset: int | None = None):
+    def run_journal(slug: str | None = None, limit: int | None = None,
+                    offset: int | None = None):
         conn = job_db.connect()
         try:
-            return job_db.list_journal(conn, domain="local", limit=limit, offset=offset)
+            return job_db.list_journal(conn, slug=slug, domain="local", limit=limit, offset=offset)
         finally:
             conn.close()
 
@@ -644,6 +645,23 @@ def create_app(
             return JSONResponse(status_code=404,
                                 content={"error": "local run not found", "id": jid})
         return entry
+
+    # PLAN-21 Befund 10-Nachtrag (Jobs-Screen-Detail): Löschen für lokale
+    # Läufe, symmetrisch zu DELETE /-/journal/{jid} (§1.4) aber rollenunab-
+    # hängig und domain="local"-gated wie die beiden Routen oben — sonst
+    # könnte ein reiner Client seine eigene Lauf-Historie nie aufräumen.
+    @app.delete("/-/run/journal/{jid}", tags=["job"])
+    def run_journal_delete(jid: int):
+        conn = job_db.connect()
+        try:
+            entry = job_db.get_journal(conn, jid)
+            if entry is None or entry.get("domain") != "local":
+                return JSONResponse(status_code=404,
+                                    content={"error": "local run not found", "id": jid})
+            job_db.delete_journal(conn, jid)
+        finally:
+            conn.close()
+        return {"deleted": jid}
 
     @app.get("/-/run/journal/{jid}/output", tags=["job"])
     def run_journal_output(jid: int):

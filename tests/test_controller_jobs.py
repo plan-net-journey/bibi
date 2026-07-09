@@ -61,6 +61,16 @@ def test_jobs_table_no_local_run_yet_shows_placeholder_no_link():
     assert 'href="/-/ui/run/' not in html
 
 
+def test_jobs_table_slug_always_links_to_local_job_detail():
+    # PLAN-21 Befund 10-Nachtrag: Slug verlinkt jetzt immer auf die lokale
+    # Job-Detailseite, unabhängig davon, ob der Job schon mal lokal lief.
+    without_run = render._jobs_table([_row("a")], {}, now=100.0)
+    assert 'href="/-/ui/jobs/detail/a"' in without_run
+    with_run = render._jobs_table([_row("a")], {"a": {"id": 42, "status": "complete"}}, now=100.0)
+    assert 'href="/-/ui/jobs/detail/a"' in with_run
+    assert 'href="/-/ui/run/42"' in with_run  # Status verlinkt weiterhin den Lauf
+
+
 def test_jobs_table_empty_shows_placeholder():
     html = render._jobs_table([], {}, now=100.0)
     assert "keine Job-MDs im Repository gefunden" in html
@@ -109,6 +119,51 @@ def test_screen_nav_hides_jobs_tab_without_connect_role():
     assert 'href="/-/ui/jobs"' not in html
 
 
+# ── Lokale Job-Detailseite (PLAN-21 Befund 10-Nachtrag) — Rendering ──────────
+
+
+def test_local_job_meta_shows_type_trigger_git_and_last_status():
+    local = _row("a", git_status="modified")
+    html = render._local_job_meta("a", local, {"status": "complete"})
+    assert "job" in html and "now" in html
+    assert 'class="chip modified"' in html and ">geändert<" in html
+    assert 'class="st complete">complete' in html
+    assert 'hx-post="/-/ui/jobs/start/a"' in html
+
+
+def test_local_job_meta_no_last_run_omits_status():
+    html = render._local_job_meta("a", _row("a"), None)
+    assert "letzter Lauf" not in html
+
+
+def test_journal_fragment_base_param_targets_local_job_detail():
+    # PLAN-21 Befund 10-Nachtrag: dieselbe Journal-Tabelle wie beim Host,
+    # aber gegen die lokale Route verdrahtet, wenn base gesetzt ist.
+    runs = [{"id": 7, "slug": "a", "status": "complete", "finished_at": 100.0}]
+    default = render.journal_fragment(runs, "a", now=200.0)
+    assert 'hx-delete="/-/ui/schedule/a/run/7"' in default
+    local = render.journal_fragment(runs, "a", now=200.0, base="/-/ui/jobs/detail")
+    assert 'hx-delete="/-/ui/jobs/detail/a/run/7"' in local
+    assert 'href="/-/ui/run/7"' in local  # Detail-Link bleibt unverändert
+
+
+def test_jobs_detail_page_has_breadcrumb_meta_and_journal():
+    html = render.jobs_detail_page(
+        "a", _row("a"), {"status": "complete"},
+        [{"id": 7, "slug": "a", "status": "complete", "finished_at": 100.0}], now=200.0)
+    assert 'href="/-/ui/jobs"' in html  # ← Jobs statt ← zurück (kein Schedule-Bezug)
+    assert "<h1>a</h1>" in html
+    assert 'id="journal"' in html
+    assert 'hx-delete="/-/ui/jobs/detail/a/run/7"' in html
+
+
+def test_jobs_detail_page_unknown_slug_still_renders():
+    # Job-MD gelöscht/umbenannt, aber alte Läufe noch im lokalen Journal —
+    # kein 500, nur eine leere Meta-Zeile (local=None).
+    html = render.jobs_detail_page("gone", None, None, [], now=100.0)
+    assert "<h1>gone</h1>" in html
+
+
 # ── Route (gefakter Client + echtes Vault-Discovery + echtes Git-Repo) ───────
 
 
@@ -117,6 +172,7 @@ class _FakeClient:
         self._schedules = schedules or []
         self._run_journal = run_journal or []
         self.run_calls: list[dict] = []
+        self.delete_calls: list[int] = []
         self.schedules_called = False
 
     def status(self) -> dict:
@@ -132,8 +188,11 @@ class _FakeClient:
     def journal(self, **_):
         return []
 
-    def run_journal(self, **_):
-        return self._run_journal
+    def run_journal(self, *, slug=None, **_):
+        # Spiegelt die echte HTTP-Route: slug filtert, wenn gesetzt.
+        if slug is None:
+            return self._run_journal
+        return [r for r in self._run_journal if r.get("slug") == slug]
 
     def jobs(self, **_):
         return []
@@ -141,6 +200,11 @@ class _FakeClient:
     def run(self, *, slug=None, cmd=None):
         self.run_calls.append({"slug": slug, "cmd": cmd})
         return {"id": "x", "status": "complete"}
+
+    def local_run_delete(self, journal_id: int):
+        self.delete_calls.append(journal_id)
+        self._run_journal = [r for r in self._run_journal if r.get("id") != journal_id]
+        return {"deleted": journal_id}
 
 
 def _seed_schedule_md(root: Path, slug: str, schedule: str, payload: str) -> None:
@@ -217,3 +281,54 @@ def test_jobs_board_fragment_route(team_repo: Path, app_with):
         r = c.get("/-/ui/jobs/board")
         assert r.status_code == 200
         assert 'id="jobsboard"' in r.text
+
+
+# ── Lokale Job-Detailseite (PLAN-21 Befund 10-Nachtrag) — Routen ─────────────
+
+
+def test_jobs_detail_route_shows_meta_and_only_this_slugs_runs(team_repo: Path, app_with):
+    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
+    client = _FakeClient(run_journal=[
+        {"id": 5, "slug": "mein-testjob", "status": "complete", "finished_at": 100.0,
+         "domain": "local"},
+        {"id": 6, "slug": "anderer-job", "status": "complete", "finished_at": 100.0,
+         "domain": "local"},
+    ])
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/detail/mein-testjob")
+        assert r.status_code == 200
+        assert "mein-testjob" in r.text
+        assert 'href="/-/ui/run/5"' in r.text
+        assert "anderer-job" not in r.text  # slug-Filter greift
+
+
+def test_jobs_detail_route_unknown_slug_still_200s(team_repo: Path, app_with):
+    # Job-MD entfernt/umbenannt, aber alte Läufe noch im lokalen Journal.
+    app, _ = app_with(_FakeClient())
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/detail/gone")
+        assert r.status_code == 200
+        assert "gone" in r.text
+
+
+def test_jobs_detail_runs_fragment_route(team_repo: Path, app_with):
+    client = _FakeClient(run_journal=[
+        {"id": 5, "slug": "a", "status": "complete", "finished_at": 100.0}])
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/detail/a/runs", params={"offset": 0})
+        assert r.status_code == 200
+        assert 'href="/-/ui/run/5"' in r.text
+
+
+def test_jobs_detail_run_delete_route(team_repo: Path, app_with):
+    client = _FakeClient(run_journal=[
+        {"id": 5, "slug": "a", "status": "complete", "finished_at": 100.0}])
+    app, fake = app_with(client)
+    with TestClient(app) as c:
+        r = c.delete("/-/ui/jobs/detail/a/run/5")
+        assert r.status_code == 200
+        assert fake.delete_calls == [5]
+        assert 'id="journal"' in r.text
+        assert "noch keine Läufe" in r.text  # Journal jetzt leer, sofort sichtbar

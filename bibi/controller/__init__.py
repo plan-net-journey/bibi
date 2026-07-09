@@ -245,6 +245,55 @@ def add_controller_routes(
         rows, local_runs, runs = _jobs_data()
         return HTMLResponse(render.jobs_fragment(rows, local_runs, runs))
 
+    def _job_detail_data(slug: str):
+        # Gegenstück zu _detail_data() (Host), aber lokal gespeist (PLAN-21
+        # Befund 10-Nachtrag) — MD-Discovery + Git-Status statt Scheduler-DB,
+        # run_journal(slug=...) statt journal(slug=...) für die Historie.
+        from bibi import repo
+        from bibi.git_status import local_files_status
+        local = _local_schedules().get(slug)
+        if local is not None:
+            try:
+                git_by_path = local_files_status(repo.root(), [local["repo_path"]])
+                local = {**local, "git_status": git_by_path.get(local["repo_path"], "clean")}
+            except Exception:  # noqa: BLE001 — defensiv (§2.7)
+                local = {**local, "git_status": "clean"}
+        try:
+            runs = client.run_journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=0)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            runs = []
+        last_run = runs[0] if runs else None
+        return local, last_run, runs
+
+    @app.get("/-/ui/jobs/detail/{slug}", include_in_schema=False)
+    def jobs_detail(slug: str):
+        local, last_run, runs = _job_detail_data(slug)
+        return HTMLResponse(render.jobs_detail_page(
+            slug, local, last_run, runs, daemon_status=_status()))
+
+    @app.get("/-/ui/jobs/detail/{slug}/runs", include_in_schema=False)
+    def jobs_detail_runs_fragment(slug: str, offset: int = 0):
+        # Nächste Journal-Batch fürs Infinite Scroll — Analogon zu
+        # schedule_runs_fragment(), gegen die lokale Route/base.
+        try:
+            runs = client.run_journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=offset)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            runs = []
+        return HTMLResponse(render.journal_runs_fragment(
+            runs, slug, time.time(), offset, base="/-/ui/jobs/detail"))
+
+    @app.delete("/-/ui/jobs/detail/{slug}/run/{jid}", include_in_schema=False)
+    def jobs_detail_run_delete(slug: str, jid: int):
+        # Analogon zu run_delete() (Host), aber local_run_delete() (nur
+        # domain="local" — rollenunabhängig, s. client.py/app.py).
+        try:
+            client.local_run_delete(jid)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        _, _, runs = _job_detail_data(slug)
+        return HTMLResponse(render.journal_fragment(
+            runs, slug, time.time(), base="/-/ui/jobs/detail"))
+
     def _detail_data(slug: str):
         try:
             schedule = next((s for s in client.schedules()

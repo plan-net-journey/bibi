@@ -1136,20 +1136,20 @@ _GIT_STATUS_LABEL = {
 def _jobs_row(row: dict, local_runs: dict[str, dict], now: float) -> str:
     """Eine Zeile: Slug, Git-Status, letzter lokaler Lauf, Start-CTA (PLAN-21
     Befund 10 — löst die vorherige Lokal/Remote/Abgleich-Zeile ab, kein
-    Remote-Bezug mehr). Slug und Status verlinken auf die lokale Lauf-Detail-
-    Seite (/-/ui/run/{jid}), sofern schon mal gelaufen — sonst reiner Text,
-    es gibt noch nichts zu zeigen."""
+    Remote-Bezug mehr). Slug verlinkt auf die lokale Job-Detailseite
+    (PLAN-21 Befund 10-Nachtrag, /-/ui/jobs/detail/{slug} — immer, analog zu
+    _sched_row()s Slug-Link auf dem Host); Status verlinkt auf den konkreten
+    letzten Lauf (/-/ui/run/{jid}), sofern schon mal gelaufen."""
     slug = row["slug"]
     s = _e(slug)
     lr = local_runs.get(slug)
     jid = lr.get("id") if lr else None
 
+    slug_cell = f'<a class="slug" href="/-/ui/jobs/detail/{s}">{s}</a>'
     if jid is not None:
-        slug_cell = f'<a class="slug" href="/-/ui/run/{jid}">{s}</a>'
         status_cell = (f'<a class="rowlink" href="/-/ui/run/{jid}">'
                        f'<span class="st {_e(lr["status"])}">{_e(lr["status"])}</span></a>')
     else:
-        slug_cell = f'<span class="slug">{s}</span>'
         status_cell = '<span class="side-empty">noch nie lokal gelaufen</span>'
 
     cls, label = _GIT_STATUS_LABEL.get(row.get("git_status", "clean"),
@@ -1246,6 +1246,81 @@ def jobs_page(
         f"{_header('Jobs', status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{jobs_fragment(rows, local_runs, runs, now=now)}"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
+
+
+# ── Lokale Job-Detailseite (PLAN-21 Befund 10-Nachtrag) ──────────────────────
+#
+# User-Fund 2026-07-09: der Jobs-Screen (Client) verlinkte bisher direkt von
+# der Liste auf den letzten EINZELNEN Lauf, ohne Zwischenseite "dieser Job,
+# alle lokalen Läufe" — anders als der Host, wo /-/ui/schedule/{slug} genau
+# das leistet. Diese Seite ist das Gegenstück, aber bewusst kein 1:1-Clone
+# von schedule_detail_page(): die Meta-Zeile speist sich aus der lokalen MD-
+# Discovery (_local_schedules()) statt der Scheduler-DB (die kennt ein reiner
+# Client nicht), keine Start/Reset/Kill-Verben (Scheduler-Konzepte — nur
+# "Start" bleibt, als erneuter /run). Die Journal-Tabelle (Historie,
+# Löschen, Detail-Link) ist dagegen **derselbe** Baustein wie beim Host
+# (journal_fragment() mit base="/-/ui/jobs/detail", s. dort) — genau die vom
+# User erhoffte Vereinheitlichung, ohne Fork.
+
+
+def _local_job_meta(slug: str, local: dict, last_run: dict | None) -> str:
+    """Meta-Zeile der lokalen Job-Detailseite — Gegenstück zur Meta-Zeile in
+    live_fragment() (Host), aber aus der lokalen MD-Discovery statt der
+    Scheduler-DB gespeist (s. Modul-Kommentar oben)."""
+    kind = _e(_effective_sched_type(local))
+    trigger = _e(local.get("schedule") or local.get("at") or "—")
+    cls, git_label = _GIT_STATUS_LABEL.get(local.get("git_status", "clean"),
+                                           ("chip", _e(str(local.get("git_status", "—")))))
+    last = ""
+    if last_run:
+        st = _e(last_run.get("status"))
+        last = f' · letzter Lauf <span class="st {st}">{st}</span>'
+    s = _e(slug)
+    btn = (f'<button class="startbtn" hx-post="/-/ui/jobs/start/{s}" '
+          f'hx-target="#jobsdetail-meta" hx-swap="outerHTML" '
+          f'title="/run {s} sofort auf diesem Rechner">▶ Start</button>')
+    return (
+        f'<div id="jobsdetail-meta"><p class="muted">Typ <b>{kind}</b> · '
+        f'Trigger <code>{trigger}</code> · Git <span class="{cls}">{git_label}</span>'
+        f"{last}</p>{btn}</div>"
+    )
+
+
+def jobs_detail_inner(slug: str, local: dict, last_run: dict | None,
+                      runs: list[dict], now: float | None = None) -> str:
+    now = time.time() if now is None else now
+    return (
+        _local_job_meta(slug, local, last_run)
+        + journal_fragment(runs, slug, now, base="/-/ui/jobs/detail")
+    )
+
+
+def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
+                     runs: list[dict], now: float | None = None,
+                     *, daemon_status: dict | None = None) -> str:
+    """Lokale Job-Detailseite (ein Slug, nur lokale /run-Läufe dieses Knotens)
+    — Gegenstück zu schedule_detail_page() auf dem Host, s. Modul-Kommentar."""
+    now = time.time() if now is None else now
+    local = local or {}
+    s = _e(slug)
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>bibi · {s}</title>"
+        f"<script>{_FOLLOW_JS}</script>"
+        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
+        f"<style>{_CSS}</style></head><body>"
+        f"{_header('', daemon_status)}"
+        f'<div style="display:flex;gap:.75rem;align-items:baseline">'
+        f'<a class="back" href="/-/ui/jobs">← Jobs</a></div>'
+        f'<h1>{s}</h1>'
+        f"{jobs_detail_inner(slug, local, last_run, runs, now)}"
+        f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
@@ -1807,24 +1882,33 @@ def _duration_cell(r: dict) -> str:
 _JOURNAL_PAGE_SIZE = 50
 
 
-def _journal_sentinel_row(slug: str, offset: int) -> str:
+#: Basis-Pfad der Journal-Bausteine — Default = Schedule-Detailseite (Host).
+#: Die lokale Jobs-Detailseite (PLAN-21 Befund 10-Nachtrag) übergibt
+#: "/-/ui/jobs/detail" an dieselben Funktionen, um Pagination/Löschen gegen
+#: ihre eigenen (rollenunabhängigen) Routen zu verdrahten — sonst identischer
+#: Baustein, kein Fork nötig.
+_JOURNAL_BASE = "/-/ui/schedule"
+
+
+def _journal_sentinel_row(slug: str, offset: int, *, base: str = _JOURNAL_BASE) -> str:
     """Trigger-Zeile für Infinite Scroll: sichtbar (``revealed``) lädt sie die
     nächste Batch nach und ersetzt sich selbst (outerHTML) — mit neuer Batch +
     ggf. frischer Sentinel-Zeile, oder ganz ohne, wenn das Ende erreicht ist."""
     s = _e(slug)
     return (
-        f'<tr id="journal-more" hx-get="/-/ui/schedule/{s}/runs?offset={offset}" '
+        f'<tr id="journal-more" hx-get="{base}/{s}/runs?offset={offset}" '
         f'hx-trigger="revealed" hx-swap="outerHTML">'
         f'<td colspan="7" class="muted">lädt weitere Läufe…</td></tr>'
     )
 
 
-def _journal_table_html(runs: list[dict], slug: str, now: float, *, offset: int = 0) -> str:
+def _journal_table_html(runs: list[dict], slug: str, now: float, *, offset: int = 0,
+                        base: str = _JOURNAL_BASE) -> str:
     if not runs:
         return '<p class="out-empty">— noch keine Läufe —</p>'
-    rows = _run_rows(runs, slug, now)
+    rows = _run_rows(runs, slug, now, base=base)
     if len(runs) == _JOURNAL_PAGE_SIZE:
-        rows += _journal_sentinel_row(slug, offset + _JOURNAL_PAGE_SIZE)
+        rows += _journal_sentinel_row(slug, offset + _JOURNAL_PAGE_SIZE, base=base)
     return (
         '<table><thead><tr><th>Zeit</th><th>Status</th><th>Grund</th>'
         '<th>exit</th><th>Dauer</th><th>Commit</th><th></th></tr></thead>'
@@ -1832,7 +1916,8 @@ def _journal_table_html(runs: list[dict], slug: str, now: float, *, offset: int 
     )
 
 
-def journal_fragment(runs: list[dict], slug: str, now: float, *, oob: bool = False) -> str:
+def journal_fragment(runs: list[dict], slug: str, now: float, *, oob: bool = False,
+                     base: str = _JOURNAL_BASE) -> str:
     """Eigenständige, nicht selbst-pollende Region (``#journal``) — wächst nur
     durch nutzergetriggertes Infinite-Scroll-Nachladen (kein 2s-Poll, der die
     nachgeladenen Zeilen sonst wieder plattmachen würde)."""
@@ -1840,21 +1925,22 @@ def journal_fragment(runs: list[dict], slug: str, now: float, *, oob: bool = Fal
     return (
         f'<div id="journal"{oob_attr}>'
         "<h2>Journal</h2>"
-        f"{_journal_table_html(runs, slug, now)}"
+        f"{_journal_table_html(runs, slug, now, base=base)}"
         "</div>"
     )
 
 
-def journal_runs_fragment(runs: list[dict], slug: str, now: float, offset: int) -> str:
+def journal_runs_fragment(runs: list[dict], slug: str, now: float, offset: int,
+                          *, base: str = _JOURNAL_BASE) -> str:
     """Nächste Batch für ``GET .../runs?offset=N`` — ersetzt die Sentinel-Zeile
     (outerHTML) durch die neuen Zeilen + ggf. eine frische Sentinel-Zeile."""
-    rows = _run_rows(runs, slug, now)
+    rows = _run_rows(runs, slug, now, base=base)
     if len(runs) == _JOURNAL_PAGE_SIZE:
-        rows += _journal_sentinel_row(slug, offset + _JOURNAL_PAGE_SIZE)
+        rows += _journal_sentinel_row(slug, offset + _JOURNAL_PAGE_SIZE, base=base)
     return rows
 
 
-def _run_rows(runs: list[dict], slug: str, now: float) -> str:
+def _run_rows(runs: list[dict], slug: str, now: float, *, base: str = _JOURNAL_BASE) -> str:
     # Follow-up (User-Feedback): "Output entfällt" für Journal-Zeilen — kein
     # Inline-Toggle mehr, nur Detail/Löschen. Der Output (formatiert + roh)
     # lebt auf der Execution-Detail-Seite ("→ Detail").
@@ -1877,7 +1963,7 @@ def _run_rows(runs: list[dict], slug: str, now: float) -> str:
             f"<td>{_duration_cell(r)}</td>"
             f"<td>{_commit_cell(r)}</td>"
             f'<td><a class="back" href="/-/ui/run/{rid}">→ Detail</a> '
-            f'<button hx-delete="/-/ui/schedule/{s}/run/{rid}" hx-target="#journal" '
+            f'<button hx-delete="{base}/{s}/run/{rid}" hx-target="#journal" '
             f'hx-swap="outerHTML" hx-confirm="Lauf-Record löschen?">Löschen</button></td>'
             "</tr>"
         )
