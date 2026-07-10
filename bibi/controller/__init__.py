@@ -291,6 +291,34 @@ def add_controller_routes(
         return HTMLResponse(render.jobs_detail_live_fragment(
             slug, _job_live(slug), local, last_run))
 
+    @app.post("/-/ui/jobs/detail/{slug}/kill", include_in_schema=False)
+    def jobs_detail_kill(slug: str):
+        # User-Fund 2026-07-10: "natürlich müssen wir kill können" — Analogon
+        # zu schedule_action()s KILL-Verb (Host), aber lokal (client.run_live_kill()).
+        try:
+            client.run_live_kill(slug)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        local, last_run, _runs = _job_detail_data(slug)
+        return HTMLResponse(render.jobs_detail_live_fragment(
+            slug, _job_live(slug), local, last_run))
+
+    @app.post("/-/ui/jobs/detail/{slug}/start", include_in_schema=False)
+    def jobs_detail_start(slug: str):
+        # Bug gefunden beim Bau des Kill-Buttons (2026-07-10): der Start-Button
+        # auf der Detailseite postete bisher an die generische
+        # /-/ui/jobs/start/{slug} (jobs_start(), Ziel #jobsboard) — deren
+        # Antwort hätte #jobsdetail-live per outerHTML mit einem #jobsboard-
+        # Fragment überschrieben (falsche id, falsches Self-Poll-Ziel). Eigene
+        # Route, analog zu jobs_detail_kill(), gibt das richtige Fragment zurück.
+        try:
+            client.run(slug=slug)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        local, last_run, _runs = _job_detail_data(slug)
+        return HTMLResponse(render.jobs_detail_live_fragment(
+            slug, _job_live(slug), local, last_run))
+
     @app.get("/-/ui/jobs/detail/{slug}/runs", include_in_schema=False)
     def jobs_detail_runs_fragment(slug: str, offset: int = 0):
         # Nächste Journal-Batch fürs Infinite Scroll — Analogon zu

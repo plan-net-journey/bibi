@@ -143,7 +143,7 @@ def test_local_job_meta_shows_type_trigger_git_and_last_status():
     assert "job" in html and "now" in html
     assert 'class="chip modified"' in html and ">geändert<" in html
     assert 'class="st complete">complete' in html
-    assert 'hx-post="/-/ui/jobs/start/a"' in html
+    assert 'hx-post="/-/ui/jobs/detail/a/start"' in html
 
 
 def test_local_job_meta_no_last_run_omits_status():
@@ -158,8 +158,20 @@ def test_local_job_meta_live_shows_running_and_disables_start():
                                   live={"id": "jid1", "events": []})
     assert 'class="st running">running<' in html
     assert "letzter Lauf" not in html  # tritt zurück, solange live
-    assert "disabled" in html
+    assert 'class="startbtn" hx-post="/-/ui/jobs/detail/a/start"' in html
+    assert 'class="startbtn" hx-post="/-/ui/jobs/detail/a/start" hx-target="#jobsdetail-live" hx-swap="outerHTML" disabled' in html
     assert 'hx-target="#jobsdetail-live"' in html
+
+
+def test_local_job_meta_kill_button_only_enabled_while_live():
+    # User-Fund 2026-07-10: "natürlich müssen wir kill können" — KILL nur
+    # aktiv, solange wirklich etwas läuft.
+    idle = render._local_job_meta("a", _row("a"), {"status": "complete"})
+    assert 'class="killbtn" hx-post="/-/ui/jobs/detail/a/kill" hx-target="#jobsdetail-live" hx-swap="outerHTML" disabled' in idle
+
+    running = render._local_job_meta("a", _row("a"), None, live={"id": "jid1", "events": []})
+    assert 'class="killbtn" hx-post="/-/ui/jobs/detail/a/kill" hx-target="#jobsdetail-live" hx-swap="outerHTML" title=' in running
+    assert "killbtn\" hx-post=\"/-/ui/jobs/detail/a/kill\" hx-target=\"#jobsdetail-live\" hx-swap=\"outerHTML\" disabled" not in running
 
 
 def test_local_live_output_empty_when_not_running():
@@ -270,6 +282,12 @@ class _FakeClient:
         if slug not in self._live:
             raise RuntimeError("404 not running")  # spiegelt HTTPError des echten Clients
         return self._live[slug]
+
+    def run_live_kill(self, slug: str) -> dict:
+        if slug not in self._live:
+            raise RuntimeError("404 not running")
+        del self._live[slug]
+        return {"slug": slug, "signaled": True}
 
 
 def _seed_schedule_md(root: Path, slug: str, schedule: str, payload: str) -> None:
@@ -468,3 +486,35 @@ def test_jobs_detail_run_delete_route(team_repo: Path, app_with):
         assert fake.delete_calls == [5]
         assert 'id="journal"' in r.text
         assert "noch keine Läufe" in r.text  # Journal jetzt leer, sofort sichtbar
+
+
+def test_jobs_detail_start_route_posts_to_own_fragment_not_jobsboard(team_repo: Path, app_with):
+    # Bug-Regressionsschutz (2026-07-10): der Start-Button auf der
+    # Detailseite muss #jobsdetail-live zurückbekommen, nicht das
+    # #jobsboard-Fragment der Jobs-Liste (jobs_start()).
+    client = _FakeClient(live={"a": {"id": "jid1", "kind": "job", "events": []}})
+    app, fake = app_with(client)
+    with TestClient(app) as c:
+        r = c.post("/-/ui/jobs/detail/a/start")
+        assert r.status_code == 200
+        assert fake.run_calls == [{"slug": "a", "cmd": None}]
+        assert 'id="jobsdetail-live"' in r.text
+        assert 'id="jobsboard"' not in r.text
+
+
+def test_jobs_detail_kill_route(team_repo: Path, app_with):
+    client = _FakeClient(live={"a": {"id": "jid1", "kind": "job", "events": []}})
+    app, fake = app_with(client)
+    with TestClient(app) as c:
+        r = c.post("/-/ui/jobs/detail/a/kill")
+        assert r.status_code == 200
+        assert "a" not in fake._live  # gekillt, aus der Live-Registry raus
+        assert 'id="jobsdetail-live"' in r.text
+        assert 'data-running="0"' in r.text  # sofort sichtbar, kein Warten auf den nächsten Poll
+
+
+def test_jobs_detail_kill_route_survives_nothing_running(team_repo: Path, app_with):
+    app, _ = app_with(_FakeClient())
+    with TestClient(app) as c:
+        r = c.post("/-/ui/jobs/detail/nichts-los/kill")
+        assert r.status_code == 200  # kein 500, auch wenn client.run_live_kill() 404t

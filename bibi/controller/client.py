@@ -74,6 +74,12 @@ class ControllerClient:
         # wie überall sonst in diesem Client (Aufrufer fängt das ab, §2.7).
         return self._get(f"/-/run/live/{urllib.parse.quote(slug, safe='')}")
 
+    def run_live_kill(self, slug: str) -> dict:
+        # Laufenden lokalen Run beenden (PLAN-21 Befund 10, User-Fund
+        # 2026-07-10: "natürlich müssen wir kill können"). 404 → HTTPError.
+        return self._request(
+            "POST", f"/-/run/live/{urllib.parse.quote(slug, safe='')}/kill") or {}
+
     def jobs(self, *, status: str | None = None) -> list[dict]:
         return self._get("/-/job", {"status": status}) or []
 

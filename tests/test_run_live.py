@@ -25,8 +25,23 @@ def _reset_live_registry():
     # zurücksetzen, sonst leaken Einträge früherer Tests in denselben
     # pytest-Prozess hinein.
     worker._local_runs_live.clear()
+    worker._local_runs_procs.clear()
     yield
     worker._local_runs_live.clear()
+    worker._local_runs_procs.clear()
+
+
+class _FakeProc:
+    """Minimaler subprocess.Popen-Stand-in für local_run_kill()-Tests — kein
+    echter Subprozess nötig, nur .poll()/.pid, die _terminate() (worker.py)
+    tatsächlich anfasst."""
+    def __init__(self, *, alive: bool = True) -> None:
+        self.pid = 999999  # garantiert kein echter Prozess — os.killpg no-opt defensiv
+        self._alive = alive
+        self.terminated = False
+
+    def poll(self):
+        return None if self._alive else 0
 
 
 # ── Reine Registry (worker.py) ───────────────────────────────────────────────
@@ -66,6 +81,47 @@ def test_local_run_live_returns_copy_not_live_reference():
     snap = worker.local_run_live("a")
     snap["id"] = "mutated"
     assert worker.local_run_live("a")["id"] == "jid1"
+
+
+# ── local_run_kill() (User-Fund 2026-07-10: "natürlich müssen wir kill können") ─
+
+
+def test_local_run_kill_terminates_and_returns_true(monkeypatch):
+    # _terminate() (worker.py) fragt _is_container() ab, was ohne Mock den
+    # globalen Knoten-Default liest (auf diesem Mac: container) und einen
+    # echten `docker stop`-Subprozess anstoßen würde — hier wie in
+    # test_worker_container.py hermetisch weggemockt.
+    monkeypatch.setattr("bibi.daemon.worker._is_container", lambda: False)
+    monkeypatch.setattr("bibi.daemon.worker._docker", lambda args: None)
+    proc = _FakeProc(alive=True)
+    worker.local_run_start("a", "jid1", "ref", "job", "echo hi", proc)
+    assert worker.local_run_kill("a") is True
+
+
+def test_local_run_kill_false_when_nothing_running():
+    assert worker.local_run_kill("nope") is False
+
+
+def test_local_run_kill_false_when_no_proc_handle():
+    # register()-Callback nie erreicht (z. B. Fehler vor dem Spawn) — kein
+    # Prozess-Handle vorhanden, kill() darf nicht crashen, nur False liefern.
+    worker.local_run_start("a", "jid1", "ref", "job", "echo hi")  # proc=None
+    assert worker.local_run_kill("a") is False
+
+
+def test_local_run_kill_false_when_proc_already_exited():
+    proc = _FakeProc(alive=False)  # .poll() != None → schon beendet
+    worker.local_run_start("a", "jid1", "ref", "job", "echo hi", proc)
+    assert worker.local_run_kill("a") is False
+
+
+def test_local_run_end_clears_proc_handle_too(monkeypatch):
+    monkeypatch.setattr("bibi.daemon.worker._is_container", lambda: False)
+    monkeypatch.setattr("bibi.daemon.worker._docker", lambda args: None)
+    proc = _FakeProc(alive=True)
+    worker.local_run_start("a", "jid1", "ref", "job", "echo hi", proc)
+    worker.local_run_end("a")
+    assert worker.local_run_kill("a") is False  # kein Handle mehr da
 
 
 # ── POST /-/run + GET /-/run/live (gefakter run_local, kein echter Subprozess) ─
@@ -169,3 +225,33 @@ def test_run_route_500s_immediately_on_generic_exception_before_spawn(client_onl
     assert r.status_code == 500
     assert r.json() == {"error": "worktree conflict"}
     assert worker.local_run_live("conflictjob") is None
+
+
+# ── POST /-/run/live/{slug}/kill (User-Fund 2026-07-10) ─────────────────────
+
+
+def test_run_live_kill_route_404_when_nothing_running(client_only):
+    r = client_only.post("/-/run/live/nope/kill")
+    assert r.status_code == 404
+
+
+def test_run_live_kill_route_signals_running_job(client_only, monkeypatch):
+    # on_spawn() (app.py) reicht proc nur über register() durch — hier direkt
+    # über worker.local_run_start() nachgestellt, denn der gefakte run_local()
+    # in diesem Modul ruft register() ohne echten Prozess auf. Der laufende
+    # Slug wird stattdessen unabhängig vom /-/run-Fake registriert, wie es
+    # on_spawn() in Produktion via local_run_start(..., proc) täte.
+    monkeypatch.setattr("bibi.daemon.worker._is_container", lambda: False)
+    monkeypatch.setattr("bibi.daemon.worker._docker", lambda args: None)
+    proc = _FakeProc(alive=True)
+    worker.local_run_start("myjob", "jid1", "data/job/jid1/output.jsonl", "job", "echo hi", proc)
+    r = client_only.post("/-/run/live/myjob/kill")
+    assert r.status_code == 200
+    assert r.json() == {"slug": "myjob", "signaled": True}
+
+
+def test_run_live_kill_route_404_when_proc_already_exited(client_only):
+    proc = _FakeProc(alive=False)
+    worker.local_run_start("myjob", "jid1", "ref", "job", "echo hi", proc)
+    r = client_only.post("/-/run/live/myjob/kill")
+    assert r.status_code == 404

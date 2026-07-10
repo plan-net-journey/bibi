@@ -456,16 +456,29 @@ def _resolve_spec(repo_root: Path, slug: str):
 #: Jobs genutzt wurde).
 _local_runs_live: dict[str, dict] = {}
 
+#: Prozess-Handle je laufendem lokalen Run, getrennt von ``_local_runs_live``
+#: (die Metadaten gehen roh in HTTP-JSON-Antworten, s. app.py — ein
+#: ``subprocess.Popen`` darin wäre nicht serialisierbar). Nur für
+#: ``local_run_kill()`` gebraucht (User-Fund 2026-07-10: "Da müssen wir dann
+#: aber wohl nochmal ran! Natürlich müssen wir kill können" — ohne das blieb
+#: ein langlebiger App-Job über /run nur per manuellem ``docker kill``/SIGTERM
+#: von außen beendbar, kein API-Weg).
+_local_runs_procs: dict[str, subprocess.Popen] = {}
 
-def local_run_start(slug: str, job_id: str, output_ref: str, kind: str, payload: str) -> None:
+
+def local_run_start(slug: str, job_id: str, output_ref: str, kind: str, payload: str,
+                    proc: subprocess.Popen | None = None) -> None:
     _local_runs_live[slug] = {
         "id": job_id, "output_ref": output_ref, "kind": kind, "payload": payload,
         "started_at": time.time(),
     }
+    if proc is not None:
+        _local_runs_procs[slug] = proc
 
 
 def local_run_end(slug: str) -> None:
     _local_runs_live.pop(slug, None)
+    _local_runs_procs.pop(slug, None)
 
 
 def local_run_live(slug: str) -> dict | None:
@@ -479,6 +492,21 @@ def local_runs_live() -> dict[str, dict]:
     (kein Output) für die Jobs-Liste, die pro Zeile nur "läuft gerade?" braucht."""
     return {slug: {"id": v["id"], "started_at": v["started_at"]}
            for slug, v in _local_runs_live.items()}
+
+
+def local_run_kill(slug: str) -> bool:
+    """Einen laufenden lokalen Run beenden — dieselbe ``_terminate()`` wie
+    ``Worker.kill()`` (container-aware: ``docker stop`` + Host-Signalgruppe,
+    SIGKILL-Backstop nach 5s). ``False``, wenn gerade nichts läuft oder kein
+    Prozess-Handle vorliegt (Callback nie erreicht, s. app.py::run())."""
+    live = _local_runs_live.get(slug)
+    proc = _local_runs_procs.get(slug)
+    if live is None or proc is None or proc.poll() is not None:
+        return False
+    _terminate(proc, job_id=live["id"])
+    activity.emit(log, logging.INFO, "worker.local_kill", "Lokaler Lauf beendet (graceful)",
+                  role="worker", slug=slug, run_id=live["id"])
+    return True
 
 
 def run_local(
@@ -496,6 +524,7 @@ def run_local(
     work_dir = work_dir or (repo_root / "data" / "worktrees")
     eff_soul = eff_session = None
     eff_schedule_ref: str | None = None
+    eff_app_port = eff_app_prefix = eff_exec_mode = None
     if cmd is not None:
         eff_slug, payload, eff_kind, eff_model = slug or "adhoc", cmd, kind, model
     else:
@@ -508,6 +537,17 @@ def run_local(
         eff_slug, payload, eff_kind, eff_model = s.slug, s.payload, s.kind.value, s.model
         eff_soul, eff_session = s.soul, s.session
         eff_schedule_ref = pr.schedule_ref
+        # Bug gefunden 2026-07-10 (HITL-Test-App-Migration): app_port/
+        # app_prefix/exec_mode aus dem Schedule-MD gingen bisher spurlos
+        # verloren — run_local() reichte sie nie an _run_wrapper() durch (im
+        # Unterschied zu execute_reservation(), dem Scheduler-Dispatch-Pfad,
+        # der reservation.get("app_port"/"app_prefix"/"exec_mode") längst
+        # korrekt weiterreicht). Betraf jeden App-Typ-Job, der lokal per
+        # /run statt über den Scheduler gestartet wurde: kein App-Port im
+        # Wrapper-Env, kein Docker-Port-Mapping, kein Traefik-Routing, und
+        # ein exec_mode:-Override im MD hatte keine Wirkung (nur die
+        # globale Knoten-Config zählte).
+        eff_app_port, eff_app_prefix, eff_exec_mode = s.app_port, s.app_prefix, s.exec_mode
 
     jid = secrets.token_hex(4)
     started = time.time()
@@ -515,6 +555,7 @@ def run_local(
         job_id=jid, slug=eff_slug, kind=eff_kind, payload=payload, model=eff_model,
         schedule_ref=eff_schedule_ref,
         soul=eff_soul, session=eff_session,
+        app_port=eff_app_port, app_prefix=eff_app_prefix, exec_mode=eff_exec_mode,
         repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=True,
     )
     finished = time.time()

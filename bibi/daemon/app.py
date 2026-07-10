@@ -629,9 +629,10 @@ def create_app(
         handle: dict = {}
         root = repo.root()
 
-        def on_spawn(job_id: str, proc) -> None:  # noqa: ARG001 — proc ungenutzt (kein Kill-Tracking hier)
+        def on_spawn(job_id: str, proc) -> None:
             out_ref = (root / "data" / "job" / job_id / "output.jsonl").relative_to(root).as_posix()
-            worker_mod.local_run_start(slug, job_id, out_ref, req.kind, req.cmd or req.slug or "")
+            worker_mod.local_run_start(
+                slug, job_id, out_ref, req.kind, req.cmd or req.slug or "", proc)
             handle["id"] = job_id
             handle["output_ref"] = out_ref
             ready.set()
@@ -700,6 +701,19 @@ def create_app(
         return {"slug": slug, "id": live["id"], "started_at": live["started_at"],
                 "output_ref": live["output_ref"], "kind": kind,
                 "events": output_format.format_events(raw, kind)}
+
+    # User-Fund 2026-07-10 (HITL-Test-App-Migration): "Da müssen wir dann aber
+    # wohl nochmal ran! Natürlich müssen wir kill können" — ein langlebiger
+    # App-Job über /run (z. B. eine HITL-Test-App mit serve_forever()) blieb
+    # sonst nur per manuellem docker kill/SIGTERM von außen beendbar, kein
+    # API-Weg. Analog zu POST /-/job/{id}/kill (Scheduler-Jobs), aber
+    # rollenunabhängig + domain="local"-only (worker_mod.local_run_kill()).
+    @app.post("/-/run/live/{slug}/kill", tags=["job"])
+    def run_live_kill(slug: str):
+        signaled = worker_mod.local_run_kill(slug)
+        if not signaled:
+            return JSONResponse(status_code=404, content={"error": "not running", "slug": slug})
+        return {"slug": slug, "signaled": True}
 
     # ── /run/journal: lokale Lauf-Historie (§1.4) — rollenunabhängig ───────────
     # PLAN-17 Stufe 17.1 (Jobs-Screen): bewusst NICHT einfach /-/journal um

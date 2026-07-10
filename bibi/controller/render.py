@@ -180,6 +180,10 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .startbtn { font: inherit; font-size: .78rem; background: #5a9fe033; border: 1px solid #5a9fe066;
         border-radius: .35rem; padding: .2rem .55rem; cursor: pointer; color: inherit; font-weight: 600;
         white-space: nowrap; }
+.killbtn { font: inherit; font-size: .78rem; background: #e06c5a33; border: 1px solid #e06c5a66;
+        border-radius: .35rem; padding: .2rem .55rem; cursor: pointer; color: inherit; font-weight: 600;
+        white-space: nowrap; }
+.startbtn:disabled, .killbtn:disabled { opacity: .4; cursor: default; }
 .note { color: #888; font-size: .82rem; margin: .2rem 0 .8rem; }
 .runhist { font-size: .86rem; }
 .runhist .row { display: flex; gap: .8rem; padding: .35rem 0; border-bottom: 1px solid #8881;
@@ -1298,13 +1302,21 @@ def _local_job_meta(slug: str, local: dict, last_run: dict | None,
         status_html = ""
     s = _e(slug)
     disabled = " disabled" if live else ""
-    btn = (f'<button class="startbtn" hx-post="/-/ui/jobs/start/{s}" '
-          f'hx-target="#jobsdetail-live" hx-swap="outerHTML"{disabled} '
-          f'title="/run {s} sofort auf diesem Rechner">▶ Start</button>')
+    start_btn = (f'<button class="startbtn" hx-post="/-/ui/jobs/detail/{s}/start" '
+                f'hx-target="#jobsdetail-live" hx-swap="outerHTML"{disabled} '
+                f'title="/run {s} sofort auf diesem Rechner">▶ Start</button>')
+    # KILL nur sichtbar/aktiv, solange wirklich etwas läuft (User-Fund
+    # 2026-07-10: "natürlich müssen wir kill können" — ein langlebiger
+    # App-Job über /run blieb sonst nur per manuellem docker kill/SIGTERM
+    # von außen beendbar).
+    kill_disabled = "" if live else " disabled"
+    kill_btn = (f'<button class="killbtn" hx-post="/-/ui/jobs/detail/{s}/kill" '
+               f'hx-target="#jobsdetail-live" hx-swap="outerHTML"{kill_disabled} '
+               f'title="laufenden Prozess beenden">■ Kill</button>')
     return (
         f'<p class="muted">Typ <b>{kind}</b> · '
         f'Trigger <code>{trigger}</code> · Git <span class="{cls}">{git_label}</span>'
-        f"{status_html}</p>{btn}"
+        f"{status_html}</p>{start_btn} {kill_btn}"
     )
 
 
