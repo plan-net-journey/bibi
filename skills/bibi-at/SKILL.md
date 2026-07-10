@@ -41,6 +41,20 @@ Firing needs a running **scheduler + worker** daemon. Without one the MD is stil
 written and is picked up on the next rescan / daemon start (`bibi-ctrl at` reports
 whether the rescan reached a daemon).
 
+## Working directory (`--job` payloads)
+
+A `--job` shell command runs inside an isolated git worktree
+(`data/worktrees/<slug>/`, branch `agent/<slug>`), with `cwd` already set to
+`$BIBI_JOB_CWD` — the schedule MD's directory *inside that worktree*
+(DESIGN §7.4/§7.5). Write the payload using **relative paths** (or reference
+`$BIBI_JOB_CWD` explicitly) — never hardcode an absolute path into the main
+checkout (e.g. `/srv/team/vault/case/...`). A hardcoded main-checkout path
+bypasses the worktree entirely: the command writes straight into the live
+`trunk` working tree, and the background Synchronizer auto-commits+pushes that
+directly to `trunk` — skipping the worktree-commit + merge-back that isolates
+every other job's changes (incident: 2026-07-10, see bibi-notes
+`vault/case/20260621.Bibi4-870bd9db/Feedback.md`).
+
 ## Observe
 
 ```bash

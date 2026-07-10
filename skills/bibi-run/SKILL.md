@@ -24,6 +24,11 @@ The job runs in a fresh `agent/<slug>` worktree, streams to `output.jsonl`, and
 the captured output is printed when it finishes. Exit status maps to
 `complete` / `failed`.
 
+`--cmd`/schedule-MD payloads must use **relative paths** (`cwd` is already the
+worktree, via `$BIBI_JOB_CWD`) — a hardcoded absolute path into the main
+checkout bypasses the worktree isolation entirely (see `/at`'s "Working
+directory" section for the failure mode).
+
 ## When
 
 - A quick, ad-hoc or **sensitive** run that must not enter the central queue.
