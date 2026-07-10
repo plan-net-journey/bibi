@@ -17,6 +17,7 @@ def cfg_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("BIBI_DAEMON_PORT", raising=False)
     monkeypatch.delenv("BIBI_SCHEDULER_URL", raising=False)
+    monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
     return tmp_path
 
 

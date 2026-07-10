@@ -14,6 +14,7 @@ from bibi.ctrl import daemon_cmd, main
 def env_iso(team_repo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # ~/.config/bibi/env isolieren, damit kein echtes BIBI_ROLE durchsickert.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
     return team_repo
 
 

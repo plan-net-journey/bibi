@@ -12,10 +12,31 @@ from bibi import config
 @pytest.fixture
 def cfg_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
     return tmp_path
 
 
 def test_env_path_respects_xdg(cfg_home: Path):
+    assert config.env_path() == cfg_home / "bibi" / "env"
+
+
+def test_env_path_respects_explicit_override(cfg_home: Path, monkeypatch: pytest.MonkeyPatch):
+    explicit = cfg_home / "client" / "bibi-env"
+    monkeypatch.setenv("BIBI_CONFIG_PATH", str(explicit))
+    assert config.env_path() == explicit
+
+
+def test_env_path_explicit_override_takes_precedence_over_xdg(
+    cfg_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    explicit = cfg_home / "client" / "bibi-env"
+    monkeypatch.setenv("BIBI_CONFIG_PATH", str(explicit))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_home / "other"))
+    assert config.env_path() == explicit
+
+
+def test_env_path_blank_override_falls_back_to_xdg(cfg_home: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("BIBI_CONFIG_PATH", "  ")
     assert config.env_path() == cfg_home / "bibi" / "env"
 
 

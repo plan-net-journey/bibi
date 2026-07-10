@@ -52,7 +52,17 @@ def daemon_port() -> int:
 
 
 def env_path() -> Path:
-    """Pfad zu ``env`` — respektiert ``XDG_CONFIG_HOME``, sonst ``~/.config``."""
+    """Pfad zu ``env`` — ``BIBI_CONFIG_PATH`` (explizite Datei) > ``XDG_CONFIG_HOME``
+    > ``~/.config``.
+
+    ``BIBI_CONFIG_PATH`` erlaubt mehrere Daemon-Instanzen unter demselben
+    Linux-User (z. B. Host + Client auf demselben Knoten) mit getrennten
+    ``BIBI_ROLE``-Dateien, ohne über ``XDG_CONFIG_HOME``-Indirektion zu gehen —
+    ein Pfad, direkt in der jeweiligen systemd-Unit sichtbar.
+    """
+    explicit = os.environ.get("BIBI_CONFIG_PATH", "").strip()
+    if explicit:
+        return Path(explicit)
     base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(base) / "bibi" / "env"
 

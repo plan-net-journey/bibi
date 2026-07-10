@@ -752,13 +752,34 @@ class Worker:
         Host-Wrapper-Gruppe; im Container-Modus auch dann ``docker kill`` als Backstop,
         wenn der Wrapper schon weg ist (Container könnte verwaist weiterlaufen)."""
         proc = self._procs.get(job_id)
-        if proc is None or proc.poll() is not None:
-            if _is_container():  # Wrapper weg, Container evtl. noch da → einsammeln
-                _docker(["kill", exec_backend.container_name(job_id)])
-                return True
+        if proc is not None and proc.poll() is None:
+            _terminate(proc, job_id=job_id)
+            activity.emit(log, logging.INFO, "worker.kill", "Lauf beendet (graceful)",
+                          role="worker", run_id=job_id)
+            return True
+        if _is_container():  # Wrapper weg, Container evtl. noch da → einsammeln
+            _docker(["kill", exec_backend.container_name(job_id)])
+            return True
+        # Kein In-Memory-Handle (z. B. Job hat einen Daemon-Neustart überlebt,
+        # reconcile_startup_orphans() lässt ihn dann bewusst running) — PID aus
+        # der DB reanimieren. Nur SIGTERM, kein SIGKILL-Backstop-Timer wie in
+        # _terminate(): dafür fehlt hier der Popen-Handle zum .wait().
+        conn = job_db.connect(self.db_path)
+        try:
+            pid_info = job_db.get_pid(conn, job_id)
+        finally:
+            conn.close()
+        if pid_info is None:
             return False
-        _terminate(proc, job_id=job_id)
-        activity.emit(log, logging.INFO, "worker.kill", "Lauf beendet (graceful)",
+        pid, pid_started_at = pid_info
+        if job_db.proc_started_at(pid) != pid_started_at:
+            return False
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            return False
+        activity.emit(log, logging.INFO, "worker.kill",
+                      "Lauf beendet (graceful, DB-PID nach Neustart)",
                       role="worker", run_id=job_id)
         return True
 

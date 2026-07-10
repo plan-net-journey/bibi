@@ -724,18 +724,20 @@ def test_reconcile_startup_orphans_pid_recycled(conn):
     assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "killed"
 
 
-def test_reconcile_startup_orphans_live_pid_sends_sigkill(conn, monkeypatch):
-    # Prozess lebt noch (gleiche PID + Startzeit) → SIGKILL.
-    import os, signal
+def test_reconcile_startup_orphans_live_pid_left_running(conn, monkeypatch):
+    # Prozess lebt noch (gleiche PID + Startzeit) → kein SIGKILL, Status bleibt
+    # running — der Wrapper überlebt Daemon-Neustarts bewusst (start_new_session=
+    # True) und meldet seinen Abschluss selbst, s. reconcile_startup_orphans()-Docstring.
+    import os
     killed = []
     monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
     monkeypatch.setattr(job_db, "proc_started_at", lambda pid: "ts-42")
     jid = _seed_full(conn, slug="orphan", status="running", worker="me",
                      next_fire_at=0, pid=1234, pid_started_at="ts-42")
     n = job_db.reconcile_startup_orphans(conn, "me")
-    assert n == 1
-    assert (1234, signal.SIGKILL) in killed
-    assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "killed"
+    assert n == 0
+    assert killed == []
+    assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "running"
 
 
 def test_report_pid_writes_to_db(conn):

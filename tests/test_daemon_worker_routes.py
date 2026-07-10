@@ -209,6 +209,40 @@ def test_kill_running_job(client):
     assert client.get(f"/-/job/{jid}/status").json()["reason"] == "by_user"
 
 
+def test_kill_running_job_falls_back_to_db_pid_after_restart(client, monkeypatch):
+    # Kein In-Memory-Popen (z. B. Job hat einen Daemon-Neustart überlebt, s. A.2) —
+    # kill() muss die PID aus der DB reanimieren und SIGTERM senden.
+    import os
+    jid = _seed_status("running")
+    conn = job_db.connect()
+    try:
+        job_db.report_pid(conn, jid, 4321, "ts-77")
+    finally:
+        conn.close()
+    monkeypatch.setattr(job_db, "proc_started_at", lambda pid: "ts-77")
+    signaled = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: signaled.append((pid, sig)))
+    r = client.post(f"/-/job/{jid}/kill")
+    assert r.status_code == 200
+    assert r.json()["signaled"] is True
+    import signal
+    assert (4321, signal.SIGTERM) in signaled
+
+
+def test_kill_running_job_db_pid_dead_not_signaled(client):
+    # PID in DB, aber nicht mehr lebendig (proc_started_at weicht ab) — kein
+    # echter Prozess mehr zu killen, signaled bleibt False.
+    jid = _seed_status("running")
+    conn = job_db.connect()
+    try:
+        job_db.report_pid(conn, jid, 4321, "stale-ts")
+    finally:
+        conn.close()
+    r = client.post(f"/-/job/{jid}/kill")
+    assert r.status_code == 200
+    assert r.json()["signaled"] is False
+
+
 def test_kill_pending_ok(client):
     # pending → killed ("aus dem Schedule nehmen") ist jetzt erlaubt (§5.4).
     jid = _seed_status("pending")

@@ -12,9 +12,7 @@ Schema-Versionierung über ``PRAGMA user_version``: die Basis (v1) liegt in
 from __future__ import annotations
 
 import json
-import os
 import secrets
-import signal
 import socket
 import sqlite3
 import subprocess
@@ -897,6 +895,20 @@ def proc_started_at(pid: int) -> str | None:
         return None
 
 
+def get_pid(conn: sqlite3.Connection, job_id: str) -> tuple[int, str | None] | None:
+    """PID + Startzeit eines Jobs lesen (Gegenstück zu ``report_pid()``, §10.2).
+
+    ``None`` bei unbekannter ID oder wenn kein PID hinterlegt ist (z. B. Job nie
+    per ``report_pid()`` getrackt) — der Aufrufer entscheidet, ob das ein Fehler
+    oder erwartet ist (``Worker.kill()``-Fallback nach einem Daemon-Neustart)."""
+    row = conn.execute(
+        "SELECT pid, pid_started_at FROM jobs WHERE id=?", (job_id,),
+    ).fetchone()
+    if row is None or row["pid"] is None:
+        return None
+    return row["pid"], row["pid_started_at"]
+
+
 def report_pid(
     conn: sqlite3.Connection, job_id: str, pid: int, pid_started_at: str | None,
 ) -> None:
@@ -930,10 +942,16 @@ def reconcile_startup_orphans(
     """Beim Start: RUNNING/AWAITING-Jobs dieses Workers per PID prüfen (§10.2).
 
     - ``pid`` + ``pid_started_at`` stimmen mit dem laufenden Prozess überein →
-      echter Orphan → ``SIGKILL``, dann ``killed/no_process``.
-    - ``pid`` tot oder PID recycled (Startzeit weicht ab) → nur ``killed/no_process``.
+      Prozess lebt echt noch (z. B. ``start_new_session=True``-Wrapper, der
+      einen Daemon-Neustart überlebt hat) → Zeile unangetastet lassen, kein
+      SIGKILL. Der Wrapper supervised sich selbst und meldet seinen Abschluss
+      eigenständig (lokale DB oder HTTP) — die nächste Reconciliation greift
+      erst wieder, wenn er wirklich weg ist.
+    - ``pid`` tot oder PID recycled (Startzeit weicht ab) → ``killed/no_process``.
     - ``pid`` nicht in DB (Altlast ohne Tracking) → ``killed/no_process`` wie bisher.
-    - Recurring Cron-Jobs werden sofort auf ``pending`` zurückgesetzt.
+    - Recurring Cron-Jobs werden bei echtem ``killed`` sofort auf ``pending``
+      zurückgesetzt — bei einem noch lebenden Prozess **nicht** (sonst würde
+      der Scheduler denselben Job parallel ein zweites Mal dispatchen).
     """
     now = time.time() if now is None else now
     n = 0
@@ -944,14 +962,9 @@ def reconcile_startup_orphans(
     ).fetchall()
     for r in rows:
         pid = r["pid"]
-        if pid is not None:
-            current = proc_started_at(pid)
-            if current is not None and current == r["pid_started_at"]:
-                # Selber Prozess lebt noch — echter Orphan → SIGKILL
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except (ProcessLookupError, OSError):
-                    pass
+        still_alive = pid is not None and proc_started_at(pid) == r["pid_started_at"]
+        if still_alive:
+            continue
         report_status(conn, r["id"], status="killed", reason="no_process", now=now)
         if is_recurring(r["schedule"]):
             conn.execute(
