@@ -641,12 +641,30 @@ def create_app(
                 run_local(slug=req.slug, cmd=req.cmd, kind=req.kind, register=on_spawn)
             except LookupError as exc:
                 handle["error"] = str(exc)
+                handle["status_code"] = 404
                 ready.set()
             except Exception as exc:  # noqa: BLE001 — Hintergrund-Thread darf nie
                 # unbeobachtet sterben: die auslösende Response ist zu diesem
                 # Zeitpunkt oft schon zurück (register() hat ready schon
                 # gesetzt), ein stiller Traceback auf stderr wäre die einzige
                 # Spur. Wenigstens ins Activity-Log (§2.7).
+                #
+                # Bug gefunden bei der Live-Verifikation 2026-07-10: eine
+                # Exception VOR dem Wrapper-Spawn (register() nie erreicht —
+                # z. B. GitOpError bei worktree.prepare(), live beobachtet an
+                # einem Repo mit liegengebliebenem Merge-Konflikt) ließ diesen
+                # Zweig nur loggen, ohne ready.set() — die Route wartete dann
+                # sinnlos bis zum vollen 30s-Timeout statt sofort den Fehler
+                # zurückzugeben. ready.is_set() unterscheidet die beiden
+                # Fälle: schon gesetzt (register() lief, Response ist längst
+                # raus) → nur loggen; noch nicht gesetzt → Fehler + sofort
+                # freigeben (500, nicht 404 — kein "not found"-Fall wie
+                # LookupError, sondern ein echter Startfehler, z. B. ein
+                # Worktree-Konflikt).
+                if not ready.is_set():
+                    handle["error"] = str(exc)
+                    handle["status_code"] = 500
+                    ready.set()
                 activity.emit(log, logging.ERROR, "run.local_background_error",
                               "Lokaler /run-Hintergrund-Lauf abgebrochen", role="daemon",
                               slug=slug, error=str(exc))
@@ -657,7 +675,8 @@ def create_app(
         if not ready.wait(timeout=30):
             return JSONResponse(status_code=504, content={"error": "timeout starting run"})
         if "error" in handle:
-            return JSONResponse(status_code=404, content={"error": handle["error"]})
+            return JSONResponse(status_code=handle["status_code"],
+                                content={"error": handle["error"]})
         return {"id": handle["id"], "slug": slug, "status": "running",
                 "output_ref": handle["output_ref"]}
 

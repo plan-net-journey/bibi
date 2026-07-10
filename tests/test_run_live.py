@@ -154,3 +154,18 @@ def test_run_live_registry_cleared_even_on_background_exception(client_only, mon
     monkeypatch.setattr("bibi.daemon.app.run_local", fake_boom)
     client_only.post("/-/run", json={"slug": "boomjob", "cmd": "irrelevant"})
     assert _wait_until(lambda: worker.local_run_live("boomjob") is None)
+
+
+def test_run_route_500s_immediately_on_generic_exception_before_spawn(client_only, monkeypatch):
+    # Live-Fund 2026-07-10: eine Exception VOR register() (z. B. GitOpError
+    # bei worktree.prepare() — hier mit einer generischen RuntimeError
+    # nachgestellt, register() wird nie aufgerufen) ließ die Route bisher bis
+    # zum vollen 30s-Timeout warten (504) statt sofort den echten Fehler
+    # zurückzugeben. Muss 500 sein (kein "not found"-Fall wie LookupError).
+    def fake_boom_before_spawn(*, slug=None, cmd=None, kind="job", register=None):
+        raise RuntimeError("worktree conflict")  # register() nie aufgerufen
+    monkeypatch.setattr("bibi.daemon.app.run_local", fake_boom_before_spawn)
+    r = client_only.post("/-/run", json={"slug": "conflictjob", "cmd": "irrelevant"})
+    assert r.status_code == 500
+    assert r.json() == {"error": "worktree conflict"}
+    assert worker.local_run_live("conflictjob") is None
