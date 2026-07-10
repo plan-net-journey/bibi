@@ -163,6 +163,16 @@ def test_local_job_meta_live_shows_running_and_disables_start():
     assert 'hx-target="#jobsdetail-live"' in html
 
 
+def test_local_job_meta_live_awaiting_shows_awaiting_badge():
+    # Ausbau User-Fund 2026-07-10: lokale App-Jobs melden jetzt auch awaiting
+    # über den Signal-Kanal (worker.local_run_signal_state()) — vorher stand
+    # hier für jeden laufenden lokalen Job unbedingt "running".
+    html = render._local_job_meta(
+        "a", _row("a"), None, live={"id": "jid1", "events": [], "status": "awaiting"})
+    assert 'class="st awaiting">awaiting<' in html
+    assert 'class="st running">running<' not in html
+
+
 def test_local_job_meta_kill_button_only_enabled_while_live():
     # User-Fund 2026-07-10: "natürlich müssen wir kill können" — KILL nur
     # aktiv, solange wirklich etwas läuft.
@@ -182,6 +192,26 @@ def test_local_live_output_renders_events():
     html = render._local_live_output(
         {"kind": "job", "events": [{"t": 1.0, "s": "out", "line": "hallo welt"}]})
     assert "hallo welt" in html and "Output" in html
+
+
+def test_local_live_output_no_hitl_panel_when_running():
+    html = render._local_live_output({"kind": "job", "events": [], "status": "running"})
+    assert "Eingabe erforderlich" not in html
+
+
+def test_local_live_output_shows_hitl_panel_when_awaiting():
+    # Ausbau User-Fund 2026-07-10: dasselbe HITL-Panel wie bei Scheduler-Jobs
+    # (_hitl_panel()), gespeist aus dem neuen Signal-Kanal für lokale Läufe.
+    html = render._local_live_output(
+        {"kind": "job", "events": [], "status": "awaiting",
+         "app_url": "http://127.0.0.1:9100/"})
+    assert "Eingabe erforderlich" in html
+    assert 'href="http://127.0.0.1:9100/"' in html
+
+
+def test_local_live_output_hitl_panel_shows_placeholder_without_app_url():
+    html = render._local_live_output({"kind": "job", "events": [], "status": "awaiting"})
+    assert "app_url nicht verfügbar" in html
 
 
 def test_jobs_detail_live_fragment_data_attrs_reflect_running_state():

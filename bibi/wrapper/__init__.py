@@ -75,6 +75,35 @@ def _handle_signal(conn, job_id: str, sig: dict) -> None:
         pass  # reiner Herzschlag — last_activity_ts aktualisiert schon der Pump-Loop
 
 
+def _record_signal(sig: dict, *, job_id: str, out_path: Path, db_path_str: str | None,
+                    current_status: list[str], lock: threading.Lock) -> None:
+    """Ein nicht-``deferred``/nicht-``activity``-Signal aus dem Pump-Loop
+    verarbeiten (aufgerufen von ``run_app()``). Meldet an die Scheduler-DB
+    (``db_path_str`` gesetzt, dispatchte Jobs) oder — ephemeral/lokal per
+    ``/run``, ``db_path_str`` ist dann ``None`` — als eigenen ``signal``-
+    Event-Tag ins ``output.jsonl`` (Ausbau User-Fund 2026-07-10: dieser Zweig
+    fehlte bisher komplett, das Signal ging spurlos verloren; die
+    Job-Detailseite lokaler App-Jobs zeigte deshalb nie ``awaiting``, s.
+    ``worker.local_run_signal_state()``, das diese Zeilen wieder ausliest)."""
+    name = sig.get("name")
+    if name in ("running", "awaiting"):
+        with lock:
+            current_status[0] = name
+    if db_path_str:
+        try:
+            from bibi.daemon import job_db as _jdb
+            conn = _jdb.connect(Path(db_path_str))
+            try:
+                _handle_signal(conn, job_id, sig)
+            finally:
+                conn.close()
+        except Exception:
+            pass
+    else:
+        with lock:
+            output.append(out_path, "signal", json.dumps(sig, separators=(",", ":")))
+
+
 @dataclass(frozen=True)
 class TypeHandler:
     """Wie ein Typ zu einem Child-Prozess wird (§7.5)."""
@@ -402,18 +431,12 @@ def run_app(env: dict[str, str]) -> int:
                         current_status[0] = "deferred"
                         if not outcome[0]:
                             outcome[0] = "deferred"
-                elif db_path_str:
-                    try:
-                        from bibi.daemon import job_db as _jdb
-                        conn = _jdb.connect(Path(db_path_str))
-                        try:
-                            _handle_signal(conn, job_id, sig)
-                            if sig.get("name") in ("running", "awaiting"):
-                                current_status[0] = sig["name"]
-                        finally:
-                            conn.close()
-                    except Exception:
-                        pass
+                elif name == "activity":
+                    pass  # reiner Herzschlag (wie im DB-Pfad _handle_signal) — keine Zeile
+                else:
+                    _record_signal(sig, job_id=job_id, out_path=out_path,
+                                   db_path_str=db_path_str,
+                                   current_status=current_status, lock=lock)
             else:
                 with lock:
                     output.append(out_path, tag, stripped)

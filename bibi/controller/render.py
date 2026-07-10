@@ -1294,7 +1294,11 @@ def _local_job_meta(slug: str, local: dict, last_run: dict | None,
     cls, git_label = _GIT_STATUS_LABEL.get(local.get("git_status", "clean"),
                                            ("chip", _e(str(local.get("git_status", "—")))))
     if live:
-        status_html = ' · <span class="st running">running</span>'
+        # Ausbau User-Fund 2026-07-10: lokale App-Jobs melden jetzt auch
+        # awaiting über den Signal-Kanal (s. worker.local_run_signal_state()) —
+        # vorher stand hier für jeden laufenden lokalen Job unbedingt "running".
+        st = "awaiting" if live.get("status") == "awaiting" else "running"
+        status_html = f' · <span class="st {st}">{st}</span>'
     elif last_run:
         st = _e(last_run.get("status"))
         status_html = f' · letzter Lauf <span class="st {st}">{st}</span>'
@@ -1331,7 +1335,11 @@ def _local_live_output(live: dict | None) -> str:
     if not live:
         return ""
     out = output_block(live.get("events", []), live.get("kind", "job"))
-    return f'<h3>Output</h3><div class="outscroll">{out}</div>'
+    # Ausbau User-Fund 2026-07-10: dasselbe HITL-Panel wie bei Scheduler-Jobs
+    # (_hitl_panel() nimmt jeden Dict mit app_url — live hat die Form seit dem
+    # Signal-Kanal-Ausbau in worker.local_run_signal_state()).
+    panel = _hitl_panel(live) if live.get("status") == "awaiting" else ""
+    return f'<h3>Output</h3><div class="outscroll">{out}</div>{panel}'
 
 
 #: Erkennt den running→(nicht mehr live)-Übergang auf der lokalen Job-

@@ -14,6 +14,7 @@ Single-Node: der Worker reserviert **lokal** über ``job_db.reserve_next`` (gena
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import secrets
@@ -507,6 +508,44 @@ def local_run_kill(slug: str) -> bool:
     activity.emit(log, logging.INFO, "worker.local_kill", "Lokaler Lauf beendet (graceful)",
                   role="worker", slug=slug, run_id=live["id"])
     return True
+
+
+def local_run_signal_state(events: list[dict]) -> dict:
+    """Leitet HITL-Status/Demand/app_url aus den ``signal``-Event-Zeilen in
+    ``output.jsonl`` ab (Ausbau User-Fund 2026-07-10: lokale ``/run``-App-Jobs
+    verwarfen awaiting/app_register bisher spurlos, weil ihnen — anders als
+    scheduler-dispatchten Jobs — keine ``jobs``-DB-Zeile zum Melden zur
+    Verfügung steht, s. ``wrapper/__init__.py::pump()``). Reine Funktion ohne
+    eigenen State: jeder Poll wertet die volle bisherige Event-Historie neu
+    aus, genau wie ``output_block()`` es für die reine Textausgabe schon tut.
+    ``app_url`` bleibt einmal bekannt (awaiting oder app_register) über einen
+    running-Übergang hinweg gültig — der Port ändert sich für die Lebensdauer
+    des Prozesses nicht; nur ``demand`` wird bei ``running`` wieder geleert."""
+    status = "running"
+    app_url: str | None = None
+    demand: dict | None = None
+    for ev in events:
+        if ev.get("s") != "signal":
+            continue
+        try:
+            sig = json.loads(ev.get("line", ""))
+        except (TypeError, ValueError):
+            continue
+        name = sig.get("name")
+        if name == "running":
+            status = "running"
+            demand = None
+        elif name == "awaiting":
+            status = "awaiting"
+            demand = {k: v for k, v in sig.items() if k != "name"}
+            port = sig.get("port")
+            if port:
+                app_url = f"http://127.0.0.1:{port}/"
+        elif name == "app_register":
+            port = sig.get("port")
+            if port:
+                app_url = f"http://127.0.0.1:{port}/"
+    return {"status": status, "app_url": app_url, "demand": demand}
 
 
 def run_local(

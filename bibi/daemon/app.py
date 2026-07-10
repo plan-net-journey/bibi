@@ -698,8 +698,15 @@ def create_app(
         path = repo.root() / live["output_ref"]
         raw = output.read_events(path) if path.exists() else []
         kind = models.effective_kind(live.get("payload"))
+        # Ausbau User-Fund 2026-07-10: HITL-Status/Demand/app_url für lokale
+        # App-Jobs (s. worker.local_run_signal_state()) — sonst sah die
+        # Job-Detailseite eines lokal per /run gestarteten App-Jobs nie
+        # "awaiting", nur "running" (der Signal-Kanal existierte schlicht nicht).
+        sig_state = worker_mod.local_run_signal_state(raw)
         return {"slug": slug, "id": live["id"], "started_at": live["started_at"],
                 "output_ref": live["output_ref"], "kind": kind,
+                "status": sig_state["status"], "app_url": sig_state["app_url"],
+                "demand": sig_state["demand"],
                 "events": output_format.format_events(raw, kind)}
 
     # User-Fund 2026-07-10 (HITL-Test-App-Migration): "Da müssen wir dann aber

@@ -8,6 +8,7 @@ deckt tests/test_run_local.py ab (@pytest.mark.slow)."""
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from pathlib import Path
@@ -81,6 +82,71 @@ def test_local_run_live_returns_copy_not_live_reference():
     snap = worker.local_run_live("a")
     snap["id"] = "mutated"
     assert worker.local_run_live("a")["id"] == "jid1"
+
+
+# ── local_run_signal_state() (Ausbau User-Fund 2026-07-10: awaiting/app_url ──
+# für lokale App-Jobs — vorher gingen deren BIBI-Signale spurlos verloren,
+# jetzt landen sie als "signal"-Events in output.jsonl, s. _record_signal()
+# in bibi/wrapper/__init__.py.) ───────────────────────────────────────────────
+
+
+def _sig_event(sig: dict) -> dict:
+    return {"t": 0.0, "s": "signal", "line": json.dumps(sig)}
+
+
+def test_signal_state_defaults_to_running_with_no_events():
+    state = worker.local_run_signal_state([])
+    assert state == {"status": "running", "app_url": None, "demand": None}
+
+
+def test_signal_state_awaiting_sets_status_demand_and_app_url():
+    events = [_sig_event({"name": "awaiting", "input_request": "ja/j?",
+                          "input_format": "text", "port": 9100})]
+    state = worker.local_run_signal_state(events)
+    assert state["status"] == "awaiting"
+    assert state["app_url"] == "http://127.0.0.1:9100/"
+    assert state["demand"] == {"input_request": "ja/j?", "input_format": "text", "port": 9100}
+
+
+def test_signal_state_awaiting_without_port_leaves_app_url_unset():
+    events = [_sig_event({"name": "awaiting", "input_request": "?"})]
+    state = worker.local_run_signal_state(events)
+    assert state["status"] == "awaiting"
+    assert state["app_url"] is None
+
+
+def test_signal_state_running_after_awaiting_clears_demand_keeps_app_url():
+    # Der Port bleibt für die Lebensdauer des Prozesses gültig — nur der
+    # Eingabe-Bedarf (demand) verschwindet, wenn der Job weiterläuft.
+    events = [
+        _sig_event({"name": "awaiting", "input_request": "?", "port": 9100}),
+        _sig_event({"name": "running"}),
+    ]
+    state = worker.local_run_signal_state(events)
+    assert state["status"] == "running"
+    assert state["app_url"] == "http://127.0.0.1:9100/"
+    assert state["demand"] is None
+
+
+def test_signal_state_app_register_sets_app_url_without_awaiting():
+    events = [_sig_event({"name": "app_register", "port": 9200})]
+    state = worker.local_run_signal_state(events)
+    assert state["status"] == "running"
+    assert state["app_url"] == "http://127.0.0.1:9200/"
+    assert state["demand"] is None
+
+
+def test_signal_state_ignores_non_signal_events():
+    events = [{"t": 0.0, "s": "phase", "line": "worktree: bereit"},
+             {"t": 0.0, "s": "out", "line": "hallo"}]
+    state = worker.local_run_signal_state(events)
+    assert state == {"status": "running", "app_url": None, "demand": None}
+
+
+def test_signal_state_malformed_signal_line_is_skipped_not_crashed():
+    events = [{"t": 0.0, "s": "signal", "line": "{ungültiges json"}]
+    state = worker.local_run_signal_state(events)
+    assert state == {"status": "running", "app_url": None, "demand": None}
 
 
 # ── local_run_kill() (User-Fund 2026-07-10: "natürlich müssen wir kill können") ─
@@ -174,6 +240,34 @@ def test_run_live_list_shows_entry_while_running_then_clears(client_only, monkey
 
 def test_run_live_detail_404_when_not_running(client_only):
     assert client_only.get("/-/run/live/nope").status_code == 404
+
+
+def test_run_live_detail_includes_signal_derived_status_and_app_url(client_only, team_repo):
+    # Ausbau User-Fund 2026-07-10: /-/run/live/{slug} muss awaiting/app_url aus
+    # den "signal"-Events in output.jsonl ableiten (worker.local_run_signal_
+    # state()), nicht nur "running" pauschal für jeden laufenden lokalen Job.
+    out_ref = "data/job/jid1/output.jsonl"
+    out_path = team_repo / out_ref
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(
+        {"t": 0.0, "s": "signal",
+         "line": json.dumps({"name": "awaiting", "input_request": "ja/j?", "port": 9100})}
+    ) + "\n")
+    worker.local_run_start("myjob", "jid1", out_ref, "job", "python3 app.py")
+    body = client_only.get("/-/run/live/myjob").json()
+    assert body["status"] == "awaiting"
+    assert body["app_url"] == "http://127.0.0.1:9100/"
+    assert body["demand"] == {"input_request": "ja/j?", "port": 9100}
+
+
+def test_run_live_detail_status_running_when_no_signal_events(client_only, team_repo):
+    out_ref = "data/job/jid2/output.jsonl"
+    (team_repo / "data" / "job" / "jid2").mkdir(parents=True)
+    worker.local_run_start("plainjob", "jid2", out_ref, "job", "echo hi")
+    body = client_only.get("/-/run/live/plainjob").json()
+    assert body["status"] == "running"
+    assert body["app_url"] is None
+    assert body["demand"] is None
 
 
 def test_run_second_start_same_slug_is_409_while_first_still_running(client_only, monkeypatch):

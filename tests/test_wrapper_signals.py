@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from bibi import wrapper as _wrapper
-from bibi.wrapper import _parse_bibi_line, _handle_signal, output
+from bibi.wrapper import _parse_bibi_line, _handle_signal, _record_signal, output
 from bibi.daemon import job_db
 
 
@@ -144,6 +144,80 @@ def test_handle_activity_signal_is_noop(conn):
     _handle_signal(conn, "j1", {"name": "activity"})
     row = conn.execute("SELECT status FROM jobs WHERE id='j1'").fetchone()
     assert row["status"] == "awaiting"  # unverändert
+
+
+# ── _record_signal (Ausbau User-Fund 2026-07-10: lokale /run-App-Jobs ────────
+# verwarfen awaiting/app_register bisher spurlos, weil ihnen keine
+# BIBI_SCHEDULER_DB_PATH zur Verfügung steht — jetzt landen sie stattdessen
+# als "signal"-Event in output.jsonl, das worker.local_run_signal_state()
+# ausliest.) ──────────────────────────────────────────────────────────────────
+
+
+def _record(sig, *, db_path_str=None, out_path, current_status=None):
+    return _record_signal(
+        sig, job_id="j1", out_path=out_path, db_path_str=db_path_str,
+        current_status=current_status if current_status is not None else ["running"],
+        lock=threading.Lock(),
+    )
+
+
+def test_record_signal_writes_to_db_when_path_given(conn, tmp_path):
+    _insert_job(conn)
+    db_path = tmp_path / "jobs.sqlite"
+    conn.close()  # _record_signal öffnet seine eigene Connection auf denselben Pfad
+    _record({"name": "running"}, db_path_str=str(db_path), out_path=tmp_path / "output.jsonl")
+    c2 = job_db.connect(db_path)
+    row = c2.execute("SELECT status FROM jobs WHERE id='j1'").fetchone()
+    c2.close()
+    assert row["status"] == "running"
+
+
+def test_record_signal_no_db_path_writes_output_event_instead(tmp_path):
+    out_path = tmp_path / "output.jsonl"
+    sig = {"name": "awaiting", "input_request": "ja/j?", "input_format": "text", "port": 9100}
+    _record(sig, db_path_str=None, out_path=out_path)
+    events = output.read_events(out_path)
+    assert len(events) == 1
+    assert events[0]["s"] == "signal"
+    assert json.loads(events[0]["line"]) == sig
+
+
+def test_record_signal_no_db_path_does_not_touch_any_db(tmp_path):
+    # Kein db_path_str ⇒ kein DB-Zugriff überhaupt versucht (ephemeral/lokal).
+    out_path = tmp_path / "output.jsonl"
+    _record({"name": "app_register", "port": 9100}, db_path_str=None, out_path=out_path)
+    events = output.read_events(out_path)
+    assert json.loads(events[0]["line"])["name"] == "app_register"
+
+
+def test_record_signal_awaiting_updates_current_status(tmp_path):
+    # User-Fund: current_status[0] wurde vorher NUR im DB-Pfad aktualisiert —
+    # ephemeral/lokale Läufe blieben intern für immer auf "running" stehen.
+    cs = ["running"]
+    _record({"name": "awaiting", "input_request": "?"}, db_path_str=None,
+            out_path=tmp_path / "output.jsonl", current_status=cs)
+    assert cs[0] == "awaiting"
+
+
+def test_record_signal_running_after_awaiting_resets_current_status(tmp_path):
+    cs = ["awaiting"]
+    _record({"name": "running"}, db_path_str=None, out_path=tmp_path / "output.jsonl",
+            current_status=cs)
+    assert cs[0] == "running"
+
+
+def test_record_signal_app_register_does_not_touch_current_status(tmp_path):
+    cs = ["running"]
+    _record({"name": "app_register", "port": 9100}, db_path_str=None,
+            out_path=tmp_path / "output.jsonl", current_status=cs)
+    assert cs[0] == "running"  # app_register ist kein running/awaiting-Übergang
+
+
+def test_record_signal_db_write_failure_is_swallowed(tmp_path):
+    # Ungültiger db_path_str (z. B. Verzeichnis existiert nicht) darf nie
+    # crashen — best effort, wie überall im Wrapper (§2.7).
+    _record({"name": "running"}, db_path_str=str(tmp_path / "nope" / "jobs.sqlite"),
+            out_path=tmp_path / "output.jsonl")
 
 
 # ── Monitor-Threads: Phasen-Logging beim autonomen Kill (User-Feedback 2026-07-03,
