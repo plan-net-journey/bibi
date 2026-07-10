@@ -24,9 +24,10 @@ from bibi.daemon.app import create_app
 # ── Rendering ─────────────────────────────────────────────────────────────
 
 
-def _row(slug: str, *, git_status: str = "clean") -> dict:
+def _row(slug: str, *, git_status: str = "clean", live: dict | None = None) -> dict:
     return {"slug": slug, "schedule": "now", "at": None, "payload": "echo x",
-            "repo_path": f"vault/case/{slug}/README.md", "git_status": git_status}
+            "repo_path": f"vault/case/{slug}/README.md", "git_status": git_status,
+            "live": live}
 
 
 def test_jobs_table_start_button_always_enabled():
@@ -74,6 +75,20 @@ def test_jobs_table_slug_always_links_to_local_job_detail():
 def test_jobs_table_empty_shows_placeholder():
     html = render._jobs_table([], {}, now=100.0)
     assert "keine Job-MDs im Repository gefunden" in html
+
+
+def test_jobs_table_live_row_shows_running_and_disables_start():
+    # PLAN-21 Befund 10, 2. Nachtrag: row["live"] gesetzt → "running" statt
+    # letztem (abgeschlossenem) Status, Status-Link geht auf die Detailseite
+    # (kein /-/ui/run/{jid} — für den laufenden Lauf existiert noch kein
+    # Journal-Eintrag), Start-Button deaktiviert (Server lehnt mit 409 ab).
+    html = render._jobs_table(
+        [_row("a", live={"id": "jid1", "started_at": 100.0})],
+        {"a": {"id": 42, "status": "complete"}}, now=200.0)  # alter, abgeschlossener Lauf
+    assert 'class="st running">running<' in html
+    assert 'href="/-/ui/jobs/detail/a"><span class="st running"' in html
+    assert 'href="/-/ui/run/42"' not in html  # alter Status tritt zurück
+    assert "disabled" in html
 
 
 def test_run_history_renders_rows():
@@ -136,6 +151,37 @@ def test_local_job_meta_no_last_run_omits_status():
     assert "letzter Lauf" not in html
 
 
+def test_local_job_meta_live_shows_running_and_disables_start():
+    # PLAN-21 Befund 10, 2. Nachtrag: live gesetzt → "running" statt letztem
+    # Status, Start-Button deaktiviert, Ziel jetzt #jobsdetail-live.
+    html = render._local_job_meta("a", _row("a"), {"status": "complete"},
+                                  live={"id": "jid1", "events": []})
+    assert 'class="st running">running<' in html
+    assert "letzter Lauf" not in html  # tritt zurück, solange live
+    assert "disabled" in html
+    assert 'hx-target="#jobsdetail-live"' in html
+
+
+def test_local_live_output_empty_when_not_running():
+    assert render._local_live_output(None) == ""
+
+
+def test_local_live_output_renders_events():
+    html = render._local_live_output(
+        {"kind": "job", "events": [{"t": 1.0, "s": "out", "line": "hallo welt"}]})
+    assert "hallo welt" in html and "Output" in html
+
+
+def test_jobs_detail_live_fragment_data_attrs_reflect_running_state():
+    idle = render.jobs_detail_live_fragment("a", None, _row("a"), None)
+    assert 'id="jobsdetail-live"' in idle and 'data-running="0"' in idle
+    running = render.jobs_detail_live_fragment(
+        "a", {"id": "jid1", "events": []}, _row("a"), None)
+    assert 'data-running="1"' in running
+    assert 'data-journal-url="/-/ui/jobs/detail/a/journal"' in running
+    assert 'hx-get="/-/ui/jobs/detail/a/live"' in running
+
+
 def test_journal_fragment_base_param_targets_local_job_detail():
     # PLAN-21 Befund 10-Nachtrag: dieselbe Journal-Tabelle wie beim Host,
     # aber gegen die lokale Route verdrahtet, wenn base gesetzt ist.
@@ -164,13 +210,23 @@ def test_jobs_detail_page_unknown_slug_still_renders():
     assert "<h1>gone</h1>" in html
 
 
+def test_jobs_detail_page_with_live_shows_running_and_autorefresh_js():
+    html = render.jobs_detail_page(
+        "a", _row("a"), None, [], now=200.0,
+        live={"id": "jid1", "kind": "job", "events": [{"t": 1.0, "s": "out", "line": "hi"}]})
+    assert 'data-running="1"' in html
+    assert "hi" in html  # Live-Output gerendert
+    assert render._JOBS_LIVE_AUTOREFRESH_JS in html
+
+
 # ── Route (gefakter Client + echtes Vault-Discovery + echtes Git-Repo) ───────
 
 
 class _FakeClient:
-    def __init__(self, *, schedules=None, run_journal=None) -> None:
+    def __init__(self, *, schedules=None, run_journal=None, live=None) -> None:
         self._schedules = schedules or []
         self._run_journal = run_journal or []
+        self._live = live or {}  # {slug: {"id":..., "events": [...]}}
         self.run_calls: list[dict] = []
         self.delete_calls: list[int] = []
         self.schedules_called = False
@@ -205,6 +261,15 @@ class _FakeClient:
         self.delete_calls.append(journal_id)
         self._run_journal = [r for r in self._run_journal if r.get("id") != journal_id]
         return {"deleted": journal_id}
+
+    def run_live_list(self) -> dict:
+        return {slug: {"id": v["id"], "started_at": v.get("started_at", 0.0)}
+               for slug, v in self._live.items()}
+
+    def run_live(self, slug: str) -> dict:
+        if slug not in self._live:
+            raise RuntimeError("404 not running")  # spiegelt HTTPError des echten Clients
+        return self._live[slug]
 
 
 def _seed_schedule_md(root: Path, slug: str, schedule: str, payload: str) -> None:
@@ -301,6 +366,77 @@ def test_jobs_detail_route_shows_meta_and_only_this_slugs_runs(team_repo: Path, 
         assert "mein-testjob" in r.text
         assert 'href="/-/ui/run/5"' in r.text
         assert "anderer-job" not in r.text  # slug-Filter greift
+
+
+def test_jobs_route_shows_running_for_live_job(team_repo: Path, app_with):
+    # PLAN-21 Befund 10, 2. Nachtrag: die Jobs-Liste zeigt "running" für einen
+    # gerade laufenden lokalen Job, unabhängig vom letzten ABGESCHLOSSENEN
+    # Lauf im Journal.
+    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
+    client = _FakeClient(
+        run_journal=[{"id": 5, "slug": "mein-testjob", "status": "complete",
+                     "finished_at": 100.0, "domain": "local"}],
+        live={"mein-testjob": {"id": "jidlive", "started_at": 200.0}})
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs")
+        assert 'class="st running">running<' in r.text
+
+
+def test_jobs_detail_route_shows_live_output(team_repo: Path, app_with):
+    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
+    client = _FakeClient(live={"mein-testjob": {
+        "id": "jidlive", "kind": "job",
+        "events": [{"t": 1.0, "s": "out", "line": "läuft gerade"}],
+    }})
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/detail/mein-testjob")
+        assert r.status_code == 200
+        assert 'data-running="1"' in r.text
+        assert "läuft gerade" in r.text
+
+
+def test_jobs_detail_live_fragment_route(team_repo: Path, app_with):
+    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
+    client = _FakeClient(live={"mein-testjob": {"id": "jidlive", "kind": "job", "events": []}})
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/detail/mein-testjob/live")
+        assert r.status_code == 200
+        assert 'id="jobsdetail-live"' in r.text and 'data-running="1"' in r.text
+
+
+def test_jobs_detail_live_fragment_route_not_running(team_repo: Path, app_with):
+    app, _ = app_with(_FakeClient())
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/detail/nichts-los/live")
+        assert r.status_code == 200
+        assert 'data-running="0"' in r.text
+
+
+def test_jobs_detail_journal_fragment_route(team_repo: Path, app_with):
+    # Regressionsschutz für den Live-Verifikations-Fund: journal_url zeigte
+    # zunächst auf eine nie implementierte Route (404, still von htmx
+    # verworfen) — #journal blieb nach Lauf-Ende veraltet stehen, bis zum
+    # nächsten manuellen Reload.
+    client = _FakeClient(run_journal=[
+        {"id": 7, "slug": "mein-testjob", "status": "complete", "finished_at": 100.0,
+         "domain": "local"}])
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/detail/mein-testjob/journal")
+        assert r.status_code == 200
+        assert 'id="journal"' in r.text
+        assert 'hx-delete="/-/ui/jobs/detail/mein-testjob/run/7"' in r.text
+
+
+def test_jobs_detail_live_fragment_journal_url_matches_real_route():
+    # Derselbe Fund als reiner Render-Test: data-journal-url muss auf eine
+    # Route zeigen, die tatsächlich existiert (obiger Route-Test).
+    frag = render.jobs_detail_live_fragment(
+        "a", {"id": "jid1", "events": []}, {}, None)
+    assert 'data-journal-url="/-/ui/jobs/detail/a/journal"' in frag
 
 
 def test_jobs_detail_route_unknown_slug_still_200s(team_repo: Path, app_with):

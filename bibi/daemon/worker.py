@@ -442,6 +442,45 @@ def _resolve_spec(repo_root: Path, slug: str):
     return res.found.get(slug)
 
 
+#: In-Memory-Register laufender lokaler /run-Ausführungen (PLAN-21 Befund 10,
+#: 2. Nachtrag: "auch hier streamen" — User-Fund 2026-07-09, der Jobs-Screen
+#: zeigte einen laufenden lokalen Job erst nach dessen Ende, weil run_local()
+#: komplett synchron läuft und lokale Läufe bewusst keinen jobs-Eintrag
+#: bekommen, s. Docstring unten). Kein DB-State — löst sich mit einem Daemon-
+#: Neustart auf (dann läuft ohnehin kein alter Hintergrund-Thread mehr, s.
+#: app.py::run()), pro Slug höchstens ein aktiver Eintrag. run_local() selbst
+#: bleibt unverändert synchron (auch von der CLI, bibi-ctrl run, direkt
+#: aufgerufen — die MUSS blockieren) — nur app.py::run() (die HTTP-Route)
+#: registriert sich hier, über den längst vorhandenen ``register``-Callback
+#: von _run_wrapper() (der bisher nur fürs Kill-Tracking scheduler-seitiger
+#: Jobs genutzt wurde).
+_local_runs_live: dict[str, dict] = {}
+
+
+def local_run_start(slug: str, job_id: str, output_ref: str, kind: str, payload: str) -> None:
+    _local_runs_live[slug] = {
+        "id": job_id, "output_ref": output_ref, "kind": kind, "payload": payload,
+        "started_at": time.time(),
+    }
+
+
+def local_run_end(slug: str) -> None:
+    _local_runs_live.pop(slug, None)
+
+
+def local_run_live(slug: str) -> dict | None:
+    """Metadaten des gerade laufenden lokalen Runs für ``slug``, oder ``None``."""
+    live = _local_runs_live.get(slug)
+    return dict(live) if live is not None else None
+
+
+def local_runs_live() -> dict[str, dict]:
+    """Alle aktuell laufenden lokalen Runs, ``{slug: {id, started_at}}`` — schlank
+    (kein Output) für die Jobs-Liste, die pro Zeile nur "läuft gerade?" braucht."""
+    return {slug: {"id": v["id"], "started_at": v["started_at"]}
+           for slug, v in _local_runs_live.items()}
+
+
 def run_local(
     *, slug: str | None = None, cmd: str | None = None, kind: str = "job",
     model: str | None = None, repo_root: Path | None = None,

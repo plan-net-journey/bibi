@@ -1139,14 +1139,21 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float) -> str:
     Remote-Bezug mehr). Slug verlinkt auf die lokale Job-Detailseite
     (PLAN-21 Befund 10-Nachtrag, /-/ui/jobs/detail/{slug} — immer, analog zu
     _sched_row()s Slug-Link auf dem Host); Status verlinkt auf den konkreten
-    letzten Lauf (/-/ui/run/{jid}), sofern schon mal gelaufen."""
+    letzten Lauf (/-/ui/run/{jid}), sofern schon mal gelaufen. ``row["live"]``
+    (PLAN-21 Befund 10, 2. Nachtrag): läuft der Job gerade, geht der Status-
+    Link stattdessen auf die Detailseite (dort lebt der Live-Output), und der
+    Start-Button deaktiviert sich (Server lehnt einen Doppelstart mit 409 ab)."""
     slug = row["slug"]
     s = _e(slug)
+    live = row.get("live")
     lr = local_runs.get(slug)
     jid = lr.get("id") if lr else None
 
     slug_cell = f'<a class="slug" href="/-/ui/jobs/detail/{s}">{s}</a>'
-    if jid is not None:
+    if live:
+        status_cell = (f'<a class="rowlink" href="/-/ui/jobs/detail/{s}">'
+                       f'<span class="st running">running</span></a>')
+    elif jid is not None:
         status_cell = (f'<a class="rowlink" href="/-/ui/run/{jid}">'
                        f'<span class="st {_e(lr["status"])}">{_e(lr["status"])}</span></a>')
     else:
@@ -1156,7 +1163,8 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float) -> str:
                                        ("chip", _e(str(row.get("git_status", "—")))))
     git_cell = f'<span class="{cls}">{label}</span>'
 
-    btn_attrs = (f'hx-post="/-/ui/jobs/start/{s}" hx-target="#jobsboard" hx-swap="outerHTML" '
+    disabled = " disabled" if live else ""
+    btn_attrs = (f'hx-post="/-/ui/jobs/start/{s}" hx-target="#jobsboard" hx-swap="outerHTML"{disabled} '
                 f'title="/run {s} sofort auf diesem Rechner"')
     start_cell = f'<button class="startbtn" {btn_attrs}>▶ Start</button>'
 
@@ -1267,41 +1275,108 @@ def jobs_page(
 # User erhoffte Vereinheitlichung, ohne Fork.
 
 
-def _local_job_meta(slug: str, local: dict, last_run: dict | None) -> str:
+def _local_job_meta(slug: str, local: dict, last_run: dict | None,
+                    *, live: dict | None = None) -> str:
     """Meta-Zeile der lokalen Job-Detailseite — Gegenstück zur Meta-Zeile in
     live_fragment() (Host), aber aus der lokalen MD-Discovery statt der
-    Scheduler-DB gespeist (s. Modul-Kommentar oben)."""
+    Scheduler-DB gespeist (s. Modul-Kommentar oben). ``live`` (PLAN-21 Befund
+    10, 2. Nachtrag — User-Fund 2026-07-09 "warum erscheinen keine Details
+    während des Laufes?"): läuft der Job gerade, zeigt sie "running" statt
+    des letzten (bereits abgeschlossenen) Laufs, und der Start-Button
+    deaktiviert sich (der Server würde einen Doppelstart ohnehin mit 409
+    ablehnen, s. app.py — das hier ist nur die sichtbare Konsequenz davon)."""
     kind = _e(_effective_sched_type(local))
     trigger = _e(local.get("schedule") or local.get("at") or "—")
     cls, git_label = _GIT_STATUS_LABEL.get(local.get("git_status", "clean"),
                                            ("chip", _e(str(local.get("git_status", "—")))))
-    last = ""
-    if last_run:
+    if live:
+        status_html = ' · <span class="st running">running</span>'
+    elif last_run:
         st = _e(last_run.get("status"))
-        last = f' · letzter Lauf <span class="st {st}">{st}</span>'
+        status_html = f' · letzter Lauf <span class="st {st}">{st}</span>'
+    else:
+        status_html = ""
     s = _e(slug)
+    disabled = " disabled" if live else ""
     btn = (f'<button class="startbtn" hx-post="/-/ui/jobs/start/{s}" '
-          f'hx-target="#jobsdetail-meta" hx-swap="outerHTML" '
+          f'hx-target="#jobsdetail-live" hx-swap="outerHTML"{disabled} '
           f'title="/run {s} sofort auf diesem Rechner">▶ Start</button>')
     return (
-        f'<div id="jobsdetail-meta"><p class="muted">Typ <b>{kind}</b> · '
+        f'<p class="muted">Typ <b>{kind}</b> · '
         f'Trigger <code>{trigger}</code> · Git <span class="{cls}">{git_label}</span>'
-        f"{last}</p>{btn}</div>"
+        f"{status_html}</p>{btn}"
     )
 
 
+def _local_live_output(live: dict | None) -> str:
+    """Live-Output-Panel (PLAN-21 Befund 10, 2. Nachtrag) — dieselbe
+    Zeilen-Formatierung wie die abgeschlossene Ansicht (output_block(), Host-
+    Execution-Detail), nur alle _POLL-Sekunden aus /-/run/live/{slug}
+    nachgelesen statt eingefroren. Kein SSE (bewusst): der 2s-Poll, den die
+    ganze Seite ohnehin schon nutzt, reicht — kein eigener Streaming-Pfad
+    nötig für ein Feature, das "sichtbar während des Laufs" leisten soll,
+    nicht "Zeichen-für-Zeichen-Latenz\"."""
+    if not live:
+        return ""
+    out = output_block(live.get("events", []), live.get("kind", "job"))
+    return f'<h3>Output</h3><div class="outscroll">{out}</div>'
+
+
+#: Erkennt den running→(nicht mehr live)-Übergang auf der lokalen Job-
+#: Detailseite und lädt #journal dann automatisch nach (PLAN-21 Befund 10,
+#: 2. Nachtrag) — Analogon zu _JOURNAL_AUTOREFRESH_JS (Host), aber gegen
+#: data-running statt data-finished-at, weil "läuft gerade?" hier ein
+#: Boolean aus der In-Memory-Registry ist, keine Zeitstempel-Differenz.
+_JOBS_LIVE_AUTOREFRESH_JS = """
+(function(){
+  let wasRunning = null;
+  function el(){ return document.getElementById('jobsdetail-live'); }
+  function baseline(){
+    const e = el();
+    wasRunning = e ? e.dataset.running === '1' : null;
+  }
+  document.addEventListener('DOMContentLoaded', baseline);
+  document.body.addEventListener('htmx:afterSettle', () => {
+    const e = el();
+    if (!e) return;
+    const running = e.dataset.running === '1';
+    if (wasRunning === null) { wasRunning = running; return; }
+    if (wasRunning && !running && window.htmx) {
+      htmx.ajax('GET', e.dataset.journalUrl, {target: '#journal', swap: 'outerHTML'});
+    }
+    wasRunning = running;
+  });
+})();
+"""
+
+
+def jobs_detail_live_fragment(slug: str, live: dict | None, local: dict | None,
+                              last_run: dict | None) -> str:
+    """Self-pollende Region (``#jobsdetail-live``): Meta-Zeile + Live-Output,
+    falls gerade ein Lauf aktiv ist. Ziel = ``/-/ui/jobs/detail/{slug}/live``."""
+    s = _e(slug)
+    running_flag = "1" if live else "0"
+    journal_url = f"/-/ui/jobs/detail/{s}/journal"
+    body = _local_job_meta(slug, local or {}, last_run, live=live) + _local_live_output(live)
+    attrs = (f'id="jobsdetail-live" data-running="{running_flag}" '
+            f'data-journal-url="{journal_url}" '
+            f'hx-get="/-/ui/jobs/detail/{s}/live" hx-trigger="{_POLL}" hx-swap="outerHTML"')
+    return f"<div {attrs}>{body}</div>"
+
+
 def jobs_detail_inner(slug: str, local: dict, last_run: dict | None,
-                      runs: list[dict], now: float | None = None) -> str:
+                      runs: list[dict], now: float | None = None,
+                      *, live: dict | None = None) -> str:
     now = time.time() if now is None else now
     return (
-        _local_job_meta(slug, local, last_run)
+        jobs_detail_live_fragment(slug, live, local, last_run)
         + journal_fragment(runs, slug, now, base="/-/ui/jobs/detail")
     )
 
 
 def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
                      runs: list[dict], now: float | None = None,
-                     *, daemon_status: dict | None = None) -> str:
+                     *, daemon_status: dict | None = None, live: dict | None = None) -> str:
     """Lokale Job-Detailseite (ein Slug, nur lokale /run-Läufe dieses Knotens)
     — Gegenstück zu schedule_detail_page() auf dem Host, s. Modul-Kommentar."""
     now = time.time() if now is None else now
@@ -1319,9 +1394,10 @@ def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
         f'<div style="display:flex;gap:.75rem;align-items:baseline">'
         f'<a class="back" href="/-/ui/jobs">← Jobs</a></div>'
         f'<h1>{s}</h1>'
-        f"{jobs_detail_inner(slug, local, last_run, runs, now)}"
+        f"{jobs_detail_inner(slug, local, last_run, runs, now, live=live)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_JOBS_LIVE_AUTOREFRESH_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )

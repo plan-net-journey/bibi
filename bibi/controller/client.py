@@ -57,8 +57,22 @@ class ControllerClient:
 
     def run(self, *, slug: str | None = None, cmd: str | None = None) -> dict:
         # Lokaler On-Demand-Lauf auf DIESEM Knoten (/-/run, PLAN-3 §3.3b) — der
-        # Start-Button des Jobs-Screens (PLAN-17 Stufe 17.2).
+        # Start-Button des Jobs-Screens (PLAN-17 Stufe 17.2). Antwortet seit
+        # PLAN-21 Befund 10, 2. Nachtrag sofort mit status="running" (nicht
+        # mehr erst nach Lauf-Ende) — s. run_live()/run_live_list() für den
+        # Zwischenstand.
         return self._request("POST", "/-/run", json_body={"slug": slug, "cmd": cmd}) or {}
+
+    def run_live_list(self) -> dict:
+        # Schlanke Übersicht aller gerade laufenden lokalen /run-Ausführungen
+        # (PLAN-21 Befund 10, 2. Nachtrag) — für die Jobs-Liste.
+        return self._get("/-/run/live") or {}
+
+    def run_live(self, slug: str) -> dict:
+        # Voller Zwischenstand (inkl. Live-Output) EINES laufenden lokalen
+        # Runs — für die Job-Detailseite. 404 (nichts läuft) → HTTPError,
+        # wie überall sonst in diesem Client (Aufrufer fängt das ab, §2.7).
+        return self._get(f"/-/run/live/{urllib.parse.quote(slug, safe='')}")
 
     def jobs(self, *, status: str | None = None) -> list[dict]:
         return self._get("/-/job", {"status": status}) or []

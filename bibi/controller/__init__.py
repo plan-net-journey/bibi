@@ -210,8 +210,13 @@ def add_controller_routes(
                 repo.root(), [s["repo_path"] for s in local.values()])
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             git_by_path = {}
+        try:
+            live_by_slug = client.run_live_list()
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            live_by_slug = {}
         rows = [
-            {"slug": slug, **s, "git_status": git_by_path.get(s["repo_path"], "clean")}
+            {"slug": slug, **s, "git_status": git_by_path.get(s["repo_path"], "clean"),
+             "live": live_by_slug.get(slug)}
             for slug, s in sorted(local.items())
         ]
         try:
@@ -265,11 +270,26 @@ def add_controller_routes(
         last_run = runs[0] if runs else None
         return local, last_run, runs
 
+    def _job_live(slug: str) -> dict | None:
+        # PLAN-21 Befund 10, 2. Nachtrag: /-/run/live/{slug} 404t, wenn gerade
+        # nichts läuft — HTTPError, wie überall sonst in diesem Client (§2.7).
+        try:
+            return client.run_live(slug)
+        except Exception:  # noqa: BLE001
+            return None
+
     @app.get("/-/ui/jobs/detail/{slug}", include_in_schema=False)
     def jobs_detail(slug: str):
         local, last_run, runs = _job_detail_data(slug)
         return HTMLResponse(render.jobs_detail_page(
-            slug, local, last_run, runs, daemon_status=_status()))
+            slug, local, last_run, runs, daemon_status=_status(), live=_job_live(slug)))
+
+    @app.get("/-/ui/jobs/detail/{slug}/live", include_in_schema=False)
+    def jobs_detail_live_fragment(slug: str):
+        # Self-Poll-Ziel von #jobsdetail-live (wie #live bei Schedules).
+        local, last_run, _runs = _job_detail_data(slug)
+        return HTMLResponse(render.jobs_detail_live_fragment(
+            slug, _job_live(slug), local, last_run))
 
     @app.get("/-/ui/jobs/detail/{slug}/runs", include_in_schema=False)
     def jobs_detail_runs_fragment(slug: str, offset: int = 0):
@@ -281,6 +301,21 @@ def add_controller_routes(
             runs = []
         return HTMLResponse(render.journal_runs_fragment(
             runs, slug, time.time(), offset, base="/-/ui/jobs/detail"))
+
+    @app.get("/-/ui/jobs/detail/{slug}/journal", include_in_schema=False)
+    def jobs_detail_journal_fragment(slug: str):
+        # Ziel von _JOBS_LIVE_AUTOREFRESH_JS (PLAN-21 Befund 10, 2. Nachtrag,
+        # Live-Streaming) — Analogon zu schedule_journal_fragment(): ein
+        # RUNNING-Lauf, der terminal endet, lädt #journal automatisch auf
+        # Seite 1 neu. War beim ersten Cut vergessen (journal_url zeigte ins
+        # Leere, 404, still von htmx verworfen) — beim Live-Test aufgefallen:
+        # die Journal-Tabelle blieb nach Lauf-Ende veraltet, bis zum nächsten
+        # manuellen Reload.
+        try:
+            runs = client.run_journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=0)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            runs = []
+        return HTMLResponse(render.journal_fragment(runs, slug, time.time(), base="/-/ui/jobs/detail"))
 
     @app.delete("/-/ui/jobs/detail/{slug}/run/{jid}", include_in_schema=False)
     def jobs_detail_run_delete(slug: str, jid: int):

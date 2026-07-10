@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import socket
+import threading
 import time
 from contextlib import asynccontextmanager
 
@@ -24,6 +25,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from bibi import config, repo, state
 from bibi.daemon import activity, job_db, mergeback, openapi, output_format
+from bibi.daemon import worker as worker_mod  # Modul-Alias (bibi.daemon.app.worker ist eine Worker-Instanz)
 from bibi.schedule import models
 from bibi.daemon.openapi import (
     JobReservation, JobView, KillRequest, NextRequest, RunRequest, StatusReport,
@@ -598,17 +600,87 @@ def create_app(
     # braucht — sich repo_root/work_dir/db_path genau wie die CLI (run_cmd.py)
     # selbst über repo.root() auflöst. Ein reiner Client (kein --worker) konnte
     # /run dadurch nur per CLI nutzen, nie über den Browser/die API — dieselbe
-    # Art Lücke wie beim Heartbeat (PLAN-17 Stufe 17.0). ``register`` bleibt
-    # bewusst weg: die CLI kennt Kill für Ad-hoc-Läufe bis heute auch nicht,
-    # keine Funktions-Reduktion gegenüber dem Bestand.
+    # Art Lücke wie beim Heartbeat (PLAN-17 Stufe 17.0).
+    #
+    # PLAN-21 Befund 10, 2. Nachtrag (User-Fund 2026-07-09: "warum erscheinen
+    # keine Details während des Laufes?"): run_local() läuft komplett synchron
+    # (Subprozess spawnen → blockierend warten → Journal schreiben → erst dann
+    # zurückkehren) — vorher blockierte diese Route bis zum Lauf-Ende, nichts
+    # war währenddessen abfragbar (lokale Läufe haben bewusst keinen
+    # jobs-Eintrag, s. run_local()-Docstring). run_local() selbst bleibt
+    # SYNCHRON (die CLI, bibi-ctrl run, ruft es direkt auf und muss blockieren)
+    # — nur diese Route startet es jetzt in einem Hintergrund-Thread und
+    # antwortet, sobald der Wrapper-Subprozess gespawnt ist (über den längst
+    # vorhandenen ``register``-Callback von _run_wrapper(), vorher nur fürs
+    # Kill-Tracking scheduler-seitiger Jobs genutzt) — nicht erst, wenn der
+    # Lauf fertig ist. GET /-/run/live[/{slug}] macht den Zwischenstand dann
+    # abfragbar (dieselbe längst inkrementell geschriebene output.jsonl, s.
+    # dort).
     @app.post("/-/run", tags=["job"])
     def run(req: RunRequest):
         if not req.slug and not req.cmd:
             return JSONResponse(status_code=400, content={"error": "slug oder cmd nötig"})
-        try:
-            return run_local(slug=req.slug, cmd=req.cmd, kind=req.kind)
-        except LookupError as exc:
-            return JSONResponse(status_code=404, content={"error": str(exc)})
+        slug = req.slug or "adhoc"
+        if worker_mod.local_run_live(slug) is not None:
+            return JSONResponse(status_code=409,
+                                content={"error": "already running", "slug": slug})
+
+        ready = threading.Event()
+        handle: dict = {}
+        root = repo.root()
+
+        def on_spawn(job_id: str, proc) -> None:  # noqa: ARG001 — proc ungenutzt (kein Kill-Tracking hier)
+            out_ref = (root / "data" / "job" / job_id / "output.jsonl").relative_to(root).as_posix()
+            worker_mod.local_run_start(slug, job_id, out_ref, req.kind, req.cmd or req.slug or "")
+            handle["id"] = job_id
+            handle["output_ref"] = out_ref
+            ready.set()
+
+        def go() -> None:
+            try:
+                run_local(slug=req.slug, cmd=req.cmd, kind=req.kind, register=on_spawn)
+            except LookupError as exc:
+                handle["error"] = str(exc)
+                ready.set()
+            except Exception as exc:  # noqa: BLE001 — Hintergrund-Thread darf nie
+                # unbeobachtet sterben: die auslösende Response ist zu diesem
+                # Zeitpunkt oft schon zurück (register() hat ready schon
+                # gesetzt), ein stiller Traceback auf stderr wäre die einzige
+                # Spur. Wenigstens ins Activity-Log (§2.7).
+                activity.emit(log, logging.ERROR, "run.local_background_error",
+                              "Lokaler /run-Hintergrund-Lauf abgebrochen", role="daemon",
+                              slug=slug, error=str(exc))
+            finally:
+                worker_mod.local_run_end(slug)
+
+        threading.Thread(target=go, daemon=True).start()
+        if not ready.wait(timeout=30):
+            return JSONResponse(status_code=504, content={"error": "timeout starting run"})
+        if "error" in handle:
+            return JSONResponse(status_code=404, content={"error": handle["error"]})
+        return {"id": handle["id"], "slug": slug, "status": "running",
+                "output_ref": handle["output_ref"]}
+
+    # ── /run/live: Zwischenstand laufender lokaler /run-Ausführungen ──────────
+    # PLAN-21 Befund 10, 2. Nachtrag — s. Kommentar bei POST /-/run. Schlank
+    # (nur id+started_at je Slug) für die Jobs-Liste; die Slug-Variante trägt
+    # zusätzlich den vollen, live nachgelesenen Output (dieselbe Datei, die der
+    # Wrapper noch schreibt) für die Job-Detailseite.
+    @app.get("/-/run/live", tags=["job"])
+    def run_live_list():
+        return worker_mod.local_runs_live()
+
+    @app.get("/-/run/live/{slug}", tags=["job"])
+    def run_live_detail(slug: str):
+        live = worker_mod.local_run_live(slug)
+        if live is None:
+            return JSONResponse(status_code=404, content={"error": "not running", "slug": slug})
+        path = repo.root() / live["output_ref"]
+        raw = output.read_events(path) if path.exists() else []
+        kind = models.effective_kind(live.get("payload"))
+        return {"slug": slug, "id": live["id"], "started_at": live["started_at"],
+                "output_ref": live["output_ref"], "kind": kind,
+                "events": output_format.format_events(raw, kind)}
 
     # ── /run/journal: lokale Lauf-Historie (§1.4) — rollenunabhängig ───────────
     # PLAN-17 Stufe 17.1 (Jobs-Screen): bewusst NICHT einfach /-/journal um

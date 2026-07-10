@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,15 @@ from bibi.daemon.worker import run_local
 from bibi.wrapper import output
 
 pytestmark = pytest.mark.slow
+
+
+def _wait_until(predicate, *, timeout=10.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -173,7 +183,12 @@ def test_run_endpoint(gitrepo: Path):
     with TestClient(app) as c:
         r = c.post("/-/run", json={"cmd": "echo via-endpoint"})
         assert r.status_code == 200
-        assert r.json()["status"] == "complete"
+        # PLAN-21 Befund 10, 2. Nachtrag: /-/run antwortet jetzt sofort nach
+        # Subprozess-Start (status="running"), nicht erst nach Lauf-Ende —
+        # der Hintergrund-Thread committet/schreibt das Journal danach.
+        slug = r.json()["slug"]
+        assert r.json()["status"] == "running"
+        assert _wait_until(lambda: slug not in c.get("/-/run/live").json())
         # rein lokal: nichts in der Scheduler-Queue
         conn = _conn(gitrepo)
         try:
@@ -199,7 +214,9 @@ def test_run_endpoint_works_without_any_worker_role(gitrepo: Path):
     with TestClient(app) as c:
         r = c.post("/-/run", json={"cmd": "echo via-client-only"})
         assert r.status_code == 200
-        assert r.json()["status"] == "complete"
+        slug = r.json()["slug"]
+        assert r.json()["status"] == "running"
+        assert _wait_until(lambda: slug not in c.get("/-/run/live").json())
         assert c.post("/-/run", json={"slug": "nope"}).status_code == 404
         # weder slug noch cmd → 400
         assert c.post("/-/run", json={}).status_code == 400
@@ -217,7 +234,8 @@ def test_run_journal_endpoint_works_without_any_worker_or_scheduler_role(gitrepo
 
     app = create_app(roles.resolve({"synchronizer", "controller"}))
     with TestClient(app) as c:
-        c.post("/-/run", json={"cmd": "echo local-lauf"})
+        slug = c.post("/-/run", json={"cmd": "echo local-lauf"}).json()["slug"]
+        assert _wait_until(lambda: slug not in c.get("/-/run/live").json())
         r = c.get("/-/run/journal")
         assert r.status_code == 200
         rows = r.json()
@@ -238,7 +256,8 @@ def test_journal_endpoint_filters_by_domain(gitrepo: Path):
 
     app = create_app(roles.resolve({"scheduler", "synchronizer", "controller"}))
     with TestClient(app) as c:
-        c.post("/-/run", json={"cmd": "echo local-lauf"})
+        slug = c.post("/-/run", json={"cmd": "echo local-lauf"}).json()["slug"]
+        assert _wait_until(lambda: slug not in c.get("/-/run/live").json())
         r = c.get("/-/journal", params={"domain": "local"})
         assert r.status_code == 200
         rows = r.json()
