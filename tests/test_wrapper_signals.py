@@ -103,7 +103,7 @@ def test_handle_awaiting_with_port_sets_app_url(conn):
     sig = {"name": "awaiting", "input_request": "Wie viele?", "input_format": "number", "port": 9100}
     _handle_signal(conn, "j1", sig)
     row = conn.execute("SELECT app_url FROM jobs WHERE id='j1'").fetchone()
-    assert row["app_url"] == "http://127.0.0.1:9100/"
+    assert row["app_url"] == "http://localhost:9100/"
 
 
 def test_handle_awaiting_falls_back_to_job_app_port(conn):
@@ -117,7 +117,18 @@ def test_handle_awaiting_falls_back_to_job_app_port(conn):
     sig = {"name": "awaiting", "input_request": "?", "input_format": "text"}
     _handle_signal(conn, "j2", sig)
     row = conn.execute("SELECT app_url FROM jobs WHERE id='j2'").fetchone()
-    assert row["app_url"] == "http://127.0.0.1:9200/"
+    assert row["app_url"] == "http://localhost:9200/"
+
+
+def test_handle_awaiting_uses_configured_public_host(conn, monkeypatch):
+    # PLAN-22 Befund 6: die Adresse war zuvor hart auf 127.0.0.1 kodiert — auf
+    # einem Remote-Host (z. B. sarasate) für einen Client-Browser tot.
+    monkeypatch.setenv("BIBI_PUBLIC_HOST", "sarasate.tail9f9173.ts.net")
+    _insert_job(conn)
+    sig = {"name": "awaiting", "input_request": "?", "input_format": "text", "port": 9100}
+    _handle_signal(conn, "j1", sig)
+    row = conn.execute("SELECT app_url FROM jobs WHERE id='j1'").fetchone()
+    assert row["app_url"] == "http://sarasate.tail9f9173.ts.net:9100/"
 
 
 def test_handle_awaiting_without_any_port_leaves_app_url_unset(conn):

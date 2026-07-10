@@ -25,6 +25,11 @@ KEYS: dict[str, str] = {
     # (Host + Client) unter demselben Hostnamen laufen, sonst überschreiben sich
     # ihre Registry-Einträge gegenseitig (gleicher Dict-Key).
     "BIBI_WORKER_NAME": "",
+    # Von außen erreichbarer Hostname für App-Adressen (PLAN-22 Befund 6) —
+    # Default leer = Ableitung über public_host() (BIBI_SCHEDULER_URL-Hostname,
+    # sonst localhost). Nötig für jeden Knoten, der App-Typ-Jobs (app_port)
+    # dispatcht und dessen Adresse einem Remote-Browser gemeldet werden soll.
+    "BIBI_PUBLIC_HOST": "",
 }
 
 DAEMON_PORT_DEFAULT = 8769
@@ -54,6 +59,36 @@ def daemon_port() -> int:
             return port
 
     return DAEMON_PORT_DEFAULT
+
+
+def public_host() -> str:
+    """Von außen erreichbarer Hostname dieses Knotens für App-Adressen (§
+    PLAN-22 Befund 6 — löst die zuvor an drei Stellen hartkodierte
+    ``127.0.0.1``-Adresse ab, die auf einem Remote-Host wie sarasate tot war).
+
+    Stufen: ``BIBI_PUBLIC_HOST`` (env > ``~/.config/bibi/env``) > Hostname aus
+    ``BIBI_SCHEDULER_URL`` > ``localhost``.
+
+    Stufe 2 ist nur eine Heuristik für Client-Rolle-Knoten (die überhaupt eine
+    ``BIBI_SCHEDULER_URL`` gesetzt haben) — kein Beweis, dass die eigene
+    Adresse im selben Netz liegt. **Host-Rolle-Knoten wie ein Scheduler selbst
+    haben kein ``BIBI_SCHEDULER_URL``, das auf sie selbst zeigt** — für sie
+    ist Stufe 1 nicht optional, sondern der einzige Weg zu einer für Remote-
+    Zugriff korrekten Adresse.
+    """
+    explicit = (os.environ.get("BIBI_PUBLIC_HOST", "").strip()
+                or read_env().get("BIBI_PUBLIC_HOST", "").strip())
+    if explicit:
+        return explicit
+
+    scheduler_url = (os.environ.get("BIBI_SCHEDULER_URL", "").strip()
+                      or read_env().get("BIBI_SCHEDULER_URL", "").strip())
+    if scheduler_url:
+        hostname = urlparse(scheduler_url).hostname
+        if hostname:
+            return hostname
+
+    return "localhost"
 
 
 def env_path() -> Path:

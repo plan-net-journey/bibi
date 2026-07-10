@@ -153,6 +153,49 @@ def _deregister_app_route(job_id: str) -> None:
     (_traefik_dynamic_dir(repo.root()) / f"{job_id}.yml").unlink(missing_ok=True)
 
 
+def _port_holder_pids(port: int) -> list[int]:
+    """PIDs, die aktuell auf ``port`` lauschen (best-effort via ``lsof``, leer
+    wenn ``lsof`` fehlt/nichts findet/fehlschlägt — nie hart scheitern, der
+    eigentliche ``bind()``-Versuch des neuen Prozesses bleibt die Wahrheit)."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"], capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    pids: list[int] = []
+    for tok in result.stdout.split():
+        try:
+            pids.append(int(tok))
+        except ValueError:
+            pass
+    return pids
+
+
+def _free_app_port_host(port: int, out_path: Path) -> None:
+    """Host-Mode-Pendant zu ``docker rm -f`` (Container-Cleanup, s.
+    ``_run_wrapper``): ein noch auf ``port`` bindender Vorgänger-Prozess (z. B.
+    ein ``start_new_session=True``-Wrapper-Kind, das einen Daemon-Neustart
+    überlebt hat) blockiert sonst den nächsten Start mit ``OSError: Address
+    already in use`` (live beobachtet, PLAN-22 Befund 4). Best-effort: SIGTERM
+    an alle Halter, kurz auf Freiwerden warten, dann weiter — kein Backstop-
+    SIGKILL nötig, ein neuer ``bind()``-Fehlschlag bleibt für den Aufrufer
+    ohnehin sichtbar (Job-Output/Exit-Code)."""
+    pids = _port_holder_pids(port)
+    if not pids:
+        return
+    output.append(out_path, "phase", f"port {port}: Vorgänger-Prozess wird beendet …")
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            pass
+    for _ in range(20):  # bis zu ~2s auf Freiwerden warten
+        if not _port_holder_pids(port):
+            return
+        time.sleep(0.1)
+
+
 def _terminate(proc: subprocess.Popen, *, job_id: str | None = None) -> None:
     """Lauf beenden. Container (D7): ``docker stop bibi-<id>`` gibt dem Job graceful
     SIGTERM + Frist (eskaliert selbst auf SIGKILL); zusätzlich die Host-Wrapper-Gruppe
@@ -289,9 +332,16 @@ def _run_wrapper(
     env.update(_exec_config())
     if exec_mode:
         env["BIBI_EXEC_MODE"] = exec_mode.strip().lower()
-    if _is_container():
+    # PLAN-22 Befund 3: _is_container() liest _exec_config() (Knoten-Config)
+    # frisch neu und würde einen gerade gesetzten Schedule-Override (Zeile
+    # zuvor) ignorieren — hier stattdessen den bereits aufgelösten env-Wert
+    # direkt prüfen, damit exec_mode: host im Schedule-MD auch dann gilt,
+    # wenn der Knoten global auf container steht.
+    if (env.get("BIBI_EXEC_MODE") or "host").strip().lower() == "container":
         output.append(out_path, "phase", "container: alte Instanz wird entfernt …")
         _docker(["rm", "-f", exec_backend.container_name(job_id)])
+    elif app_port:
+        _free_app_port_host(int(app_port), out_path)
 
     output.append(out_path, "phase", "wrapper: wird gestartet …")
     started = time.time()
@@ -466,6 +516,14 @@ _local_runs_live: dict[str, dict] = {}
 #: von außen beendbar, kein API-Weg).
 _local_runs_procs: dict[str, subprocess.Popen] = {}
 
+#: Slugs, deren aktueller lokaler Lauf per local_run_kill() beendet wurde —
+#: run_local() liest das nach _run_wrapper() aus, um den Endstatus als
+#: "killed"/"by_user" zu melden statt der reinen Exit-Code-Ableitung (PLAN-22
+#: Befund 5: ein KILL landete bisher als nicht unterscheidbares "failed" mit
+#: zufälligem Exit-Code, Grund-Spalte leer — write_local_journal() hat den
+#: reason-Parameter längst, er wurde nur nie befüllt).
+_local_runs_killed: set[str] = set()
+
 
 def local_run_start(slug: str, job_id: str, output_ref: str, kind: str, payload: str,
                     proc: subprocess.Popen | None = None) -> None:
@@ -480,6 +538,11 @@ def local_run_start(slug: str, job_id: str, output_ref: str, kind: str, payload:
 def local_run_end(slug: str) -> None:
     _local_runs_live.pop(slug, None)
     _local_runs_procs.pop(slug, None)
+    # Sicherheitsnetz: falls das Kill-Flag nie von run_local() konsumiert wurde
+    # (z. B. Kill kurz vor einem Fehler in _run_wrapper() selbst), darf es
+    # keinen späteren, unabhängigen Lauf desselben Slugs fälschlich als
+    # "killed" melden.
+    _local_runs_killed.discard(slug)
 
 
 def local_run_live(slug: str) -> dict | None:
@@ -504,6 +567,10 @@ def local_run_kill(slug: str) -> bool:
     proc = _local_runs_procs.get(slug)
     if live is None or proc is None or proc.poll() is not None:
         return False
+    # Vor _terminate() setzen (PLAN-22 Befund 5): run_local() liest das Flag
+    # nach dem Warten auf den Prozess aus, um den Endstatus als "killed" statt
+    # als Exit-Code-Ableitung zu melden.
+    _local_runs_killed.add(slug)
     _terminate(proc, job_id=live["id"])
     activity.emit(log, logging.INFO, "worker.local_kill", "Lokaler Lauf beendet (graceful)",
                   role="worker", slug=slug, run_id=live["id"])
@@ -540,11 +607,11 @@ def local_run_signal_state(events: list[dict]) -> dict:
             demand = {k: v for k, v in sig.items() if k != "name"}
             port = sig.get("port")
             if port:
-                app_url = f"http://127.0.0.1:{port}/"
+                app_url = f"http://{config.public_host()}:{port}/"
         elif name == "app_register":
             port = sig.get("port")
             if port:
-                app_url = f"http://127.0.0.1:{port}/"
+                app_url = f"http://{config.public_host()}:{port}/"
     return {"status": status, "app_url": app_url, "demand": demand}
 
 
@@ -598,14 +665,23 @@ def run_local(
         repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=True,
     )
     finished = time.time()
-    status = "complete" if code == 0 else "failed"
+    # PLAN-22 Befund 5: ein per local_run_kill() beendeter Lauf soll sich als
+    # "killed"/"by_user" melden, nicht als nicht unterscheidbares "failed" mit
+    # zufälligem Exit-Code (127/137/241/… je nachdem, wie der Prozess auf das
+    # Signal reagiert hat) — Flag konsumieren, bevor local_run_end() es sonst
+    # als Sicherheitsnetz aufräumt.
+    if eff_slug in _local_runs_killed:
+        _local_runs_killed.discard(eff_slug)
+        status, reason = "killed", "by_user"
+    else:
+        status, reason = ("complete" if code == 0 else "failed"), None
     rel = out_path.relative_to(repo_root).as_posix()
 
     conn = job_db.connect(db_path)
     try:
         job_db.write_local_journal(
             conn, run_id=f"{eff_slug}:{jid}", slug=eff_slug, kind=eff_kind,
-            status=status, exit_code=code, output_ref=rel,
+            status=status, exit_code=code, output_ref=rel, reason=reason,
             host=socket.gethostname(), worker=worker_name,
             started_at=started, finished_at=finished, payload=payload,
         )

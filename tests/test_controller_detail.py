@@ -422,8 +422,21 @@ def test_detail_shows_last_run_in_meta_and_live_state_in_panel():
     job = {"id": "j1", "slug": "witz", "status": "pending", "next_fire_at": None}
     html = render.schedule_detail_inner(s, runs, job, slug="witz", now=10.0)
     assert "letzter Lauf <b>error</b>" in html          # Journal-Historie in Meta
-    assert 'class="live"' in html and "aktiver Lauf" in html  # Live-Block
+    # PLAN-22 Befund 1: pending zeigt "wartet", nicht "aktiver Lauf" — es läuft
+    # ja noch gar nichts (kein started_at, leeres Journal).
+    assert 'class="live"' in html and "wartet" in html  # Live-Block
     assert '<h2>Journal</h2>' in html                    # Journal-Liste bleibt unten
+
+
+def test_detail_live_panel_pending_shows_wartet_not_aktiver_lauf():
+    # PLAN-22 Befund 1: "aktiver Lauf" suggeriert einen laufenden Prozess —
+    # pending hat weder started_at noch Output, es wartet nur auf den Start.
+    s = {"slug": "a", "kind": "job", "trigger": "now"}
+    job = {"id": "j", "slug": "a", "status": "pending", "next_fire_at": None}
+    html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
+    assert 'class="st pending">pending' in html
+    assert "wartet" in html
+    assert "aktiver Lauf" not in html
 
 
 def test_detail_live_panel_for_running_job():
@@ -432,6 +445,27 @@ def test_detail_live_panel_for_running_job():
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
     assert 'class="live"' in html and 'class="st running">running' in html
     assert "noch keine Läufe" in html                    # Journal noch leer
+
+
+def test_detail_app_link_defaults_to_localhost():
+    # PLAN-22 Befund 6: ohne explizit übergebenen public_host bleibt localhost
+    # der sichere Default (kein I/O in render.py — "pure" Funktionen, s.
+    # Moduldocstring — config.public_host() wird eine Ebene höher aufgelöst).
+    s = {"slug": "a", "kind": "job", "trigger": "now"}
+    job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0, "app_port": 9100}
+    html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
+    assert 'href="http://localhost:9100/"' in html
+
+
+def test_detail_app_link_uses_passed_public_host():
+    # Auf einem Remote-Host (sarasate) muss der Link eine erreichbare Adresse
+    # zeigen, nicht 127.0.0.1/localhost (live beobachtet, FeedbackOnJobManagement.md).
+    s = {"slug": "a", "kind": "job", "trigger": "now"}
+    job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0, "app_port": 9100}
+    html = render.schedule_detail_inner(
+        s, [], job, slug="a", now=5.0, public_host="sarasate.tail9f9173.ts.net")
+    assert 'href="http://sarasate.tail9f9173.ts.net:9100/"' in html
+    assert "127.0.0.1" not in html
 
 
 def test_detail_shows_live_panel_for_last_terminal_run():

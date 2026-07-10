@@ -477,13 +477,19 @@ def get_job_by_slug(conn: sqlite3.Connection, slug: str) -> dict | None:
     return job_full_view(row) if row else None
 
 
-#: Nicht-terminale Zeilen-Status, die gerade **aktiv** etwas Neues passieren
-#: (nicht bloß ein routinemäßiger Cron-Re-Arm wie `pending`) — die STATUS-Spalte
-#: zeigt sie direkt statt des letzten Journal-Ergebnisses (User-Feedback
-#: 2026-07-01: ein `failed`-Retry zeigte 40+s lang noch `error` vom vorherigen
-#: Zyklus, weil nur `running` als "live" galt — dieselbe Lücke hätte `awaiting`/
-#: `deferred` genauso getroffen).
-_LIVE_ROW_STATUSES = {"running", "failed", "awaiting", "deferred"}
+#: Nicht-terminale Zeilen-Status — die STATUS-Spalte zeigt sie direkt statt des
+#: letzten Journal-Ergebnisses (User-Feedback 2026-07-01: ein `failed`-Retry
+#: zeigte 40+s lang noch `error` vom vorherigen Zyklus, weil nur `running` als
+#: "live" galt — dieselbe Lücke hätte `awaiting`/`deferred` genauso getroffen).
+#: `pending` war hier ursprünglich bewusst ausgenommen ("nicht bloß ein
+#: routinemäßiger Cron-Re-Arm") — das griff aber nicht: ein wiederkehrender
+#: Job bleibt zwischen Zyklen `complete` und wird von `reserve_next()` direkt
+#: dorthin dispatcht (lazy Rearm), durchläuft `pending` also gar nie routine-
+#: mäßig. `pending` mit `started_at` ungleich `None` kommt praktisch nicht vor
+#: (RESET räumt `started_at` explizit, s. `report_status()`) — PLAN-22 Befund 2:
+#: nach RESET zeigte die Übersicht sonst weiterhin den alten Terminal-Status
+#: (z. B. "killed") statt "pending", weil genau dieser Ausschluss griff.
+_LIVE_ROW_STATUSES = {"running", "failed", "awaiting", "deferred", "pending"}
 
 
 def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:

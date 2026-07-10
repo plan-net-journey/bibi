@@ -388,11 +388,13 @@ def add_controller_routes(
 
     @app.get("/-/ui/schedule/{slug}", include_in_schema=False)
     def schedule_detail(slug: str):
+        from bibi import config
+
         schedule, runs, job = _detail_data(slug)
         live_output = _detail_outputs(job)
         return HTMLResponse(render.schedule_detail_page(
             schedule, runs, job, slug=slug, live_output=live_output,
-            daemon_status=_status()))
+            daemon_status=_status(), public_host=config.public_host()))
 
     @app.get("/-/ui/schedule/{slug}/live", include_in_schema=False)
     def schedule_live_fragment(slug: str):
@@ -400,10 +402,13 @@ def add_controller_routes(
         # #journal pollt bewusst NICHT mit (würde nachgeladene Infinite-Scroll-
         # Zeilen jeden Tick wieder plattmachen) — braucht `runs` trotzdem für
         # den last_status-Fallback in der Meta-Zeile.
+        from bibi import config
+
         schedule, runs, job = _detail_data(slug)
         live_output = _detail_outputs(job)
         return HTMLResponse(render.live_fragment(
-            schedule, runs, job, slug=slug, live_output=live_output))
+            schedule, runs, job, slug=slug, live_output=live_output,
+            public_host=config.public_host()))
 
     @app.get("/-/ui/schedule/{slug}/runs", include_in_schema=False)
     def schedule_runs_fragment(slug: str, offset: int = 0):
@@ -481,6 +486,8 @@ def add_controller_routes(
     # Sichtbarkeit/Scope (read-only vs. operator) wird in 4.6 (Traefik) erzwungen.
     @app.post("/-/ui/schedule/{slug}/{verb}", include_in_schema=False)
     def schedule_action(slug: str, verb: str):
+        from bibi import config
+
         if verb not in render._VERBS:
             return JSONResponse(status_code=404, content={"error": "unknown verb"})
         _, _, job = _detail_data(slug)
@@ -495,7 +502,8 @@ def add_controller_routes(
         # Journal-Zeile erzeugen (z. B. KILL), deshalb hier explizit per Out-of-
         # Band-Swap auf Seite 1 zurücksetzen, statt auf den nächsten Scroll zu warten.
         return HTMLResponse(
-            render.live_fragment(schedule, runs, job, slug=slug, now=now)
+            render.live_fragment(schedule, runs, job, slug=slug, now=now,
+                                 public_host=config.public_host())
             + render.journal_fragment(runs, slug, now, oob=True)
         )
 

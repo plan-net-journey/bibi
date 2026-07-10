@@ -67,7 +67,11 @@ def _isolate_node_config(tmp_path_factory, monkeypatch: pytest.MonkeyPatch):
     der Exec-Variablen neutralisieren."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("bibicfg")))
     for k in ("BIBI_EXEC_MODE", "BIBI_JOB_IMAGE", "BIBI_DOCKER_BIN",
-              "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
+              "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY",
+              # PLAN-22 Befund 6: config.public_host() liest beide — ohne
+              # Isolation würde die Shell-Umgebung des Test-Hosts in App-
+              # Adress-Tests leaken (analog zur bestehenden Begründung oben).
+              "BIBI_SCHEDULER_URL", "BIBI_PUBLIC_HOST"):
         monkeypatch.delenv(k, raising=False)
 
 

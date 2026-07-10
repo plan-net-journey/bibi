@@ -57,6 +57,7 @@ def _handle_signal(conn, job_id: str, sig: dict) -> None:
     ``deferred`` wird nicht hier behandelt — der Pump-Thread setzt ``outcome``
     direkt, da kein DB-Schreiben nötig (nur ``_finish`` ändert den Status).
     """
+    from bibi import config as _config
     from bibi.daemon import job_db as _jdb
     name = sig.get("name")
     if name == "running":
@@ -66,7 +67,7 @@ def _handle_signal(conn, job_id: str, sig: dict) -> None:
         if port is None:
             row = conn.execute("SELECT app_port FROM jobs WHERE id=?", (job_id,)).fetchone()
             port = row["app_port"] if row else None
-        app_url = f"http://127.0.0.1:{port}/" if port else None
+        app_url = f"http://{_config.public_host()}:{port}/" if port else None
         _jdb.report_status(conn, job_id, status="awaiting", app_url=app_url)
         _jdb.set_demand(conn, job_id, sig)
     elif name == "app_register":

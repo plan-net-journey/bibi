@@ -341,6 +341,118 @@ def test_run_wrapper_logs_worktree_and_spawn_phases(gitrepo: Path, monkeypatch):
     assert any("wird gestartet" in p for p in phases)
 
 
+def test_run_wrapper_respects_schedule_exec_mode_override_for_cleanup(
+    gitrepo: Path, monkeypatch):
+    # PLAN-22 Befund 3: Knoten-weite Config sagt "container" (z. B. Mac-Dogfood-
+    # Setup), das Schedule-MD sagt explizit exec_mode: host — die
+    # Container-Cleanup-Phase davor muss den Schedule-Override respektieren,
+    # nicht die globale Config erneut lesen (_is_container() tat genau das).
+    import sys
+    import types
+
+    import bibi.daemon.worker as W
+    from bibi.wrapper import output as _output
+
+    monkeypatch.setattr(W.config, "read_env", lambda: {"BIBI_EXEC_MODE": "container"})
+    monkeypatch.delenv("BIBI_EXEC_MODE", raising=False)
+
+    docker_calls: list[list[str]] = []
+    monkeypatch.setattr(W, "_docker", lambda args: docker_calls.append(args))
+
+    real_popen = W.subprocess.Popen
+
+    def fake_popen(*a, **kw):
+        if a and isinstance(a[0], list) and a[0][:1] == [sys.executable]:
+            return types.SimpleNamespace(pid=999)
+        return real_popen(*a, **kw)
+    monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
+
+    _, _, out_path, outcome, pid = W._run_wrapper(
+        job_id="j1", slug="hostoverride", kind="job", payload="echo hi",
+        exec_mode="host",
+        repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
+        run_id="hostoverride:0", detach=True,
+    )
+    assert outcome == "detached" and pid == 999
+    phases = _output.lines(out_path, "phase")
+    assert not any("alte Instanz" in p for p in phases)
+    assert docker_calls == []
+
+
+def test_run_wrapper_host_mode_no_cleanup_when_port_free(gitrepo: Path, monkeypatch):
+    # PLAN-22 Befund 4: kein Vorgänger auf dem app_port → kein SIGTERM, keine
+    # Phase-Meldung, kein Zeitverlust (Grundfall bleibt unauffällig).
+    import sys
+    import types
+
+    import bibi.daemon.worker as W
+    from bibi.wrapper import output as _output
+
+    monkeypatch.setattr(W, "_port_holder_pids", lambda port: [])
+    kills: list[tuple[int, int]] = []
+    monkeypatch.setattr(W.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+
+    real_popen = W.subprocess.Popen
+
+    def fake_popen(*a, **kw):
+        if a and isinstance(a[0], list) and a[0][:1] == [sys.executable]:
+            return types.SimpleNamespace(pid=999)
+        return real_popen(*a, **kw)
+    monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
+
+    _, _, out_path, outcome, pid = W._run_wrapper(
+        job_id="j1", slug="portfree", kind="job", payload="echo hi",
+        exec_mode="host", app_port=9100,
+        repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
+        run_id="portfree:0", detach=True,
+    )
+    assert outcome == "detached" and pid == 999
+    assert kills == []
+    phases = _output.lines(out_path, "phase")
+    assert not any("Vorgänger-Prozess" in p for p in phases)
+
+
+def test_run_wrapper_host_mode_frees_stale_app_port(gitrepo: Path, monkeypatch):
+    # PLAN-22 Befund 4: ein Vorgänger-Prozess hält den festen app_port noch
+    # (z. B. nach einem Daemon-Neustart überlebter Wrapper-Child) — Host-Mode
+    # muss ihn vor dem nächsten Start beenden, analog zu `docker rm -f` im
+    # Container-Modus (sonst OSError: Address already in use, live beobachtet).
+    import sys
+    import types
+
+    import bibi.daemon.worker as W
+    from bibi.wrapper import output as _output
+
+    calls = {"n": 0}
+
+    def fake_holder(port):
+        calls["n"] += 1
+        return [4242] if calls["n"] == 1 else []
+    monkeypatch.setattr(W, "_port_holder_pids", fake_holder)
+    kills: list[tuple[int, int]] = []
+    monkeypatch.setattr(W.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+    monkeypatch.setattr(W.time, "sleep", lambda s: None)
+
+    real_popen = W.subprocess.Popen
+
+    def fake_popen(*a, **kw):
+        if a and isinstance(a[0], list) and a[0][:1] == [sys.executable]:
+            return types.SimpleNamespace(pid=999)
+        return real_popen(*a, **kw)
+    monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
+
+    _, _, out_path, outcome, pid = W._run_wrapper(
+        job_id="j1", slug="portstale", kind="job", payload="echo hi",
+        exec_mode="host", app_port=9100,
+        repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
+        run_id="portstale:0", detach=True,
+    )
+    assert outcome == "detached" and pid == 999
+    assert kills == [(4242, W.signal.SIGTERM)]
+    phases = _output.lines(out_path, "phase")
+    assert any("Vorgänger-Prozess" in p for p in phases)
+
+
 @pytest.mark.slow
 def test_per_run_output_isolation(gitrepo: Path):
     # Wiederkehrender Job läuft zweimal (fire 0, dann 1) → **getrennte** Output-

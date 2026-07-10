@@ -449,6 +449,26 @@ def test_reset_increments_fire_and_allows_new_journal_entry(conn, tmp_path: Path
     assert s["last_status"] == "error"
 
 
+def test_schedule_view_shows_pending_after_reset_not_stale_terminal_status(conn, tmp_path: Path):
+    # PLAN-22 Befund 2: RESET setzt jobs.status auf pending zurück, erzeugt aber
+    # keinen neuen Journal-Eintrag — schedule_view() fiel deshalb auf den
+    # letzten (jetzt veralteten) Journal-Status zurück, obwohl die Zeile schon
+    # wieder pending ist (started_at ebenfalls schon von report_status() auf
+    # None geräumt, s. dort — kein Risiko einer irreführenden "seit"-Anzeige).
+    _write(tmp_path / "case" / "once.md", '---\nschedule: never\njob: "echo x"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jid = conn.execute("SELECT id FROM jobs WHERE slug='once'").fetchone()["id"]
+
+    job_db.report_status(conn, jid, status="running")
+    job_db.report_status(conn, jid, status="killed", reason="by_user")
+    job_db.report_status(conn, jid, status="pending")  # RESET
+
+    scheds = job_db.list_schedules(conn)
+    s = next(x for x in scheds if x["slug"] == "once")
+    assert s["last_status"] == "pending"
+    assert s["last_run_at"] is None
+
+
 # ── PLAN-11.2: last_ping_at + demand ─────────────────────────────────────────
 
 

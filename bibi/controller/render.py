@@ -2067,7 +2067,7 @@ def _run_rows(runs: list[dict], slug: str, now: float, *, base: str = _JOURNAL_B
 
 
 def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
-               slug: str = "") -> str:
+               slug: str = "", *, public_host: str = "localhost") -> str:
     """Eigener Block für den **aktuellen** Lauf (aktiv oder zuletzt beendet), nahe
     am Header. Bleibt auch nach einem Terminal-Übergang mit Status+Output stehen
     (User-Feedback 2026-07-01: "archiviert wird erst vor dem nächsten Rerun" —
@@ -2121,9 +2121,16 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
                + output_block(live_output["events"], live_output.get("kind", "job"))
                + "</div>")
     app_port = job.get("app_port") if job else None
-    app_link = (f' <a href="http://127.0.0.1:{app_port}/" target="_blank" '
+    app_link = (f' <a href="http://{public_host}:{app_port}/" target="_blank" '
                 f'style="font-size:.82rem">Zur App →</a>' if app_port else "")
-    label = "letzter Lauf" if is_terminal else "aktiver Lauf"
+    # PLAN-22 Befund 1: pending hat weder started_at noch Output — "aktiver
+    # Lauf" suggerierte fälschlich, dass gerade schon etwas läuft.
+    if is_terminal:
+        label = "letzter Lauf"
+    elif job.get("status") == "pending":
+        label = "wartet"
+    else:
+        label = "aktiver Lauf"
     return (f'<div class="live"><div class="live-head">'
             f'<span class="st {st}">{st}</span>'
             f'<span class="muted">{label}{tail}</span>{app_link}</div>{out}</div>')
@@ -2184,7 +2191,7 @@ def _action_bar(slug: str, job: dict | None) -> str:
 def live_fragment(
     schedule: dict | None, runs: list[dict], job: dict | None,
     slug: str = "", now: float | None = None,
-    *, live_output: dict | None = None,
+    *, live_output: dict | None = None, public_host: str = "localhost",
 ) -> str:
     """Der austauschbare Live-Kern (``#live``): Meta + Aktions-Leiste
     (START/RESET/KILL) + Live-Block (aktiver Lauf, Output default expanded).
@@ -2227,7 +2234,7 @@ def live_fragment(
         f"<h1>{name}</h1>"
         f'<div class="meta">{meta}</div>'
         f"{_action_bar(slug, job)}"
-        f"{_live_panel(job, now, live_output, slug=slug)}"
+        f"{_live_panel(job, now, live_output, slug=slug, public_host=public_host)}"
         "</div>"
     )
 
@@ -2235,13 +2242,14 @@ def live_fragment(
 def schedule_detail_inner(
     schedule: dict | None, runs: list[dict], job: dict | None,
     slug: str = "", now: float | None = None,
-    *, live_output: dict | None = None,
+    *, live_output: dict | None = None, public_host: str = "localhost",
 ) -> str:
     """Voller Detail-Kern für den initialen Seitenaufbau: ``#live`` (self-
     pollend) + ``#journal`` (einmalig, wächst nur per Infinite Scroll)."""
     now = time.time() if now is None else now
     return (
-        live_fragment(schedule, runs, job, slug, now, live_output=live_output)
+        live_fragment(schedule, runs, job, slug, now, live_output=live_output,
+                      public_host=public_host)
         + journal_fragment(runs, slug, now)
     )
 
@@ -2250,6 +2258,7 @@ def schedule_detail_page(
     schedule: dict | None, runs: list[dict], job: dict | None = None,
     slug: str = "", now: float | None = None,
     *, live_output: dict | None = None, daemon_status: dict | None = None,
+    public_host: str = "localhost",
 ) -> str:
     """Schedule-zentrierte Detail-Sicht (§3 Ebene 3) als volle Seite. Ops-Handles
     (RESCAN/MAINT) seit User-Feedback 2026-07-03 auch hier — außerhalb von
@@ -2268,7 +2277,7 @@ def schedule_detail_page(
         f'<a class="back" href="/-/">← zurück</a>'
         f'<a class="back" href="/-/ui/schedule/{_e(name)}/attrs">Attribute →</a>'
         f'</div>'
-        f"{schedule_detail_inner(schedule, runs, job, slug, now, live_output=live_output)}"
+        f"{schedule_detail_inner(schedule, runs, job, slug, now, live_output=live_output, public_host=public_host)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_LIVE_JS}</script>"
         f"<script>{_JOURNAL_AUTOREFRESH_JS}</script>"

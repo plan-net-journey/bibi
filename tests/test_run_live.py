@@ -104,7 +104,7 @@ def test_signal_state_awaiting_sets_status_demand_and_app_url():
                           "input_format": "text", "port": 9100})]
     state = worker.local_run_signal_state(events)
     assert state["status"] == "awaiting"
-    assert state["app_url"] == "http://127.0.0.1:9100/"
+    assert state["app_url"] == "http://localhost:9100/"
     assert state["demand"] == {"input_request": "ja/j?", "input_format": "text", "port": 9100}
 
 
@@ -124,15 +124,24 @@ def test_signal_state_running_after_awaiting_clears_demand_keeps_app_url():
     ]
     state = worker.local_run_signal_state(events)
     assert state["status"] == "running"
-    assert state["app_url"] == "http://127.0.0.1:9100/"
+    assert state["app_url"] == "http://localhost:9100/"
     assert state["demand"] is None
+
+
+def test_signal_state_app_url_uses_configured_public_host(monkeypatch):
+    # PLAN-22 Befund 6: die Adresse war zuvor hart auf 127.0.0.1 kodiert — auf
+    # einem Remote-Host (z. B. sarasate) für einen Client-Browser tot.
+    monkeypatch.setenv("BIBI_PUBLIC_HOST", "sarasate.tail9f9173.ts.net")
+    events = [_sig_event({"name": "awaiting", "input_request": "?", "port": 9100})]
+    state = worker.local_run_signal_state(events)
+    assert state["app_url"] == "http://sarasate.tail9f9173.ts.net:9100/"
 
 
 def test_signal_state_app_register_sets_app_url_without_awaiting():
     events = [_sig_event({"name": "app_register", "port": 9200})]
     state = worker.local_run_signal_state(events)
     assert state["status"] == "running"
-    assert state["app_url"] == "http://127.0.0.1:9200/"
+    assert state["app_url"] == "http://localhost:9200/"
     assert state["demand"] is None
 
 
@@ -256,7 +265,7 @@ def test_run_live_detail_includes_signal_derived_status_and_app_url(client_only,
     worker.local_run_start("myjob", "jid1", out_ref, "job", "python3 app.py")
     body = client_only.get("/-/run/live/myjob").json()
     assert body["status"] == "awaiting"
-    assert body["app_url"] == "http://127.0.0.1:9100/"
+    assert body["app_url"] == "http://localhost:9100/"
     assert body["demand"] == {"input_request": "ja/j?", "port": 9100}
 
 
