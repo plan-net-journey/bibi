@@ -59,6 +59,18 @@ def _apply_auto_sync_default(r: R.Roles) -> None:
         state.set_auto_sync(True)
 
 
+def _resolve_worker_name() -> str | None:
+    """Explizite Knoten-Identität für Worker/Heartbeat: ``BIBI_WORKER_NAME``
+    env > Config-Datei > ``None`` (⇒ Aufrufer fällt auf ``socket.gethostname()``
+    zurück). Getrennt von ``run()`` gehalten, damit ohne echten uvicorn-Start
+    testbar (wie ``_apply_auto_sync_default``). Nötig, sobald mehrere Instanzen
+    (Host + Client) unter demselben Hostnamen laufen — sonst kollidieren ihre
+    Team-Registry-Einträge auf demselben Dict-Key."""
+    name = (os.environ.get("BIBI_WORKER_NAME", "").strip()
+            or config.read_env().get("BIBI_WORKER_NAME", "").strip())
+    return name or None
+
+
 def run(args: argparse.Namespace) -> int:
     r, errs = resolve_from_args(args)
     if errs:
@@ -84,11 +96,13 @@ def run(args: argparse.Namespace) -> int:
     if r.connect:
         connect_url = os.environ.get("BIBI_SCHEDULER_URL") or config.read_env().get("BIBI_SCHEDULER_URL")
 
+    worker_name = _resolve_worker_name()
+
     worker = None
     if r.worker:
         from bibi.daemon.worker import Worker
         worker = Worker(
-            connect=r.connect, scheduler_url=connect_url,
+            connect=r.connect, scheduler_url=connect_url, worker_name=worker_name,
             secret=os.environ.get("BIBI_CONNECT_SECRET"),
         )
 
@@ -103,7 +117,7 @@ def run(args: argparse.Namespace) -> int:
             connect_url or "http://127.0.0.1:8769",
             secret=os.environ.get("BIBI_CONNECT_SECRET"),
         )
-        heartbeat = Heartbeat(client=hb_client, repo_root=repo.root())
+        heartbeat = Heartbeat(client=hb_client, repo_root=repo.root(), worker_name=worker_name)
 
     import uvicorn
 

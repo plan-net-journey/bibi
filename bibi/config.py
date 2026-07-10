@@ -20,6 +20,11 @@ KEYS: dict[str, str] = {
     # Pfad/Name des claude-Binaries (claude-Jobs). Default "claude" = via PATH;
     # absoluter Pfad nötig, wenn claude nicht auf dem (Service-)PATH liegt.
     "BIBI_CLAUDE_BIN": "claude",
+    # Knoten-Identität für Worker/Heartbeat (Team-Registry, §4.2/A12) — Default
+    # leer = socket.gethostname(). Explizit nötig, sobald mehrere Instanzen
+    # (Host + Client) unter demselben Hostnamen laufen, sonst überschreiben sich
+    # ihre Registry-Einträge gegenseitig (gleicher Dict-Key).
+    "BIBI_WORKER_NAME": "",
 }
 
 DAEMON_PORT_DEFAULT = 8769

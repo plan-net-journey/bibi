@@ -46,6 +46,7 @@ def run(args: argparse.Namespace) -> int:
         "BIBI_ROLE": "Rollen (kommagetrennt)",
         "BIBI_REMOTE": "Git-Remote",
         "BIBI_CLAUDE_BIN": "claude-Binary (Pfad/Name)",
+        "BIBI_WORKER_NAME": "Knoten-Name (leer = Hostname)",
     }
     for key, fallback in config.KEYS.items():
         default = existing.get(key) or fallback

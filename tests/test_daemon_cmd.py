@@ -15,6 +15,7 @@ def env_iso(team_repo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # ~/.config/bibi/env isolieren, damit kein echtes BIBI_ROLE durchsickert.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("BIBI_WORKER_NAME", raising=False)
     return team_repo
 
 
@@ -88,6 +89,40 @@ def test_apply_auto_sync_default_push_flag_wins_regardless_of_scheduler(env_iso)
     r, _errs = daemon_cmd.resolve_from_args(_args(synchronizer=True, push=True))
     daemon_cmd._apply_auto_sync_default(r)
     assert state.get_auto_sync() is True
+
+
+# --- _resolve_worker_name (Host+Client unter demselben Hostnamen, §4.2/A12) ---
+
+
+def test_resolve_worker_name_none_by_default(env_iso):
+    assert daemon_cmd._resolve_worker_name() is None
+
+
+def test_resolve_worker_name_from_env(env_iso, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("BIBI_WORKER_NAME", "sarasate-client")
+    assert daemon_cmd._resolve_worker_name() == "sarasate-client"
+
+
+def test_resolve_worker_name_from_config_file(env_iso):
+    from bibi import config
+    config.write_env({"BIBI_WORKER_NAME": "sarasate-client"})
+    assert daemon_cmd._resolve_worker_name() == "sarasate-client"
+
+
+def test_resolve_worker_name_env_takes_precedence_over_file(
+    env_iso, monkeypatch: pytest.MonkeyPatch
+):
+    from bibi import config
+    config.write_env({"BIBI_WORKER_NAME": "from-file"})
+    monkeypatch.setenv("BIBI_WORKER_NAME", "from-env")
+    assert daemon_cmd._resolve_worker_name() == "from-env"
+
+
+def test_resolve_worker_name_blank_falls_back_to_none(
+    env_iso, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("BIBI_WORKER_NAME", "  ")
+    assert daemon_cmd._resolve_worker_name() is None
 
 
 def test_run_returns_2_on_validation_error(env_iso):
