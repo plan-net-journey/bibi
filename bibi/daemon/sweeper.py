@@ -19,11 +19,20 @@ log = logging.getLogger("bibi.sweeper")
 
 class Sweeper:
     def __init__(self, *, db_path: Path | None = None, interval: float = 2.0,
-                 autorun: bool = True, registry=None) -> None:
+                 autorun: bool = True, registry=None,
+                 local_worker_name: str | None = None) -> None:
         self.db_path = db_path
         self.interval = interval
         self.autorun = autorun
         self.registry = registry  # WorkerRegistry für no_process-Reconcile (§3.6)
+        # Name des co-located Workers (falls aktiv) — nie als "stale" reconcilen,
+        # egal was in der Registry steht. Der lokale Worker registriert sich nie
+        # selbst dort (kein --connect nötig, um lokal zu dispatchen); lebt aber
+        # ein fremder --connect-Knoten zufällig unter demselben Namen (z. B.
+        # Hostname-Kollision bei co-located Host+Client), würde dessen veralteter
+        # Registry-Eintrag sonst fälschlich die eigenen laufenden Jobs killen —
+        # live gefunden 2026-07-11 (sarasate Host+Client-Deploy).
+        self.local_worker_name = local_worker_name
         self._task: asyncio.Task | None = None
         self._running = False
 
@@ -32,7 +41,7 @@ class Sweeper:
         try:
             out = job_db.sweep(conn)
             if self.registry is not None:  # verwaiste running-Jobs toter Worker
-                stale = self.registry.stale_workers()
+                stale = self.registry.stale_workers() - {self.local_worker_name}
                 out["no_process"] = job_db.reconcile_no_process(conn, stale)
             if any(out.values()):  # nur wenn wirklich etwas terminalisiert wurde
                 activity.emit(log, logging.INFO, "sweeper.reap", role="scheduler", **out)

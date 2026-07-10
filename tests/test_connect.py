@@ -72,6 +72,60 @@ def test_sweeper_reconciles_no_process(tmp_path: Path):
     conn.close()
 
 
+def test_sweeper_never_reconciles_local_worker_even_if_registry_entry_stale(tmp_path: Path):
+    # Live-Fund 2026-07-11 (sarasate Host+Client): ein fremder --connect-Knoten
+    # kann zufällig unter demselben Namen wie der co-located lokale Worker
+    # heartbeaten (Hostname-Kollision) und dessen Registry-Eintrag veralten
+    # lassen — das darf den eigenen, echt laufenden lokalen Job NIE killen.
+    import secrets
+    import time as _t
+
+    from bibi.daemon import job_db
+    from bibi.daemon.sweeper import Sweeper
+    p = tmp_path / "j.sqlite"
+    conn = job_db.connect(p)
+    jid = secrets.token_hex(4)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, worker, "
+        "enqueued_at, next_fire_at) VALUES (?,?,?,?,?, 'running', 'sarasate', ?, 0)",
+        (jid, "x", "x.md", "job", "e", _t.time()))
+    conn.close()
+    reg = WorkerRegistry()
+    reg.heartbeat("sarasate", "h", now=0)  # veralteter Fremd-Heartbeat, gleicher Name
+    sw = Sweeper(db_path=p, registry=reg, autorun=False, local_worker_name="sarasate")
+    assert sw.tick_once()["no_process"] == 0
+    conn = job_db.connect(p)
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "running"
+    conn.close()
+
+
+def test_sweeper_still_reconciles_other_stale_workers_when_local_name_set(tmp_path: Path):
+    # local_worker_name schützt nur den einen Namen — echte Fremd-Orphans
+    # anderer Worker werden weiterhin normal reconciliert.
+    import secrets
+    import time as _t
+
+    from bibi.daemon import job_db
+    from bibi.daemon.sweeper import Sweeper
+    p = tmp_path / "j.sqlite"
+    conn = job_db.connect(p)
+    jid = secrets.token_hex(4)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, worker, "
+        "enqueued_at, next_fire_at) VALUES (?,?,?,?,?, 'running', 'gone', ?, 0)",
+        (jid, "x", "x.md", "job", "e", _t.time()))
+    conn.close()
+    reg = WorkerRegistry()
+    reg.heartbeat("gone", "h", now=0)
+    sw = Sweeper(db_path=p, registry=reg, autorun=False, local_worker_name="sarasate")
+    assert sw.tick_once()["no_process"] == 1
+    conn = job_db.connect(p)
+    row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "killed" and row["reason"] == "no_process"
+    conn.close()
+
+
 # ── /-/worker-Routen (Scheduler-Rolle) ───────────────────────────────────────
 
 

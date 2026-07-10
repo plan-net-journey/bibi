@@ -467,7 +467,8 @@ def create_app(
     worker_registry = WorkerRegistry() if roles.scheduler else None
     if sweeper is None and roles.scheduler:
         from bibi.daemon.sweeper import Sweeper
-        sweeper = Sweeper(registry=worker_registry)
+        sweeper = Sweeper(registry=worker_registry,
+                          local_worker_name=worker.worker_name if worker is not None else None)
     if rescanner is None and roles.scheduler:
         from bibi.daemon.rescanner import Rescanner
         rescanner = Rescanner()
