@@ -289,20 +289,30 @@ def test_activity_signal_extends_deadline_while_awaiting(tmp_path):
 
 def test_worker_sets_bibi_silence_timeout(tmp_path):
     """_run_wrapper setzt BIBI_SILENCE_TIMEOUT in die Wrapper-Env (detach-Pfad)."""
+    import sys
     import subprocess as subprocess_mod
     from bibi.daemon import worker as _worker
     captured_env: list[dict] = []
     _orig_popen = subprocess_mod.Popen
 
     def mock_popen(argv, **kwargs):
-        captured_env.append(kwargs.get("env") or {})
-        return _orig_popen(
-            ["python", "-c", "import sys; sys.exit(0)"],
-            stdin=subprocess_mod.DEVNULL, stdout=subprocess_mod.PIPE,
-            stderr=subprocess_mod.PIPE,
-            env=kwargs.get("env"), cwd=None,
-            start_new_session=False,
-        )
+        # PLAN-22 Befund 4 (_free_app_port_host()) ruft vor dem eigentlichen
+        # Wrapper-Spawn best-effort `lsof` per subprocess.run() auf — das
+        # geht intern ebenfalls über Popen und würde hier sonst fälschlich
+        # als captured_env[0] landen. Nur den echten Wrapper-Spawn
+        # capturen (python -m bibi.wrapper), alles andere real durchlassen.
+        is_wrapper_spawn = (isinstance(argv, list) and len(argv) >= 2
+                            and argv[0] == sys.executable and argv[1] == "-m")
+        if is_wrapper_spawn:
+            captured_env.append(kwargs.get("env") or {})
+            return _orig_popen(
+                ["python", "-c", "import sys; sys.exit(0)"],
+                stdin=subprocess_mod.DEVNULL, stdout=subprocess_mod.PIPE,
+                stderr=subprocess_mod.PIPE,
+                env=kwargs.get("env"), cwd=None,
+                start_new_session=False,
+            )
+        return _orig_popen(argv, **kwargs)
 
     with (
         patch("bibi.daemon.worker.subprocess.Popen", side_effect=mock_popen),
