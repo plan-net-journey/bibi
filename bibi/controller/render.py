@@ -289,10 +289,15 @@ def _ago(ts: float | None, now: float) -> str:
 
 
 def _until(ts: float | None, now: float) -> str:
-    """Zukunfts-Distanz („in …") für „nächster Lauf". Vergangenes/None → „—"
-    (ein bereits gefeuerter/erledigter Trigger hat keinen nächsten Lauf)."""
-    if ts is None or ts <= now:
+    """Zukunfts-Distanz („in …") für „nächster Lauf". ``None`` (kein Trigger
+    gesetzt) → „—"; ein gesetzter, aber bereits fälliger/überfälliger
+    Zeitstempel → „asap" (PLAN-23 Befund 4 — vorher identisch zu None als
+    „—" gerendert, das versteckte u. a. einen zwischenzeitlich wiederbelebten
+    oneshot, s. Befund 1, hinter einer unauffälligen Anzeige)."""
+    if ts is None:
         return "—"
+    if ts <= now:
+        return "asap"
     d = int(ts - now)
     if d < 60:
         return f"in {d}s"
@@ -334,15 +339,27 @@ def _e(v) -> str:
 _TERMINAL_VIEW = {"complete", "error", "inactive", "zombie", "killed"}
 
 
+def _is_archived_oneshot(s: dict) -> bool:
+    """Ein abgeschlossener oneshot (`at:`-Einzellauf) gehört ins Archiv, auch
+    wenn seine MD noch da ist (PLAN-23 Befund 2) — nicht erneut startbar
+    (s. job_db.report_status()s PENDING-Sperre), macht als "aktiv" gelistet
+    keinen Sinn mehr. Wiederkehrende Schedules (oneshot=False) bleiben bei
+    complete Teil der aktiven Rotation (Lazy Rearm)."""
+    return bool(s.get("oneshot")) and s.get("last_status") == "complete"
+
+
 def _group_schedules(schedules: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
     """Registrierungs-Drei-Gruppen (PLAN-14 Stufe 14.6, orthogonal zum Laufzeit-
-    Status): aktiv (MD entdeckt) / inaktiv (DB-Zeile ohne MD) / journal (nur
-    Journal-Historie, kein jobs-Eintrag mehr). Fehlt der ``active``-Key (ältere
-    Fixtures), gilt der Schedule als aktiv."""
-    active = [s for s in schedules if s.get("active", True) is True]
-    inactive = [s for s in schedules if s.get("active", True) is False]
+    Status): aktiv (MD entdeckt) / archive (MD entfernt ODER abgeschlossener
+    oneshot, PLAN-23 Befund 2) / journal (nur Journal-Historie, kein
+    jobs-Eintrag mehr). Fehlt der ``active``-Key (ältere Fixtures), gilt der
+    Schedule als aktiv."""
+    active = [s for s in schedules
+              if s.get("active", True) is True and not _is_archived_oneshot(s)]
+    archive = [s for s in schedules
+              if s.get("active", True) is False or _is_archived_oneshot(s)]
     journaled = [s for s in schedules if s.get("active", True) is None]
-    return active, inactive, journaled
+    return active, archive, journaled
 
 
 def _sched_row(s: dict, now: float) -> str:
@@ -379,18 +396,19 @@ def _sched_table(items: list[dict], now: float) -> str:
 
 def schedule_list(schedules: list[dict], now: float | None = None) -> str:
     """Die volle Liste, gruppiert nach Registrierungs-Zustand (PLAN-14 Stufe
-    14.6): Aktiv (MD entdeckt) / Inaktiv (DB-Zeile ohne MD) / Journal (nur
-    Journal-Historie). Flach + immer sichtbar, kein Klapp mehr — überlebt so
-    den 2s-Poll ohne Expand-Verlust."""
+    14.6, erweitert PLAN-23 Befund 2): Aktiv (MD entdeckt) / Archive (MD
+    entfernt ODER abgeschlossener oneshot) / Journal (nur Journal-Historie).
+    Flach + immer sichtbar, kein Klapp mehr — überlebt so den 2s-Poll ohne
+    Expand-Verlust."""
     now = time.time() if now is None else now
     head = f'<h2>Schedules ({len(schedules)})</h2>'
     if not schedules:
         return head + '<p class="out-empty">— no schedules —</p>'
-    active, inactive, journaled = _group_schedules(schedules)
+    active, archive, journaled = _group_schedules(schedules)
     body = (_sched_table(active, now) if active
             else '<p class="out-empty">— no active schedules —</p>')
-    if inactive:
-        body += f'<h3>Inactive — MD removed ({len(inactive)})</h3>' + _sched_table(inactive, now)
+    if archive:
+        body += f'<h3>Archive ({len(archive)})</h3>' + _sched_table(archive, now)
     if journaled:
         body += f'<h3>Journal — history only ({len(journaled)})</h3>' + _sched_table(journaled, now)
     return head + body
@@ -449,7 +467,10 @@ _LANDING_COLOR = {
     "error": "#e06c5a",      # rot — endgültig gescheitert (Retries erschöpft)
     "zombie": "#e0567f",     # rose — Silence-Timeout, eigener Ton statt Dublette zu error
     "killed": "#e08a3e",     # orange — User-/System-Abbruch, eigener Ton statt Dublette zu waiting
-    "inactive": "#8888a0",   # grau — administrativ (Schedule entfernt), kein Lauf-Ausgang
+    # grau — Job-STATUS "inactive" (deferred-Frist abgelaufen, s. sweep()),
+    # nicht zu verwechseln mit dem gleichnamigen Registrierungs-Flag
+    # active=False (MD entfernt) — zwei unabhängige Konzepte, PLAN-23 Befund 2.
+    "inactive": "#8888a0",
 }
 
 #: Auflösungs-Presets (Bucket-Minuten → Fenster in Stunden) — Bucket-Zahl bleibt

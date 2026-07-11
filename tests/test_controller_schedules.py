@@ -32,14 +32,14 @@ def test_schedule_list_groups_by_active_flag():
     items = [_sched("a", active=True), _sched("b", active=False),
              _sched("c", active=None)]
     html = render.schedule_list(items, now=1000.0)
-    assert 'href="/-/ui/schedule/a"' in html.split("Inactive")[0]
-    assert "Inactive" in html and 'href="/-/ui/schedule/b"' in html.split("Inactive")[1].split("Journal")[0]
+    assert 'href="/-/ui/schedule/a"' in html.split("Archive")[0]
+    assert "Archive" in html and 'href="/-/ui/schedule/b"' in html.split("Archive")[1].split("Journal")[0]
     assert "Journal" in html and 'href="/-/ui/schedule/c"' in html.split("Journal")[1]
 
 
-def test_schedule_list_no_inactive_or_journal_heading_when_all_active():
+def test_schedule_list_no_archive_or_journal_heading_when_all_active():
     html = render.schedule_list([_sched("a", active=True)], now=1000.0)
-    assert "Inactive" not in html and "Journal —" not in html
+    assert "Archive" not in html and "Journal —" not in html
 
 
 def test_schedule_list_default_active_true_when_key_missing():
@@ -48,8 +48,41 @@ def test_schedule_list_default_active_true_when_key_missing():
     item = _sched("a")
     del item["active"]
     html = render.schedule_list([item], now=1000.0)
-    assert "Inactive" not in html and "Journal —" not in html
+    assert "Archive" not in html and "Journal —" not in html
     assert 'href="/-/ui/schedule/a"' in html
+
+
+# ── PLAN-23 Befund 2 — abgeschlossene oneshots wandern ins Archive ──────────
+
+
+def test_schedule_list_completed_oneshot_with_md_goes_to_archive():
+    # PLAN-23 Befund 2: ein `at:`-Einzellauf (oneshot=True), der complete
+    # abgeschlossen hat, gehört ins Archive, auch wenn seine MD noch da ist
+    # (active=True) — anders als früher (PLAN-14 14.6: "bleibt einfach aktiv").
+    items = [_sched("done", active=True, oneshot=True, last_status="complete")]
+    html = render.schedule_list(items, now=1000.0)
+    assert "Archive" in html
+    assert 'href="/-/ui/schedule/done"' in html.split("Archive")[1]
+    assert 'href="/-/ui/schedule/done"' not in html.split("Archive")[0]
+
+
+def test_schedule_list_pending_oneshot_with_md_stays_active():
+    # Regressionsschutz: ein NOCH NICHT abgeschlossener oneshot bleibt aktiv —
+    # nur last_status=="complete" verschiebt ihn ins Archive.
+    items = [_sched("waiting", active=True, oneshot=True, last_status="pending")]
+    html = render.schedule_list(items, now=1000.0)
+    assert "Archive" not in html
+    assert 'href="/-/ui/schedule/waiting"' in html
+
+
+def test_schedule_list_completed_recurring_stays_active():
+    # Regressionsschutz: ein abgeschlossener WIEDERKEHRENDER Schedule
+    # (oneshot=False) gehört weiter zur aktiven Rotation (Lazy Rearm), nicht
+    # ins Archive — nur echte oneshots werden bei complete archiviert.
+    items = [_sched("cron", active=True, oneshot=False, last_status="complete")]
+    html = render.schedule_list(items, now=1000.0)
+    assert "Archive" not in html
+    assert 'href="/-/ui/schedule/cron"' in html
 
 
 # ── Filter (pure) ─────────────────────────────────────────────────────────────

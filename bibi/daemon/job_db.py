@@ -333,6 +333,14 @@ def upsert_schedule(conn: sqlite3.Connection, pr: ParseResult, now: float) -> st
         return job_id
     if existing["status"] in _FROZEN_UNTIL_USER_ACTION:
         cols.pop("next_fire_at", None)
+    elif existing["status"] == "complete" and cols.get("schedule") is None:
+        # PLAN-23 Befund 1: ein abgeschlossener oneshot (`at:`, schedule=None)
+        # darf beim Rescan nicht "geheilt" werden — compute_next_fire() hat für
+        # at: keine Vergangenheits-Prüfung, ein NULL hier ist gewollter
+        # Dauerzustand (wie bei _FROZEN_UNTIL_USER_ACTION), kein Unfall.
+        # Wiederkehrende complete-Jobs (schedule gesetzt) durchlaufen weiter
+        # den Zweig darunter — deren Heilung bleibt unangetastet.
+        cols.pop("next_fire_at", None)
     elif existing["status"] in _PRESERVE_NEXT_FIRE_AT and existing["next_fire_at"] is not None:
         cols.pop("next_fire_at", None)
     cols["updated_at"] = now
@@ -712,6 +720,12 @@ def report_status(
         # driftete aber trotzdem bei jedem Wiederholungs-Report nach vorn.
         return "ok"
     if target != current and target not in lifecycle.targets(current, kind=Kind(row["kind"])):
+        return "invalid"
+    # PLAN-23 Befund 3: lifecycle.py erlaubt (COMPLETE, RESET) → PENDING generell
+    # (richtig für wiederkehrende Schedules) — ein abgeschlossener oneshot
+    # (`at:`, schedule=None) ist mit complete aber erledigt; eine neue
+    # Ausführung braucht ein neues MD (neuer Slug), keinen Reset des alten.
+    if target is Status.PENDING and current is Status.COMPLETE and row["schedule"] is None:
         return "invalid"
 
     fields: dict = {"status": target.value, "reason": reason, "updated_at": now}

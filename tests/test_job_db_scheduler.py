@@ -202,6 +202,29 @@ def test_report_illegal_transition_rejected(conn):
     assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "pending"
 
 
+def test_reset_rejected_for_completed_oneshot(conn):
+    # PLAN-23 Befund 3: lifecycle.py erlaubt (COMPLETE, RESET) → PENDING
+    # generell (richtig für wiederkehrende Jobs) — für einen abgeschlossenen
+    # oneshot (`at:`, schedule=None) muss das serverseitig verboten sein, die
+    # UI blendet den RESET-Button dafür zwar aus (_VERBS_FOR_STATUS), aber
+    # ein direkter API-Call ging bisher trotzdem durch.
+    jid = _insert(conn, "once", 0, time.time())
+    conn.execute("UPDATE jobs SET status='complete', schedule=NULL WHERE id=?", (jid,))
+    conn.commit()
+    assert job_db.report_status(conn, jid, status="pending") == "invalid"
+    assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "complete"
+
+
+def test_reset_still_allowed_for_completed_recurring(conn):
+    # Regressionsschutz: der Befund-3-Fix darf RESET für wiederkehrende
+    # Schedules (schedule gesetzt) nicht antasten.
+    jid = _insert(conn, "recurring", 0, time.time())
+    conn.execute("UPDATE jobs SET status='complete', schedule='0 9 * * *' WHERE id=?", (jid,))
+    conn.commit()
+    assert job_db.report_status(conn, jid, status="pending") == "ok"
+    assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "pending"
+
+
 def test_report_not_found(conn):
     assert job_db.report_status(conn, "deadbeef", status="running") == "not_found"
 
@@ -574,11 +597,28 @@ def test_start_now_archives_terminal_status_to_pending(conn, status):
     # PLAN-14 Stufe 14.2: START auf error/inactive/zombie/killed/complete
     # archiviert wie RESET, erzwingt aber zusätzlich next_fire_at=now — RESET
     # allein respektiert stattdessen den Trigger (Follow-up-Fix, 2026-07-01).
-    jid = _seed_full(conn, slug="x", status=status, next_fire_at=None)
+    # schedule explizit gesetzt (wiederkehrend): PLAN-23 Befund 3 sperrt
+    # complete+oneshot (schedule=None) gezielt — dieser Test prüft den
+    # generischen, nicht-oneshot-Fall, s. eigener Test für die Sperre.
+    jid = _seed_full(conn, slug="x", status=status, next_fire_at=None,
+                     schedule="0 9 * * *")
     assert job_db.start_now(conn, jid) == "ok"
     row = conn.execute("SELECT status, next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
     assert row["status"] == "pending"
     assert row["next_fire_at"] is not None
+
+
+def test_start_now_rejected_for_completed_oneshot(conn):
+    # PLAN-23 Befund 3: start_now() archiviert komplett-Status via
+    # report_status() (s. _ARCHIVE_AND_START) — die dortige Sperre greift
+    # also auch für START, nicht nur für den direkten RESET-Aufruf. Deckt
+    # sich mit der User-Vorgabe "können dann nicht mehr erneut ausgeführt
+    # werden" (kein Re-Run über irgendeinen Verb-Pfad).
+    jid = _seed_full(conn, slug="once", status="complete", next_fire_at=None,
+                     schedule=None)
+    assert job_db.start_now(conn, jid) == "invalid"
+    row = conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "complete"
 
 
 @pytest.mark.parametrize("status", ["running", "awaiting"])

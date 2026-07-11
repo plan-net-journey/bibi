@@ -31,10 +31,15 @@ def _seed_complete(lines: list[tuple[str, str]]) -> str:
     run_id = job_db.run_id_for("run1", jid, 0)
     conn = job_db.connect()
     try:
+        # schedule gesetzt (wiederkehrend): PLAN-23 Befund 3 sperrt RESET nur
+        # für complete+oneshot (schedule=None) — dieser Helper testet den
+        # generischen Fall, nicht die oneshot-Sperre selbst.
         conn.execute(
             "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, host, "
-            "worker, output_ref, enqueued_at) VALUES (?,?,?,?,?, 'complete', 'h','w1',?,?)",
-            (jid, "run1", "run1.md", "job", "echo", f"data/job/{run_id}/output.jsonl", time.time()),
+            "worker, output_ref, enqueued_at, schedule) "
+            "VALUES (?,?,?,?,?, 'complete', 'h','w1',?,?,?)",
+            (jid, "run1", "run1.md", "job", "echo", f"data/job/{run_id}/output.jsonl", time.time(),
+             "0 9 * * *"),
         )
     finally:
         conn.close()
@@ -297,6 +302,25 @@ def test_reset_complete_to_pending(client):
     r = client.post(f"/-/job/{jid}/reset")
     assert r.status_code == 200
     assert client.get(f"/-/job/{jid}/status").json()["status"] == "pending"
+
+
+def test_reset_completed_oneshot_is_409(client):
+    # PLAN-23 Befund 3: ein abgeschlossener oneshot (`at:`, schedule=None)
+    # darf über die Route nicht mehr resettbar sein — Gegenstück zu
+    # test_reset_complete_to_pending (dort: wiederkehrend, schedule gesetzt).
+    jid = secrets.token_hex(4)
+    conn = job_db.connect()
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+            "enqueued_at, schedule) VALUES (?,?,?,?,?, 'complete', ?, NULL)",
+            (jid, "once", "once.md", "job", "echo", time.time()),
+        )
+    finally:
+        conn.close()
+    r = client.post(f"/-/job/{jid}/reset")
+    assert r.status_code == 409
+    assert client.get(f"/-/job/{jid}/status").json()["status"] == "complete"
 
 
 def test_reset_running_is_409(client):

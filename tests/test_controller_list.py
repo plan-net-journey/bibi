@@ -2,9 +2,11 @@
 
 Quick-Spalten slug/status/last/next. Die frühere Archiv-Klapp-Logik für
 abgelaufene One-shots ist mit PLAN-14 Stufe 14.6 vollständig durch das
-Registrierungs-Drei-Gruppen-Modell ersetzt (Aktiv/Inaktiv/Journal, siehe
-test_controller_schedules.py) — ein abgelaufener One-shot mit noch vorhandener
-MD landet jetzt einfach in „Aktiv", kein Collapse mehr."""
+Registrierungs-Drei-Gruppen-Modell ersetzt (Aktiv/Archive/Journal, siehe
+test_controller_schedules.py). PLAN-23 Befund 2 verfeinert das nochmal: ein
+abgeschlossener oneshot (`at:`) mit noch vorhandener MD landet jetzt NICHT
+mehr in „Aktiv", sondern im Archive (nicht mehr erneut startbar, s. Befund
+3) — anders als PLAN-14 14.6 das ursprünglich vorsah."""
 
 from __future__ import annotations
 
@@ -41,36 +43,64 @@ def test_schedule_list_active_rows_and_links():
     assert "complete" in html
 
 
-def test_schedule_list_expired_oneshot_with_md_stays_active():
-    # PLAN-14 Stufe 14.6: ein abgelaufener One-shot mit noch vorhandener MD
-    # (active=True) landet einfach in "Aktiv" — keine separate Archivierung
-    # mehr allein aufgrund des Terminal-Status.
+def test_schedule_list_completed_oneshot_with_md_moves_to_archive():
+    # PLAN-23 Befund 2 (ersetzt die PLAN-14-14.6-Annahme "bleibt einfach
+    # aktiv"): ein complete abgeschlossener oneshot gehört jetzt ins Archive,
+    # auch wenn seine MD noch da ist — nicht mehr erneut startbar (Befund 3).
+    # Ein NICHT abgeschlossener recurring-Schedule bleibt unverändert aktiv.
     items = [
         _sched("recurring", trigger="0 9 * * *", last_status="pending"),
         _sched("done-oneshot", trigger="2026-06-26T20:00:00", oneshot=True,
                last_status="complete", last_run_at=100.0, active=True),
     ]
     html = render.schedule_list(items, now=300.0)
-    assert "recurring" in html and "done-oneshot" in html
-    assert "Inaktiv" not in html and "Journal —" not in html
+    assert "recurring" in html.split("Archive")[0]
+    assert "Archive" in html and "done-oneshot" in html.split("Archive")[1]
 
 
 def test_schedule_list_next_is_future_worded():
-    # „nächster" in der Zukunft → „in …"; Vergangenheit → „—" (kein „vor").
+    # „nächster" in der Zukunft → „in …"; None → „—"; fällig/überfällig
+    # (gesetzt, aber ≤ now) → „asap" (PLAN-23 Befund 4 — vorher identisch zu
+    # None als „—" gerendert, das machte den PLAN-23-Befund-1-Bug in der UI
+    # unsichtbar).
     future = render.schedule_list(
         [_sched("soon", trigger="0 9 * * *", next_fire_at=360.0)], now=300.0)
     assert "in 1 min" in future
     past = render.schedule_list(
         [_sched("done", trigger="0 9 * * *", last_status="complete",
                 next_fire_at=100.0)], now=300.0)
-    # in der next-Spalte kein „X min ago" mehr
+    # in der next-Spalte kein „X min ago" mehr, sondern „asap"
     assert "3 min ago" not in past.split(">next<", 1)[1]
+    assert "asap" in past.split(">next<", 1)[1]
+    none_html = render.schedule_list(
+        [_sched("idle", trigger="never", next_fire_at=None)], now=300.0)
+    assert "asap" not in none_html.split(">next<", 1)[1]
 
 
 def test_schedule_list_escapes_slug():
     html = render.schedule_list([_sched("<x>", oneshot=False)])
     assert "<x>" not in html.replace("/-/ui/schedule/", "")
     assert "&lt;x&gt;" in html
+
+
+# ── PLAN-23 Befund 4 — _until() direkt (drei Zustände) ───────────────────────
+
+
+def test_until_none_is_dash():
+    assert render._until(None, 300.0) == "—"
+
+
+def test_until_future_is_in_x():
+    assert render._until(360.0, 300.0) == "in 1 min"
+
+
+def test_until_past_is_asap():
+    assert render._until(100.0, 300.0) == "asap"
+
+
+def test_until_exactly_now_is_asap():
+    # ts == now zählt als fällig, nicht als Zukunft (kein "in 0s").
+    assert render._until(300.0, 300.0) == "asap"
 
 
 # ── Route ────────────────────────────────────────────────────────────────────

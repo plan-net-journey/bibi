@@ -190,6 +190,45 @@ def test_rescan_recomputes_next_fire_at_when_stuck_at_none_while_complete(conn, 
     assert row["next_fire_at"] > time.time()
 
 
+def test_rescan_does_not_rearm_completed_oneshot(conn, tmp_path: Path):
+    # PLAN-23 Befund 1: ein `at:`-Einzellauf (oneshot, schedule=None), der
+    # complete abschließt, bekommt next_fire_at=None (report_status()). Die
+    # bestehende "heile ein None"-Logik für complete (s. Test oben, dort
+    # korrekt für wiederkehrende Schedules) griff hier fälschlich auch —
+    # compute_next_fire() hat für at: keine Vergangenheits-Prüfung, parst
+    # den längst vergangenen at:-Zeitstempel einfach erneut → reserve_next()
+    # dispatcht den Job unbegrenzt oft erneut (live per Repro bestätigt,
+    # 3 Zyklen reserve_next→complete→rescan feuerten je erneut). Ein
+    # abgeschlossener Einzelauftrag ("schicke einmal diese Mail") darf sich
+    # nicht von selbst wiederholen.
+    md = tmp_path / "case" / "once" / "README.md"
+    _write(md, '---\nat: "2020-01-01T00:00:00"\njob: "echo a"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jid = job_db.list_jobs(conn)[0]["id"]
+    conn.execute("UPDATE jobs SET status='complete', next_fire_at=NULL WHERE id=?", (jid,))
+    conn.commit()
+    job_db.rescan(conn, vault_root=tmp_path / "case")  # z.B. periodischer Sync
+    row = conn.execute("SELECT next_fire_at, schedule FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["schedule"] is None  # oneshot — Gegenprobe zur Fallunterscheidung
+    assert row["next_fire_at"] is None, "abgeschlossener oneshot darf nicht rearmed werden"
+
+
+def test_rescan_still_heals_recurring_complete_stuck_at_none(conn, tmp_path: Path):
+    # Regressionsschutz: der Befund-1-Fix darf die bestehende Heilung für
+    # WIEDERKEHRENDE Schedules (schedule != None) nicht antasten — nur echte
+    # oneshots (schedule=None) werden bei complete eingefroren.
+    md = tmp_path / "case" / "hello" / "README.md"
+    _write(md, '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jid = job_db.list_jobs(conn)[0]["id"]
+    conn.execute("UPDATE jobs SET status='complete', next_fire_at=NULL WHERE id=?", (jid,))
+    conn.commit()
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    row = conn.execute("SELECT next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["next_fire_at"] is not None
+    assert row["next_fire_at"] > time.time()
+
+
 def test_rescan_never_rearms_frozen_statuses(conn, tmp_path: Path):
     # User-Feedback 2026-07-05 (real beobachtet bei news-aggregator):
     # report_status() setzt beim Übergang in error/killed/inactive/zombie
