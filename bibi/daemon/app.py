@@ -447,6 +447,24 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
             return JSONResponse(status_code=409, content={"error": "not pending", "id": id})
         return {"id": id, "status": "started"}
 
+    @app.post("/-/job/{id}/rebuild", tags=["job"])
+    def job_rebuild_image(id: str):  # noqa: A002
+        # PLAN-24 Befund 5: per-Job-Image verwerfen — eigenständige Aktion,
+        # bewusst getrennt von START/RESET (die das Image nie antasten).
+        conn = job_db.connect(worker.db_path)
+        try:
+            info = job_db.get_job_exec_mode(conn, id)
+        finally:
+            conn.close()
+        if info is None:
+            return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
+        slug, exec_mode = info
+        if (exec_mode or "host").strip().lower() != "container":
+            return JSONResponse(status_code=409, content={"error": "not a container job", "id": id})
+        if not worker.rebuild_job_image(slug):
+            return JSONResponse(status_code=502, content={"error": "docker command failed", "id": id})
+        return {"id": id, "slug": slug, "rebuilt": True}
+
 
 def create_app(
     roles: Roles, synchronizer=None, worker: Worker | None = None, sweeper=None,

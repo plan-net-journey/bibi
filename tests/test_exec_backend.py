@@ -35,41 +35,60 @@ def test_host_mode_falls_back_to_worktree_without_job_cwd():
     assert spec.cwd == "/wt"
 
 
-def test_container_mode_wraps_in_docker_run():
+def test_container_mode_wraps_in_docker_run(monkeypatch):
+    monkeypatch.setattr(exec_backend, "_host_uid", lambda: 1000)
     env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
            "BIBI_JOB_ID": "abc123", "BIBI_DOCKER_BIN": "/d/docker",
            "BIBI_JOB_IMAGE": "img:1", "PATH": "/usr/bin"}
     spec = exec_backend.build_exec(["claude", "-p", "x"], env)
     assert spec.cwd is None
-    assert spec.argv[:9] == [
+    assert spec.argv[:13] == [
         "/d/docker", "run", "--rm", "--name", "bibi-abc123",
-        "-v", "/wt:/workspace", "-w", "/workspace"]
+        "--user", "1000:0",
+        "-v", "/wt:/workspace", "-w", "/workspace",
+        "-e", "HOME=/root"]
     assert spec.argv[-3:] == ["img:1", "claude", "-p", "x"][-3:]
     assert spec.argv[-4:] == ["img:1", "claude", "-p", "x"]
     # docker-bin-Dir vorne im PATH (Cred-Helper)
     assert spec.env["PATH"].startswith("/d" + os.pathsep)
 
 
-def test_container_mode_uses_job_cwd_as_workdir_subpath():
+def test_container_mode_uses_job_cwd_as_workdir_subpath(monkeypatch):
+    monkeypatch.setattr(exec_backend, "_host_uid", lambda: 1000)
     env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
            "BIBI_JOB_CWD": "/wt/vault/case/foo",
            "BIBI_JOB_ID": "abc123", "BIBI_DOCKER_BIN": "/d/docker",
            "BIBI_JOB_IMAGE": "img:1", "PATH": "/usr/bin"}
     spec = exec_backend.build_exec(["claude", "-p", "x"], env)
-    assert spec.argv[:9] == [
+    assert spec.argv[:13] == [
         "/d/docker", "run", "--rm", "--name", "bibi-abc123",
-        "-v", "/wt:/workspace", "-w", "/workspace/vault/case/foo"]
+        "--user", "1000:0",
+        "-v", "/wt:/workspace", "-w", "/workspace/vault/case/foo",
+        "-e", "HOME=/root"]
+
+
+def test_container_mode_runs_as_mapped_host_user():
+    # PLAN-24 Befund 5: "arbitrary UID"-Konvention statt dauerhaft root — GID
+    # immer 0 ("root"-Gruppe, passwortloses sudo im Image), UID = Host-UID
+    # (im Bind-Mount geschriebene Dateien gehören dadurch dem Host-User).
+    env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
+           "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker"}
+    spec = exec_backend.build_exec(["sh"], env)
+    assert "--user" in spec.argv
+    i = spec.argv.index("--user")
+    assert spec.argv[i + 1] == f"{os.getuid()}:0"
+    assert "HOME=/root" in spec.argv
 
 
 def test_container_passes_api_key_only_when_set():
     base = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
             "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker"}
     without = exec_backend.build_exec(["sh"], base)
-    assert "-e" not in without.argv
+    assert "ANTHROPIC_API_KEY" not in without.argv
     with_key = exec_backend.build_exec(["sh"], {**base, "ANTHROPIC_API_KEY": "sk-x"})
-    assert "-e" in with_key.argv
-    i = with_key.argv.index("-e")
-    assert with_key.argv[i + 1] == "ANTHROPIC_API_KEY"   # nur Name, Wert vom Host
+    assert "ANTHROPIC_API_KEY" in with_key.argv
+    i = with_key.argv.index("ANTHROPIC_API_KEY")
+    assert with_key.argv[i - 1] == "-e"   # nur Name, Wert vom Host
 
 
 def test_container_passes_oauth_token():
@@ -87,6 +106,68 @@ def test_default_image_when_unset():
         ["sh"], {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
                  "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker"})
     assert exec_backend.DEFAULT_IMAGE in spec.argv
+
+
+# ── PLAN-24 Befund 5: Job-Image-Persistenz ───────────────────────────────────
+
+def test_container_mode_uses_rm_without_persist_flag():
+    env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
+           "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker"}
+    spec = exec_backend.build_exec(["sh"], env)
+    assert "--rm" in spec.argv
+
+
+def test_container_mode_omits_rm_with_persist_flag():
+    # Der Container muss nach dem Lauf noch existieren, damit `docker commit`
+    # ihn snapshotten kann — finalize_container() räumt danach selbst auf.
+    env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
+           "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker",
+           "BIBI_JOB_IMAGE_PERSIST": "1"}
+    spec = exec_backend.build_exec(["sh"], env)
+    assert "--rm" not in spec.argv
+    assert spec.argv[:2] == ["/d/docker", "run"]
+
+
+def test_job_image_tag_shape():
+    assert exec_backend.job_image_tag("hitl-test-app") == "bibi-job-hitl-test-app:latest"
+
+
+def test_job_image_tag_sanitizes_unsafe_characters():
+    # Docker-Repo-Namen erlauben nur lowercase + [a-z0-9._-] — Slugs (z. B.
+    # explizites slug:-Frontmatter) könnten anderes enthalten.
+    assert exec_backend.job_image_tag("MySlug With Spaces!") == "bibi-job-myslug-with-spaces:latest"
+    assert exec_backend.job_image_tag("---") == "bibi-job-job:latest"  # nichts Sicheres übrig
+
+
+def test_finalize_container_noop_without_persist_flag(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(exec_backend.subprocess, "run", lambda *a, **kw: calls.append(a))
+    exec_backend.finalize_container({"BIBI_JOB_ID": "j", "BIBI_JOB_SLUG": "s"})
+    assert calls == []
+
+
+def test_finalize_container_commits_and_removes(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(exec_backend.subprocess, "run", fake_run)
+    monkeypatch.setattr(exec_backend, "resolve_docker_bin", lambda env: "/usr/bin/docker")
+
+    exec_backend.finalize_container({
+        "BIBI_JOB_IMAGE_PERSIST": "1", "BIBI_JOB_ID": "abc123", "BIBI_JOB_SLUG": "myjob",
+    })
+
+    assert calls[0] == ["/usr/bin/docker", "commit", "bibi-abc123", "bibi-job-myjob:latest"]
+    assert calls[1] == ["/usr/bin/docker", "rm", "-f", "bibi-abc123"]
+
+
+def test_finalize_container_missing_slug_is_noop(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(exec_backend.subprocess, "run", lambda *a, **kw: calls.append(a))
+    exec_backend.finalize_container({"BIBI_JOB_IMAGE_PERSIST": "1", "BIBI_JOB_ID": "abc123"})
+    assert calls == []
 
 
 def test_container_name():

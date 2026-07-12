@@ -192,6 +192,27 @@ def test_action_bar_complete_kill_and_reset_disabled():
     assert 'hx-post="/-/ui/schedule/x/start" hx-target="#live" hx-swap="outerHTML">' in html
 
 
+# ── PLAN-24 Befund 5 — REBUILD-Aktion nur bei exec_mode: container ──────────
+
+
+def test_action_bar_shows_rebuild_for_container_job():
+    job = {"id": "j1", "slug": "x", "status": "pending"}
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now", "exec_mode": "container"},
+        [], job, slug="x")
+    assert 'hx-post="/-/ui/schedule/x/rebuild" hx-target="#live" hx-swap="outerHTML"' in html
+    assert ">REBUILD<" in html
+
+
+def test_action_bar_hides_rebuild_for_host_job():
+    # User-Klärung (PLAN-24): "sichtbar nur bei exec_mode: container", nicht
+    # sichtbar-aber-deaktiviert — Host-Mode-Jobs haben kein per-Job-Image.
+    job = {"id": "j1", "slug": "x", "status": "pending"}
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
+    assert "rebuild" not in html.lower()
+
+
 def test_run_row_has_delete_button():
     runs = [{"id": 9, "status": "complete", "exit_code": 0, "kind": "job"}]
     html = render.schedule_detail_page(
@@ -399,6 +420,20 @@ def test_action_route_rejects_unknown_verb(app_with):
     with TestClient(app_with(client)) as c:
         assert c.post("/-/ui/schedule/boom/destroy").status_code == 404
         assert client.actions == []
+
+
+def test_action_route_accepts_rebuild_verb(app_with):
+    # PLAN-24 Befund 5: rebuild ist kein _VERBS-Eintrag (nicht Teil der immer
+    # gerenderten START/RESET/KILL-Leiste), muss aber trotzdem als gültiges
+    # Verb akzeptiert werden (render._CONTAINER_VERBS).
+    client = FakeClient(
+        schedules=[{"slug": "boom", "kind": "job", "trigger": "now", "exec_mode": "container"}],
+        journal=[],
+        jobs=[{"id": "abc123", "slug": "boom", "status": "pending"}])
+    with TestClient(app_with(client)) as c:
+        r = c.post("/-/ui/schedule/boom/rebuild")
+        assert r.status_code == 200
+        assert client.actions == [("abc123", "rebuild")]
 
 
 def test_run_delete_route(app_with):

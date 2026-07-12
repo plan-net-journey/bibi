@@ -2195,7 +2195,17 @@ _VERBS_FOR_STATUS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _action_bar(slug: str, job: dict | None) -> str:
+#: PLAN-24 Befund 5: REBUILD ist bewusst NICHT Teil von _VERBS/_VERBS_FOR_STATUS
+#: — anders als START/RESET/KILL (immer sichtbar, nur je nach Status
+#: aktiviert) taucht REBUILD gar nicht erst auf, wenn der Job nicht im
+#: Container-Modus läuft (User-Klärung: "sichtbar nur bei exec_mode:
+#: container", nicht sichtbar-aber-deaktiviert). Host-Mode-Jobs haben kein
+#: per-Job-Image, das ein Reset bräuchte (uv run --script ist selbst schon
+#: reproduzierbar).
+_CONTAINER_VERBS = ("rebuild",)
+
+
+def _action_bar(slug: str, job: dict | None, exec_mode: str | None = None) -> str:
     if not job or not job.get("id"):
         return ""
     s = _e(slug)
@@ -2206,6 +2216,11 @@ def _action_bar(slug: str, job: dict | None) -> str:
         f'hx-swap="outerHTML"{"" if v in enabled else " disabled"}>{v.upper()}</button> '
         for v in _VERBS
     )
+    if (exec_mode or "host").strip().lower() == "container":
+        btns += (f'<button hx-post="/-/ui/schedule/{s}/rebuild" hx-target="#live" '
+                 f'hx-swap="outerHTML" '
+                 f'title="Verwirft das per-Job-Image, nächster Lauf startet vom '
+                 f'Default-Image">REBUILD</button> ')
     return f'<div class="actions">{btns}</div>'
 
 
@@ -2254,7 +2269,7 @@ def live_fragment(
         f"<div {attrs}>"
         f"<h1>{name}</h1>"
         f'<div class="meta">{meta}</div>'
-        f"{_action_bar(slug, job)}"
+        f"{_action_bar(slug, job, exec_mode=s.get('exec_mode'))}"
         f"{_live_panel(job, now, live_output, slug=slug, public_host=public_host)}"
         "</div>"
     )

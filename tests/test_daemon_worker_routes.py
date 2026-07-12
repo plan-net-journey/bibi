@@ -371,6 +371,51 @@ def test_start_deferred_dispatches_immediately(client):
     assert client.post(f"/-/job/{jid}/start").status_code == 200
 
 
+def _seed_with_exec_mode(exec_mode: str | None) -> str:
+    jid = secrets.token_hex(4)
+    conn = job_db.connect()
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+            "enqueued_at, exec_mode) VALUES (?,?,?,?,?, 'pending', ?, ?)",
+            (jid, "rebuildjob", "rebuildjob.md", "job", "echo hi", time.time(), exec_mode),
+        )
+    finally:
+        conn.close()
+    return jid
+
+
+def test_rebuild_missing_is_404(client):
+    assert client.post("/-/job/deadbeef/rebuild").status_code == 404
+
+
+def test_rebuild_host_mode_is_409(client):
+    # PLAN-24 Befund 5: REBUILD betrifft nur Container-Jobs — ein Host-Mode-
+    # Job hat kein per-Job-Image, das verworfen werden könnte.
+    jid = _seed_with_exec_mode(None)
+    assert client.post(f"/-/job/{jid}/rebuild").status_code == 409
+
+
+def test_rebuild_container_mode_ok(client, monkeypatch):
+    jid = _seed_with_exec_mode("container")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "bibi.daemon.app.Worker.rebuild_job_image",
+        lambda self, slug: calls.append(slug) or True,
+    )
+    r = client.post(f"/-/job/{jid}/rebuild")
+    assert r.status_code == 200
+    assert r.json() == {"id": jid, "slug": "rebuildjob", "rebuilt": True}
+    assert calls == ["rebuildjob"]
+
+
+def test_rebuild_docker_failure_is_502(client, monkeypatch):
+    jid = _seed_with_exec_mode("container")
+    monkeypatch.setattr(
+        "bibi.daemon.app.Worker.rebuild_job_image", lambda self, slug: False)
+    assert client.post(f"/-/job/{jid}/rebuild").status_code == 502
+
+
 def test_ping_writes_last_ping_at(client):
     jid = _seed_status("running")
     r = client.post(f"/-/job/{jid}/ping")

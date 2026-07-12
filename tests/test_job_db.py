@@ -319,6 +319,30 @@ def test_schedule_view_exposes_payload_and_app_port(conn, tmp_path: Path):
     assert sched["app_port"] == 9100
 
 
+def test_schedule_view_exposes_exec_mode(conn, tmp_path: Path):
+    # PLAN-24 Befund 5: der Controller braucht exec_mode, um die REBUILD-
+    # Aktion nur bei Container-Jobs anzuzeigen (render._action_bar()).
+    _write(tmp_path / "case" / "hostjob.md", '---\nschedule: never\njob: "echo hi"\n---\n')
+    _write(tmp_path / "case" / "containerjob.md",
+          '---\nschedule: never\njob: "echo hi"\nexec_mode: container\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    sched = {s["slug"]: s for s in job_db.list_schedules(conn)}
+    assert sched["hostjob"]["exec_mode"] is None
+    assert sched["containerjob"]["exec_mode"] == "container"
+
+
+def test_get_job_exec_mode(conn, tmp_path: Path):
+    _write(tmp_path / "case" / "containerjob.md",
+          '---\nschedule: never\njob: "echo hi"\nexec_mode: container\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jid = conn.execute("SELECT id FROM jobs WHERE slug='containerjob'").fetchone()["id"]
+    assert job_db.get_job_exec_mode(conn, jid) == ("containerjob", "container")
+
+
+def test_get_job_exec_mode_missing_returns_none(conn):
+    assert job_db.get_job_exec_mode(conn, "deadbeef") is None
+
+
 # ── PLAN-14 Stufe 14.6 — Schedules-Übersicht: active-Flag + Journal-Phantome ──
 
 

@@ -122,6 +122,69 @@ def _docker(args: list[str]) -> None:
         pass
 
 
+def _docker_image_exists(bin_: str, image: str) -> bool:
+    """Best-effort ``docker image inspect`` — jeder Fehler zählt als "existiert nicht"."""
+    try:
+        check = subprocess.run(
+            [bin_, "image", "inspect", image],
+            capture_output=True, env=_docker_env(), timeout=30,
+        )
+        return check.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _ensure_default_image_built(out_path: Path) -> None:
+    """PLAN-24 Befund 1: ``bibi-base:dev`` wird nirgends automatisch gebaut oder
+    verteilt (bisher ein rein manueller Schritt pro Knoten) — vor dem ersten
+    Container-Lauf best-effort prüfen und bei Bedarf synchron bauen, mit
+    Feedback-Zeile im Output (User-Auflage: "wir brauchen dann im GUI dringend
+    eine Feedback-Zeile im Output, der signalisiert, dass gerade gebaut wird").
+
+    Nur fürs Default-Image — ein Schedule-eigenes ``image:`` bleibt Autors-
+    Verantwortung, Auto-Build kennt kein beliebiges fremdes Dockerfile."""
+    bin_ = exec_backend.resolve_docker_bin({**os.environ, **config.read_env()})
+    if _docker_image_exists(bin_, exec_backend.DEFAULT_IMAGE):
+        return
+    output.append(out_path, "phase",
+                   f"image: {exec_backend.DEFAULT_IMAGE} wird gebaut "
+                   f"(kann einige Minuten dauern) …")
+    dockerfile = Path(__file__).resolve().parent.parent / "docker" / "bibi-base" / "Dockerfile"
+    try:
+        build = subprocess.run(
+            [bin_, "build", "-t", exec_backend.DEFAULT_IMAGE,
+             "-f", str(dockerfile), str(dockerfile.parent)],
+            capture_output=True, text=True, env=_docker_env(), timeout=600,
+        )
+        if build.returncode == 0:
+            output.append(out_path, "phase", f"image: {exec_backend.DEFAULT_IMAGE} gebaut.")
+        else:
+            stderr_tail = (build.stderr or "").strip()[-500:]
+            output.append(out_path, "phase",
+                           f"image: Bau fehlgeschlagen ({build.returncode}): {stderr_tail}")
+    except (OSError, subprocess.SubprocessError) as exc:
+        output.append(out_path, "phase", f"image: Auto-Provisioning übersprungen ({exc}).")
+
+
+def _ensure_job_image(out_path: Path, env: dict[str, str], slug: str) -> None:
+    """PLAN-24 Befund 5: ohne expliziten Override (Schedule- oder Knoten-Config-
+    ``image:``) bevorzugt jeder Job sein eigenes, über frühere Läufe
+    evolvierendes Image (``bibi-job-<slug>:latest``, s.
+    ``exec_backend.job_image_tag``/``finalize_container``) — existiert es
+    noch nicht (Erstlauf), gilt weiter das Default-Image samt Auto-Build
+    (Befund 1). ``BIBI_JOB_IMAGE_PERSIST=1`` signalisiert dem Wrapper, den
+    Container ohne ``--rm`` zu starten und nach dem Lauf zu committen."""
+    if env.get("BIBI_JOB_IMAGE"):
+        return  # expliziter Override (Schedule/Knoten-Config) — Autors-Verantwortung
+    env["BIBI_JOB_IMAGE_PERSIST"] = "1"
+    bin_ = exec_backend.resolve_docker_bin({**os.environ, **config.read_env()})
+    job_tag = exec_backend.job_image_tag(slug)
+    if _docker_image_exists(bin_, job_tag):
+        env["BIBI_JOB_IMAGE"] = job_tag
+    else:
+        _ensure_default_image_built(out_path)
+
+
 def _traefik_dynamic_dir(repo_root: Path) -> Path:
     return repo_root / "data" / "traefik" / "dynamic"
 
@@ -226,7 +289,7 @@ def _run_wrapper(
     soul: str | None = None, session: str | None = None,
     wall_time: int | None = None, silence_timeout: int | None = None,
     app_port: int | None = None, app_prefix: str | None = None,
-    exec_mode: str | None = None,
+    exec_mode: str | None = None, image: str | None = None,
     defer_time: int | None = None,
     repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
     run_id: str | None = None,
@@ -263,6 +326,10 @@ def _run_wrapper(
 
     env = os.environ.copy()
     env["BIBI_JOB_ID"] = job_id
+    # PLAN-24 Befund 5: der Wrapper-Prozess braucht den Slug fürs per-Job-Image
+    # (exec_backend.finalize_container()/job_image_tag()) — vorher stand
+    # BIBI_JOB_SLUG nur im Detach-Zweig, für run_local()/ephemeral fehlte es.
+    env["BIBI_JOB_SLUG"] = slug
     env["BIBI_OUTPUT_PATH"] = str(out_path)
     env["BIBI_WORKTREE"] = str(wt_path)
     # Job-cwd = Verzeichnis der Schedule-MD (User-Feedback 2026-07-05: ein Job
@@ -305,7 +372,6 @@ def _run_wrapper(
     # Detach-Modus: Commit + Report im Wrapper-Prozess.
     if detach:
         env["BIBI_REPO_ROOT"] = str(repo_root)
-        env["BIBI_JOB_SLUG"] = slug
         env["BIBI_RUN_ID"] = out_run_id
         if ephemeral:
             env["BIBI_EPHEMERAL"] = "1"
@@ -332,6 +398,11 @@ def _run_wrapper(
     env.update(_exec_config())
     if exec_mode:
         env["BIBI_EXEC_MODE"] = exec_mode.strip().lower()
+    # PLAN-24 Befund 1: ein Schedule-eigenes image: übersteuert die Knoten-
+    # weite Default-Konfiguration, analog zum exec_mode-Override direkt
+    # darüber — vorher komplett totes Feld (nur in der DB, nie hier gelesen).
+    if image:
+        env["BIBI_JOB_IMAGE"] = image
     # PLAN-22 Befund 3: _is_container() liest _exec_config() (Knoten-Config)
     # frisch neu und würde einen gerade gesetzten Schedule-Override (Zeile
     # zuvor) ignorieren — hier stattdessen den bereits aufgelösten env-Wert
@@ -340,6 +411,7 @@ def _run_wrapper(
     if (env.get("BIBI_EXEC_MODE") or "host").strip().lower() == "container":
         output.append(out_path, "phase", "container: alte Instanz wird entfernt …")
         _docker(["rm", "-f", exec_backend.container_name(job_id)])
+        _ensure_job_image(out_path, env, slug)
     elif app_port:
         _free_app_port_host(int(app_port), out_path)
 
@@ -433,6 +505,7 @@ def execute_reservation(
             app_port=reservation.get("app_port"),
             app_prefix=reservation.get("app_prefix"),
             exec_mode=reservation.get("exec_mode"),
+            image=reservation.get("image"),
             defer_time=reservation.get("defer_time"),
             repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
             run_id=run_id, detach=True,
@@ -630,7 +703,7 @@ def run_local(
     work_dir = work_dir or (repo_root / "data" / "worktrees")
     eff_soul = eff_session = None
     eff_schedule_ref: str | None = None
-    eff_app_port = eff_app_prefix = eff_exec_mode = None
+    eff_app_port = eff_app_prefix = eff_exec_mode = eff_image = None
     if cmd is not None:
         eff_slug, payload, eff_kind, eff_model = slug or "adhoc", cmd, kind, model
     else:
@@ -654,6 +727,10 @@ def run_local(
         # ein exec_mode:-Override im MD hatte keine Wirkung (nur die
         # globale Knoten-Config zählte).
         eff_app_port, eff_app_prefix, eff_exec_mode = s.app_port, s.app_prefix, s.exec_mode
+        # PLAN-24 Befund 1: image: gleiches Bug-Muster wie app_port/app_prefix/
+        # exec_mode oben — ging bislang nur execute_reservation() (Scheduler-
+        # Dispatch) mit, run_local() (/run) verlor es spurlos.
+        eff_image = s.image
 
     jid = secrets.token_hex(4)
     started = time.time()
@@ -662,6 +739,7 @@ def run_local(
         schedule_ref=eff_schedule_ref,
         soul=eff_soul, session=eff_session,
         app_port=eff_app_port, app_prefix=eff_app_prefix, exec_mode=eff_exec_mode,
+        image=eff_image,
         repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=True,
     )
     finished = time.time()
@@ -858,6 +936,23 @@ class Worker:
                       "Lauf beendet (graceful, DB-PID nach Neustart)",
                       role="worker", run_id=job_id)
         return True
+
+    def rebuild_job_image(self, slug: str) -> bool:
+        """PLAN-24 Befund 5, REBUILD-Aktion: das per-Job-Image verwerfen — der
+        nächste Container-Lauf dieses Jobs fällt automatisch auf das Default-
+        Image zurück (derselbe Fallback wie beim allerersten Lauf, kein
+        Sonderfall). Bewusst getrennt von START/RESET (User-Klärung, PLAN-24:
+        beide sollen das per-Job-Image NIE implizit antasten). Ein bereits
+        fehlendes Tag zählt als Erfolg (Ziel schon erreicht) — ``False`` nur,
+        wenn das Docker-Kommando selbst technisch fehlschlägt."""
+        bin_ = exec_backend.resolve_docker_bin({**os.environ, **config.read_env()})
+        tag = exec_backend.job_image_tag(slug)
+        try:
+            subprocess.run([bin_, "rmi", "-f", tag], capture_output=True,
+                           env=_docker_env(), timeout=60, check=False)
+            return True
+        except (OSError, subprocess.SubprocessError):
+            return False
 
     async def _loop(self) -> None:
         loop = asyncio.get_event_loop()

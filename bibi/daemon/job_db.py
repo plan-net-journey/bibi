@@ -399,6 +399,14 @@ def get_job(conn: sqlite3.Connection, job_id: str) -> dict | None:
     return job_view(row) if row else None
 
 
+def get_job_exec_mode(conn: sqlite3.Connection, job_id: str) -> tuple[str, str | None] | None:
+    """``(slug, exec_mode)`` — die REBUILD-Aktion (PLAN-24 Befund 5) muss
+    wissen, ob ein Job überhaupt im Container-Modus läuft, bevor sie dessen
+    per-Job-Image verwirft."""
+    row = conn.execute("SELECT slug, exec_mode FROM jobs WHERE id=?", (job_id,)).fetchone()
+    return (row["slug"], row["exec_mode"]) if row else None
+
+
 def list_schedules(conn: sqlite3.Connection) -> list[dict]:
     # Letzten disponierten Lauf je Slug aus dem Journal (für STATUS = „letzter Lauf",
     # nicht der nach Cron-Re-Arm harmlose Zeilen-Status `pending`).
@@ -540,6 +548,9 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
         "payload": row["payload"], "app_port": row["app_port"],
         # Registrierungs-Zustand (PLAN-14 Stufe 14.6): True = MD aktuell entdeckt.
         "active": bool(row["active"]),
+        # PLAN-24 Befund 5: der Controller braucht das, um die REBUILD-Aktion
+        # nur bei Container-Jobs anzuzeigen (render._action_bar()).
+        "exec_mode": row["exec_mode"],
     }
 
 
@@ -619,6 +630,10 @@ def reservation_view(row: sqlite3.Row) -> dict:
         "silence_timeout": row["silence_timeout"],
         "app_port": row["app_port"], "app_prefix": row["app_prefix"],
         "exec_mode": row["exec_mode"],
+        # PLAN-24 Befund 1: image war zwar in der DB (_spec_columns), ging aber
+        # nie an den Worker durch — dasselbe Bug-Muster wie app_port/exec_mode
+        # vor PLAN-22 und oneshot vor PLAN-23.
+        "image": row["image"],
         "defer_time": row["defer_time"],
         # Vault-relativer Pfad der Schedule-MD (unter case_dir) — der Worker
         # leitet daraus das Job-cwd ab (Verzeichnis der MD, nicht Worktree-Root).

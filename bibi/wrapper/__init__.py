@@ -478,6 +478,10 @@ def run_app(env: dict[str, str]) -> int:
     if not oc and cs == "deferred":
         outcome[0] = "deferred"
 
+    # PLAN-24 Befund 5: mit aktiver Job-Image-Persistenz existiert der
+    # Container jetzt noch (kein --rm, s. exec_backend.build_exec) — genau
+    # hier committen, bevor finalize_container() ihn selbst aufräumt.
+    exec_backend.finalize_container(env)
     _finish(env, proc.returncode or 0, outcome[0])
     return proc.returncode or 0
 
@@ -546,6 +550,10 @@ def run_job(env: dict[str, str]) -> int:
     for t in threads[:2]:  # pump threads joinen (monitors sind daemon)
         t.join()
 
+    # PLAN-24 Befund 5: mit aktiver Job-Image-Persistenz existiert der
+    # Container jetzt noch (kein --rm, s. exec_backend.build_exec) — genau
+    # hier committen, bevor finalize_container() ihn selbst aufräumt.
+    exec_backend.finalize_container(env)
     _finish(env, proc.returncode or 0, outcome[0])
     return proc.returncode or 0
 

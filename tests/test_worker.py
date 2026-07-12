@@ -311,6 +311,34 @@ def test_execute_reservation_setup_failure_does_not_hang_running(gitrepo: Path, 
     assert any("worktree prepare kaputt" in p for p in phases)
 
 
+def test_execute_reservation_passes_schedule_image_override(gitrepo: Path, monkeypatch):
+    # PLAN-24 Befund 1: image: aus dem Schedule-MD landet in der DB
+    # (job_db._spec_columns), reservation_view() gab es aber nie an den Worker
+    # weiter — komplett totes Feld, exakt wie oneshot vor PLAN-23.
+    import bibi.daemon.worker as W
+    jid = _seed(gitrepo, "customimg/README.md",
+                '---\nschedule: now\njob: "echo hi"\nimage: "registry.local/custom:7"\n---\n')
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    res = job_db.reserve_next(conn)
+    conn.close()
+    assert res["id"] == jid
+    assert res["image"] == "registry.local/custom:7"
+
+    captured = {}
+
+    def fake_run_wrapper(**kwargs):
+        captured.update(kwargs)
+        return 0, None, gitrepo / "data" / "job" / "jid" / "output.jsonl", "detached", 999
+    monkeypatch.setattr(W, "_run_wrapper", fake_run_wrapper)
+
+    from bibi.daemon.scheduler_client import LocalScheduler
+    execute_reservation(
+        res, repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
+        client=LocalScheduler(gitrepo / "data" / "jobs.sqlite"), worker_name="t",
+    )
+    assert captured["image"] == "registry.local/custom:7"
+
+
 def test_run_wrapper_logs_worktree_and_spawn_phases(gitrepo: Path, monkeypatch):
     # User-Feedback 2026-07-03: Startup-Phasen (Worktree, Wrapper-Spawn) landen
     # als erste Zeilen im selben output.jsonl, das der Wrapper weiterschreibt.
@@ -377,6 +405,251 @@ def test_run_wrapper_respects_schedule_exec_mode_override_for_cleanup(
     phases = _output.lines(out_path, "phase")
     assert not any("alte Instanz" in p for p in phases)
     assert docker_calls == []
+
+
+def test_run_wrapper_sets_job_image_env_from_schedule_override(gitrepo: Path, monkeypatch):
+    # PLAN-24 Befund 1: image aus dem Schedule muss env["BIBI_JOB_IMAGE"]
+    # überschreiben (nach der Knoten-Config aus _exec_config(), analog zum
+    # bestehenden exec_mode-Override zwei Zeilen darüber im echten Code).
+    import sys
+    import types
+
+    import bibi.daemon.worker as W
+
+    captured_env: dict = {}
+    real_popen = W.subprocess.Popen
+
+    def fake_popen(*a, **kw):
+        if a and isinstance(a[0], list) and a[0][:1] == [sys.executable]:
+            captured_env.update(kw.get("env") or {})
+            return types.SimpleNamespace(pid=999)
+        return real_popen(*a, **kw)
+    monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
+
+    _, _, out_path, outcome, pid = W._run_wrapper(
+        job_id="j1", slug="customimg", kind="job", payload="echo hi",
+        image="registry.local/custom:7",
+        repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
+        run_id="customimg:0", detach=True,
+    )
+    assert outcome == "detached" and pid == 999
+    assert captured_env["BIBI_JOB_IMAGE"] == "registry.local/custom:7"
+
+
+def test_ensure_default_image_built_skips_when_image_present(tmp_path: Path, monkeypatch):
+    # PLAN-24 Befund 1: bibi-base:dev existiert bereits → kein Bau, keine
+    # Feedback-Zeile (Grundfall bleibt unauffällig, analog PLAN-22 Befund 4).
+    import bibi.daemon.worker as W
+    from bibi.wrapper import output as _output
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    monkeypatch.setattr(W.subprocess, "run", fake_run)
+    monkeypatch.setattr(W.exec_backend, "resolve_docker_bin", lambda env: "/usr/bin/docker")
+
+    out_path = tmp_path / "output.jsonl"
+    W._ensure_default_image_built(out_path)
+
+    assert len(calls) == 1  # nur der Inspect-Check, kein Build
+    assert calls[0][:3] == ["/usr/bin/docker", "image", "inspect"]
+    assert _output.lines(out_path, "phase") == []
+
+
+def test_ensure_default_image_built_builds_when_missing(tmp_path: Path, monkeypatch):
+    # PLAN-24 Befund 1: fehlt bibi-base:dev, wird es synchron gebaut — mit
+    # Feedback-Zeile im Output (User-Auflage bei der On-Demand-Entscheidung).
+    import bibi.daemon.worker as W
+    from bibi.wrapper import output as _output
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if argv[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="No such image")
+        assert argv[1] == "build"
+        return subprocess.CompletedProcess(argv, 0, stdout="built", stderr="")
+    monkeypatch.setattr(W.subprocess, "run", fake_run)
+    monkeypatch.setattr(W.exec_backend, "resolve_docker_bin", lambda env: "/usr/bin/docker")
+
+    out_path = tmp_path / "output.jsonl"
+    W._ensure_default_image_built(out_path)
+
+    assert len(calls) == 2
+    build_argv = calls[1]
+    assert build_argv[:3] == ["/usr/bin/docker", "build", "-t"]
+    assert build_argv[3] == W.exec_backend.DEFAULT_IMAGE
+    assert "-f" in build_argv
+    dockerfile = Path(build_argv[build_argv.index("-f") + 1])
+    assert dockerfile.name == "Dockerfile" and dockerfile.parent.name == "bibi-base"
+
+    phases = _output.lines(out_path, "phase")
+    assert any("wird gebaut" in p for p in phases)
+    assert any(p.endswith("gebaut.") for p in phases)
+
+
+def test_ensure_default_image_built_reports_build_failure(tmp_path: Path, monkeypatch):
+    import bibi.daemon.worker as W
+    from bibi.wrapper import output as _output
+
+    def fake_run(argv, **kw):
+        if argv[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="Dockerfile: syntax error")
+    monkeypatch.setattr(W.subprocess, "run", fake_run)
+    monkeypatch.setattr(W.exec_backend, "resolve_docker_bin", lambda env: "/usr/bin/docker")
+
+    out_path = tmp_path / "output.jsonl"
+    W._ensure_default_image_built(out_path)
+
+    phases = _output.lines(out_path, "phase")
+    assert any("fehlgeschlagen" in p and "syntax error" in p for p in phases)
+
+
+def test_run_wrapper_auto_builds_only_for_default_image(gitrepo: Path, monkeypatch):
+    # PLAN-24 Befund 1: Scope-Eingrenzung aus dem Design-Dialog — Auto-Build
+    # nur fürs Default-Image, ein Schedule-eigenes image: bleibt Autors-
+    # Verantwortung (Auto-Build kennt kein beliebiges fremdes Dockerfile).
+    import sys
+    import types
+
+    import bibi.daemon.worker as W
+
+    build_calls: list[Path] = []
+    monkeypatch.setattr(W, "_ensure_default_image_built", lambda out_path: build_calls.append(out_path))
+    # PLAN-24 Befund 5: _ensure_job_image() prüft zuerst das per-Job-Image —
+    # hier deterministisch "existiert nicht" simulieren, damit dieser Test
+    # (Scope-Frage: Default- vs. Custom-Image) nicht von echtem Docker abhängt.
+    monkeypatch.setattr(W, "_docker_image_exists", lambda bin_, image: False)
+    monkeypatch.setattr(W, "_docker", lambda args: None)
+
+    real_popen = W.subprocess.Popen
+
+    def fake_popen(*a, **kw):
+        if a and isinstance(a[0], list) and a[0][:1] == [sys.executable]:
+            return types.SimpleNamespace(pid=999)
+        return real_popen(*a, **kw)
+    monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
+
+    W._run_wrapper(
+        job_id="j1", slug="customimg", kind="job", payload="echo hi",
+        exec_mode="container", image="registry.local/custom:1",
+        repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
+        run_id="customimg:0", detach=True,
+    )
+    assert build_calls == []  # Custom-Image → kein Auto-Build-Versuch
+
+    W._run_wrapper(
+        job_id="j2", slug="defaultimg", kind="job", payload="echo hi",
+        exec_mode="container",
+        repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
+        run_id="defaultimg:0", detach=True,
+    )
+    assert len(build_calls) == 1  # kein Override, kein Job-Image → Default-Check greift
+
+
+def test_ensure_job_image_noop_with_explicit_override(tmp_path: Path, monkeypatch):
+    # PLAN-24 Befund 5: ein expliziter Override (Schedule- oder Knoten-Config-
+    # image:) bleibt Autors-Verantwortung — kein Job-Image-Check, keine
+    # Persistenz, kein Auto-Build.
+    import bibi.daemon.worker as W
+
+    calls: list = []
+    monkeypatch.setattr(W, "_docker_image_exists", lambda bin_, image: calls.append(image) or True)
+    monkeypatch.setattr(W, "_ensure_default_image_built", lambda out_path: calls.append("build"))
+
+    env = {"BIBI_JOB_IMAGE": "registry.local/custom:1"}
+    W._ensure_job_image(tmp_path / "output.jsonl", env, "some-slug")
+
+    assert calls == []
+    assert env == {"BIBI_JOB_IMAGE": "registry.local/custom:1"}  # unverändert, kein PERSIST-Flag
+
+
+def test_ensure_job_image_reuses_existing_job_tag(tmp_path: Path, monkeypatch):
+    # PLAN-24 Befund 5: existiert bibi-job-<slug>:latest aus einem früheren
+    # Lauf, wird es bevorzugt statt des Default-Images — kein Auto-Build nötig.
+    import bibi.daemon.worker as W
+
+    seen_tags: list[str] = []
+
+    def fake_exists(bin_, image):
+        seen_tags.append(image)
+        return True
+    monkeypatch.setattr(W, "_docker_image_exists", fake_exists)
+    build_calls: list = []
+    monkeypatch.setattr(W, "_ensure_default_image_built", lambda out_path: build_calls.append(out_path))
+
+    env: dict = {}
+    W._ensure_job_image(tmp_path / "output.jsonl", env, "MySlug!")
+
+    assert seen_tags == [W.exec_backend.job_image_tag("MySlug!")]
+    assert env["BIBI_JOB_IMAGE"] == W.exec_backend.job_image_tag("MySlug!")
+    assert env["BIBI_JOB_IMAGE_PERSIST"] == "1"
+    assert build_calls == []
+
+
+def test_ensure_job_image_falls_back_to_default_when_missing(tmp_path: Path, monkeypatch):
+    # PLAN-24 Befund 5: Erstlauf — noch kein per-Job-Image vorhanden → Default-
+    # Image samt Auto-Build (Befund 1) greift weiter, BIBI_JOB_IMAGE bleibt
+    # ungesetzt (build_exec()s eigener DEFAULT_IMAGE-Fallback übernimmt).
+    import bibi.daemon.worker as W
+
+    monkeypatch.setattr(W, "_docker_image_exists", lambda bin_, image: False)
+    build_calls: list = []
+    monkeypatch.setattr(W, "_ensure_default_image_built", lambda out_path: build_calls.append(out_path))
+
+    env: dict = {}
+    out_path = tmp_path / "output.jsonl"
+    W._ensure_job_image(out_path, env, "freshslug")
+
+    assert "BIBI_JOB_IMAGE" not in env
+    assert env["BIBI_JOB_IMAGE_PERSIST"] == "1"
+    assert build_calls == [out_path]
+
+
+def test_rebuild_job_image_removes_tag(monkeypatch):
+    # PLAN-24 Befund 5, REBUILD-Aktion: eigenständig von START/RESET, verwirft
+    # nur das per-Job-Image — der nächste Lauf fällt automatisch auf das
+    # Default-Image zurück (derselbe Mechanismus wie beim Erstlauf).
+    import bibi.daemon.worker as W
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(W.subprocess, "run", fake_run)
+    monkeypatch.setattr(W.exec_backend, "resolve_docker_bin", lambda env: "/usr/bin/docker")
+
+    w = W.Worker(autopoll=False, worker_name="t")
+    assert w.rebuild_job_image("myjob") is True
+    assert calls == [["/usr/bin/docker", "rmi", "-f", "bibi-job-myjob:latest"]]
+
+
+def test_rebuild_job_image_missing_tag_still_ok(monkeypatch):
+    # docker rmi auf ein bereits fehlendes Tag liefert einen Fehler-Returncode
+    # — zählt trotzdem als Erfolg (Ziel schon erreicht), kein Sonderfall nötig.
+    import bibi.daemon.worker as W
+
+    monkeypatch.setattr(W.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, 1, stderr="No such image"))
+    monkeypatch.setattr(W.exec_backend, "resolve_docker_bin", lambda env: "/usr/bin/docker")
+    w = W.Worker(autopoll=False, worker_name="t")
+    assert w.rebuild_job_image("myjob") is True
+
+
+def test_rebuild_job_image_docker_unreachable_is_false(monkeypatch):
+    import bibi.daemon.worker as W
+
+    def fake_run(*a, **kw):
+        raise OSError("docker not found")
+    monkeypatch.setattr(W.subprocess, "run", fake_run)
+    monkeypatch.setattr(W.exec_backend, "resolve_docker_bin", lambda env: "/usr/bin/docker")
+    w = W.Worker(autopoll=False, worker_name="t")
+    assert w.rebuild_job_image("myjob") is False
 
 
 def test_run_wrapper_host_mode_no_cleanup_when_port_free(gitrepo: Path, monkeypatch):

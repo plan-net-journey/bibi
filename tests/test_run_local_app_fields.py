@@ -19,7 +19,8 @@ from bibi.daemon.worker import run_local
 
 def _seed_app_schedule(root: Path, slug: str, *, app_port: int = 9100,
                        app_prefix: str | None = None,
-                       exec_mode: str | None = None) -> None:
+                       exec_mode: str | None = None,
+                       image: str | None = None) -> None:
     d = root / "vault" / "case" / slug
     d.mkdir(parents=True, exist_ok=True)
     lines = ["---", 'schedule: "never"', f'job: "python3 {slug}.py"',
@@ -28,6 +29,8 @@ def _seed_app_schedule(root: Path, slug: str, *, app_port: int = 9100,
         lines.append(f"app_prefix: {app_prefix}")
     if exec_mode is not None:
         lines.append(f"exec_mode: {exec_mode}")
+    if image is not None:
+        lines.append(f'image: "{image}"')
     lines += ["---", f"# {slug}"]
     (d / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -51,6 +54,28 @@ def test_run_local_passes_app_port_and_exec_mode_to_wrapper(team_repo: Path, mon
     assert captured["app_port"] == 9100
     assert captured["app_prefix"] == "/myapp"
     assert captured["exec_mode"] == "host"
+
+
+def test_run_local_passes_schedule_image_override_to_wrapper(team_repo: Path, monkeypatch):
+    # PLAN-24 Befund 1: image: aus dem Schedule-MD ging bislang spurlos verloren
+    # — weder execute_reservation() noch run_local() reichten s.image an
+    # _run_wrapper() durch, exakt dasselbe Bug-Muster wie app_port/exec_mode
+    # vor PLAN-22.
+    _seed_app_schedule(team_repo, "customimg", image="registry.local/custom:7")
+    captured = {}
+
+    def fake_run_wrapper(**kwargs):
+        captured.update(kwargs)
+        return 0, None, team_repo / "data" / "job" / "jid" / "output.jsonl", "ok", None
+
+    monkeypatch.setattr("bibi.daemon.worker._run_wrapper", fake_run_wrapper)
+    monkeypatch.setattr(
+        "bibi.daemon.worker.job_db.write_local_journal", lambda *a, **k: None)
+
+    run_local(slug="customimg", repo_root=team_repo, work_dir=team_repo / "data" / "worktrees",
+              db_path=team_repo / "data" / "jobs.sqlite")
+
+    assert captured["image"] == "registry.local/custom:7"
 
 
 def test_run_local_plain_job_passes_none_for_app_fields(team_repo: Path, monkeypatch):
@@ -78,6 +103,7 @@ def test_run_local_plain_job_passes_none_for_app_fields(team_repo: Path, monkeyp
     assert captured["app_port"] is None
     assert captured["app_prefix"] is None
     assert captured["exec_mode"] is None
+    assert captured["image"] is None
 
 
 def test_run_local_by_cmd_has_no_app_fields(team_repo: Path, monkeypatch):
@@ -99,3 +125,4 @@ def test_run_local_by_cmd_has_no_app_fields(team_repo: Path, monkeypatch):
     assert captured["app_port"] is None
     assert captured["app_prefix"] is None
     assert captured["exec_mode"] is None
+    assert captured["image"] is None

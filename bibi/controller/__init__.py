@@ -488,7 +488,7 @@ def add_controller_routes(
     def schedule_action(slug: str, verb: str):
         from bibi import config
 
-        if verb not in render._VERBS:
+        if verb not in render._VERBS and verb not in render._CONTAINER_VERBS:
             return JSONResponse(status_code=404, content={"error": "unknown verb"})
         _, _, job = _detail_data(slug)
         if job and job.get("id"):

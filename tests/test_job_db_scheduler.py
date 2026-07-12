@@ -133,10 +133,26 @@ def test_reservation_view_shape(conn):
     assert set(r) == {
         "id", "slug", "kind", "payload", "model", "soul", "session",
         "fire", "attempt", "attempts", "backoff", "wall_time", "silence_timeout",
-        "app_port", "app_prefix", "exec_mode", "defer_time",
+        "app_port", "app_prefix", "exec_mode", "image", "defer_time",
         "schedule_ref", "env",
     }
     assert r["kind"] == "job" and r["payload"] == "echo hi"
+
+
+def test_reservation_includes_schedule_image_override(conn):
+    # PLAN-24 Befund 1: `image:` aus dem Schedule-MD landet zwar in der DB
+    # (job_db._spec_columns), ging bislang aber nie über reservation_view()
+    # zum Worker durch — komplett totes Feld, exakt wie `oneshot` vor PLAN-23.
+    jid = _insert(conn, "a", 0, time.time())
+    conn.execute("UPDATE jobs SET image=? WHERE id=?", ("custom-job-image:1", jid))
+    r = job_db.reserve_next(conn)
+    assert r["image"] == "custom-job-image:1"
+
+
+def test_reservation_image_is_none_without_override(conn):
+    _insert(conn, "a", 0, time.time())
+    r = job_db.reserve_next(conn)
+    assert r["image"] is None
 
 
 def test_reservation_includes_claude_fields(conn):

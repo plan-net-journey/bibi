@@ -10,7 +10,9 @@ Reine Funktion (``build_exec``) — testbar ohne Docker.
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,6 +57,52 @@ def container_name(job_id: str) -> str:
     return f"bibi-{job_id}"
 
 
+def _host_uid() -> int:
+    """Eigene Funktion (statt inline ``os.getuid()``) — testbar per monkeypatch,
+    UID variiert pro Host/Aufruf (PLAN-24 Befund 5, "arbitrary UID"-Konvention)."""
+    return os.getuid()
+
+
+_TAG_UNSAFE_RE = re.compile(r"[^a-z0-9._-]+")
+
+
+def job_image_tag(slug: str) -> str:
+    """Docker-Image-Tag für das per-Job evolvierende Image (PLAN-24 Befund 5:
+    Nachinstalliertes persistiert über Läufe hinweg, statt bei jedem ``--rm``
+    verlorenzugehen). Slugs können Zeichen enthalten, die in Docker-Repo-Namen
+    ungültig sind (nur lowercase + ``[a-z0-9._-]``) — sicherheitshalber
+    normalisieren, statt der Slug-Validierung ein neues Format aufzuzwingen."""
+    safe = _TAG_UNSAFE_RE.sub("-", slug.lower()).strip("-") or "job"
+    return f"bibi-job-{safe}:latest"
+
+
+def finalize_container(env: dict[str, str]) -> None:
+    """Nach einem Container-Lauf mit Job-Image-Persistenz (PLAN-24 Befund 5):
+    Container-Zustand in das per-Job-Image committen, bevor der (ohne
+    ``--rm`` gestartete, s. ``build_exec``) Container aufgeräumt wird — genau
+    dieser Zeitpunkt ist der einzige, an dem der Container noch existiert.
+    Best-effort: ein Fehler hier darf den Job-Report nie verhindern. No-op,
+    wenn keine Job-Image-Persistenz aktiv war (Host-Modus oder expliziter
+    ``image:``-Override, s. ``worker._run_wrapper``)."""
+    if (env.get("BIBI_JOB_IMAGE_PERSIST") or "").strip() != "1":
+        return
+    job_id = env.get("BIBI_JOB_ID")
+    slug = env.get("BIBI_JOB_SLUG")
+    if not job_id or not slug:
+        return
+    docker_bin = resolve_docker_bin(env)
+    name = container_name(job_id)
+    try:
+        subprocess.run([docker_bin, "commit", name, job_image_tag(slug)],
+                       capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        subprocess.run([docker_bin, "rm", "-f", name], capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 @dataclass(frozen=True, slots=True)
 class ExecSpec:
     argv: list[str]
@@ -92,11 +140,15 @@ def build_exec(child_argv: list[str], env: dict[str, str]) -> ExecSpec:
 
     - ``host`` (Default): das Child direkt, cwd = ``BIBI_JOB_CWD`` (Verzeichnis der
       Schedule-MD innerhalb des Worktrees), Fallback Worktree-Root ohne ``BIBI_JOB_CWD``.
-    - ``container``: ``docker run --rm --name bibi-<id> -v <worktree>:/workspace
-      -w /workspace[/<md-relativ>] [-e KEY…] <image> <child-argv>``; der ganze
-      Worktree bleibt gemountet (Zugriff auf andere Repo-Verzeichnisse bleibt
-      möglich), nur der Arbeitsordner (``-w``) zeigt auf den ``BIBI_JOB_CWD``-Unterpfad;
-      PATH um das docker-bin-Dir ergänzt (Cred-Helper).
+    - ``container``: ``docker run --rm --name bibi-<id> --user <host-uid>:0
+      -v <worktree>:/workspace -w /workspace[/<md-relativ>] -e HOME=/root
+      [-e KEY…] <image> <child-argv>``; der ganze Worktree bleibt gemountet
+      (Zugriff auf andere Repo-Verzeichnisse bleibt möglich), nur der
+      Arbeitsordner (``-w``) zeigt auf den ``BIBI_JOB_CWD``-Unterpfad; PATH um
+      das docker-bin-Dir ergänzt (Cred-Helper). ``--user <host-uid>:0`` +
+      ``HOME=/root`` (PLAN-24 Befund 5, "arbitrary UID"-Konvention): im
+      Bind-Mount geschriebene Dateien gehören exakt dem Host-User, GID bleibt
+      immer 0 ("root"-Gruppe) für eine feste Identität + passwortloses sudo.
     - ``container`` + ``app``-Typ: zusätzlich ``--network bibi-net`` + statisches
       App-Content-Traefik-Label, falls ``app_port``/``app_prefix`` beim Spawn schon
       feststehen (PLAN-9 §2, Slice 9.0; bereinigt PLAN-11.5 — kein Wrapper-Routing
@@ -114,8 +166,24 @@ def build_exec(child_argv: list[str], env: dict[str, str]) -> ExecSpec:
     docker_bin = resolve_docker_bin(env)
     job_id = env.get("BIBI_JOB_ID", "job")
     name = container_name(job_id)
-    argv = [docker_bin, "run", "--rm", "--name", name,
-            "-v", f"{worktree}:{WORKSPACE}", "-w", workdir]
+    # PLAN-24 Befund 5: "arbitrary UID"-Konvention (OpenShift-Stil) statt
+    # dauerhaft als root laufen — --user <host-uid>:0 (GID immer 0/"root",
+    # UID variiert pro Host), damit im Bind-Mount geschriebene Dateien exakt
+    # dem Host-User gehören (kein chown vor `git commit` nötig) und trotzdem
+    # eine feste, /etc/passwd-unabhängige Identität existiert. HOME=/root
+    # erzwungen, weil eine fremde UID sonst keinen passenden /etc/passwd-
+    # Eintrag hat (s. Dockerfile: /root ist für GID 0 gruppen-beschreibbar).
+    # PLAN-24 Befund 5: mit aktiver Job-Image-Persistenz kein --rm — der
+    # Container muss nach dem Lauf noch existieren, damit `docker commit`
+    # ihn snapshotten kann (finalize_container() räumt danach selbst auf).
+    persist = (env.get("BIBI_JOB_IMAGE_PERSIST") or "").strip() == "1"
+    argv = [docker_bin, "run"]
+    if not persist:
+        argv.append("--rm")
+    argv += ["--name", name,
+             "--user", f"{_host_uid()}:0",
+             "-v", f"{worktree}:{WORKSPACE}", "-w", workdir,
+             "-e", "HOME=/root"]
 
     app_port_str = env.get("BIBI_APP_PORT")
     if app_port_str:

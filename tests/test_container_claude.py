@@ -38,6 +38,31 @@ needs = pytest.mark.skipif(not _docker_and_image(),
 
 @needs
 @pytest.mark.slow
+def test_container_runs_as_mapped_host_user_with_working_sudo(tmp_path: Path):
+    """PLAN-24 Befund 5: --user <host-uid>:0 + Entrypoint (passwd/shadow-Eintrag
+    zur Laufzeit) + gruppenbasiertes NOPASSWD-sudo (%root). Ohne den Entrypoint
+    lehnt sudo eine fremde UID per PAM/NSS ab ("account validation failure" /
+    "you do not exist in the passwd database") — live gegen bibi-base:dev
+    verifiziert, bevor dieser Test geschrieben wurde."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    env = {
+        **os.environ,
+        "BIBI_EXEC_MODE": "container",
+        "BIBI_JOB_IMAGE": "bibi-base:dev",
+        "BIBI_WORKTREE": str(wt),
+        "BIBI_JOB_ID": "sudosmoke" + os.urandom(3).hex(),
+    }
+    spec = exec_backend.build_exec(["bash", "-c", "sudo whoami > sudo_out.txt"], env)
+    r = subprocess.run(spec.argv, capture_output=True, text=True, env=spec.env, timeout=60)
+    assert r.returncode == 0, f"stdout={r.stdout!r} stderr={r.stderr!r}"
+    assert (wt / "sudo_out.txt").read_text().strip() == "root"
+    # Bind-Mount-Schreibzugriff gehört exakt dem Host-User (kein chown nötig).
+    assert (wt / "sudo_out.txt").stat().st_uid == os.getuid()
+
+
+@needs
+@pytest.mark.slow
 def test_claude_runs_in_container_output_captured(tmp_path: Path):
     wt = tmp_path / "wt"
     wt.mkdir()
