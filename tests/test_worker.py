@@ -610,6 +610,44 @@ def test_ensure_job_image_falls_back_to_default_when_missing(tmp_path: Path, mon
     assert build_calls == [out_path]
 
 
+def test_rebuild_job_image_logs_phase_lines_when_tag_existed(tmp_path: Path, monkeypatch):
+    # User-Fund 2026-07-12: "ich habe nicht den Eindruck, dass REBUILD einen
+    # Effekt hat. Es zeigt auch keinen Output/Log/Fortschritt." — mit
+    # out_path muss die Live-/Output-Ansicht jetzt sichtbare Bestätigung
+    # bekommen, unterschieden nach "Tag existierte" vs. "existierte nicht".
+    import bibi.daemon.worker as W
+    from bibi.wrapper import output as _output
+
+    monkeypatch.setattr(W, "_docker_image_exists", lambda bin_, image: True)
+    monkeypatch.setattr(W.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, 0))
+    monkeypatch.setattr(W.exec_backend, "resolve_docker_bin", lambda env: "/usr/bin/docker")
+    w = W.Worker(autopoll=False, worker_name="t")
+    out_path = tmp_path / "output.jsonl"
+
+    assert w.rebuild_job_image("myjob", out_path=out_path) is True
+    phases = _output.lines(out_path, "phase")
+    assert any("wird verworfen" in p for p in phases)
+    assert any("erledigt" in p for p in phases)
+
+
+def test_rebuild_job_image_logs_noop_when_tag_missing(tmp_path: Path, monkeypatch):
+    import bibi.daemon.worker as W
+    from bibi.wrapper import output as _output
+
+    monkeypatch.setattr(W, "_docker_image_exists", lambda bin_, image: False)
+    monkeypatch.setattr(W.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, 1))
+    monkeypatch.setattr(W.exec_backend, "resolve_docker_bin", lambda env: "/usr/bin/docker")
+    w = W.Worker(autopoll=False, worker_name="t")
+    out_path = tmp_path / "output.jsonl"
+
+    assert w.rebuild_job_image("myjob", out_path=out_path) is True
+    phases = _output.lines(out_path, "phase")
+    assert any("existiert nicht" in p for p in phases)
+    assert not any("erledigt" in p for p in phases)  # kein echtes Ergebnis, nichts zu tun
+
+
 def test_rebuild_job_image_removes_tag(monkeypatch):
     # PLAN-24 Befund 5, REBUILD-Aktion: eigenständig von START/RESET, verwirft
     # nur das per-Job-Image — der nächste Lauf fällt automatisch auf das
@@ -626,7 +664,12 @@ def test_rebuild_job_image_removes_tag(monkeypatch):
 
     w = W.Worker(autopoll=False, worker_name="t")
     assert w.rebuild_job_image("myjob") is True
-    assert calls == [["/usr/bin/docker", "rmi", "-f", "bibi-job-myjob:latest"]]
+    # Existenz-Check (docker image inspect) vor dem eigentlichen rmi — für
+    # die Phase-Zeilen-Unterscheidung "existierte"/"existierte nicht" nötig.
+    assert calls == [
+        ["/usr/bin/docker", "image", "inspect", "bibi-job-myjob:latest"],
+        ["/usr/bin/docker", "rmi", "-f", "bibi-job-myjob:latest"],
+    ]
 
 
 def test_rebuild_job_image_missing_tag_still_ok(monkeypatch):
@@ -775,6 +818,47 @@ def test_kill_unknown_job_falls_back_to_node_default(gitrepo: Path, monkeypatch)
 
     assert w.kill("gone") is True
     assert calls == [["kill", "bibi-gone"]]
+
+
+def test_terminate_logs_kill_phase_line_when_out_path_given(tmp_path: Path, monkeypatch):
+    # User-Fund 2026-07-12: "ich sehe beim Kill gar nichts im Output/Log/
+    # Fortschritt" — Start hat Phase-Zeilen, Teardown bisher keine einzige.
+    import bibi.daemon.worker as W
+    from bibi.wrapper import output as _output
+
+    monkeypatch.setattr(W, "_docker", lambda args: None)
+    out_path = tmp_path / "output.jsonl"
+    W._terminate(_FakeProc(), job_id="abc", is_container=True, out_path=out_path)
+    phases = _output.lines(out_path, "phase")
+    assert any("wird beendet" in p for p in phases)
+
+
+def test_terminate_without_out_path_writes_nothing(monkeypatch):
+    # Rückwärtskompatibel: kein out_path → kein Schreibversuch (Aufrufer wie
+    # local_run_kill() vor diesem Fix übergaben ihn schlicht nicht).
+    import bibi.daemon.worker as W
+
+    monkeypatch.setattr(W, "_docker", lambda args: None)
+    monkeypatch.setattr(W.output, "append", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("output.append() sollte ohne out_path nie aufgerufen werden")))
+    W._terminate(_FakeProc(), job_id="abc", is_container=False)
+
+
+def test_kill_container_backstop_logs_phase_line(gitrepo: Path, monkeypatch):
+    # "Wrapper weg, Container evtl. noch da"-Zweig — auch hier eine
+    # sichtbare Phase-Zeile statt Stille.
+    import bibi.daemon.worker as W
+    from bibi.wrapper import output as _output
+
+    monkeypatch.setattr(W, "_is_container", lambda: True)
+    monkeypatch.setattr(W, "_docker", lambda args: None)
+    w = W.Worker(autopoll=False, worker_name="t",
+                db_path=gitrepo / "data" / "jobs.sqlite")
+
+    assert w.kill("gone") is True
+    out_path = w.output_path("gone")
+    phases = _output.lines(out_path, "phase")
+    assert any("verwaister Container" in p for p in phases)
 
 
 def test_run_wrapper_host_mode_no_cleanup_when_port_free(gitrepo: Path, monkeypatch):

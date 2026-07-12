@@ -401,7 +401,7 @@ def test_rebuild_container_mode_ok(client, monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(
         "bibi.daemon.app.Worker.rebuild_job_image",
-        lambda self, slug: calls.append(slug) or True,
+        lambda self, slug, out_path=None: calls.append(slug) or True,
     )
     r = client.post(f"/-/job/{jid}/rebuild")
     assert r.status_code == 200
@@ -412,7 +412,7 @@ def test_rebuild_container_mode_ok(client, monkeypatch):
 def test_rebuild_docker_failure_is_502(client, monkeypatch):
     jid = _seed_with_exec_mode("container")
     monkeypatch.setattr(
-        "bibi.daemon.app.Worker.rebuild_job_image", lambda self, slug: False)
+        "bibi.daemon.app.Worker.rebuild_job_image", lambda self, slug, out_path=None: False)
     assert client.post(f"/-/job/{jid}/rebuild").status_code == 502
 
 

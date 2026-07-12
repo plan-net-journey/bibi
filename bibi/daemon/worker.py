@@ -280,7 +280,7 @@ def _free_app_port_host(port: int, out_path: Path) -> None:
 
 
 def _terminate(proc: subprocess.Popen, *, job_id: str | None = None,
-               is_container: bool | None = None) -> None:
+               is_container: bool | None = None, out_path: Path | None = None) -> None:
     """Lauf beenden. Container (D7): ``docker stop bibi-<id>`` gibt dem Job graceful
     SIGTERM + Frist (eskaliert selbst auf SIGKILL); zusätzlich die Host-Wrapper-Gruppe
     terminieren. Host: SIGTERM → der Wrapper propagiert an den Child (dessen SIGTERM-
@@ -291,9 +291,17 @@ def _terminate(proc: subprocess.Popen, *, job_id: str | None = None,
     Knoten-Default (``_is_container()``) zurück, für Aufrufer ohne Zugriff
     auf den DB-Pfad. Reines Verlassen auf den Knoten-Default hier war der Bug
     (s. ``_job_is_container()``-Docstring): ein Container-Job auf einem
-    Host-Default-Knoten bekam nie sein ``docker stop``."""
+    Host-Default-Knoten bekam nie sein ``docker stop``.
+
+    ``out_path``: User-Fund 2026-07-12 ("ich sehe beim Kill gar nichts im
+    Output/Log/Fortschritt") — Start hat Phase-Zeilen (worktree/container/
+    wrapper), Teardown bisher keine einzige. Wird ``out_path`` übergeben,
+    schreibt diese Funktion symmetrisch dazu Phase-Zeilen für Kill-Start und
+    SIGKILL-Eskalation."""
     if is_container is None:
         is_container = _is_container()
+    if out_path is not None:
+        output.append(out_path, "phase", "kill: wird beendet …")
     if job_id is not None and is_container:
         _docker(["stop", exec_backend.container_name(job_id)])
     try:
@@ -306,6 +314,8 @@ def _terminate(proc: subprocess.Popen, *, job_id: str | None = None,
         _t.sleep(5.0)
         if proc.poll() is not None:
             return
+        if out_path is not None:
+            output.append(out_path, "phase", "kill: Zeitlimit überschritten — SIGKILL")
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, OSError):
@@ -674,7 +684,8 @@ def local_run_kill(slug: str) -> bool:
     # nach dem Warten auf den Prozess aus, um den Endstatus als "killed" statt
     # als Exit-Code-Ableitung zu melden.
     _local_runs_killed.add(slug)
-    _terminate(proc, job_id=live["id"])
+    out_path = repo.root() / live["output_ref"]
+    _terminate(proc, job_id=live["id"], out_path=out_path)
     activity.emit(log, logging.INFO, "worker.local_kill", "Lokaler Lauf beendet (graceful)",
                   role="worker", slug=slug, run_id=live["id"])
     return True
@@ -942,13 +953,15 @@ class Worker:
         sarasate) bekam ein Container-Job beim KILL nie sein ``docker
         stop``/``kill``, der Container blieb verwaist laufen."""
         is_container = _job_is_container(self.db_path, job_id)
+        out_path = self.output_path(job_id)
         proc = self._procs.get(job_id)
         if proc is not None and proc.poll() is None:
-            _terminate(proc, job_id=job_id, is_container=is_container)
+            _terminate(proc, job_id=job_id, is_container=is_container, out_path=out_path)
             activity.emit(log, logging.INFO, "worker.kill", "Lauf beendet (graceful)",
                           role="worker", run_id=job_id)
             return True
         if is_container:  # Wrapper weg, Container evtl. noch da → einsammeln
+            output.append(out_path, "phase", "kill: verwaister Container wird entfernt …")
             _docker(["kill", exec_backend.container_name(job_id)])
             return True
         # Kein In-Memory-Handle (z. B. Job hat einen Daemon-Neustart überlebt,
@@ -965,6 +978,7 @@ class Worker:
         pid, pid_started_at = pid_info
         if job_db.proc_started_at(pid) != pid_started_at:
             return False
+        output.append(out_path, "phase", "kill: wird beendet (graceful, nach Neustart) …")
         try:
             os.kill(pid, signal.SIGTERM)
         except (ProcessLookupError, OSError):
@@ -974,21 +988,43 @@ class Worker:
                       role="worker", run_id=job_id)
         return True
 
-    def rebuild_job_image(self, slug: str) -> bool:
+    def rebuild_job_image(self, slug: str, out_path: Path | None = None) -> bool:
         """PLAN-24 Befund 5, REBUILD-Aktion: das per-Job-Image verwerfen — der
         nächste Container-Lauf dieses Jobs fällt automatisch auf das Default-
         Image zurück (derselbe Fallback wie beim allerersten Lauf, kein
         Sonderfall). Bewusst getrennt von START/RESET (User-Klärung, PLAN-24:
         beide sollen das per-Job-Image NIE implizit antasten). Ein bereits
         fehlendes Tag zählt als Erfolg (Ziel schon erreicht) — ``False`` nur,
-        wenn das Docker-Kommando selbst technisch fehlschlägt."""
+        wenn das Docker-Kommando selbst technisch fehlschlägt.
+
+        ``out_path``: User-Fund 2026-07-12 ("ich habe nicht den Eindruck,
+        dass REBUILD einen Effekt hat. Es zeigt auch keinen Output/Log/
+        Fortschritt") — bisher lieferte die Route nur ein stilles HTTP-200,
+        die re-gerenderte Live-Ansicht sah davor/danach identisch aus (REBUILD
+        ändert ja keinen Job-Status). Mit ``out_path`` schreibt diese Methode
+        Phase-Zeilen in dieselbe ``output.jsonl``, die die Live-/Output-
+        Ansicht ohnehin schon zeigt — sichtbare Bestätigung statt Stille,
+        inklusive der Unterscheidung "Image existierte gar nicht" (echtes
+        No-op) vs. "wurde entfernt"."""
         bin_ = exec_backend.resolve_docker_bin({**os.environ, **config.read_env()})
         tag = exec_backend.job_image_tag(slug)
+        existed = _docker_image_exists(bin_, tag)
+        if out_path is not None:
+            if existed:
+                output.append(out_path, "phase", f"REBUILD: {tag} wird verworfen …")
+            else:
+                output.append(out_path, "phase",
+                              f"REBUILD: {tag} existiert nicht — nichts zu tun")
         try:
             subprocess.run([bin_, "rmi", "-f", tag], capture_output=True,
                            env=_docker_env(), timeout=60, check=False)
+            if out_path is not None and existed:
+                output.append(out_path, "phase",
+                              "REBUILD: erledigt — nächster Lauf startet vom Default-Image")
             return True
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as exc:
+            if out_path is not None:
+                output.append(out_path, "phase", f"REBUILD: docker-Kommando fehlgeschlagen ({exc})")
             return False
 
     async def _loop(self) -> None:

@@ -461,7 +461,8 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
         slug, exec_mode = info
         if (exec_mode or "host").strip().lower() != "container":
             return JSONResponse(status_code=409, content={"error": "not a container job", "id": id})
-        if not worker.rebuild_job_image(slug):
+        out_path = worker.output_path(id)
+        if not worker.rebuild_job_image(slug, out_path=out_path):
             return JSONResponse(status_code=502, content={"error": "docker command failed", "id": id})
         return {"id": id, "slug": slug, "rebuilt": True}
 
