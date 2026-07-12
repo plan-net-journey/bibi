@@ -677,6 +677,17 @@ def filter_schedules(schedules: list[dict], *, typ: str | None = None,
     return out
 
 
+def _cookie_filter_value(cookie: str | None, valid: tuple[str, ...]) -> str | None:
+    """Persistenter Filter-Wert aus Cookie (User-Fund: "die ausgewählte
+    Auswahl in /-/ui/schedules sollte erhalten bleiben"). Nur übernehmen,
+    wenn der Wert noch zu den aktuell gültigen Optionen gehört (oder der
+    ``alle``-Sentinel ist) — schützt gegen veraltete Cookies nach
+    Options-Änderungen (z. B. den entfernten ``app``-Typ, PLAN-25 Befund 7)."""
+    if cookie and (cookie == "alle" or cookie in valid):
+        return cookie
+    return None
+
+
 def _filter_bar(typ: str | None, status: str | None) -> str:
     def _opts(values: tuple, cur: str | None) -> str:
         cur = cur or "alle"

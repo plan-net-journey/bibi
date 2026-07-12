@@ -85,6 +85,26 @@ def test_schedule_list_completed_recurring_stays_active():
     assert 'href="/-/ui/schedule/cron"' in html
 
 
+# ── Filter-Cookie-Validierung (pure) ────────────────────────────────────────
+
+
+def test_cookie_filter_value_accepts_known_type():
+    assert render._cookie_filter_value("job", render._SCHED_TYPES) == "job"
+
+
+def test_cookie_filter_value_accepts_alle_sentinel():
+    assert render._cookie_filter_value("alle", render._SCHED_TYPES) == "alle"
+
+
+def test_cookie_filter_value_rejects_stale_value():
+    # z. B. der entfernte "app"-Typ (PLAN-25 Befund 7).
+    assert render._cookie_filter_value("app", render._SCHED_TYPES) is None
+
+
+def test_cookie_filter_value_none_for_missing_cookie():
+    assert render._cookie_filter_value(None, render._SCHED_TYPES) is None
+
+
 # ── Filter (pure) ─────────────────────────────────────────────────────────────
 
 
@@ -394,6 +414,65 @@ def test_ui_schedules_timeseries_fragment_route_honors_resolution_param(team_rep
         assert 'class="res-link active"' in r.text
         assert render._RESOLUTION_LABEL[5] in r.text
         assert 'hx-get="/-/ui/schedules/timeseries?res=5"' in r.text
+
+
+# ── Filter-Persistenz per Cookie (User-Fund: "die ausgewählte Auswahl in
+# /-/ui/schedules sollte erhalten bleiben. Entweder Cookies oder Local Store") ─
+
+
+def test_schedules_screen_sets_filter_cookies_from_query(team_repo: Path):
+    client = FakeClient([_sched("a", kind="job"), _sched("b", kind="claude",
+                                                        payload="claude: x")])
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/schedules", params={"typ": "job", "status": "complete"})
+        assert r.cookies.get("bibi_sched_typ") == "job"
+        assert r.cookies.get("bibi_sched_status") == "complete"
+
+
+def test_schedules_screen_uses_cookie_when_no_query_param(team_repo: Path):
+    client = FakeClient([_sched("jobrun", kind="job"),
+                         _sched("clauderun", kind="claude", payload="claude: x")])
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        c.cookies.set("bibi_sched_typ", "claude")
+        r = c.get("/-/ui/schedules")  # kein ?typ= in der URL
+        assert r.status_code == 200
+        assert "clauderun" in r.text
+        assert "jobrun" not in r.text
+
+
+def test_schedules_screen_query_param_overrides_cookie(team_repo: Path):
+    client = FakeClient([_sched("jobrun", kind="job"),
+                         _sched("clauderun", kind="claude", payload="claude: x")])
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        c.cookies.set("bibi_sched_typ", "claude")
+        r = c.get("/-/ui/schedules", params={"typ": "job"})
+        assert "jobrun" in r.text
+        assert "clauderun" not in r.text
+        assert r.cookies.get("bibi_sched_typ") == "job"  # Cookie folgt der expliziten Wahl
+
+
+def test_schedules_screen_ignores_stale_invalid_cookie(team_repo: Path):
+    # Z. B. der entfernte "app"-Typ (PLAN-25 Befund 7) — ein altes Cookie darf
+    # nicht crashen oder alles unsichtbar filtern.
+    client = FakeClient([_sched("a", kind="job")])
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        c.cookies.set("bibi_sched_typ", "app")
+        r = c.get("/-/ui/schedules")
+        assert r.status_code == 200
+        assert '/-/ui/schedule/a"' in r.text
+
+
+def test_schedules_list_fragment_sets_filter_cookies(team_repo: Path):
+    client = FakeClient([_sched("a", kind="job")])
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/schedules/list", params={"typ": "job", "status": "alle"})
+        assert r.cookies.get("bibi_sched_typ") == "job"
+        assert r.cookies.get("bibi_sched_status") == "alle"
 
 
 def test_ui_schedules_screen_survives_landings_fetch_failure(team_repo: Path):

@@ -179,20 +179,50 @@ def add_controller_routes(
             _status(), _feed_git_status(), _scheduler_url(), time.time(),
             poll_interval_s=config.status_poll_interval()))
 
+    _FILTER_COOKIE_MAX_AGE = 60 * 60 * 24 * 180  # 180 Tage — UI-Präferenz, kein Session-Cookie
+
+    def _effective_filter(
+        request: Request, typ: str | None, status: str | None,
+    ) -> tuple[str | None, str | None]:
+        # Query-Param gewinnt immer (explizite Wahl); fehlt er (kein ?typ=/
+        # ?status= in der URL), auf das zuletzt per Cookie gemerkte Filter
+        # zurückfallen (User-Fund: "die ausgewählte Auswahl in
+        # /-/ui/schedules sollte erhalten bleiben. Entweder Cookies oder
+        # Local Store") — ungültige/veraltete Cookie-Werte werden verworfen.
+        eff_typ = typ if typ is not None else render._cookie_filter_value(
+            request.cookies.get("bibi_sched_typ"), render._SCHED_TYPES)
+        eff_status = status if status is not None else render._cookie_filter_value(
+            request.cookies.get("bibi_sched_status"), render._SCHED_STATUSES)
+        return eff_typ, eff_status
+
+    def _set_filter_cookies(resp: HTMLResponse, typ: str | None, status: str | None) -> None:
+        resp.set_cookie("bibi_sched_typ", typ or "alle",
+                        max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
+        resp.set_cookie("bibi_sched_status", status or "alle",
+                        max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
+
     @app.get("/-/ui/schedules", include_in_schema=False)
-    def schedules_screen(typ: str | None = None, status: str | None = None):
+    def schedules_screen(request: Request, typ: str | None = None, status: str | None = None):
         # Der Schedules-Screen (Seite): Nav + Ops-Handles + Stat-Grid/Landungs-
         # Histogramm (PLAN-21 Befund 11) + Filter + gefilterte, self-pollende Liste.
-        items = render.filter_schedules(_schedules(), typ=typ, status=status)
-        return HTMLResponse(render.schedules_page(
-            items, typ=typ, status=status, daemon_status=_status(),
+        eff_typ, eff_status = _effective_filter(request, typ, status)
+        items = render.filter_schedules(_schedules(), typ=eff_typ, status=eff_status)
+        resp = HTMLResponse(render.schedules_page(
+            items, typ=eff_typ, status=eff_status, daemon_status=_status(),
             landings=_landings()))
+        _set_filter_cookies(resp, eff_typ, eff_status)
+        return resp
 
     @app.get("/-/ui/schedules/list", include_in_schema=False)
-    def schedules_list_fragment(typ: str | None = None, status: str | None = None):
-        # Filter-fähiges Fragment — Self-Poll-Ziel + Ziel der Filter-Dropdowns.
-        items = render.filter_schedules(_schedules(), typ=typ, status=status)
-        return HTMLResponse(render.schedules_fragment(items, typ=typ, status=status))
+    def schedules_list_fragment(request: Request, typ: str | None = None, status: str | None = None):
+        # Filter-fähiges Fragment — Self-Poll-Ziel + Ziel der Filter-Dropdowns
+        # (der tatsächliche Request beim Ändern eines Filters, s.
+        # _set_filter_cookies oben).
+        eff_typ, eff_status = _effective_filter(request, typ, status)
+        items = render.filter_schedules(_schedules(), typ=eff_typ, status=eff_status)
+        resp = HTMLResponse(render.schedules_fragment(items, typ=eff_typ, status=eff_status))
+        _set_filter_cookies(resp, eff_typ, eff_status)
+        return resp
 
     @app.get("/-/ui/schedules/timeseries", include_in_schema=False)
     def schedules_timeseries_fragment(res: int = render._DEFAULT_RESOLUTION_MINUTES):
