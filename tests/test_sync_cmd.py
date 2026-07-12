@@ -56,13 +56,66 @@ def test_sync_on_off(repo_with_origin):
 
 # --- manueller sync (§4.9) ---
 
-def test_sync_dirty_warns_no_commit(repo_with_origin, capsys):
+def test_sync_caseless_dirty_gets_committed_and_pushed(repo_with_origin):
+    # PLAN-25 Befund 8: dirty Änderungen außerhalb jedes Case-Ordners (hier:
+    # Repo-Root, kein aktiver Case geparkt) werden automatisch geclustert,
+    # committet und gepusht — kein "geh erst zu /save"-Abbruch mehr.
     root, origin = repo_with_origin
     (root / "x.txt").write_text("x", encoding="utf-8")
     rc = main(["sync"])
-    assert rc == 1
-    assert "save" in capsys.readouterr().err.lower()
-    assert _local_head(root) == "init"   # NICHT committet
+    assert rc == 0
+    assert _local_head(root) == "sync: other changes"
+    assert _origin_head(origin) == "sync: other changes"
+
+
+def test_sync_clusters_other_case_and_leaves_active_untouched(repo_with_origin, monkeypatch):
+    # PLAN-25 Befund 8, Punkt 1+4: ein fremder Case-Ordner wird automatisch
+    # committet+gepusht; der aktive Case bleibt unangetastet (nur `/save`
+    # zuständig).
+    root, origin = repo_with_origin
+    active = root / "vault" / "case" / "20260101.active-aaa"
+    other = root / "vault" / "case" / "20260202.other-bbb"
+    active.mkdir(parents=True)
+    other.mkdir(parents=True)
+    (active / "README.md").write_text("wip", encoding="utf-8")
+    (other / "README.md").write_text("other case change", encoding="utf-8")
+    monkeypatch.chdir(active)
+
+    rc = main(["sync"])
+    assert rc == 0
+    assert _origin_head(origin) == "sync: 20260202.other-bbb"
+    # aktiver Case NICHT committed, bleibt dirty (git kollabiert das komplett
+    # unversionierte Verzeichnis in --porcelain zu einer Zeile, daher Präfix
+    # statt exaktem Dateipfad).
+    status = _sh(root, "status", "--porcelain")
+    assert "vault/case/20260101.active-aaa/" in status
+
+
+def test_sync_no_active_case_treats_every_case_as_other(repo_with_origin):
+    # PLAN-25 Befund 8, Punkt 1: "egal ob mit oder ohne aktives Projekt" — cwd
+    # bleibt am Repo-Root (kein Case geparkt), also zählt jeder Case-Ordner
+    # als "fremd" und wird automatisch committet.
+    root, origin = repo_with_origin
+    case = root / "vault" / "case" / "20260101.a-aaa"
+    case.mkdir(parents=True)
+    (case / "README.md").write_text("x", encoding="utf-8")
+    rc = main(["sync"])
+    assert rc == 0
+    assert _origin_head(origin) == "sync: 20260101.a-aaa"
+
+
+def test_sync_multiple_other_cases_get_separate_commits(repo_with_origin, tmp_path):
+    root, origin = repo_with_origin
+    for slug in ("20260101.a-aaa", "20260202.b-bbb"):
+        case = root / "vault" / "case" / slug
+        case.mkdir(parents=True)
+        (case / "README.md").write_text("x", encoding="utf-8")
+    rc = main(["sync"])
+    assert rc == 0
+    log = _sh(origin, "log", "--format=%s", "-5")
+    assert "sync: 20260101.a-aaa" in log
+    assert "sync: 20260202.b-bbb" in log
+
 
 def test_sync_clean_pulls(repo_with_origin, tmp_path):
     root, origin = repo_with_origin

@@ -27,12 +27,25 @@ runs, its sync loop reads this on each tick; in a pure interactive setup the
 bibi-ctrl sync
 ```
 
-Per §4.9 — **`/sync` never commits by itself**:
+Nearly always does *something* — it is no longer an all-or-nothing gate that
+refuses on any dirty tree:
 
-- **Dirty tree** → it warns and points to `/save`. Make your semantic commits
-  with `/save` first.
-- **Clean tree** → integrate origin (pull/rebase) → push if ahead.
-- **Merge conflict** → the rebase is left in the working tree and `sync_conflict`
+- **Changes outside the active case** (with or without one parked) — grouped
+  into sensible commit clusters and committed **without asking again**: one
+  commit per other case folder, plus one collective commit for everything
+  that belongs to no case (`vault/memo/`, `vault/attach/`, repo-root files,
+  …). Running `/sync` at all is the human-in-the-loop approval — steer the
+  grouping in conversation beforehand if you want it different, there's no
+  separate per-cluster confirmation.
+- **Already-committed work in the active case ("ahead")** — pushed
+  unconditionally, regardless of the `auto_sync` flag. An explicit `/sync`
+  call is itself the push consent.
+- **Origin** — always fetched and integrated (rebase), whether or not
+  anything local changed.
+- **Uncommitted changes in the active case** — the one thing `/sync` leaves
+  alone. It lists them and points you to `/save`; nothing else does.
+- **Merge conflict** (from either the new cluster commits or pre-existing
+  ahead commits) — the rebase is left in the working tree and `sync_conflict`
   is set. Resolve it (next section), do not abort blindly.
 
 ## Conflict resolution (A8/A11 — shared)

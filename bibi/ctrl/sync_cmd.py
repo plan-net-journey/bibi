@@ -1,9 +1,21 @@
-"""``bibi-ctrl sync …`` — Git-Abgleich (PLAN-1 §1.5, §4.9).
+"""``bibi-ctrl sync …`` — Git-Abgleich (PLAN-1 §1.5, §4.9; Neufassung PLAN-25
+Befund 8).
 
 - ``sync on|off``      — auto_sync-Flag (stehende Push-Zustimmung) umschalten
-- ``sync``            — manueller Abgleich: dirty → warnen + auf /save verweisen
-                        (committet NIE selbst); sauber → integrieren → push if ahead;
-                        Konflikt → im Tree lassen + sync_conflict (KI-Auflösung)
+- ``sync``            — manueller, (fast) immer wirksamer Abgleich:
+                        1. Case-fremde dirty Änderungen automatisch clustern
+                           + committen (ein Commit je fremdem Case-Ordner +
+                           ein Sammel-Commit für Case-loses) — keine eigene
+                           Freigabe je Cluster, der ``/sync``-Aufruf selbst
+                           ist die Freigabe (Steering im Gespräch davor).
+                        2. Immer integrieren (fetch + rebase) — deckt die
+                           neuen Cluster-Commits UND schon vorhandene
+                           "ahead"-Commits im aktiven Projekt ab. Konflikt →
+                           im Tree lassen + ``sync_conflict`` (KI-Auflösung).
+                        3. Immer pushen, unabhängig von ``auto_sync`` — der
+                           ``/sync``-Aufruf ist die Freigabe für den Push.
+                        4. Dirty Änderungen IM aktiven Projekt: nur anzeigen,
+                           nicht anfassen — auf ``/save`` verweisen.
 - ``sync continue``   — nach KI-Auflösung der Marker den Rebase fortsetzen + push
 - ``sync abort``      — offenen Rebase abbrechen
 - ``sync hook-stop``  — Hintergrund: bei auto_sync transient committen + push
@@ -15,7 +27,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from bibi import git_ops, state
+from bibi import git_ops, repo, state
 
 
 def _toggle_on(_: argparse.Namespace) -> int:
@@ -36,16 +48,26 @@ def _print_conflicts() -> None:
 
 
 def run_sync(_: argparse.Namespace) -> int:
-    """Manueller Abgleich (§4.9)."""
+    """Manueller Abgleich — Neufassung PLAN-25 Befund 8: cluster-committen
+    (case-fremde Änderungen) → integrieren (immer) → pushen (immer). Nur
+    dirty Änderungen im aktiven Projekt bleiben unangetastet (→ ``/save``)."""
     if git_ops.is_rebase_in_progress():
         print("Rebase offen — Marker auflösen, dann `bibi-ctrl sync continue` "
               "(oder `sync abort`).", file=sys.stderr)
         _print_conflicts()
         return 1
-    if git_ops.is_dirty():
-        print("Working tree dirty — erst `/save` (sync committet nicht selbst).",
-              file=sys.stderr)
-        return 1
+
+    active_case_rel = state.get_path()
+    other_cases, caseless, active_dirty = git_ops.cluster_dirty_paths(
+        git_ops.dirty_paths(), case_dir_name=repo.case_dir_name(),
+        active_case_rel=active_case_rel)
+
+    for case_rel in sorted(other_cases):
+        label = case_rel.rsplit("/", 1)[-1]
+        if git_ops.stage_and_commit(repo.vault() / case_rel, f"sync: {label}"):
+            print(f"committed: sync: {label}")
+    if caseless and git_ops.stage_and_commit_paths(caseless, "sync: other changes"):
+        print("committed: sync: other changes")
 
     branch = git_ops.current_branch()
     ok, kind = git_ops.integrate(branch, keep_conflict=True)
@@ -58,14 +80,23 @@ def run_sync(_: argparse.Namespace) -> int:
         else:
             print(f"Abgleich fehlgeschlagen: {kind}", file=sys.stderr)
         return 1
+    print("integrated")
 
     pok, pmsg = git_ops.push(branch)
-    if pok:
-        state.set_sync_conflict(False)
-        print("sync ok")
-        return 0
-    print(f"push fehlgeschlagen: {pmsg}", file=sys.stderr)
-    return 1
+    if not pok:
+        print(f"push fehlgeschlagen: {pmsg}", file=sys.stderr)
+        return 1
+    state.set_sync_conflict(False)
+    print("push ok")
+
+    if active_dirty:
+        print("Änderungen im aktiven Projekt (nicht angefasst) — `/save` ausführen:",
+              file=sys.stderr)
+        for p in active_dirty:
+            print(f"  {p}", file=sys.stderr)
+
+    print("sync ok")
+    return 0
 
 
 def run_continue(_: argparse.Namespace) -> int:

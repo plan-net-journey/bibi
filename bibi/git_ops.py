@@ -125,6 +125,88 @@ def diff_stat() -> tuple[str, int]:
     return signal, lines
 
 
+def dirty_paths() -> list[str]:
+    """Alle dirty (uncommitted) Pfade, repo-root-relativ, POSIX-Separator
+    (PLAN-25 Befund 8 — Input für ``cluster_dirty_paths()``). ``--no-renames``
+    (wie ``git_status.local_files_status()``) macht jede Rename-Zeile zu zwei
+    einfachen Einträgen (alter Pfad "gelöscht", neuer "neu") statt eines
+    schwerer zu parsenden Rename-Eintrags."""
+    proc = _git(["status", "--porcelain=v2", "--untracked-files=all", "--no-renames"],
+               check=False)
+    paths: list[str] = []
+    for line in proc.stdout.splitlines():
+        if line.startswith("? "):
+            paths.append(line[2:])
+        elif line.startswith("1 ") or line.startswith("u "):
+            paths.append(line.split(" ")[-1])
+    return paths
+
+
+def cluster_dirty_paths(
+    paths: list[str], *, case_dir_name: str, active_case_rel: str | None,
+) -> tuple[dict[str, list[str]], list[str], list[str]]:
+    """Dirty Pfade nach Case-Zugehörigkeit gruppieren (PLAN-25 Befund 8,
+    Punkt 1) — reine Pfad-Logik, kein Git-Aufruf.
+
+    Gibt ``(other_cases, caseless, active_case)`` zurück:
+
+    - ``other_cases``: ``{"<case_dir_name>/<slug>": [pfade]}`` — ein Cluster
+      je Case-Ordner, der **nicht** der aktive ist (auch ohne aktiven Case,
+      s. u.).
+    - ``caseless``: Pfade außerhalb jedes Case-Ordners (``vault/memo/``,
+      ``vault/attach/``, Repo-Root-Dateien, ``.claude/`` …) — ein Sammel-
+      Cluster.
+    - ``active_case``: Pfade, die zum aktiven Case gehören (``active_case_rel``,
+      aus ``state.get_path()``) — von ``/sync`` bewusst **nicht** angefasst,
+      nur angezeigt (auf ``/save`` verweisen).
+
+    ``active_case_rel is None`` (kein Case geparkt) ⇒ **jeder** Case-Ordner
+    zählt als "other" — "egal ob mit oder ohne aktives Projekt" (User-Vorgabe)."""
+    vault_prefix = "vault/"
+    case_prefix = f"{case_dir_name}/"
+    other: dict[str, list[str]] = {}
+    caseless: list[str] = []
+    active: list[str] = []
+    for p in paths:
+        if not p.startswith(vault_prefix):
+            caseless.append(p)
+            continue
+        rel_to_vault = p[len(vault_prefix):]
+        if not rel_to_vault.startswith(case_prefix):
+            caseless.append(p)
+            continue
+        rest = rel_to_vault[len(case_prefix):]
+        folder = rest.split("/", 1)[0]
+        case_rel = f"{case_dir_name}/{folder}"
+        if active_case_rel is not None and case_rel == active_case_rel:
+            active.append(p)
+        else:
+            other.setdefault(case_rel, []).append(p)
+    return other, caseless, active
+
+
+def stage_and_commit_paths(paths: list[str], message: str,
+                          identity: tuple[str, str] | None = None) -> bool:
+    """Wie ``stage_and_commit()``, aber für eine explizite Liste von Pfaden
+    ohne gemeinsamen Verzeichnis-Scope (PLAN-25 Befund 8 — Sammel-Cluster für
+    Case-lose Änderungen). Gibt True zurück, wenn ein Commit entstanden ist."""
+    if not paths:
+        return False
+    _git(["add", "-A", "--", *paths])
+    return _commit_if_staged(message, identity)
+
+
+def _commit_if_staged(message: str, identity: tuple[str, str] | None) -> bool:
+    if not _has_staged():
+        return False
+    args = []
+    if identity is not None:
+        name, email = identity
+        args += ["-c", f"user.name={name}", "-c", f"user.email={email}"]
+    _git([*args, "commit", "-m", message])
+    return True
+
+
 def stage_and_commit(scope: Path | None, message: str,
                      identity: tuple[str, str] | None = None) -> bool:
     """Stagen (scope-begrenzt oder ganzes Repo) und committen, falls dirty.
@@ -148,14 +230,7 @@ def stage_and_commit(scope: Path | None, message: str,
     else:
         rel = str(scope.resolve().relative_to(repo.root()))
         _git(["add", "-A", "--", rel])
-    if not _has_staged():
-        return False
-    args = []
-    if identity is not None:
-        name, email = identity
-        args += ["-c", f"user.name={name}", "-c", f"user.email={email}"]
-    _git([*args, "commit", "-m", message])
-    return True
+    return _commit_if_staged(message, identity)
 
 
 def integrate(branch: str, keep_conflict: bool = False,

@@ -72,6 +72,38 @@ def test_commit_nothing_to_commit(repo_with_origin):
     assert git_ops.stage_and_commit(None, "leer") is False
 
 
+# --- dirty_paths / stage_and_commit_paths (PLAN-25 Befund 8) ---------------
+
+def test_dirty_paths_lists_modified_and_untracked(repo_with_origin):
+    root, _ = repo_with_origin
+    (root / "pyproject.toml").write_text("MODIFIED\n", encoding="utf-8")
+    (root / "new.txt").write_text("new", encoding="utf-8")
+    paths = git_ops.dirty_paths()
+    assert set(paths) == {"pyproject.toml", "new.txt"}
+
+
+def test_dirty_paths_empty_on_clean_tree(repo_with_origin):
+    assert git_ops.dirty_paths() == []
+
+
+def test_stage_and_commit_paths_only_stages_listed_paths(repo_with_origin):
+    root, _ = repo_with_origin
+    (root / "a.txt").write_text("a", encoding="utf-8")
+    (root / "b.txt").write_text("b", encoding="utf-8")
+    committed = git_ops.stage_and_commit_paths(["a.txt"], "sync: a only")
+    assert committed is True
+    files = _head_files(root)
+    assert "a.txt" in files and "b.txt" not in files
+    assert "b.txt" in _sh(root, "status", "--porcelain")  # bleibt uncommitted
+
+
+def test_stage_and_commit_paths_empty_list_is_noop(repo_with_origin):
+    root, _ = repo_with_origin
+    (root / "a.txt").write_text("a", encoding="utf-8")
+    assert git_ops.stage_and_commit_paths([], "sync: nothing") is False
+    assert "a.txt" in _sh(root, "status", "--porcelain")
+
+
 # --- integrate + push ---
 
 def test_push_when_ahead(repo_with_origin):
