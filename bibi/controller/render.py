@@ -1156,34 +1156,41 @@ def _git_segment_card(git_status: dict | None) -> str:
     return _kv_card("Git", rows, sub=f"Branch {branch}" if branch else "")
 
 
-_JOB_STATUS_LEFT = ("pending", "awaiting", "deferred", "failed", "running")
-_JOB_STATUS_RIGHT = ("inactive", "zombie", "error", "killed")
+_JOB_STATUS_WAITING = ("pending", "deferred", "failed")
+_JOB_STATUS_RUNNING = ("running", "awaiting")
+_JOB_STATUS_STOPPED = ("inactive", "zombie", "error", "killed")
 
 
-def _job_status_card(job_stats: dict) -> str:
-    """Job-Status-Kachel (PLAN-26 Befund 3, User-Fund: "Als 4. Kachel nehmen
-    wir dazu die Job Status in 2 x 5 Zeilen") — 4. Kachel neben Host/Mode/Git,
+def _job_status_card(job_stats: dict, now: float) -> str:
+    """Job-Status-Kachel (PLAN-26 Befund 3) — 4. Kachel neben Host/Mode/Git,
     nur gerendert wenn ``job_stats`` vorhanden ist (``scheduler``-Rolle, wie
     ``job_stats`` selbst — Client-Darstellung laut User bewusst "später").
 
-    Alle 10 Status unbedingt gezeigt, auch mit Zählung 0 — anders als
-    ``_current_state_chips()`` (PLAN-21), das Null-Zustände ausblendet; hier
-    laut Originaltext explizit gewünscht ("Anzahl Job in diesem Status", ohne
-    Bedingung). ``complete`` kommt NICHT aus ``counts`` (Live-Zählung aktiver
-    Jobs — sinkt, sobald abgeschlossene Jobs archiviert werden), sondern aus
-    dem kumulativen ``complete_since_uptime`` (``job_db.complete_count()``,
-    analog ``running_since_uptime``)."""
+    2 Zeilen (User-Fund direkt nach dem ersten Deploy: das ursprüngliche 2×5-
+    Layout war zu hoch, hier auf dieselbe Höhe wie Host/Mode/Git verdichtet):
+    Waiting (pending+deferred+failed) / Stopped (inactive+zombie+error+killed)
+    in Zeile 1, Running (running+awaiting) / Complete in Zeile 2. ``complete``
+    kommt NICHT aus ``counts`` (Live-Zählung aktiver Jobs — sinkt, sobald
+    abgeschlossene Jobs archiviert werden), sondern aus dem kumulativen
+    ``complete_since_uptime`` (``job_db.complete_count()``, analog
+    ``running_since_uptime``). Sub-Zeile (kleinere Schrift, wie Mode-Karten
+    "Uptime …"/Git-Karten "Branch …"): kleinster ``next_fire_at`` über alle
+    aktiven Jobs (``job_db.next_due_at()``), über ``_until()`` formatiert."""
     counts = job_stats.get("counts") or {}
-    left = [(s.capitalize(), counts.get(s, 0)) for s in _JOB_STATUS_LEFT]
-    right = [(s.capitalize(), counts.get(s, 0)) for s in _JOB_STATUS_RIGHT]
-    right.append(("Complete", job_stats.get("complete_since_uptime", 0)))
-    cells = "".join(
-        f'<div class="k">{lk}</div><div class="v">{lv}</div>'
-        f'<div class="k">{rk}</div><div class="v">{rv}</div>'
-        for (lk, lv), (rk, rv) in zip(left, right)
+    waiting = sum(counts.get(s, 0) for s in _JOB_STATUS_WAITING)
+    running = sum(counts.get(s, 0) for s in _JOB_STATUS_RUNNING)
+    stopped = sum(counts.get(s, 0) for s in _JOB_STATUS_STOPPED)
+    complete = job_stats.get("complete_since_uptime", 0)
+    cells = (
+        f'<div class="k">Waiting</div><div class="v">{waiting}</div>'
+        f'<div class="k">Stopped</div><div class="v">{stopped}</div>'
+        f'<div class="k">Running</div><div class="v">{running}</div>'
+        f'<div class="k">Complete</div><div class="v">{complete}</div>'
     )
+    sub = f"Nächster Job {_until(job_stats.get('next_due_at'), now)}"
     return (f'<div class="card"><div class="label">Job Status</div>'
-           f'<div class="kvgrid2">{cells}</div></div>')
+           f'<div class="kvgrid2">{cells}</div>'
+           f'<div class="sub">{_e(sub)}</div></div>')
 
 
 def feed_status_fragment(
@@ -1212,7 +1219,7 @@ def feed_status_fragment(
              _git_segment_card(git_status)]
     job_stats = status.get("job_stats")
     if job_stats is not None:
-        cards.append(_job_status_card(job_stats))
+        cards.append(_job_status_card(job_stats, now))
     attrs = (f'id="feedstatus" hx-get="/-/ui/feed/status" '
             f'hx-trigger="every {poll_interval_s}s [window.bibiFollow]" hx-swap="outerHTML"')
     return f'<div {attrs}><div class="statuscards">{"".join(cards)}</div></div>'

@@ -175,38 +175,56 @@ def test_mode_and_git_card_use_kvgrid_container():
 # wir dazu die Job Status in 2 x 5 Zeilen") ----------------------------------
 
 
-def test_job_status_card_shows_all_ten_statuses_including_zero():
-    # Alle 10 Status unbedingt gezeigt, auch mit Zählung 0 — anders als
-    # _current_state_chips() (PLAN-21), das Nullen ausblendet; hier laut
-    # Originaltext explizit gewünscht ("Anzahl Job in diesem Status").
-    job_stats = {"counts": {"pending": 2, "awaiting": 1, "running": 1, "error": 1},
-                "complete_since_uptime": 47}
-    html = render._job_status_card(job_stats)
-    assert '<div class="k">Pending</div><div class="v">2</div>' in html
-    assert '<div class="k">Deferred</div><div class="v">0</div>' in html
-    assert '<div class="k">Inactive</div><div class="v">0</div>' in html
+def test_job_status_card_aggregates_into_two_rows():
+    # User-Fund direkt nach Deploy: 5 Zeilen waren zu hoch — auf 2 Zeilen
+    # aggregierte Kategorien verdichtet: Waiting (pending+deferred+failed) /
+    # Stopped (inactive+zombie+error+killed) links/rechts Zeile 1, Running
+    # (running+awaiting) / Complete Zeile 2.
+    job_stats = {"counts": {"pending": 2, "deferred": 1, "failed": 1,
+                            "running": 1, "awaiting": 1,
+                            "inactive": 1, "zombie": 1, "error": 1, "killed": 1},
+                "complete_since_uptime": 47, "next_due_at": None}
+    html = render._job_status_card(job_stats, now=100.0)
+    assert '<div class="k">Waiting</div><div class="v">4</div>' in html
+    assert '<div class="k">Running</div><div class="v">2</div>' in html
+    assert '<div class="k">Stopped</div><div class="v">4</div>' in html
     assert '<div class="k">Complete</div><div class="v">47</div>' in html
+    assert html.count('<div class="k">') == 4  # nur noch 2 Zeilen x 2 Paare
 
 
 def test_job_status_card_complete_uses_cumulative_counter_not_live_count():
     # complete_since_uptime (kumulativ seit Start), NICHT counts["complete"]
     # (Live-Zählung aktiver Jobs — sinkt, sobald abgeschlossene Jobs
     # archiviert werden).
-    job_stats = {"counts": {"complete": 3}, "complete_since_uptime": 47}
-    html = render._job_status_card(job_stats)
+    job_stats = {"counts": {"complete": 3}, "complete_since_uptime": 47, "next_due_at": None}
+    html = render._job_status_card(job_stats, now=100.0)
     assert '<div class="k">Complete</div><div class="v">47</div>' in html
     assert '<div class="k">Complete</div><div class="v">3</div>' not in html
 
 
+def test_job_status_card_shows_next_due_sub_line():
+    html = render._job_status_card(
+        {"counts": {}, "complete_since_uptime": 0, "next_due_at": 400.0}, now=100.0)
+    assert '<div class="sub">Nächster Job in 5 min</div>' in html
+
+
+def test_job_status_card_next_due_none_shows_dash():
+    html = render._job_status_card(
+        {"counts": {}, "complete_since_uptime": 0, "next_due_at": None}, now=100.0)
+    assert '<div class="sub">Nächster Job —</div>' in html
+
+
 def test_job_status_card_uses_kvgrid2_css():
-    html = render._job_status_card({"counts": {}, "complete_since_uptime": 0})
+    html = render._job_status_card(
+        {"counts": {}, "complete_since_uptime": 0, "next_due_at": None}, now=100.0)
     assert '<div class="kvgrid2">' in html
     assert ".kvgrid2 {" in render._CSS
 
 
 def test_feed_status_fragment_includes_job_status_card_when_present():
     html = render.feed_status_fragment(
-        {"job_stats": {"counts": {"running": 1}, "complete_since_uptime": 5}},
+        {"job_stats": {"counts": {"running": 1}, "complete_since_uptime": 5,
+                       "next_due_at": None}},
         None, None, now=100.0)
     assert html.count('<div class="card">') == 4
     assert "Job Status" in html

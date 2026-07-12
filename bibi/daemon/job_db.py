@@ -369,6 +369,16 @@ def status_counts(conn: sqlite3.Connection) -> dict[str, int]:
     return {r["status"]: r["n"] for r in rows}
 
 
+def next_due_at(conn: sqlite3.Connection) -> float | None:
+    """Kleinster ``next_fire_at`` über alle aktiven Jobs (PLAN-26 Befund 3,
+    Job-Status-Kachel: "nächster Job in …"). ``None``, wenn kein aktiver Job
+    einen Trigger gesetzt hat."""
+    row = conn.execute(
+        "SELECT MIN(next_fire_at) AS m FROM jobs WHERE active=1 AND next_fire_at IS NOT NULL"
+    ).fetchone()
+    return row["m"] if row else None
+
+
 def list_jobs(conn: sqlite3.Connection, status: str | None = None) -> list[dict]:
     # active=1 (PLAN-14 Stufe 14.5): dies speist die Root-Bänder (Live-Betrieb) —
     # ein deaktivierter Schedule (MD entfernt) gehört dort nicht mehr hin, nur

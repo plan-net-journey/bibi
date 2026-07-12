@@ -387,6 +387,31 @@ def test_status_counts_empty_db(conn):
     assert job_db.status_counts(conn) == {}
 
 
+# ── next_due_at (PLAN-26 Befund 3, Job-Status-Kachel: "nächster Job") ───────
+
+
+def test_next_due_at_returns_smallest_next_fire_at(conn):
+    _seed_full(conn, slug="a", status="pending", next_fire_at=500.0)
+    _seed_full(conn, slug="b", status="pending", next_fire_at=100.0)
+    _seed_full(conn, slug="c", status="deferred", next_fire_at=300.0)
+    assert job_db.next_due_at(conn) == 100.0
+
+
+def test_next_due_at_ignores_jobs_without_next_fire_at(conn):
+    _seed_full(conn, slug="a", status="running", next_fire_at=None)
+    assert job_db.next_due_at(conn) is None
+
+
+def test_next_due_at_excludes_inactive_jobs(conn):
+    jid = _seed_full(conn, slug="a", status="pending", next_fire_at=100.0)
+    conn.execute("UPDATE jobs SET active=0 WHERE id=?", (jid,))
+    assert job_db.next_due_at(conn) is None
+
+
+def test_next_due_at_empty_db(conn):
+    assert job_db.next_due_at(conn) is None
+
+
 # ── Concurrency: n parallele /next → disjunkt (§3.2/§3.8) ─────────────────────
 
 

@@ -230,6 +230,16 @@ def test_status_job_stats_absent_without_scheduler_role(team_repo):
         assert "job_stats" not in client.get("/-/status").json()
 
 
+def test_status_job_stats_includes_next_due_at(sched):
+    # PLAN-26 Befund 3 Redesign — Sub-Zeile "Nächster Job in …" der Job-
+    # Status-Kachel.
+    client, root = sched
+    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    client.post("/-/rescan")
+    stats = client.get("/-/status").json()["job_stats"]
+    assert stats["next_due_at"] is not None
+
+
 def test_status_job_stats_includes_complete_since_uptime(sched):
     # PLAN-26 Befund 3 — Job-Status-Kachel: complete_since_uptime ist ein
     # kumulativer Prozesslaufzeit-Zähler wie running_since_uptime, nicht die
