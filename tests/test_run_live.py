@@ -161,11 +161,18 @@ def test_signal_state_malformed_signal_line_is_skipped_not_crashed():
 # ── local_run_kill() (User-Fund 2026-07-10: "natürlich müssen wir kill können") ─
 
 
-def test_local_run_kill_terminates_and_returns_true(monkeypatch):
+def test_local_run_kill_terminates_and_returns_true(monkeypatch, team_repo):
     # _terminate() (worker.py) fragt _is_container() ab, was ohne Mock den
     # globalen Knoten-Default liest (auf diesem Mac: container) und einen
     # echten `docker stop`-Subprozess anstoßen würde — hier wie in
     # test_worker_container.py hermetisch weggemockt.
+    #
+    # team_repo ist Pflicht, kein Nice-to-have: local_run_kill() baut
+    # out_path = repo.root() / output_ref und _terminate() schreibt dorthin
+    # echte Phase-Zeilen (auch verzögert aus dem SIGKILL-Backstop-Thread,
+    # s. worker.py::_terminate) — ohne team_repo landet das im echten
+    # Checkout statt in einem Tempdir (beobachtet: eine "ref"-Datei mit
+    # Kill-Phase-Zeilen im Repo-Root nach jedem Testlauf).
     monkeypatch.setattr("bibi.daemon.worker._is_container", lambda: False)
     monkeypatch.setattr("bibi.daemon.worker._docker", lambda args: None)
     proc = _FakeProc(alive=True)
