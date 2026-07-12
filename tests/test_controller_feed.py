@@ -467,6 +467,15 @@ def test_feed_fragment_wraps_heatmap_and_changes_in_own_panel_cards():
     assert html.index('class="panel-card"') < html.index("Änderungen")
 
 
+def test_panel_card_first_heading_has_no_top_margin():
+    # PLAN-27 Befund 1, User-Fund: "Margins zwischen Chart und Heatmap
+    # unterschiedlich" — Root Cause: die generische h2-Regel (margin-top
+    # 1.5rem) addiert sich zum .panel-card-Padding, während der Chart-Kopf
+    # (.ts-head h3) schon bei margin:0 sitzt. Normalisiert alle .panel-card-
+    # Überschriften (Aktivität/Änderungen/Schedules) auf denselben Stand.
+    assert ".panel-card > h2:first-child { margin-top: 0" in render._CSS
+
+
 def test_feed_page_has_header_nav_and_status_cards():
     feed_data = {"entities": [], "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
     html = render.feed_page(feed_data, git_status={"tree": "clean", "sync": "synced",

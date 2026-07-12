@@ -37,6 +37,18 @@ def test_log_page_has_nav_and_clock():
     assert "new EventSource('/-/log/stream" in html  # Live-Quelle bleibt
 
 
+def test_log_page_includes_feed_status_header():
+    # PLAN-27 Befund 2, User-Fund: denselben Host/Mode/Git/Job-Status-Kopf
+    # wie auf /-/ und /-/ui/schedules auch im Live-Log zeigen.
+    html = render.log_page(
+        daemon_status={"job_stats": {"counts": {"running": 1}, "complete_since_uptime": 3,
+                                     "next_due_at": None}},
+        git_status={"tree": "clean", "sync": "synced", "branch": "trunk"},
+        host_url="http://sarasate.tail9f9173.ts.net:8780")
+    assert 'id="feedstatus"' in html
+    assert html.count('<div class="card">') == 4  # Host/Mode/Git/Job Status
+
+
 def test_log_links_slug_to_schedule_detail():
     # Die Log-Zeilen-JS baut slug als Link zum Schedule-Detail.
     assert "/-/ui/schedule/" in render.log_page()

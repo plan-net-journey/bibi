@@ -260,7 +260,10 @@ def add_controller_routes(
 
     @app.get("/-/ui/logs", include_in_schema=False)
     def logs_page():
-        return HTMLResponse(render.log_page(daemon_status=_status()))
+        from bibi import config
+        return HTMLResponse(render.log_page(
+            daemon_status=_status(), git_status=_feed_git_status(),
+            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval()))
 
     def _jobs_data() -> tuple[list, dict, list]:
         """PLAN-21 Befund 10, User-Entscheidung: der Jobs-Screen dient

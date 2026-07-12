@@ -192,7 +192,6 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
         border-radius: .35rem; padding: .2rem .55rem; cursor: pointer; color: inherit; font-weight: 600;
         white-space: nowrap; }
 .startbtn:disabled, .killbtn:disabled { opacity: .4; cursor: default; }
-.note { color: #888; font-size: .82rem; margin: .2rem 0 .8rem; }
 .runhist { font-size: .86rem; }
 .runhist .row { display: flex; gap: .8rem; padding: .35rem 0; border-bottom: 1px solid #8881;
                 align-items: baseline; }
@@ -247,6 +246,13 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
    Schedules und die Inaktiven"). */
 .panel-card { border: 1px solid #8883; border-radius: .4rem; padding: .7rem 1rem .6rem;
               margin: .5rem 0 1rem; }
+/* PLAN-27 Befund 1, User-Fund: "Margins zwischen Chart und Heatmap
+   unterschiedlich" — die generische h2-Regel (margin-top 1.5rem, für
+   Überschriften ZWISCHEN Sektionen gedacht) addierte sich zusätzlich zum
+   .panel-card-Padding oben, während der Chart-Kopf (.ts-head h3) schon bei
+   margin:0 saß. Normalisiert Aktivität/Änderungen/Schedules auf denselben
+   Stand wie der Chart. */
+.panel-card > h2:first-child { margin-top: 0; }
 .ts-head { display: flex; align-items: baseline; justify-content: space-between;
            flex-wrap: wrap; gap: .4rem 1rem; }
 .ts-head h3 { margin: 0; font-size: .95rem; }
@@ -989,21 +995,31 @@ def _log_panel() -> str:
     )
 
 
-def log_page(daemon_status: dict | None = None) -> str:
+def log_page(daemon_status: dict | None = None, *, git_status: dict | None = None,
+             host_url: str | None = None, now: float | None = None,
+             status_poll_interval_s: int = 30) -> str:
     """Live-Log-Panel (§5.4 Slice C): EventSource gegen ``/-/log/stream``, mit
     Level- + Text-Filter (Rolle/Event/slug/msg). Reines FE; der Daemon liefert
-    die Events als SSE. ``pure`` (kein HTTP/DB) — voll testbar. Ops-Handles +
-    funktionierendes FOLLOW seit User-Feedback 2026-07-04 (vorher fehlte
-    ``_FOLLOW_JS`` hier komplett — der FOLLOW-Button im Header war wirkungslos)."""
+    die Events als SSE. Ops-Handles + funktionierendes FOLLOW seit User-Feedback
+    2026-07-04 (vorher fehlte ``_FOLLOW_JS`` hier komplett — der FOLLOW-Button
+    im Header war wirkungslos). Status-Kacheln (Host/Mode/Git/Job-Status,
+    PLAN-27 Befund 2, User-Fund: "diesen Header auch im Live-Log anzeigen")
+    seit demselben `feed_status_fragment()` wie auf ``/-/``/``/-/ui/schedules``
+    — braucht dafür jetzt auch das htmx-Script-Tag (vorher unnötig, da der
+    Log-Stream reines SSE/Plain-JS ist)."""
+    now = time.time() if now is None else now
+    status = daemon_status or {}
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Live-Log</title>"
         f"<script>{_FOLLOW_JS}</script>"
+        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Live Log', daemon_status)}"
+        f"{_header('Live Log', status)}"
         f"<script>{_CLOCK_JS}</script>"
+        f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s)}"
         f"{_log_panel()}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"
@@ -1314,8 +1330,12 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float) -> str:
 
     slug_cell = f'<a class="slug" href="/-/ui/jobs/detail/{s}">{s}</a>'
     if live:
+        # PLAN-27 Befund 4, User-Fund: "der Status awaiting wird in /ui/jobs
+        # nicht angezeigt" — live["status"] kommt jetzt aus local_runs_live()
+        # (worker.py), analog zu _local_job_meta()s Fallunterscheidung.
+        st = "awaiting" if live.get("status") == "awaiting" else "running"
         status_cell = (f'<a class="rowlink" href="/-/ui/jobs/detail/{s}">'
-                       f'<span class="st running">running</span></a>')
+                       f'<span class="st {st}">{st}</span></a>')
     elif jid is not None:
         status_cell = (f'<a class="rowlink" href="/-/ui/run/{jid}">'
                        f'<span class="st {_e(lr["status"])}">{_e(lr["status"])}</span></a>')
@@ -1385,10 +1405,6 @@ def jobs_fragment(
     return (
         f'<div id="jobsboard" hx-get="/-/ui/jobs/board" hx-trigger="{_POLL}" hx-swap="outerHTML">'
         '<h2>Jobs im Repository</h2>'
-        '<div class="note">Lokal per <code>discovery.discover()</code> entdeckte '
-        "Job-MDs (aus den <code>vault/case/</code>-MDs dieses Checkouts) mit "
-        "ihrem echten Git-Status. Gelöschte MDs verschwinden von selbst — "
-        "diese Ansicht bildet nur ab, was gerade im Repository liegt.</div>"
         f"{_jobs_table(rows, local_runs, now)}"
         '<h2>Lokale Läufe</h2>'
         f"{_run_history(runs, now)}"

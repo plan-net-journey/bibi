@@ -665,10 +665,25 @@ def local_run_live(slug: str) -> dict | None:
 
 
 def local_runs_live() -> dict[str, dict]:
-    """Alle aktuell laufenden lokalen Runs, ``{slug: {id, started_at}}`` — schlank
-    (kein Output) für die Jobs-Liste, die pro Zeile nur "läuft gerade?" braucht."""
-    return {slug: {"id": v["id"], "started_at": v["started_at"]}
-           for slug, v in _local_runs_live.items()}
+    """Alle aktuell laufenden lokalen Runs, ``{slug: {id, started_at, status}}``.
+
+    ``status`` (PLAN-27 Befund 4, User-Fund: "der Status awaiting wird in
+    /ui/jobs nicht angezeigt. Im Job Detail bereits schon.") liest pro Zeile
+    einmal die bisherige ``output.jsonl`` + ``local_run_signal_state()`` —
+    derselbe Weg, über den ``run_live_detail()`` (Job-Detailseite) "awaiting"
+    schon immer korrekt zeigte; die Übersichtsliste hier tat das bisher nicht
+    (bewusst schlank gehalten, "kein Output" — aber genau das verschluckte
+    awaiting). In der Praxis läuft auf einem Client so gut wie nie mehr als
+    ein lokaler Job gleichzeitig, der zusätzliche Datei-Read je Poll ist
+    vernachlässigbar. Kein ``output_ref`` im Rückgabewert (bleibt schlank für
+    die Liste, die pro Zeile nur Status + Link braucht)."""
+    out = {}
+    for slug, v in _local_runs_live.items():
+        path = repo.root() / v["output_ref"]
+        raw = output.read_events(path) if path.exists() else []
+        sig_state = local_run_signal_state(raw)
+        out[slug] = {"id": v["id"], "started_at": v["started_at"], "status": sig_state["status"]}
+    return out
 
 
 def local_run_kill(slug: str) -> bool:

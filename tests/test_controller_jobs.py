@@ -91,6 +91,18 @@ def test_jobs_table_live_row_shows_running_and_disables_start():
     assert "disabled" in html
 
 
+def test_jobs_table_live_row_shows_awaiting_when_signaled():
+    # PLAN-27 Befund 4, User-Fund: "der Status awaiting wird in /ui/jobs
+    # nicht angezeigt. Im Job Detail bereits schon." — row["live"]["status"]
+    # kommt jetzt aus local_runs_live() (worker.py), analog zu
+    # _local_job_meta()s bereits bestehender Fallunterscheidung.
+    html = render._jobs_table(
+        [_row("a", live={"id": "jid1", "started_at": 100.0, "status": "awaiting"})],
+        {}, now=200.0)
+    assert 'class="st awaiting">awaiting<' in html
+    assert 'class="st running">running<' not in html
+
+
 def test_run_history_renders_rows():
     runs = [{"id": 7, "slug": "mein-testjob", "status": "complete", "exit_code": 0,
             "exec_runtime": 3.2, "finished_at": 100.0}]
@@ -115,6 +127,14 @@ def test_jobs_fragment_has_no_remote_or_hostlink_text():
 def test_jobs_fragment_self_polls():
     html = render.jobs_fragment([], {}, [], now=100.0)
     assert 'id="jobsboard"' in html and 'hx-get="/-/ui/jobs/board"' in html
+
+
+def test_jobs_fragment_has_no_explanatory_note():
+    # PLAN-27 Befund 3, User-Fund: erklärender Text ("Lokal per
+    # discovery.discover() entdeckte Job-MDs ...") soll raus.
+    html = render.jobs_fragment([], {}, [], now=100.0)
+    assert "discovery.discover()" not in html
+    assert "bildet nur ab, was gerade im Repository liegt" not in html
 
 
 def test_jobs_page_has_header_and_nav():

@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from bibi.daemon import roles, worker
 from bibi.daemon.app import create_app
+from bibi.wrapper import output
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +83,26 @@ def test_local_run_live_returns_copy_not_live_reference():
     snap = worker.local_run_live("a")
     snap["id"] = "mutated"
     assert worker.local_run_live("a")["id"] == "jid1"
+
+
+def test_local_runs_live_defaults_status_running_without_signals(team_repo):
+    worker.local_run_start("a", "jid1", "data/job/jid1/output.jsonl", "job", "echo hi")
+    live = worker.local_runs_live()
+    assert live["a"]["status"] == "running"
+
+
+def test_local_runs_live_includes_awaiting_status(team_repo):
+    # PLAN-27 Befund 4, User-Fund: "der Status awaiting wird in /ui/jobs nicht
+    # angezeigt. Im Job Detail bereits schon." — local_runs_live() (Quelle für
+    # die Jobs-Übersicht) las bisher gar keinen Output, kannte deshalb nur
+    # "läuft/läuft nicht", nie "awaiting" (anders als run_live_detail(), das
+    # lokal per local_run_signal_state() schon immer korrekt "awaiting" zeigt).
+    out_ref = "data/job/jid1/output.jsonl"
+    output.append(team_repo / out_ref, "signal",
+                  json.dumps({"name": "awaiting", "input_request": "ja/j?", "port": 9100}))
+    worker.local_run_start("a", "jid1", out_ref, "job", "echo hi")
+    live = worker.local_runs_live()
+    assert live["a"]["status"] == "awaiting"
 
 
 # ── local_run_signal_state() (Ausbau User-Fund 2026-07-10: awaiting/app_url ──
