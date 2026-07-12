@@ -1719,14 +1719,20 @@ def _ops_handles(status: dict | None = None) -> str:
     dadurch gleichzeitig im Button UND in der Git-Karte — echte Dopplung, per
     Screenshot bestätigt. Bleibt jetzt nur noch in der Git-Karte). Kein
     "Wartungsmodus aktiv"-Banner mehr (PLAN-21 Befund 3: reine Redundanz zum
-    längst aussagekräftigen MAINT-Toggle, keine Zusatzinfo)."""
+    längst aussagekräftigen MAINT-Toggle, keine Zusatzinfo).
+
+    MAINT nur mit ``scheduler``-Rolle (PLAN-25 Befund 1) — der Client kennt
+    gar keinen eigenen Maintenance-Mode, ein Klick hätte dort nie etwas
+    pausiert. RESCAN bleibt unbedingt, das ist auf jedem Knoten sinnvoll."""
+    roles = (status or {}).get("roles") or []
     maint = bool((status or {}).get("maintenance"))
     mcls = "toggle warn" if maint else "toggle"
     mlabel = "MAINT: ON" if maint else "MAINT: OFF"
+    maint_btn = f'<button id="maint" class="{mcls}">{mlabel}</button>' if "scheduler" in roles else ""
     return (
         '<nav class="handles">'
         '<button id="rescan" class="toggle">RESCAN</button>'
-        f'<button id="maint" class="{mcls}">{mlabel}</button>'
+        f"{maint_btn}"
         "</nav>"
     )
 

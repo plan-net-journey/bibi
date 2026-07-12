@@ -172,7 +172,8 @@ class Synchronizer:
         with self._lock_ctx():
             ok, loglines, kind = self._push_fn()
         self.last_push_at, self.last_ok, self.last_log = self._clock(), ok, loglines
-        activity.emit(log, logging.INFO, "sync.push", role="synchronizer", ok=ok, kind=kind)
+        activity.emit(log, logging.INFO, "sync.push", "; ".join(loglines),
+                      role="synchronizer", ok=ok, kind=kind)
         return ok, loglines, kind
 
     # — Laufzeit-Toggle (§4.3-Endpunkte) —
@@ -215,7 +216,7 @@ class Synchronizer:
                 kinds.append(kind)
                 self._debounce.reset()
                 did["pushed"] = True
-                activity.emit(log, logging.INFO, "sync.push",
+                activity.emit(log, logging.INFO, "sync.push", "; ".join(loglines),
                               role="synchronizer", ok=ok, kind=kind)
 
         if self._pull and self._pull_due(now):

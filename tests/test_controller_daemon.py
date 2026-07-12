@@ -83,7 +83,7 @@ def test_daemon_page_has_header_nav_status_and_log():
 
 
 def test_daemon_page_has_rescan_and_maint():
-    html = render.daemon_page({"maintenance": True}, now=100.0)
+    html = render.daemon_page({"maintenance": True, "roles": ["scheduler"]}, now=100.0)
     assert 'id="rescan"' in html
     assert 'id="maint"' in html and "MAINT: ON" in html
 

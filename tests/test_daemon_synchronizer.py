@@ -87,6 +87,28 @@ def test_tick_pushes_after_idle(team_repo):
     assert calls["push"] == 1
 
 
+def test_tick_push_logs_loglines_as_message(team_repo, caplog):
+    # PLAN-25 Befund 3 Ebene 1, User-Fund: "sync.push ok=true kind=null" ist zu
+    # dürftig — commit_and_push() (git_ops.py) liefert schon eine sprechende
+    # loglines-Liste ("committed: ...", "integrated", "push ok"), die bisher
+    # nie ans Aktivitätslog durchgereicht wurde (nur ok=/kind=).
+    import logging as _logging
+    s, _ = _mk(push=True)
+    with caplog.at_level(_logging.INFO, logger="bibi.daemon.synchronizer"):
+        s.tick(600.0)  # Debounce-Fenster (10 min Idle bei <50 Zeilen) abgelaufen
+    rec = next(r for r in caplog.records if getattr(r, "bibi", {}).get("event") == "sync.push")
+    assert rec.getMessage() == "log"  # _mk()s push_fn liefert loglines=["log"]
+
+
+def test_push_now_logs_loglines_as_message(team_repo, caplog):
+    import logging as _logging
+    s, _ = _mk(push=True)
+    with caplog.at_level(_logging.INFO, logger="bibi.daemon.synchronizer"):
+        s.push_now()
+    rec = next(r for r in caplog.records if getattr(r, "bibi", {}).get("event") == "sync.push")
+    assert rec.getMessage() == "log"
+
+
 def test_tick_pulls_on_interval(team_repo):
     s, calls = _mk(pull=True, stat=("", 0))
     s.tick(0.0)

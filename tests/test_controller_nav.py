@@ -24,7 +24,7 @@ def test_header_includes_theme_toggle():
 
 def test_header_includes_ops_handles():
     # RESCAN/MAINT sitzen jetzt direkt im Header, nicht mehr als separater Aufruf.
-    html = render._header("Schedules", {"maintenance": True})
+    html = render._header("Schedules", {"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
     assert 'id="maint"' in html and "MAINT: ON" in html
 
@@ -59,10 +59,35 @@ def test_feed_header_rescan_ignores_git_status():
 
 
 def test_ops_handles_has_no_maintenance_banner():
-    html = render._ops_handles({"maintenance": True})
+    html = render._ops_handles({"maintenance": True, "roles": ["scheduler"]})
     assert "Wartungsmodus aktiv" not in html
     assert "maintbanner" not in html
     assert 'id="maint"' in html and "MAINT: ON" in html  # Toggle bleibt die einzige Anzeige
+
+
+# --- MAINT nur für scheduler-Rolle sichtbar (PLAN-25 Befund 1) -----------------
+
+
+def test_ops_handles_hides_maint_without_scheduler_role():
+    # User-Fund: der Client kennt gar keinen Maintenance-Mode — kontinuierliche
+    # Anzeige würde nur unnötigen Traffic auf den Host verursachen. MAINT bleibt
+    # dem Scheduler vorbehalten, RESCAN bleibt für jeden Knoten sinnvoll.
+    html = render._ops_handles({"maintenance": True, "roles": ["controller", "connect"]})
+    assert 'id="maint"' not in html
+    assert 'id="rescan"' in html
+
+
+def test_ops_handles_shows_maint_with_scheduler_role():
+    html = render._ops_handles({"maintenance": False, "roles": ["scheduler"]})
+    assert 'id="maint"' in html
+
+
+def test_ops_handles_hides_maint_when_roles_missing():
+    # Kein status/keine roles (ältere Aufrufer, Tests ohne explizite Rolle) —
+    # sicherer Default ist "kein Scheduler", nicht "zeig's trotzdem".
+    assert 'id="maint"' not in render._ops_handles({})
+    assert 'id="maint"' not in render._ops_handles(None)
+    assert 'id="maint"' not in render._ops_handles()
 
 
 # --- Links/Rechts-Gruppen (PLAN-21 Befund 1) -----------------------------------
@@ -98,7 +123,7 @@ def test_toggles_styled_as_text_links_not_boxed_buttons():
     # Nav-Tabs aussehen (reine Text-Links), keine Buttons mit Box/Rahmen mehr.
     # Bleiben funktional <button>-Elemente (JS-Handler), nur CSS-Klasse ändert
     # sich von "handle" auf "toggle" — kein "handle" mehr irgendwo im Markup.
-    html = render._header("Schedules", {"maintenance": True})
+    html = render._header("Schedules", {"maintenance": True, "roles": ["scheduler"]})
     assert 'class="handle"' not in html and 'class="handle ' not in html
     assert 'class="toggle on"' in html  # FOLLOW startet an
     assert 'class="toggle"' in html  # THEME + RESCAN
@@ -175,14 +200,14 @@ def test_schedule_detail_page_has_rescan_and_maint():
     # Schedules-Liste (s.u.), außerhalb von #live/#journal (kein 2s-Re-Render).
     html = render.schedule_detail_page(
         {"slug": "a", "kind": "job"}, [], None, slug="a",
-        daemon_status={"maintenance": True})
+        daemon_status={"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
     assert 'id="maint"' in html and "MAINT: ON" in html
     assert render._OPS_HANDLES_JS in html
 
 
 def test_schedules_page_has_rescan_and_maint():
-    html = render.schedules_page([], daemon_status={"maintenance": False})
+    html = render.schedules_page([], daemon_status={"maintenance": False, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
     assert 'id="maint"' in html and "MAINT: OFF" in html
     assert render._OPS_HANDLES_JS in html
@@ -202,7 +227,8 @@ def test_execution_detail_page_has_rescan_and_maint():
     # jetzt auch auf der Execution-Detail-Seite (vorher gar nicht vorhanden).
     entry = {"id": 1, "run_id": "x:1", "slug": "x", "kind": "job", "status": "complete",
              "started_at": 1.0, "finished_at": 2.0, "domain": "scheduled"}
-    html = render.execution_detail_page(entry, [], "job", daemon_status={"maintenance": True})
+    html = render.execution_detail_page(
+        entry, [], "job", daemon_status={"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
     assert 'id="maint"' in html and "MAINT: ON" in html
 
@@ -211,7 +237,7 @@ def test_log_page_has_rescan_maint_and_follow():
     # User-Feedback 2026-07-04: "Sie sind damit auch auf Live-Log sichtbar" —
     # Live-Log hatte bisher weder Ops-Handles noch ein funktionierendes FOLLOW
     # (_FOLLOW_JS fehlte).
-    html = render.log_page(daemon_status={"maintenance": True})
+    html = render.log_page(daemon_status={"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
     assert 'id="maint"' in html and "MAINT: ON" in html
     assert 'id="follow"' in html and "bibiToggleFollow" in html

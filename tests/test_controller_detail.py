@@ -334,7 +334,7 @@ def test_schedule_detail_route_has_rescan_and_reflects_maintenance(app_with):
     # User-Feedback 2026-07-03: RESCAN + MAINT auch auf der Job-Detail-Seite.
     client = FakeClient(
         schedules=[{"slug": "boom", "kind": "job", "trigger": "now"}],
-        status={"maintenance": True})
+        status={"maintenance": True, "roles": ["scheduler"]})
     with TestClient(app_with(client)) as c:
         r = c.get("/-/ui/schedule/boom")
         assert r.status_code == 200

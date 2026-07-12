@@ -326,7 +326,7 @@ def test_ui_schedules_screen_route(team_repo: Path):
 
 def test_ui_schedules_screen_route_has_rescan_and_reflects_maintenance(team_repo: Path):
     # User-Feedback 2026-07-03: RESCAN + MAINT auch auf dem Schedules-Screen.
-    client = FakeClient([], status={"maintenance": True})
+    client = FakeClient([], status={"maintenance": True, "roles": ["scheduler"]})
     app = create_app(roles.resolve({"controller"}), controller_client=client)
     with TestClient(app) as c:
         r = c.get("/-/ui/schedules")
