@@ -75,6 +75,7 @@ a.rowlink { color: inherit; text-decoration: none; }
 a.rowlink:hover { text-decoration: underline; }
 h2 { font-size: .95rem; color: #888; margin: 1.5rem 0 .4rem; font-weight: 600; }
 .back { color: #888; text-decoration: none; font-size: .85rem; }
+.tab-active { font-weight: 600; border-bottom: 2px solid currentColor; }
 .meta { color: #aaa; font-size: .9rem; margin: .2rem 0 1rem; }
 /* Terminal-Boxen bleiben theme-unabhängig dunkel (PLAN-19 Befund 3, User-Fund:
    Light-Mode unleserlich) — vorher halbtransparentes Schwarz über dem
@@ -394,6 +395,28 @@ def _sched_table(items: list[dict], now: float) -> str:
             "</tbody></table>")
 
 
+def _schedule_active_block(schedules: list[dict], now: float) -> str:
+    head = f'<h2>Schedules ({len(schedules)})</h2>'
+    if not schedules:
+        return head + '<p class="out-empty">— no schedules —</p>'
+    active, _archive, _journaled = _group_schedules(schedules)
+    body = (_sched_table(active, now) if active
+            else '<p class="out-empty">— no active schedules —</p>')
+    return head + body
+
+
+def _schedule_archive_block(schedules: list[dict], now: float) -> str:
+    if not schedules:
+        return ""
+    _active, archive, journaled = _group_schedules(schedules)
+    body = ""
+    if archive:
+        body += f'<h3>Archive ({len(archive)})</h3>' + _sched_table(archive, now)
+    if journaled:
+        body += f'<h3>Journal — history only ({len(journaled)})</h3>' + _sched_table(journaled, now)
+    return body
+
+
 def schedule_list(schedules: list[dict], now: float | None = None) -> str:
     """Die volle Liste, gruppiert nach Registrierungs-Zustand (PLAN-14 Stufe
     14.6, erweitert PLAN-23 Befund 2): Aktiv (MD entdeckt) / Archive (MD
@@ -401,17 +424,7 @@ def schedule_list(schedules: list[dict], now: float | None = None) -> str:
     Flach + immer sichtbar, kein Klapp mehr — überlebt so den 2s-Poll ohne
     Expand-Verlust."""
     now = time.time() if now is None else now
-    head = f'<h2>Schedules ({len(schedules)})</h2>'
-    if not schedules:
-        return head + '<p class="out-empty">— no schedules —</p>'
-    active, archive, journaled = _group_schedules(schedules)
-    body = (_sched_table(active, now) if active
-            else '<p class="out-empty">— no active schedules —</p>')
-    if archive:
-        body += f'<h3>Archive ({len(archive)})</h3>' + _sched_table(archive, now)
-    if journaled:
-        body += f'<h3>Journal — history only ({len(journaled)})</h3>' + _sched_table(journaled, now)
-    return head + body
+    return _schedule_active_block(schedules, now) + _schedule_archive_block(schedules, now)
 
 
 def schedules_fragment(schedules: list[dict], now: float | None = None,
@@ -419,14 +432,19 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
     """Self-pollender Wrapper um die (bereits gefilterte) Schedule-Liste. Der
     Self-Poll trägt den aktiven Filter in der URL, damit er ihn über den 2s-Tick
     bewahrt. Ziel = ``/-/ui/schedules/list`` (das Fragment; die Seite liegt auf
-    ``/-/ui/schedules``)."""
+    ``/-/ui/schedules``). Aktive Liste und Archive/Journal sitzen in je einem
+    eigenen ``.panel-card`` (PLAN-25 Befund 6: 3 Rahmen statt 2 — Chart /
+    Schedules / Archive), nur der äußere Poll-Container trägt id/hx-Attribute."""
     now = time.time() if now is None else now
     qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status))
                   if v and v != "alle")
     url = "/-/ui/schedules/list" + (f"?{qs}" if qs else "")
-    attrs = (f'id="schedules" class="panel-card" hx-get="{url}" '
+    attrs = (f'id="schedules" hx-get="{url}" '
             f'hx-trigger="{_POLL}" hx-swap="outerHTML"')
-    return f"<div {attrs}>{schedule_list(schedules, now)}</div>"
+    active_html = f'<div class="panel-card">{_schedule_active_block(schedules, now)}</div>'
+    archive_body = _schedule_archive_block(schedules, now)
+    archive_html = f'<div class="panel-card">{archive_body}</div>' if archive_body else ""
+    return f"<div {attrs}>{active_html}{archive_html}</div>"
 
 
 # ── Lauf-Historie-Chart (PLAN-21 Befund 11, v2 — User-Redesign 2026-07-08) ───
@@ -616,7 +634,7 @@ def timeseries_fragment(landings: list[dict], job_stats: dict | None = None,
 
 #: Filter-Optionen. „problem" ist eine **Gruppe** (Abweichungen als Filter statt
 #: eigenem Block): failed/error/killed/zombie + überfällig (pending, fällig verpasst).
-_SCHED_TYPES = ("job", "claude", "app")
+_SCHED_TYPES = ("job", "claude")
 _SCHED_STATUSES = ("running", "pending", "complete", "failed", "deferred", "problem")
 _SCHED_PROBLEM = {"failed", "error", "killed", "zombie"}
 
@@ -632,7 +650,7 @@ def _effective_sched_type(s: dict) -> str:
     """Anzeige-/Filter-Typ ableiten — ``kind`` ist seit PLAN-10 (Unified Job
     Model) immer ``"job"`` und trägt keine Information mehr (§5.3). Delegiert an
     ``models.effective_kind`` (PLAN-12 Stufe 12.0 — einzige Quelle für alle Aufrufer)."""
-    return models.effective_kind(s.get("payload"), s.get("app_port"))
+    return models.effective_kind(s.get("payload"))
 
 
 def filter_schedules(schedules: list[dict], *, typ: str | None = None,
@@ -697,7 +715,7 @@ def _screen_nav(active: str, roles: list[str] | None = None) -> str:
     tabs += [("Live Log", "/-/ui/logs"), ("API Docs", "/-/docs")]
     def _tab(t: str, h: str) -> str:
         if t == active:
-            return t
+            return f'<span class="tab-active">{t}</span>'
         extra = ' target="_blank" rel="noopener"' if t == "API Docs" else ""
         return f'<a class="back" href="{h}"{extra}>{t}</a>'
     items = [_tab(t, h) for t, h in tabs]
@@ -1522,7 +1540,7 @@ def _heatmap_html(grid: list[list[list[int]]], now: float | None = None) -> str:
     legend = ('<div class="heatmap-legend"><span>wenig</span>'
              + "".join(f'<span class="hm-cell" data-lvl="{i}"></span>' for i in range(5))
              + "<span>viel</span></div>")
-    return (f'<h2>Aktivität — 1 Zeile je Woche, 8 × 3h je Tag (letzte {len(grid)} Wochen)</h2>'
+    return ('<h2>Aktivität</h2>'
            f'<div class="heatmap-wrap"><div class="heatmap2">{header}{subheader}'
            f'{"".join(rows)}</div></div>{legend}')
 
@@ -1646,11 +1664,13 @@ def feed_fragment(feed_data: dict, *, days: int | None = None, weeks: int | None
         )
     return (
         '<div id="feedboard">'
-        f"{_heatmap_html(grid, now)}"
+        f'<div class="panel-card">{_heatmap_html(grid, now)}</div>'
         f"{heatmap_load_more}"
+        '<div class="panel-card">'
         '<h2>Änderungen</h2>'
         f"{_feed_filter_bar()}"
         f"{_feed_list(entities, now, commit_base_url=commit_base_url)}"
+        '</div>'
         f"{load_more}"
         f"<script>{_FEED_FILTER_JS}</script>"
         "</div>"

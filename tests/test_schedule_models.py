@@ -107,14 +107,13 @@ def test_is_claude_payload_false_for_none_and_other():
     assert not is_claude_payload("echo hi")
 
 
-def test_effective_kind_claude_prefix_wins_over_app_port():
-    assert effective_kind("claude: tu was", app_port=8080) == "claude"
-
-
-def test_effective_kind_app_port_without_claude_prefix():
-    assert effective_kind("echo hi", app_port=8080) == "app"
+def test_effective_kind_claude_prefix_wins():
+    assert effective_kind("claude: tu was") == "claude"
 
 
 def test_effective_kind_default_job():
+    # PLAN-25 Befund 7, User-Fund: Jobs mit port+prefix sollen einfach als
+    # "job" erscheinen, nicht als eigener "app"-Typ — effective_kind() kennt
+    # app_port seit PLAN-25 gar nicht mehr (Parameter komplett entfernt).
     assert effective_kind("echo hi") == "job"
     assert effective_kind(None) == "job"

@@ -175,6 +175,15 @@ def test_heatmap_html_has_day_labels_and_correct_cell_count():
     assert 'data-lvl="3"' in html  # 7 Änderungen → Stufe 3
 
 
+def test_heatmap_html_heading_is_short():
+    # PLAN-25 Befund 5, User-Fund: Feed braucht Rahmen; dabei das sperrige
+    # Label auf "Aktivität" kürzen statt der technischen Erklärung.
+    grid = [[[0] * 8 for _ in range(7)] for _ in range(5)]
+    html = render._heatmap_html(grid, now=100.0)
+    assert "<h2>Aktivität</h2>" in html
+    assert "1 Zeile je Woche" not in html
+
+
 def test_heatmap_html_row_label_is_week_start_date():
     # PLAN-21 Befund 5, User-Fund: Datum des Wochenstarts statt "vor N
     # Wochen". 2026-07-08 ist ein Mittwoch; Woche 0 beginnt 6 Tage davor.
@@ -320,6 +329,18 @@ def test_feed_fragment_no_heatmap_load_more_when_grid_empty():
     html = render.feed_fragment({"entities": [], "heatmap": []}, days=3, now=100.0)
     assert html.count("mehr laden (") == 1  # nur der Tage-Button, kein Wochen-Button
     assert 'hx-get="/-/ui/feed/board?days=4"' in html  # kein weeks= ohne Grid-Daten
+
+
+def test_feed_fragment_wraps_heatmap_and_changes_in_own_panel_cards():
+    # PLAN-25 Befund 5, User-Fund: Feed-Seite braucht Rahmen — Heatmap und
+    # Änderungen-Block bekommen je ein eigenes .panel-card, wie Schedules es
+    # schon nutzt.
+    feed_data = {"entities": [{"kind": "system", "name": "System", "last_changed": 1.0,
+                              "authors": ["a"], "all_agent": False}],
+                "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
+    html = render.feed_fragment(feed_data, days=3, now=100.0)
+    assert html.count('class="panel-card"') == 2
+    assert html.index('class="panel-card"') < html.index("Änderungen")
 
 
 def test_feed_page_has_header_nav_and_status_cards():

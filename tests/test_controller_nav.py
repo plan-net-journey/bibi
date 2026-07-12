@@ -129,6 +129,15 @@ def test_screen_nav_hides_schedules_and_jobs_without_any_role():
     assert "Live Log" in html  # aktiver Tab, ohne Link
 
 
+def test_screen_nav_active_tab_has_active_class():
+    # PLAN-25 Befund 2, User-Fund: der aktive Tab war bisher nur reiner Text
+    # ohne eigene CSS-Klasse — "Hervorhebung" war die zufällige Abwesenheit
+    # von .back-Grau, kein bewusstes visuelles Signal.
+    html = render._screen_nav("Live Log")
+    assert '<span class="tab-active">Live Log</span>' in html
+    assert ".tab-active {" in render._CSS
+
+
 def test_ops_handles_no_longer_duplicates_follow_button():
     # FOLLOW sitzt separat im gemeinsamen Header — _ops_handles() bleibt frei davon.
     html = render._ops_handles()

@@ -94,16 +94,22 @@ def test_filter_by_typ():
     assert [x["slug"] for x in out] == ["a", "b"]
 
 
-def test_filter_by_typ_app_uses_app_port_not_dead_kind_column():
-    # kind ist seit PLAN-10 (Unified Job Model) immer "job" — Typ "app"/"claude"
-    # muss aus payload/app_port abgeleitet werden, sonst verschwindet jede
-    # App/Claude-Schedule aus der gefilterten Liste (kind matcht nie).
+def test_filter_by_typ_job_includes_former_app_port_schedules():
+    # PLAN-25 Befund 7, User-Fund: Jobs mit port+prefix sollen als "job"
+    # erscheinen, nicht als eigener "app"-Typ — app_port beeinflusst die Kind-
+    # Anzeige/den Typ-Filter seit PLAN-25 nicht mehr, nur claude: tut das noch.
     s = [_sched("plain", payload="echo hi"),
          _sched("hitl", payload="python3 hitl_test_app.py", app_port=9100),
          _sched("ai", payload="claude: tu was")]
-    assert [x["slug"] for x in render.filter_schedules(s, typ="app", now=1.0)] == ["hitl"]
+    assert [x["slug"] for x in render.filter_schedules(s, typ="job", now=1.0)] == ["plain", "hitl"]
     assert [x["slug"] for x in render.filter_schedules(s, typ="claude", now=1.0)] == ["ai"]
-    assert [x["slug"] for x in render.filter_schedules(s, typ="job", now=1.0)] == ["plain"]
+
+
+def test_sched_types_no_longer_offers_app():
+    # PLAN-25 Befund 7: "app" war nie ein eigener kind-Wert in der DB (immer
+    # "job"), nur ein abgeleiteter Anzeige-/Filter-Typ — jetzt ganz entfernt,
+    # jobs mit app_port erscheinen als "job".
+    assert render._SCHED_TYPES == ("job", "claude")
 
 
 def test_filter_by_status():
@@ -136,6 +142,27 @@ def test_schedules_page_has_filter_and_nav():
     assert "/-/ui/schedules/list" in html      # Filter-Ziel + Self-Poll
     assert 'id="schedules"' in html and "daily" in html
     assert "Live Log" in html
+
+
+def test_schedules_fragment_active_only_has_single_panel_card():
+    # PLAN-25 Befund 6: 2 Rahmen (Chart/Schedules) waren korrekt, solange kein
+    # Archive/Journal vorliegt — kein leerer zweiter Rahmen ohne Inhalt.
+    frag = render.schedules_fragment([_sched("a", active=True)], now=1000.0)
+    assert frag.count('class="panel-card"') == 1
+
+
+def test_schedules_fragment_archive_gets_own_panel_card():
+    # PLAN-25 Befund 6, User-Fund: 3 Rahmen statt 2 (Chart/Schedules/Archive)
+    # — Archive (und Journal) gehören in einen eigenen zweiten Rahmen, getrennt
+    # von der aktiven Liste.
+    items = [_sched("a", active=True), _sched("b", active=False),
+             _sched("c", active=None)]
+    frag = render.schedules_fragment(items, now=1000.0)
+    assert frag.count('class="panel-card"') == 2
+    first_card = frag.split('class="panel-card"')[1]
+    assert "Schedules (" in first_card and "Archive" not in first_card
+    second_card = frag.split('class="panel-card"')[2]
+    assert "Archive" in second_card and "Journal" in second_card
 
 
 def test_schedules_fragment_polls_list_with_filter():

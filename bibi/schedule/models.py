@@ -46,14 +46,13 @@ def is_claude_payload(payload: str | None) -> bool:
     return bool(payload and CLAUDE_PAYLOAD_RE.match(payload.strip()))
 
 
-def effective_kind(payload: str | None, app_port: int | None = None) -> str:
-    """Anzeige-/Dispatch-Typ: ``claude:``-Prefix ⇒ ``"claude"``; sonst ``app_port``
-    gesetzt ⇒ ``"app"``; sonst ``"job"``. Einzige Quelle für alle Aufrufer — DB-
-    ``kind`` ist seit PLAN-10 immer ``"job"``."""
+def effective_kind(payload: str | None) -> str:
+    """Anzeige-/Dispatch-Typ: ``claude:``-Prefix ⇒ ``"claude"``; sonst ``"job"``
+    (PLAN-25 Befund 7 — ``app_port`` beeinflusst die Anzeige nicht mehr, Jobs
+    mit Port+Prefix erscheinen wie jeder andere Job). Einzige Quelle für alle
+    Aufrufer — DB-``kind`` ist seit PLAN-10 immer ``"job"``."""
     if is_claude_payload(payload):
         return "claude"
-    if app_port:
-        return "app"
     return "job"
 
 
