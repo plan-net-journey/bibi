@@ -825,6 +825,90 @@ def run_local(
             "exit_code": code, "output_ref": rel, "commit": commit_sha}
 
 
+def run_pinned(
+    *, slug: str | None = None, cmd: str | None = None, kind: str = "job",
+    model: str | None = None, repo_root: Path | None = None,
+    work_dir: Path | None = None, db_path: Path | None = None,
+    worker_name: str | None = None, host: str | None = None,
+    attempts: int = 1, register=None,
+) -> dict:
+    """**Lokale** On-Demand-Ausführung mit voller Scheduler-Lifecycle (PLAN-28).
+
+    Nachfolger von ``run_local()``s Einstiegspunkt für ``/-/run`` — anders als
+    dort bekommt der Lauf jetzt eine echte ``jobs``-Zeile (``pinned_host`` =
+    dieser Host, s. ``reserve_next()``s ``pinned_only``-Filter), läuft also
+    durch dieselbe Retry/Error/Deferred/Zombie-Maschine wie ein Scheduler-Job
+    (``report_status()``, ``Sweeper``/``LocalPinnedLoop``). Beide bisherigen
+    ``/run``-Garantien bleiben erhalten: **hier** (``pinned_host`` erzwingt
+    genau diesen Knoten, kein anderer Worker kann die Zeile je reservieren)
+    und **sofort** (kein Warten auf einen Poll-Tick — die Zeile wird synchron
+    im selben Aufruf reserviert + über ``execute_reservation()`` dispatcht,
+    das mit ``detach=True`` fast augenblicklich zurückkehrt, während der
+    Wrapper-Subprozess eigenständig weiterläuft und terminale Status via
+    SQLite-Direct selbst meldet — kein Netz nötig, funktioniert offline).
+
+    Entweder ``slug`` (erfasste MD) **oder** ``cmd`` (ad-hoc, rein lokal).
+    ``attempts`` (Default 1, wie das bisherige ``/run``-Verhalten): >1 aktiviert
+    echtes Retry-mit-Backoff, gefangen vom ``LocalPinnedLoop`` (nicht von
+    diesem Aufruf selbst — der deckt nur den ersten Versuch ab)."""
+    repo_root = repo_root or repo.root()
+    work_dir = work_dir or (repo_root / "data" / "worktrees")
+    host = host or socket.gethostname()
+    worker_name = worker_name or host
+    eff_soul = eff_session = None
+    eff_schedule_ref: str | None = None
+    eff_app_port = eff_app_prefix = eff_exec_mode = eff_image = None
+    if cmd is not None:
+        eff_slug, payload, eff_kind, eff_model = slug or "adhoc", cmd, kind, model
+    else:
+        if not slug:
+            raise ValueError("run_pinned braucht entweder slug oder cmd")
+        pr = _resolve_spec(repo_root, slug)
+        if pr is None or pr.spec is None:
+            raise LookupError(f"kein Schedule mit Slug {slug!r}")
+        s = pr.spec
+        eff_slug, payload, eff_kind, eff_model = s.slug, s.payload, s.kind.value, s.model
+        eff_soul, eff_session = s.soul, s.session
+        eff_schedule_ref = pr.schedule_ref
+        eff_app_port, eff_app_prefix, eff_exec_mode = s.app_port, s.app_prefix, s.exec_mode
+        eff_image = s.image
+
+    # Eindeutiger jobs.slug (UNIQUE-Constraint) — unabhängig vom MD-/Cmd-Slug,
+    # sonst kollidiert ein zweiter ▶ Start mit der noch nicht aufgeräumten
+    # Zeile des ersten Laufs (analog zur run_id-Konvention in
+    # write_local_journal(), nur hier als eigenständige Job-Identität).
+    unique_slug = f"{eff_slug}:{secrets.token_hex(4)}"
+    now = time.time()
+    jid = secrets.token_hex(4)
+    conn = job_db.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, model, soul, "
+            "session, app_port, app_prefix, exec_mode, image, schedule, next_fire_at, "
+            "attempts, pinned_host, status, enqueued_at) VALUES "
+            "(:id, :slug, :schedule_ref, :kind, :payload, :model, :soul, :session, "
+            ":app_port, :app_prefix, :exec_mode, :image, 'now', :now, "
+            ":attempts, :pinned_host, 'pending', :now)",
+            {"id": jid, "slug": unique_slug, "schedule_ref": eff_schedule_ref or unique_slug,
+             "kind": eff_kind, "payload": payload, "model": eff_model, "soul": eff_soul,
+             "session": eff_session, "app_port": eff_app_port, "app_prefix": eff_app_prefix,
+             "exec_mode": eff_exec_mode, "image": eff_image, "now": now,
+             "attempts": attempts, "pinned_host": host},
+        )
+        reservation = job_db.reserve_next(conn, host=host, pinned_only=True, now=now)
+    finally:
+        conn.close()
+    if reservation is None:  # unter BEGIN IMMEDIATE eigentlich unerreichbar
+        raise RuntimeError(f"gepinnter Job {unique_slug!r} konnte nicht reserviert werden")
+
+    from bibi.daemon.scheduler_client import LocalScheduler
+    execute_reservation(
+        reservation, repo_root=repo_root, work_dir=work_dir,
+        client=LocalScheduler(db_path), worker_name=worker_name, host=host, register=register,
+    )
+    return {"id": reservation["id"], "slug": unique_slug, "kind": eff_kind}
+
+
 class Worker:
     """Async-Loop, der reservierte Jobs ausführt (im Daemon-Lifespan gestartet)."""
 
