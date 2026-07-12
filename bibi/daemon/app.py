@@ -595,7 +595,7 @@ def create_app(
                 out["job_stats"] = {
                     "counts": job_db.status_counts(conn),
                     "running_since_uptime": job_db.dispatch_count(),
-                    "complete_since_uptime": job_db.complete_count(),
+                    "complete_since_uptime": job_db.count_completed_since(conn, started_at),
                     "next_due_at": job_db.next_due_at(conn),
                 }
             finally:

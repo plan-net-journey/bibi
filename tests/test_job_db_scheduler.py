@@ -302,39 +302,79 @@ def test_dispatch_count_unchanged_when_nothing_to_reserve(conn):
     assert job_db.dispatch_count() == 0
 
 
-# ── complete_count (PLAN-26 Befund 3, job_stats.complete_since_uptime) ──────
+# ── count_completed_since (PLAN-26 Befund 3 Nachtrag, job_stats.
+# complete_since_uptime) ─────────────────────────────────────────────────────
+#
+# Der ursprüngliche In-Memory-Zähler (_complete_count/complete_count(), wie
+# dispatch_count()) hatte einen Prozessgrenzen-Bug (User-Fund: "warum zählt
+# COMPLETE nach einem erfolgreichen Lauf nicht +1?"): report_status(status=
+# "complete") für Scheduler-Jobs läuft meist im DETACHED Wrapper-Subprozess
+# (SQLite-Direct-Pfad, wrapper/__init__.py::_report_terminal) — ein reiner
+# Python-Global im Daemon-Hauptprozess sieht diese Inkremente nie, der
+# Wrapper-Prozess erhöht nur seine eigene, kurzlebige Kopie. Fix: eine
+# DB-Query gegen die journal-Tabelle (echter, prozessübergreifender Shared
+# State) statt eines In-Memory-Zählers.
 
 
-def test_complete_count_increments_on_transition_to_complete(conn):
-    assert job_db.complete_count() == 0
+def test_count_completed_since_counts_scheduled_completions(conn):
     jid = _insert(conn, "a", 0, time.time())
-    job_db.reserve_next(conn)  # → running
-    job_db.report_status(conn, jid, status="complete", exit_code=0)
-    assert job_db.complete_count() == 1
+    job_db.reserve_next(conn, now=100.0)  # → running
+    job_db.report_status(conn, jid, status="complete", exit_code=0, now=150.0)
+    assert job_db.count_completed_since(conn, 0.0) == 1
 
 
-def test_complete_count_counts_each_recurring_completion(conn):
-    # Wiederkehrende Schedules laufen mehrfach durch complete — jeder echte
-    # Übergang zählt, nicht nur der erste (analog dispatch_count()).
+def test_count_completed_since_excludes_completions_before_threshold(conn):
+    jid = _insert(conn, "a", 0, time.time())
+    job_db.reserve_next(conn, now=100.0)
+    job_db.report_status(conn, jid, status="complete", exit_code=0, now=150.0)
+    assert job_db.count_completed_since(conn, 200.0) == 0  # Daemon "startete" danach
+
+
+def test_count_completed_since_counts_each_recurring_completion(conn):
+    # Wiederkehrende Schedules laufen mehrfach durch complete — jede echte
+    # Ausführung schreibt eine eigene Journal-Zeile.
     jid = _seed_full(conn, slug="a", status="running", next_fire_at=0)
-    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    job_db.report_status(conn, jid, status="complete", exit_code=0, now=100.0)
     conn.execute(
         "UPDATE jobs SET status='pending', locked_at=NULL, next_fire_at=0 WHERE id=?", (jid,))
     job_db.reserve_next(conn, now=200.0)
-    job_db.report_status(conn, jid, status="complete", exit_code=0)
-    assert job_db.complete_count() == 2
+    job_db.report_status(conn, jid, status="complete", exit_code=0, now=250.0)
+    assert job_db.count_completed_since(conn, 0.0) == 2
 
 
-def test_complete_count_unchanged_on_idempotent_repeat_report(conn):
-    # Doppelter Report desselben Terminal-Status (z. B. doppelter Kill-Klick-
-    # Analogon) ist ein No-Op (report_status() Zeile ~731-736) — zählt nicht
-    # doppelt.
+def test_count_completed_since_excludes_local_runs(conn):
+    # User-Entscheidung: konsistent zu den anderen 9 Status, die auch nur
+    # Scheduler-Jobs sehen — lokale /-/run-Läufe (domain='local') zählen
+    # bewusst nicht mit.
+    job_db.write_local_journal(
+        conn, run_id="x:1", slug="x", kind="job", status="complete", exit_code=0,
+        output_ref=None, host="h", worker="w", started_at=100.0, finished_at=150.0)
+    assert job_db.count_completed_since(conn, 0.0) == 0
+
+
+def test_count_completed_since_ignores_non_complete_terminals(conn):
     jid = _insert(conn, "a", 0, time.time())
-    job_db.reserve_next(conn)
-    job_db.report_status(conn, jid, status="complete", exit_code=0)
-    assert job_db.complete_count() == 1
-    assert job_db.report_status(conn, jid, status="complete", exit_code=0) == "ok"
-    assert job_db.complete_count() == 1
+    job_db.reserve_next(conn, now=100.0)
+    job_db.report_status(conn, jid, status="failed", exit_code=1, now=150.0)
+    assert job_db.count_completed_since(conn, 0.0) == 0
+
+
+def test_count_completed_since_survives_fresh_connection(tmp_path: Path):
+    # Kern der Prozessgrenzen-Korrektur: die Zählung hängt an der DB, nicht an
+    # In-Memory-State — eine komplett neue Verbindung (simuliert einen neuen
+    # Prozess) sieht dieselbe, bereits geschriebene Completion.
+    db_path = tmp_path / "jobs.sqlite"
+    conn1 = job_db.connect(db_path)
+    jid = _insert(conn1, "a", 0, time.time())
+    job_db.reserve_next(conn1, now=100.0)
+    job_db.report_status(conn1, jid, status="complete", exit_code=0, now=150.0)
+    conn1.close()
+
+    conn2 = job_db.connect(db_path)  # "anderer Prozess"
+    try:
+        assert job_db.count_completed_since(conn2, 0.0) == 1
+    finally:
+        conn2.close()
 
 
 # ── journal_landings (PLAN-21 Befund 11 v2, Lauf-Historie-Chart) ────────────

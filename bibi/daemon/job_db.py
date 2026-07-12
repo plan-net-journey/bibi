@@ -803,11 +803,6 @@ def report_status(
         fields["next_fire_at"] = (
             _next_cron(row["schedule"], now) if is_recurring(row["schedule"]) else None
         )
-        # job_stats.complete_since_uptime (PLAN-26 Befund 3) — nur hier erreicht
-        # bei einem echten neuen Übergang (idempotente Wiederholungs-Reports
-        # kehren oben, Zeile ~731, vorher zurück), zählt also nicht doppelt.
-        global _complete_count
-        _complete_count += 1
     if attempt is not None:
         fields["attempt"] = attempt
     if next_fire_at is not None:
@@ -1041,21 +1036,41 @@ def reconcile_startup_orphans(
 # (keine 48h-Kappung mehr).
 
 _dispatch_count = 0
-_complete_count = 0
 
 
 def dispatch_count() -> int:
     """Anzahl erfolgreicher ``reserve_next()``-Dispatches seit Prozessstart
-    (In-Memory, kein DB-State) — Basis für ``job_stats.running_since_uptime``."""
+    (In-Memory, kein DB-State) — Basis für ``job_stats.running_since_uptime``.
+
+    ``reserve_next()`` läuft immer im Scheduler-Prozess selbst (der die Queue
+    besitzt) — ein In-Memory-Zähler ist hier sicher, anders als bei
+    ``count_completed_since()`` unten (die Completion-Meldung läuft meist in
+    einem *anderen* Prozess, s. dortiger Docstring)."""
     return _dispatch_count
 
 
-def complete_count() -> int:
-    """Anzahl erfolgreicher Übergänge nach ``complete`` seit Prozessstart
-    (In-Memory, kein DB-State, PLAN-26 Befund 3) — Basis für
-    ``job_stats.complete_since_uptime``. Löst sich mit dem Daemon-Neustart
-    auf, genau wie ``dispatch_count()``/``started_at``."""
-    return _complete_count
+def count_completed_since(conn: sqlite3.Connection, since: float) -> int:
+    """Anzahl Scheduler-Jobs, die seit ``since`` (Prozessstart) mit
+    ``status='complete'`` im Journal gelandet sind (PLAN-26 Befund 3,
+    Basis für ``job_stats.complete_since_uptime``).
+
+    DB-Query statt In-Memory-Zähler (User-Fund: "warum zählt COMPLETE nach
+    einem erfolgreichen Lauf nicht +1?") — Root Cause: ``report_status()``
+    für Scheduler-Jobs wird meist aus dem **detachten Wrapper-Subprozess**
+    aufgerufen (SQLite-Direct-Pfad, ``wrapper/__init__.py::_report_terminal``),
+    nicht aus dem Daemon-Hauptprozess. Ein In-Memory-Zähler dort sähe diese
+    Inkremente nie — der Wrapper-Prozess erhöht nur seine eigene, mit ihm
+    endende Kopie. Die ``journal``-Tabelle ist dagegen echter, prozess-
+    übergreifender State (dieselbe SQLite-Datei).
+
+    ``domain='scheduled'`` schließt lokale ``/-/run``-Läufe aus (User-
+    Entscheidung: konsistent zu den anderen 9 Status, die ebenfalls nur die
+    ``jobs``-Tabelle/Scheduler-Domäne sehen)."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM journal WHERE domain='scheduled' "
+        "AND status='complete' AND finished_at >= ?", (since,)
+    ).fetchone()
+    return row["n"] if row else 0
 
 
 # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────────

@@ -59,16 +59,6 @@ def _reset_dispatch_count():
 
 
 @pytest.fixture(autouse=True)
-def _reset_complete_count():
-    """``job_db._complete_count`` (PLAN-26 Befund 3, ``job_stats.
-    complete_since_uptime``) — derselbe Prozesslaufzeit-Zähler-Reset-Bedarf
-    wie ``_dispatch_count`` oben."""
-    from bibi.daemon import job_db
-    job_db._complete_count = 0
-    yield
-
-
-@pytest.fixture(autouse=True)
 def _isolate_node_config(tmp_path_factory, monkeypatch: pytest.MonkeyPatch):
     """Tests nie gegen die **echte** ``~/.config/bibi/env`` laufen lassen — sonst
     leaken Knoten-Settings (BIBI_EXEC_MODE=container, Auth-Token, BIBI_CLAUDE_BIN …)
