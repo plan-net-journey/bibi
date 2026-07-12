@@ -94,6 +94,7 @@ def test_tick_push_logs_loglines_as_message(team_repo, caplog):
     # nie ans Aktivitätslog durchgereicht wurde (nur ok=/kind=).
     import logging as _logging
     s, _ = _mk(push=True)
+    s.tick(0.0)  # öffnet das Änderungsfenster (first_change_at/last_change_at)
     with caplog.at_level(_logging.INFO, logger="bibi.daemon.synchronizer"):
         s.tick(600.0)  # Debounce-Fenster (10 min Idle bei <50 Zeilen) abgelaufen
     rec = next(r for r in caplog.records if getattr(r, "bibi", {}).get("event") == "sync.push")

@@ -31,6 +31,34 @@ def test_clean_synced(repo_with_origin):
     assert s.tree == "clean" and s.sync == "synced" and s.branch == "trunk"
 
 
+def test_oid_is_full_commit_hash(repo_with_origin):
+    # PLAN-25 Befund 8-Nachtrag: die SYNC-Zeile soll den Commit-Hash zeigen
+    # (# branch.oid <hash>) — bisher geparst, aber nie im Dataclass gehalten.
+    root, _ = repo_with_origin
+    s = working_tree_status(root)
+    head = _sh(root, "rev-parse", "HEAD").strip()
+    assert s.oid == head
+
+
+def test_ahead_behind_counts_exposed(repo_with_origin, tmp_path):
+    # ahead/behind wurden intern schon geparst (branch.ab), aber sofort
+    # verworfen — landen jetzt im Dataclass statt nur in der groben
+    # sync-Kategorie aufzugehen.
+    root, origin = repo_with_origin
+    other = _clone(origin, tmp_path / "other")
+    (other / "r.txt").write_text("r", encoding="utf-8")
+    _sh(other, "add", "-A")
+    _sh(other, "commit", "-q", "-m", "remote")
+    _sh(other, "push", "-q", "origin", "trunk")
+    (root / "l.txt").write_text("l", encoding="utf-8")
+    _sh(root, "add", "-A")
+    _sh(root, "commit", "-q", "-m", "local")
+    _sh(root, "fetch", "-q", "origin")
+    s = working_tree_status(root)
+    assert s.sync == "conflict"
+    assert s.ahead == 1 and s.behind == 1
+
+
 def test_modified_tree(repo_with_origin):
     root, _ = repo_with_origin
     (root / "dirty.md").write_text("x", encoding="utf-8")

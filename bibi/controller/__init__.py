@@ -143,7 +143,8 @@ def add_controller_routes(
             return None
         if s is None:
             return None
-        return {"tree": s.tree, "sync": s.sync, "branch": s.branch}
+        return {"tree": s.tree, "sync": s.sync, "branch": s.branch,
+                "oid": s.oid, "ahead": s.ahead, "behind": s.behind}
 
     @app.get("/-/", include_in_schema=False)
     def root(request: Request, days: int | None = None, weeks: int | None = None):

@@ -18,6 +18,9 @@ class WorkingTreeStatus:
     tree: str            # "clean" | "modified"
     sync: str            # "synced" | "ahead" | "behind" | "conflict"
     branch: str | None   # None bei detached HEAD
+    oid: str | None = None    # voller Commit-Hash (# branch.oid), None wenn unparsbar
+    ahead: int = 0
+    behind: int = 0
 
 
 def working_tree_status(root: Path | None = None) -> WorkingTreeStatus | None:
@@ -32,10 +35,13 @@ def working_tree_status(root: Path | None = None) -> WorkingTreeStatus | None:
         return None
 
     branch: str | None = None
+    oid: str | None = None
     ahead = behind = 0
     dirty = False
     for line in proc.stdout.splitlines():
-        if line.startswith("# branch.head "):
+        if line.startswith("# branch.oid "):
+            oid = line.split()[-1]
+        elif line.startswith("# branch.head "):
             head = line.split()[-1]
             branch = None if head == "(detached)" else head
         elif line.startswith("# branch.ab "):
@@ -54,7 +60,8 @@ def working_tree_status(root: Path | None = None) -> WorkingTreeStatus | None:
     else:
         sync = "synced"
 
-    return WorkingTreeStatus(tree=tree, sync=sync, branch=branch)
+    return WorkingTreeStatus(tree=tree, sync=sync, branch=branch,
+                             oid=oid, ahead=ahead, behind=behind)
 
 
 def local_files_status(root: Path | None, paths: list[str]) -> dict[str, str]:

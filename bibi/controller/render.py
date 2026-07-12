@@ -1109,19 +1109,41 @@ def _mode_card(status: dict, now: float) -> str:
                     sub=f"Uptime {_uptime_label(status.get('started_at'), now)}")
 
 
+def _format_sync_value(sync: str, oid: str | None, ahead: int, behind: int) -> str:
+    """SYNC-Zeilenwert inkl. Commit-Hash (PLAN-25 Befund 8-Nachtrag, User-Fund:
+    "Release-Stand — Commit-Hash und Anzahl commits behind — reporten"),
+    Format je Zustand final geklärt: ``synced: <hash>``, ``behind: <hash> (N)``,
+    ``ahead: <hash> (N)``, ``conflict: <hash> (+N, -M)`` (``conflict`` heißt
+    hier divergiert — ahead UND behind zugleich > 0 — nicht ein unaufgelöster
+    Merge-Konflikt mit ``<<<<<<<``-Markern, s. ``git_status.working_tree_status()``).
+    Ohne ``oid`` (ältere Aufrufer/Tests) bleibt es beim reinen Zustandswort."""
+    if not oid:
+        return sync
+    short = oid[:7]
+    if sync == "behind":
+        return f"{sync}: {short} ({behind})"
+    if sync == "ahead":
+        return f"{sync}: {short} ({ahead})"
+    if sync == "conflict":
+        return f"{sync}: {short} (+{ahead}, -{behind})"
+    return f"{sync}: {short}"
+
+
 def _git_segment_card(git_status: dict | None) -> str:
     """Git-Kachel: Tree + Sync als Key/Value-Grid, Branch als Sub-Zeile
     (PLAN-19 Befund 4, verfeinert PLAN-21 Befund 7: Grid-Optik statt
     gestapelter Zeilen). ``git_status`` ist bereits ein Dict (``{"tree",
-    "sync", "branch"}``, aus ``bibi.git_status.working_tree_status()`` — rein
-    lokal, kein Heartbeat/Netzwerk nötig). ``None`` (kein Git-Repo) → leere
-    Kachel mit „—"."""
+    "sync", "branch", "oid", "ahead", "behind"}``, aus
+    ``bibi.git_status.working_tree_status()`` — rein lokal, kein Heartbeat/
+    Netzwerk nötig). ``None`` (kein Git-Repo) → leere Kachel mit „—"."""
     if git_status is None:
         return _lines_card("Git", ["—"])
     tree, sync = git_status["tree"], git_status["sync"]
+    sync_value = _format_sync_value(
+        sync, git_status.get("oid"), git_status.get("ahead", 0), git_status.get("behind", 0))
     rows = [
         ("Tree", tree, _TREE_LABEL_CLASS[tree]),
-        ("Sync", sync, _SYNC_LABEL_CLASS[sync]),
+        ("Sync", sync_value, _SYNC_LABEL_CLASS[sync]),
     ]
     branch = git_status.get("branch")
     return _kv_card("Git", rows, sub=f"Branch {branch}" if branch else "")

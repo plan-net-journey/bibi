@@ -45,6 +45,47 @@ def test_git_segment_card_none_shows_dash():
     assert ">—<" in html
 
 
+# --- SYNC-Zeile mit Commit-Hash (PLAN-25 Befund 8-Nachtrag, User-Fund:
+# "Release-Stand — Commit-Hash und Anzahl commits behind — reporten") --------
+
+
+def test_git_segment_card_synced_shows_short_hash():
+    html = render._git_segment_card(
+        {"tree": "clean", "sync": "synced", "branch": "trunk",
+         "oid": "95a04a7197fd3e5dfb63283f591e8e77458bf401", "ahead": 0, "behind": 0})
+    assert "synced: 95a04a7" in html
+    assert "95a04a7197fd3e5dfb63283f591e8e77458bf401" not in html  # gekürzt, nicht voll
+
+
+def test_git_segment_card_behind_shows_hash_and_count():
+    html = render._git_segment_card(
+        {"tree": "clean", "sync": "behind", "branch": "trunk",
+         "oid": "95a04a7197fd3e5dfb63283f591e8e77458bf401", "ahead": 0, "behind": 3})
+    assert "behind: 95a04a7 (3)" in html
+
+
+def test_git_segment_card_ahead_shows_hash_and_count():
+    html = render._git_segment_card(
+        {"tree": "modified", "sync": "ahead", "branch": "trunk",
+         "oid": "95a04a7197fd3e5dfb63283f591e8e77458bf401", "ahead": 23, "behind": 0})
+    assert "ahead: 95a04a7 (23)" in html
+
+
+def test_git_segment_card_conflict_shows_hash_and_both_deltas():
+    # "conflict" = divergiert (ahead UND behind > 0), kein echter Merge-
+    # Konflikt mit <<<<<<<-Markern — s. git_status.working_tree_status().
+    html = render._git_segment_card(
+        {"tree": "clean", "sync": "conflict", "branch": "trunk",
+         "oid": "95a04a7197fd3e5dfb63283f591e8e77458bf401", "ahead": 23, "behind": 3})
+    assert "conflict: 95a04a7 (+23, -3)" in html
+
+
+def test_git_segment_card_without_oid_falls_back_to_plain_sync():
+    # Ältere Aufrufer/Tests ohne oid-Feld — kein Crash, reines Zustandswort.
+    html = render._git_segment_card({"tree": "clean", "sync": "synced", "branch": "trunk"})
+    assert 'class="v sync-synced"' in html
+
+
 # --- Host-Kachel (PLAN-19 Befund 4: Hostname statt "verbunden", Link) -----------
 
 
