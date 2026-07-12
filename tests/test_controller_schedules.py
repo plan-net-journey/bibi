@@ -216,13 +216,16 @@ def test_landings_buckets_resolution_window_pairs():
 
 
 def test_resolution_windows_cover_all_seven_presets():
-    # PLAN-25-Folge-Feedback: 1h/24h wurde zu 2h/48h, dazu neu 3h/72h,
-    # 6h/144h, 8h/168h — 15min/5min/1min bleiben unverändert.
+    # PLAN-26 Befund 2, Korrektur nach Live-Review: 6h/144h wieder raus,
+    # dafür 24h/1m (720h) neu dazu; 8h/168h -> 8h/1w, 3h/72h -> 3h/3d,
+    # 2h/48h -> 2h/2d (kompakte Tage/Wochen/Monat-Einheit statt Stundenzahl
+    # im Label — die zugrundeliegenden Bucket-/Fenster-Minuten bleiben
+    # gleich, nur die Anzeige ändert sich). 15min/5min/1min unverändert.
     assert render._RESOLUTION_WINDOWS == {
-        480: 168, 360: 144, 180: 72, 120: 48, 15: 24, 5: 8, 1: 2,
+        1440: 720, 480: 168, 180: 72, 120: 48, 15: 24, 5: 8, 1: 2,
     }
     assert render._RESOLUTION_LABEL == {
-        480: "8h/168h", 360: "6h/144h", 180: "3h/72h", 120: "2h/48h",
+        1440: "24h/1m", 480: "8h/1w", 180: "3h/3d", 120: "2h/2d",
         15: "15min/24h", 5: "5min/8h", 1: "1min/2h",
     }
 

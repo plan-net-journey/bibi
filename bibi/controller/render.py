@@ -494,8 +494,8 @@ _LANDING_COLOR = {
 #: Auflösungs-Presets (Bucket-Minuten → Fenster in Stunden) — Bucket-Zahl bleibt
 #: dabei über alle Presets ähnlich groß (~96), sonst würde z. B. 1min-Auflösung
 #: über 24h zu 1440 kaum noch unterscheidbaren Balken führen.
-_RESOLUTION_WINDOWS = {480: 168, 360: 144, 180: 72, 120: 48, 15: 24, 5: 8, 1: 2}
-_RESOLUTION_LABEL = {480: "8h/168h", 360: "6h/144h", 180: "3h/72h", 120: "2h/48h",
+_RESOLUTION_WINDOWS = {1440: 720, 480: 168, 180: 72, 120: 48, 15: 24, 5: 8, 1: 2}
+_RESOLUTION_LABEL = {1440: "24h/1m", 480: "8h/1w", 180: "3h/3d", 120: "2h/2d",
                      15: "15min/24h", 5: "5min/8h", 1: "1min/2h"}
 _DEFAULT_RESOLUTION_MINUTES = 15
 
