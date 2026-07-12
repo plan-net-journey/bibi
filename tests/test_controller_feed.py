@@ -134,7 +134,7 @@ def test_mode_and_git_card_use_kvgrid_container():
 
 
 def test_feed_status_cards_has_three_cards_no_rollen():
-    html = render._feed_status_cards(
+    html = render.feed_status_fragment(
         {"roles": ["connect"], "connect": {"ok": True, "last_at": 99.0}},
         {"tree": "clean", "sync": "synced", "branch": "trunk"},
         "http://sarasate.tail9f9173.ts.net:8780", now=100.0)
@@ -142,6 +142,22 @@ def test_feed_status_cards_has_three_cards_no_rollen():
     assert "Rollen" not in html
     # PLAN-21 Befund 6: mit connect-Rolle heißt die erste Karte "Client".
     assert "Client" in html and "Mode" in html and "Git" in html
+
+
+def test_feed_status_fragment_self_polls_with_default_interval():
+    # PLAN-25 Befund 4, User-Fund: die Feed-Status-Kacheln wurden bisher nur
+    # beim initialen Seitenaufbau gerendert, kein Polling — jetzt self-pollend
+    # mit konfigurierbarem Intervall (Default 30s, BIBI_STATUS_POLL_INTERVAL).
+    html = render.feed_status_fragment({}, None, None, now=100.0)
+    assert 'id="feedstatus"' in html
+    assert 'hx-get="/-/ui/feed/status"' in html
+    assert 'hx-trigger="every 30s [window.bibiFollow]"' in html
+    assert 'hx-swap="outerHTML"' in html
+
+
+def test_feed_status_fragment_uses_explicit_poll_interval():
+    html = render.feed_status_fragment({}, None, None, now=100.0, poll_interval_s=60)
+    assert 'hx-trigger="every 60s [window.bibiFollow]"' in html
 
 
 def test_status_cards_unchanged_after_refactor():
@@ -402,3 +418,24 @@ def test_feed_board_fragment_route(app_with):
         r = c.get("/-/ui/feed/board")
         assert r.status_code == 200
         assert 'id="feedboard"' in r.text
+
+
+def test_feed_status_fragment_route(app_with):
+    # PLAN-25 Befund 4: Self-Poll-Ziel von #feedstatus.
+    app = app_with(_FakeClient())
+    with TestClient(app) as c:
+        r = c.get("/-/ui/feed/status")
+        assert r.status_code == 200
+        assert 'id="feedstatus"' in r.text
+        assert 'class="statuscards"' in r.text
+
+
+def test_root_route_status_cards_use_configured_poll_interval(
+    app_with, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("BIBI_STATUS_POLL_INTERVAL", "45")
+    app = app_with(_FakeClient())
+    with TestClient(app) as c:
+        r = c.get("/-/", headers={"Accept": "text/html"})
+        assert 'hx-trigger="every 45s [window.bibiFollow]"' in r.text

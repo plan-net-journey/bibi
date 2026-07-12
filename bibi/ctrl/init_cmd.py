@@ -48,6 +48,7 @@ def run(args: argparse.Namespace) -> int:
         "BIBI_CLAUDE_BIN": "claude-Binary (Pfad/Name)",
         "BIBI_WORKER_NAME": "Knoten-Name (leer = Hostname)",
         "BIBI_PUBLIC_HOST": "Von außen erreichbarer Hostname (leer = Ableitung)",
+        "BIBI_STATUS_POLL_INTERVAL": "Feed-Status-Poll-Intervall (Sekunden)",
     }
     for key, fallback in config.KEYS.items():
         default = existing.get(key) or fallback

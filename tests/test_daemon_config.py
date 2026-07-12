@@ -18,6 +18,7 @@ def cfg_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("BIBI_DAEMON_PORT", raising=False)
     monkeypatch.delenv("BIBI_SCHEDULER_URL", raising=False)
     monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("BIBI_STATUS_POLL_INTERVAL", raising=False)
     return tmp_path
 
 
@@ -102,6 +103,38 @@ def test_public_host_no_config_no_scheduler_url_is_localhost(cfg_home: Path):
     # BIBI_PUBLIC_HOST bleibt nur der alte, für Remote-Zugriff falsche
     # localhost-Fallback (dokumentierte Einschränkung, PLAN-22 Befund 6).
     assert config.public_host() == "localhost"
+
+
+# ── config.status_poll_interval (PLAN-25 Befund 4) ──────────────────────────
+
+
+def test_status_poll_interval_default_30(cfg_home: Path):
+    assert config.status_poll_interval() == 30
+
+
+def test_status_poll_interval_from_env(cfg_home: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("BIBI_STATUS_POLL_INTERVAL", "60")
+    assert config.status_poll_interval() == 60
+
+
+def test_status_poll_interval_from_config_file(cfg_home: Path):
+    config.write_env({"BIBI_STATUS_POLL_INTERVAL": "45"})
+    assert config.status_poll_interval() == 45
+
+
+def test_status_poll_interval_env_takes_precedence_over_config_file(
+    cfg_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config.write_env({"BIBI_STATUS_POLL_INTERVAL": "45"})
+    monkeypatch.setenv("BIBI_STATUS_POLL_INTERVAL", "60")
+    assert config.status_poll_interval() == 60
+
+
+def test_status_poll_interval_invalid_falls_back_to_default(
+    cfg_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("BIBI_STATUS_POLL_INTERVAL", "not-a-number")
+    assert config.status_poll_interval() == 30
 
 
 def test_maintenance_toggle(team_repo):

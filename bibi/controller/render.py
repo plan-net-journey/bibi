@@ -1126,18 +1126,30 @@ def _git_segment_card(git_status: dict | None) -> str:
     return _kv_card("Git", rows, sub=f"Branch {branch}" if branch else "")
 
 
-def _feed_status_cards(
+def feed_status_fragment(
     status: dict, git_status: dict | None, host_url: str | None, now: float,
+    *, poll_interval_s: int = 30,
 ) -> str:
     """Die 3 Feed-Header-Kacheln (PLAN-19 Befund 4: Host-Connection, Mode,
     Git — löst die bisherigen 6 Kacheln von PLAN-18 Stufe 18.3 ab, u. a. fällt
     die Rollen-Kachel weg, deckungsgleich mit der ursprünglichen Umbau-Vorgabe
     „Rollen sind eh klar"). Baut **nicht** mehr auf ``_status_card_list()``
     auf (die bleibt unverändert für ``_status_cards()``/``daemon_page()`` als
-    Baustein bestehen, auch ohne eigene Route seit PLAN-18 Stufe 18.4)."""
+    Baustein bestehen, auch ohne eigene Route seit PLAN-18 Stufe 18.4).
+
+    Self-pollend seit PLAN-25 Befund 4 (User-Fund: "Header kontinuierlich
+    aktualisieren") — vorher nur beim initialen Seitenaufbau gerendert.
+    Bewusst **kein** festes 2s-Intervall wie ``#schedules``: die Karten
+    hängen an ``/-/status`` (DB-Query bei Scheduler-Rolle) und einem
+    ``git status``-Subprozess (Git-Karte) — beides nicht billig genug für
+    Sekundentakt. ``poll_interval_s`` kommt vom Aufrufer (Default 30s,
+    konfigurierbar über ``config.status_poll_interval()``/
+    ``BIBI_STATUS_POLL_INTERVAL``), damit diese Funktion config-frei bleibt."""
     cards = [_host_card(status, host_url, now), _mode_card(status, now),
              _git_segment_card(git_status)]
-    return '<div class="statuscards">' + "".join(cards) + "</div>"
+    attrs = (f'id="feedstatus" hx-get="/-/ui/feed/status" '
+            f'hx-trigger="every {poll_interval_s}s [window.bibiFollow]" hx-swap="outerHTML"')
+    return f'<div {attrs}><div class="statuscards">{"".join(cards)}</div></div>'
 
 
 def daemon_page(daemon_status: dict | None = None, now: float | None = None) -> str:
@@ -1681,6 +1693,7 @@ def feed_page(
     feed_data: dict, *, git_status: dict | None = None, host_url: str | None = None,
     days: int | None = None, weeks: int | None = None,
     daemon_status: dict | None = None, now: float | None = None,
+    status_poll_interval_s: int = 30,
 ) -> str:
     """Feed-Screen — jetzt Home (``/-/``): fixierte Status-Kacheln (Host/Mode/
     Git, PLAN-19 Befund 4) + Heatmap + aggregierte Änderungsliste. Kein
@@ -1697,7 +1710,7 @@ def feed_page(
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Feed', status)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"{_feed_status_cards(status, git_status, host_url, now)}"
+        f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s)}"
         f"{feed_fragment(feed_data, days=days, weeks=weeks, now=now)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"

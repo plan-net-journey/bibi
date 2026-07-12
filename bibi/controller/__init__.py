@@ -152,12 +152,14 @@ def add_controller_routes(
         # (§1.1 bleibt an der Wurzel gewahrt). Schedules bleibt unter
         # /-/ui/schedules erreichbar, unverändert.
         if _wants_html(request):
+            from bibi import config
             eff_days = _effective_days(days)
             eff_weeks = _effective_weeks(weeks)
             return HTMLResponse(render.feed_page(
                 _feed_data(eff_days, eff_weeks), git_status=_feed_git_status(),
                 host_url=_scheduler_url(), days=eff_days, weeks=eff_weeks,
-                daemon_status=_status()))
+                daemon_status=_status(),
+                status_poll_interval_s=config.status_poll_interval()))
         return JSONResponse(service_descriptor(roles))
 
     @app.get("/-/ui/feed/board", include_in_schema=False)
@@ -166,6 +168,15 @@ def add_controller_routes(
         eff_weeks = _effective_weeks(weeks)
         return HTMLResponse(render.feed_fragment(
             _feed_data(eff_days, eff_weeks), days=eff_days, weeks=eff_weeks))
+
+    @app.get("/-/ui/feed/status", include_in_schema=False)
+    def feed_status():
+        # Self-Poll-Ziel von #feedstatus (PLAN-25 Befund 4) — dieselben
+        # Datenquellen wie root(), nur ohne Heatmap/Änderungsliste.
+        from bibi import config
+        return HTMLResponse(render.feed_status_fragment(
+            _status(), _feed_git_status(), _scheduler_url(), time.time(),
+            poll_interval_s=config.status_poll_interval()))
 
     @app.get("/-/ui/schedules", include_in_schema=False)
     def schedules_screen(typ: str | None = None, status: str | None = None):

@@ -30,9 +30,15 @@ KEYS: dict[str, str] = {
     # sonst localhost). Nötig für jeden Knoten, der App-Typ-Jobs (app_port)
     # dispatcht und dessen Adresse einem Remote-Browser gemeldet werden soll.
     "BIBI_PUBLIC_HOST": "",
+    # Poll-Intervall (Sekunden) der Feed-Status-Kacheln (Host/Mode/Git,
+    # PLAN-25 Befund 4) — Default 30s, konfigurierbar, weil die zugrunde-
+    # liegenden /-/status-Daten nicht billig sind (DB-Query bei Scheduler-
+    # Rolle, git-status-Subprozess für die Git-Kachel).
+    "BIBI_STATUS_POLL_INTERVAL": "30",
 }
 
 DAEMON_PORT_DEFAULT = 8769
+STATUS_POLL_INTERVAL_DEFAULT = 30
 
 
 def daemon_port() -> int:
@@ -89,6 +95,22 @@ def public_host() -> str:
             return hostname
 
     return "localhost"
+
+
+def status_poll_interval() -> int:
+    """Poll-Intervall (Sekunden) der Feed-Status-Kacheln: ``BIBI_STATUS_POLL_INTERVAL``
+    (env > ``~/.config/bibi/env``) > Default 30s (PLAN-25 Befund 4 — die Karten
+    wurden bisher nur beim initialen Seitenaufbau gerendert, kein Polling;
+    ein festes 2s-Intervall wie ``#schedules`` wäre hier zu teuer, s. Docstring
+    der Aufrufer in ``render.py``)."""
+    raw = (os.environ.get("BIBI_STATUS_POLL_INTERVAL", "").strip()
+           or read_env().get("BIBI_STATUS_POLL_INTERVAL", "").strip())
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return STATUS_POLL_INTERVAL_DEFAULT
 
 
 def env_path() -> Path:
