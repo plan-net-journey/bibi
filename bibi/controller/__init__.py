@@ -201,19 +201,36 @@ def add_controller_routes(
         resp.set_cookie("bibi_sched_status", status or "alle",
                         max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
 
+    def _effective_resolution(request: Request, res: int | None) -> int:
+        # Dieselbe Systematik wie _effective_filter (User-Fund: "warum wird
+        # die Auflösung ... nicht gespeichert?") — Query-Param gewinnt, sonst
+        # Cookie, sonst Default. res muss zusätzlich noch ein gültiges Preset
+        # sein (sonst wie ein fehlender Query-Param behandelt).
+        if res is not None and res in render._RESOLUTION_WINDOWS:
+            return res
+        cookie_res = render._cookie_resolution_value(request.cookies.get("bibi_sched_res"))
+        return cookie_res if cookie_res is not None else render._DEFAULT_RESOLUTION_MINUTES
+
+    def _set_resolution_cookie(resp: HTMLResponse, res: int) -> None:
+        resp.set_cookie("bibi_sched_res", str(res),
+                        max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
+
     @app.get("/-/ui/schedules", include_in_schema=False)
-    def schedules_screen(request: Request, typ: str | None = None, status: str | None = None):
+    def schedules_screen(request: Request, typ: str | None = None, status: str | None = None,
+                         res: int | None = None):
         # Der Schedules-Screen (Seite): Nav + Ops-Handles + Status-Kacheln
         # (Host/Mode/Git/Job-Status, wie /-/) + Stat-Grid/Landungs-Histogramm
         # (PLAN-21 Befund 11) + Filter + gefilterte, self-pollende Liste.
         from bibi import config
         eff_typ, eff_status = _effective_filter(request, typ, status)
+        eff_res = _effective_resolution(request, res)
         items = render.filter_schedules(_schedules(), typ=eff_typ, status=eff_status)
         resp = HTMLResponse(render.schedules_page(
             items, typ=eff_typ, status=eff_status, daemon_status=_status(),
             landings=_landings(), git_status=_feed_git_status(), host_url=_scheduler_url(),
-            status_poll_interval_s=config.status_poll_interval()))
+            status_poll_interval_s=config.status_poll_interval(), bucket_minutes=eff_res))
         _set_filter_cookies(resp, eff_typ, eff_status)
+        _set_resolution_cookie(resp, eff_res)
         return resp
 
     @app.get("/-/ui/schedules/list", include_in_schema=False)
@@ -228,13 +245,18 @@ def add_controller_routes(
         return resp
 
     @app.get("/-/ui/schedules/timeseries", include_in_schema=False)
-    def schedules_timeseries_fragment(res: int = render._DEFAULT_RESOLUTION_MINUTES):
+    def schedules_timeseries_fragment(request: Request, res: int | None = None):
         # Self-Poll-Ziel des Stat-Grid/Charts — eigene Route, eigene
         # Datenquelle (journal_landings/job_stats statt /-/schedule). ``res``
         # trägt die vom User gewählte Auflösung (Bucket-Minuten) über den
-        # 2s-Poll hinweg (s. render.timeseries_fragment()'s Self-Poll-URL).
-        return HTMLResponse(render.timeseries_fragment(
-            _landings(), _status().get("job_stats"), bucket_minutes=res))
+        # 2s-Poll hinweg (s. render.timeseries_fragment()'s Self-Poll-URL);
+        # fehlt er (frischer Seitenaufbau), auf das Cookie zurückfallen
+        # (User-Fund: "warum wird die Auflösung ... nicht gespeichert?").
+        eff_res = _effective_resolution(request, res)
+        resp = HTMLResponse(render.timeseries_fragment(
+            _landings(), _status().get("job_stats"), bucket_minutes=eff_res))
+        _set_resolution_cookie(resp, eff_res)
+        return resp
 
     @app.get("/-/ui/logs", include_in_schema=False)
     def logs_page():

@@ -105,6 +105,22 @@ def test_cookie_filter_value_none_for_missing_cookie():
     assert render._cookie_filter_value(None, render._SCHED_TYPES) is None
 
 
+def test_cookie_resolution_value_accepts_known_preset():
+    assert render._cookie_resolution_value("120") == 120
+
+
+def test_cookie_resolution_value_rejects_unknown_preset():
+    assert render._cookie_resolution_value("999") is None
+
+
+def test_cookie_resolution_value_rejects_non_numeric():
+    assert render._cookie_resolution_value("bogus") is None
+
+
+def test_cookie_resolution_value_none_for_missing_cookie():
+    assert render._cookie_resolution_value(None) is None
+
+
 # ── Filter (pure) ─────────────────────────────────────────────────────────────
 
 
@@ -501,6 +517,49 @@ def test_schedules_list_fragment_sets_filter_cookies(team_repo: Path):
         r = c.get("/-/ui/schedules/list", params={"typ": "job", "status": "alle"})
         assert r.cookies.get("bibi_sched_typ") == "job"
         assert r.cookies.get("bibi_sched_status") == "alle"
+
+
+# ── Chart-Auflösungs-Persistenz per Cookie (dieselbe Systematik + User-Fund:
+# "warum wird die Auflösung ... nicht gespeichert?") ─────────────────────────
+
+
+def test_schedules_timeseries_fragment_sets_resolution_cookie(team_repo: Path):
+    client = FakeClient([], status={"job_stats": {"counts": {}, "running_since_uptime": 0}})
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/schedules/timeseries", params={"res": 120})
+        assert r.cookies.get("bibi_sched_res") == "120"
+
+
+def test_schedules_screen_uses_resolution_cookie_when_no_query_param(team_repo: Path):
+    client = FakeClient([], status={"job_stats": {"counts": {}, "running_since_uptime": 0}})
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        c.cookies.set("bibi_sched_res", "120")
+        r = c.get("/-/ui/schedules")  # kein ?res= in der URL
+        assert r.status_code == 200
+        assert render._RESOLUTION_LABEL[120] in r.text
+        assert 'hx-get="/-/ui/schedules/timeseries?res=120"' in r.text
+
+
+def test_schedules_screen_res_query_param_overrides_cookie(team_repo: Path):
+    client = FakeClient([], status={"job_stats": {"counts": {}, "running_since_uptime": 0}})
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        c.cookies.set("bibi_sched_res", "120")
+        r = c.get("/-/ui/schedules", params={"res": 5})
+        assert render._RESOLUTION_LABEL[5] in r.text
+        assert r.cookies.get("bibi_sched_res") == "5"
+
+
+def test_schedules_timeseries_fragment_ignores_stale_invalid_cookie(team_repo: Path):
+    client = FakeClient([], status={"job_stats": {"counts": {}, "running_since_uptime": 0}})
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        c.cookies.set("bibi_sched_res", "999")
+        r = c.get("/-/ui/schedules/timeseries")
+        assert r.status_code == 200
+        assert render._RESOLUTION_LABEL[render._DEFAULT_RESOLUTION_MINUTES] in r.text
 
 
 def test_ui_schedules_screen_survives_landings_fetch_failure(team_repo: Path):

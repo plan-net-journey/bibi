@@ -677,6 +677,20 @@ def filter_schedules(schedules: list[dict], *, typ: str | None = None,
     return out
 
 
+def _cookie_resolution_value(cookie: str | None) -> int | None:
+    """Persistenter Auflösungs-Wert aus Cookie (dieselbe Systematik wie
+    ``_cookie_filter_value()`` für typ/status, User-Fund: "warum wird die
+    Auflösung ... nicht gespeichert?") — nur übernehmen, wenn er noch zu
+    einem der aktuell gültigen Presets gehört."""
+    if not cookie:
+        return None
+    try:
+        value = int(cookie)
+    except ValueError:
+        return None
+    return value if value in _RESOLUTION_WINDOWS else None
+
+
 def _cookie_filter_value(cookie: str | None, valid: tuple[str, ...]) -> str | None:
     """Persistenter Filter-Wert aus Cookie (User-Fund: "die ausgewählte
     Auswahl in /-/ui/schedules sollte erhalten bleiben"). Nur übernehmen,
@@ -828,7 +842,8 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
                    *, daemon_status: dict | None = None,
                    landings: list[dict] | None = None,
                    git_status: dict | None = None, host_url: str | None = None,
-                   status_poll_interval_s: int = 30) -> str:
+                   status_poll_interval_s: int = 30,
+                   bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES) -> str:
     """Der Schedules-Screen: Nav + Ops-Handles (RESCAN/MAINT, User-Feedback
     2026-07-03) + Status-Kacheln (Host/Mode/Git/Job-Status, User-Fund: "diesen
     Header möchte ich auch im /-/ui/schedules haben" — dieselbe
@@ -838,7 +853,10 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
     spiegeln die Auswahl — ``status`` ist hier der Filterwert (z. B.
     "error"), nicht zu verwechseln mit ``daemon_status`` (``/-/status``-JSON
     für den MAINT-Toggle **und** die Stat-Grid-Zählung,
-    ``daemon_status["job_stats"]``)."""
+    ``daemon_status["job_stats"]``). ``bucket_minutes`` ist die initiale Chart-
+    Auflösung beim ersten Laden (User-Fund: "warum wird die Auflösung ...
+    nicht gespeichert?") — der Aufrufer (``controller/__init__.py``) ermittelt
+    sie aus Query-Param/Cookie, bevor der Self-Poll die URL selbst trägt."""
     now = time.time() if now is None else now
     daemon_status = daemon_status or {}
     return (
@@ -852,7 +870,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Schedules', daemon_status)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s)}"
-        f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now)}"
+        f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now, bucket_minutes=bucket_minutes)}"
         f"{_filter_bar(typ, status)}"
         f"{schedules_fragment(schedules, now, typ=typ, status=status)}"
         f"<script>{_CLOCK_JS}</script>"
