@@ -104,6 +104,26 @@ def _is_container() -> bool:
     return (_exec_config().get("BIBI_EXEC_MODE") or "host").strip().lower() == "container"
 
 
+def _job_is_container(db_path: Path | None, job_id: str) -> bool:
+    """Tatsächlicher Exec-Mode dieses Jobs — Schedule-Override, falls in der
+    DB gesetzt, sonst der Knoten-Default (``_is_container()``). Bug gefunden
+    2026-07-12 (User-Fund, live reproduziert): ``kill()``/``_terminate()``
+    prüften bisher nur den Knoten-Default, nie den Job-eigenen ``exec_mode``
+    — ein Job mit ``exec_mode: container`` auf einem Host-Default-Knoten
+    (z. B. sarasate, kein ``BIBI_EXEC_MODE`` gesetzt) bekam beim KILL nie
+    seinen ``docker stop``/``kill``, der Container blieb verwaist laufen
+    (verifiziert: docker-run-CLI-Prozess tot, Container weiterhin "Up")."""
+    conn = job_db.connect(db_path)
+    try:
+        info = job_db.get_job_exec_mode(conn, job_id)
+    finally:
+        conn.close()
+    exec_mode = info[1] if info else None
+    if exec_mode:
+        return exec_mode.strip().lower() == "container"
+    return _is_container()
+
+
 def _docker_env() -> dict[str, str]:
     # docker-bin-Dir in den PATH (Cred-Helper docker-credential-*).
     bin_ = exec_backend.resolve_docker_bin({**os.environ, **config.read_env()})
@@ -259,12 +279,22 @@ def _free_app_port_host(port: int, out_path: Path) -> None:
         time.sleep(0.1)
 
 
-def _terminate(proc: subprocess.Popen, *, job_id: str | None = None) -> None:
+def _terminate(proc: subprocess.Popen, *, job_id: str | None = None,
+               is_container: bool | None = None) -> None:
     """Lauf beenden. Container (D7): ``docker stop bibi-<id>`` gibt dem Job graceful
     SIGTERM + Frist (eskaliert selbst auf SIGKILL); zusätzlich die Host-Wrapper-Gruppe
     terminieren. Host: SIGTERM → der Wrapper propagiert an den Child (dessen SIGTERM-
-    Handler killt die Child-Prozessgruppe). Backstop nach 5 s: SIGKILL an Wrapper."""
-    if job_id is not None and _is_container():
+    Handler killt die Child-Prozessgruppe). Backstop nach 5 s: SIGKILL an Wrapper.
+
+    ``is_container``: vom Aufrufer explizit aufgelöster Wert (Job-eigener
+    ``exec_mode``, s. ``_job_is_container()``) — ``None`` fällt auf den
+    Knoten-Default (``_is_container()``) zurück, für Aufrufer ohne Zugriff
+    auf den DB-Pfad. Reines Verlassen auf den Knoten-Default hier war der Bug
+    (s. ``_job_is_container()``-Docstring): ein Container-Job auf einem
+    Host-Default-Knoten bekam nie sein ``docker stop``."""
+    if is_container is None:
+        is_container = _is_container()
+    if job_id is not None and is_container:
         _docker(["stop", exec_backend.container_name(job_id)])
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -904,14 +934,21 @@ class Worker:
     def kill(self, job_id: str) -> bool:
         """Lauf beenden — container-aware (PLAN-8 D7): ``docker stop`` (graceful) +
         Host-Wrapper-Gruppe; im Container-Modus auch dann ``docker kill`` als Backstop,
-        wenn der Wrapper schon weg ist (Container könnte verwaist weiterlaufen)."""
+        wenn der Wrapper schon weg ist (Container könnte verwaist weiterlaufen).
+
+        Container-Erkennung nutzt den Job-eigenen ``exec_mode`` (Schedule-
+        Override), nicht nur den Knoten-Default — Bug gefunden 2026-07-12
+        (s. ``_job_is_container()``): auf einem Host-Default-Knoten (z. B.
+        sarasate) bekam ein Container-Job beim KILL nie sein ``docker
+        stop``/``kill``, der Container blieb verwaist laufen."""
+        is_container = _job_is_container(self.db_path, job_id)
         proc = self._procs.get(job_id)
         if proc is not None and proc.poll() is None:
-            _terminate(proc, job_id=job_id)
+            _terminate(proc, job_id=job_id, is_container=is_container)
             activity.emit(log, logging.INFO, "worker.kill", "Lauf beendet (graceful)",
                           role="worker", run_id=job_id)
             return True
-        if _is_container():  # Wrapper weg, Container evtl. noch da → einsammeln
+        if is_container:  # Wrapper weg, Container evtl. noch da → einsammeln
             _docker(["kill", exec_backend.container_name(job_id)])
             return True
         # Kein In-Memory-Handle (z. B. Job hat einen Daemon-Neustart überlebt,

@@ -652,6 +652,131 @@ def test_rebuild_job_image_docker_unreachable_is_false(monkeypatch):
     assert w.rebuild_job_image("myjob") is False
 
 
+class _FakeProc:
+    pid = 2_147_400_000  # existiert nicht → killpg wirft ProcessLookupError (gefangen)
+
+    def poll(self) -> int | None:
+        return 0
+
+
+def test_terminate_explicit_is_container_overrides_node_default(monkeypatch):
+    # Bug gefunden 2026-07-12 (User-Fund, live reproduziert): _terminate()
+    # prüfte bisher nur den Knoten-Default (_is_container()) für den
+    # docker-stop-Aufruf — ein explizit übergebener is_container-Wert (vom
+    # Aufrufer aus dem Job-eigenen exec_mode aufgelöst) muss ihn übersteuern.
+    import bibi.daemon.worker as W
+
+    monkeypatch.setattr(W, "_is_container", lambda: False)  # Knoten-Default: host
+    calls: list[list[str]] = []
+    monkeypatch.setattr(W, "_docker", lambda args: calls.append(args))
+    W._terminate(_FakeProc(), job_id="abc", is_container=True)  # Job sagt container
+    assert calls == [["stop", "bibi-abc"]]
+
+
+def test_terminate_without_explicit_flag_falls_back_to_node_default(monkeypatch):
+    # Rückwärtskompatibilität: kein is_container übergeben → altes Verhalten
+    # (Knoten-Default), damit bestehende Aufrufer unverändert funktionieren.
+    import bibi.daemon.worker as W
+
+    monkeypatch.setattr(W, "_is_container", lambda: True)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(W, "_docker", lambda args: calls.append(args))
+    W._terminate(_FakeProc(), job_id="abc")
+    assert calls == [["stop", "bibi-abc"]]
+
+
+def test_kill_uses_job_exec_mode_not_node_default(gitrepo: Path, monkeypatch):
+    # Live reproduziert (2026-07-12): hitl-test-app-container.md hat
+    # exec_mode: container, sarasates Knoten-Config hat kein BIBI_EXEC_MODE
+    # (Default host). Worker.kill() prüfte bislang nur _is_container()
+    # (Knoten-weit) — der Container blieb nach KILL verwaist laufen (docker
+    # ps zeigte ihn "Up", obwohl der docker-run-CLI-Prozess längst tot war).
+    import bibi.daemon.worker as W
+
+    monkeypatch.setattr(W, "_is_container", lambda: False)  # Knoten-Default: host
+    calls: list[list[str]] = []
+    monkeypatch.setattr(W, "_docker", lambda args: calls.append(args))
+    w = W.Worker(autopoll=False, worker_name="t",
+                db_path=gitrepo / "data" / "jobs.sqlite")
+    conn = job_db.connect(w.db_path)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+        "enqueued_at, exec_mode) VALUES (?,?,?,?,?, 'running', ?, 'container')",
+        ("j1", "containerjob", "containerjob.md", "job", "echo hi", time.time()))
+    conn.commit()
+    conn.close()
+
+    assert w.kill("j1") is True  # kein Proc registriert → "Wrapper weg"-Zweig
+    assert calls == [["kill", "bibi-j1"]]
+
+
+class _FakeAliveProc:
+    """Anders als _FakeProc: poll() is None → kill() muss die
+    _terminate()-Branch nehmen (Prozess gilt als noch laufend)."""
+    pid = 2_147_400_001
+
+    def poll(self) -> int | None:
+        return None
+
+
+def test_kill_proc_alive_uses_job_exec_mode(gitrepo: Path, monkeypatch):
+    import bibi.daemon.worker as W
+
+    monkeypatch.setattr(W, "_is_container", lambda: False)  # Knoten-Default: host
+    calls: list[list[str]] = []
+    monkeypatch.setattr(W, "_docker", lambda args: calls.append(args))
+    w = W.Worker(autopoll=False, worker_name="t",
+                db_path=gitrepo / "data" / "jobs.sqlite")
+    conn = job_db.connect(w.db_path)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+        "enqueued_at, exec_mode) VALUES (?,?,?,?,?, 'running', ?, 'container')",
+        ("j2", "containerjob2", "containerjob2.md", "job", "echo hi", time.time()))
+    conn.commit()
+    conn.close()
+    w._procs["j2"] = _FakeAliveProc()
+
+    assert w.kill("j2") is True
+    assert calls == [["stop", "bibi-j2"]]  # _terminate()s Zweig, nicht der Backstop
+
+
+def test_kill_respects_host_override_on_container_node(gitrepo: Path, monkeypatch):
+    # Kehrfall: Job hat exec_mode: host, Knoten-Default ist container — auch
+    # hier gewinnt der Job-eigene Wert, kein docker-Aufruf.
+    import bibi.daemon.worker as W
+
+    monkeypatch.setattr(W, "_is_container", lambda: True)  # Knoten-Default: container
+    calls: list[list[str]] = []
+    monkeypatch.setattr(W, "_docker", lambda args: calls.append(args))
+    w = W.Worker(autopoll=False, worker_name="t",
+                db_path=gitrepo / "data" / "jobs.sqlite")
+    conn = job_db.connect(w.db_path)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+        "enqueued_at, exec_mode) VALUES (?,?,?,?,?, 'running', ?, 'host')",
+        ("j3", "hostjob", "hostjob.md", "job", "echo hi", time.time()))
+    conn.commit()
+    conn.close()
+
+    assert w.kill("j3") is False  # kein Proc, kein Container, keine DB-PID → False
+    assert calls == []
+
+
+def test_kill_unknown_job_falls_back_to_node_default(gitrepo: Path, monkeypatch):
+    # Kein DB-Eintrag (z. B. schon gelöscht) → fällt auf den Knoten-Default
+    # zurück statt zu crashen — bisheriges Verhalten bleibt erhalten.
+    import bibi.daemon.worker as W
+
+    monkeypatch.setattr(W, "_is_container", lambda: True)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(W, "_docker", lambda args: calls.append(args))
+    w = W.Worker(autopoll=False, worker_name="t",
+                db_path=gitrepo / "data" / "jobs.sqlite")
+
+    assert w.kill("gone") is True
+    assert calls == [["kill", "bibi-gone"]]
+
+
 def test_run_wrapper_host_mode_no_cleanup_when_port_free(gitrepo: Path, monkeypatch):
     # PLAN-22 Befund 4: kein Vorgänger auf dem app_port → kein SIGTERM, keine
     # Phase-Meldung, kein Zeitverlust (Grundfall bleibt unauffällig).
