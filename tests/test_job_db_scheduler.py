@@ -831,6 +831,49 @@ def test_reserve_next_skips_inactive_jobs(conn):
     assert job_db.reserve_next(conn) is None
 
 
+# ── PLAN-28 — pinned_host + reserve_next(pinned_only=) ──────────────────────
+
+
+def test_reserve_next_default_still_reserves_unpinned_job(conn):
+    # pinned_host=NULL (heutiges Verhalten, keine Regression) — jeder Worker
+    # darf weiterhin ran, egal welcher Host anfragt.
+    jid = _seed_full(conn, slug="team", next_fire_at=0)
+    res = job_db.reserve_next(conn, host="anyhost")
+    assert res is not None and res["id"] == jid
+
+
+def test_reserve_next_default_reserves_job_pinned_to_own_host(conn):
+    jid = _seed_full(conn, slug="mine", next_fire_at=0, pinned_host="mac")
+    res = job_db.reserve_next(conn, host="mac")
+    assert res is not None and res["id"] == jid
+
+
+def test_reserve_next_default_skips_job_pinned_to_other_host(conn):
+    # Ein für Host A gepinnter Job darf auch im normalen Team-Pfad nie von
+    # Host B reserviert werden — die Pin-Garantie gilt unabhängig von
+    # pinned_only (PLAN-28: "es zählt die Einschränkung: lokal").
+    _seed_full(conn, slug="theirs", next_fire_at=0, pinned_host="sarasate")
+    assert job_db.reserve_next(conn, host="mac") is None
+
+
+def test_reserve_next_pinned_only_skips_unpinned_job(conn):
+    # Der neue lokale Mini-Loop (LocalPinnedLoop, PLAN-28) darf nie ungepinnte
+    # Team-Queue-Jobs an sich reißen.
+    _seed_full(conn, slug="team", next_fire_at=0)
+    assert job_db.reserve_next(conn, host="mac", pinned_only=True) is None
+
+
+def test_reserve_next_pinned_only_reserves_matching_host(conn):
+    jid = _seed_full(conn, slug="mine", next_fire_at=0, pinned_host="mac")
+    res = job_db.reserve_next(conn, host="mac", pinned_only=True)
+    assert res is not None and res["id"] == jid
+
+
+def test_reserve_next_pinned_only_skips_other_host(conn):
+    _seed_full(conn, slug="theirs", next_fire_at=0, pinned_host="sarasate")
+    assert job_db.reserve_next(conn, host="mac", pinned_only=True) is None
+
+
 # ── #4 no_process-Reconcile ──────────────────────────────────────────────────
 
 

@@ -26,7 +26,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -136,6 +136,15 @@ def _mig_transitions(conn: sqlite3.Connection) -> None:  # v13 → v14
     )
 
 
+def _mig_jobs_pinned_host(conn: sqlite3.Connection) -> None:  # v14 → v15
+    # PLAN-28: gepinnte /run-Läufe mit voller Scheduler-Lifecycle (Retry/Error/
+    # Deferred/Zombie) — NULL = jeder Worker (heutiges Verhalten unverändert),
+    # gesetzt = nur dieser Host darf reservieren (reserve_next()s neuer
+    # pinned_only-Filter).
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "pinned_host"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN pinned_host TEXT")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -153,6 +162,7 @@ _MIGRATIONS: dict[int, list] = {
     11: [_mig_journal_payload],
     12: [_mig_jobs_active],
     13: [_mig_transitions],
+    14: [_mig_jobs_pinned_host],
 }
 
 
@@ -654,7 +664,7 @@ def reservation_view(row: sqlite3.Row) -> dict:
 
 def reserve_next(
     conn: sqlite3.Connection, *, worker: str | None = None,
-    host: str | None = None, now: float | None = None,
+    host: str | None = None, now: float | None = None, pinned_only: bool = False,
 ) -> dict | None:
     """Nächstbesten Job atomar reservieren (§4.4/§3.2). ``None`` = nichts zu tun.
 
@@ -663,12 +673,24 @@ def reserve_next(
     Writer, also können zwei gleichzeitige ``/next`` denselben Job nicht bekommen
     und der read-modify-write des Cursors bleibt konsistent (Invariante: genau 1
     Scheduler).
+
+    ``pinned_host`` (PLAN-28) schränkt ein, welcher Host reservieren darf:
+    ``NULL`` = wie bisher jeder Worker; gesetzt = nur der eine Host. Das gilt
+    **immer**, unabhängig von ``pinned_only`` — ein für Host A gepinnter Job
+    darf nie von Host B reserviert werden, auch nicht über den normalen
+    Team-Pfad. ``pinned_only=True`` (vom neuen, rollenunabhängigen
+    ``LocalPinnedLoop`` genutzt) geht noch einen Schritt weiter: **nur**
+    gepinnte Zeilen dieses Hosts sind eligibel, ungepinnte (Team-Queue-)Zeilen
+    bleiben komplett unangetastet — der lokale Loop darf nie in die geteilte
+    Warteschlange greifen.
     """
     now = time.time() if now is None else now
     host = host or socket.gethostname()
     conn.execute("BEGIN IMMEDIATE")
     try:
         offset = _get_offset(conn)
+        pin_clause = ("pinned_host = :host" if pinned_only
+                     else "(pinned_host IS NULL OR pinned_host = :host)")
         # Eligibel nur, was **fällig** ist (§5.2): pending feuert erst, wenn
         # next_fire_at gesetzt UND erreicht ist (`now` ⇒ sofort, `at:`/cron ⇒ zur
         # Zeit, `never` ⇒ next_fire_at NULL ⇒ nie). Dazu retriable failed (Backoff
@@ -676,14 +698,14 @@ def reserve_next(
         # (lazy Rearm — der Job bleibt bis hierhin sichtbar `complete`), §5.4.
         rows = conn.execute(
             "SELECT id, slug, status, priority, enqueued_at, rowid AS seq FROM jobs "
-            "WHERE active=1 AND locked_at IS NULL AND ("
+            f"WHERE active=1 AND locked_at IS NULL AND {pin_clause} AND ("
             "  (status='pending' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='failed' AND attempt < attempts "
             "      AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='deferred' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='complete' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             ")",
-            {"now": now},
+            {"now": now, "host": host},
         ).fetchall()
         chosen, new_offset = dispatcher.select([dict(r) for r in rows], offset)
         if chosen is None:

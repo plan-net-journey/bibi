@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     app_url         TEXT,                      -- HITL-Eingabe-Endpunkt der App (v10, §10.4)
     last_ping_at    REAL,                      -- letzter Ping-Timestamp (v11, Zombie-Timeout §2.5)
     demand          TEXT,                      -- HITL-Demand JSON (v11, §11.2)
+    pinned_host     TEXT,                      -- (v15, PLAN-28) NULL = jeder Worker; gesetzt =
+                                                -- nur dieser Host darf reservieren (reserve_next())
 
     created_at      REAL,
     updated_at      REAL
