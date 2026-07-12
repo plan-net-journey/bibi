@@ -30,3 +30,13 @@ def test_schedule_attrs_page_trims_runtime_section():
         assert f"<b>{key}</b>" in html
     for key in _DROPPED_RUNTIME_KEYS:
         assert f"<b>{key}</b>" not in html
+
+
+def test_schedule_attrs_page_respects_theme_preference():
+    # User-Fund: die Seite liefert "immer nur im DARK Mode aus" — sie baut ihr
+    # eigenes minimales <html> (kein _header()) und vergisst dabei _THEME_JS,
+    # das localStorage['bibiTheme'] liest und data-theme setzt. Ohne das
+    # fällt sie auf reine OS-Präferenz zurück statt die gespeicherte
+    # Light/Dark-Wahl zu respektieren.
+    html = render.schedule_attrs_page("boom", {"slug": "boom"})
+    assert render._THEME_JS in html

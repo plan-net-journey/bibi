@@ -494,8 +494,9 @@ _LANDING_COLOR = {
 #: Auflösungs-Presets (Bucket-Minuten → Fenster in Stunden) — Bucket-Zahl bleibt
 #: dabei über alle Presets ähnlich groß (~96), sonst würde z. B. 1min-Auflösung
 #: über 24h zu 1440 kaum noch unterscheidbaren Balken führen.
-_RESOLUTION_WINDOWS = {60: 24, 15: 24, 5: 8, 1: 2}
-_RESOLUTION_LABEL = {60: "1h/24h", 15: "15min/24h", 5: "5min/8h", 1: "1min/2h"}
+_RESOLUTION_WINDOWS = {480: 168, 360: 144, 180: 72, 120: 48, 15: 24, 5: 8, 1: 2}
+_RESOLUTION_LABEL = {480: "8h/168h", 360: "6h/144h", 180: "3h/72h", 120: "2h/48h",
+                     15: "15min/24h", 5: "5min/8h", 1: "1min/2h"}
 _DEFAULT_RESOLUTION_MINUTES = 15
 
 #: Chart.js UMD-Bundle (CDN, wie htmx per <script>-Tag — kein Build-Step nötig).
@@ -2609,5 +2610,6 @@ def schedule_attrs_page(slug: str, data: dict, now: float | None = None) -> str:
         f'<h1><span class="st {st}">{name}</span> · Attribute</h1>'
         f"{config_html}"
         f"{runtime_html}"
+        f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )

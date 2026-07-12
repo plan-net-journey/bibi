@@ -207,12 +207,24 @@ def test_landings_buckets_ignores_non_terminal_or_out_of_window():
 def test_landings_buckets_resolution_window_pairs():
     # Auflösung bestimmt automatisch das Fenster (_RESOLUTION_WINDOWS) —
     # 1min-Auflösung bleibt so bei ~120 statt 1440 Buckets über 24h.
-    labels_1h, _ = render._landings_buckets([], now=1_000_000.0, bucket_minutes=60)
+    labels_2h, _ = render._landings_buckets([], now=1_000_000.0, bucket_minutes=120)
     labels_5m, _ = render._landings_buckets([], now=1_000_000.0, bucket_minutes=5)
     labels_1m, _ = render._landings_buckets([], now=1_000_000.0, bucket_minutes=1)
-    assert len(labels_1h) == 24    # 60min × 24 = 24h Fenster
+    assert len(labels_2h) == 24    # 120min × 24 = 48h Fenster
     assert len(labels_5m) == 96    # 5min × 96 = 8h Fenster
     assert len(labels_1m) == 120   # 1min × 120 = 2h Fenster
+
+
+def test_resolution_windows_cover_all_seven_presets():
+    # PLAN-25-Folge-Feedback: 1h/24h wurde zu 2h/48h, dazu neu 3h/72h,
+    # 6h/144h, 8h/168h — 15min/5min/1min bleiben unverändert.
+    assert render._RESOLUTION_WINDOWS == {
+        480: 168, 360: 144, 180: 72, 120: 48, 15: 24, 5: 8, 1: 2,
+    }
+    assert render._RESOLUTION_LABEL == {
+        480: "8h/168h", 360: "6h/144h", 180: "3h/72h", 120: "2h/48h",
+        15: "15min/24h", 5: "5min/8h", 1: "1min/2h",
+    }
 
 
 def test_landings_chart_html_has_canvas_and_chartjs_init():
