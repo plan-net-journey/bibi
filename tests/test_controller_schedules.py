@@ -164,6 +164,20 @@ def test_schedules_page_has_filter_and_nav():
     assert "Live Log" in html
 
 
+def test_schedules_page_includes_feed_status_header():
+    # User-Fund: denselben Host/Mode/Git/Job-Status-Kopf wie auf /-/ auch auf
+    # /-/ui/schedules zeigen.
+    html = render.schedules_page(
+        [_sched("daily")], now=300.0,
+        daemon_status={"job_stats": {"counts": {"running": 1}, "complete_since_uptime": 3,
+                                     "next_due_at": None}},
+        git_status={"tree": "clean", "sync": "synced", "branch": "trunk"},
+        host_url="http://sarasate.tail9f9173.ts.net:8780")
+    assert 'id="feedstatus"' in html
+    assert html.count('<div class="card">') == 4  # Host/Mode/Git/Job Status
+    assert '<div class="k">Running</div><div class="v">1</div>' in html
+
+
 def test_schedules_fragment_active_only_has_single_panel_card():
     # PLAN-25 Befund 6: 2 Rahmen (Chart/Schedules) waren korrekt, solange kein
     # Archive/Journal vorliegt — kein leerer zweiter Rahmen ohne Inhalt.
@@ -391,6 +405,20 @@ def test_ui_schedules_screen_includes_timeseries(team_repo: Path):
         assert r.status_code == 200
         assert 'id="timeseries"' in r.text
         assert "5 since start" in r.text
+
+
+def test_ui_schedules_screen_includes_feed_status_header(team_repo: Path):
+    # User-Fund: denselben Host/Mode/Git/Job-Status-Kopf wie auf /-/ auch auf
+    # /-/ui/schedules zeigen.
+    client = FakeClient(
+        [], status={"job_stats": {"counts": {"running": 1}, "complete_since_uptime": 3,
+                                  "next_due_at": None}})
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/schedules")
+        assert r.status_code == 200
+        assert 'id="feedstatus"' in r.text
+        assert r.text.count('<div class="card">') == 4
 
 
 def test_ui_schedules_timeseries_fragment_route(team_repo: Path):

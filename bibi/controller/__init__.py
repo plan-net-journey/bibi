@@ -203,13 +203,16 @@ def add_controller_routes(
 
     @app.get("/-/ui/schedules", include_in_schema=False)
     def schedules_screen(request: Request, typ: str | None = None, status: str | None = None):
-        # Der Schedules-Screen (Seite): Nav + Ops-Handles + Stat-Grid/Landungs-
-        # Histogramm (PLAN-21 Befund 11) + Filter + gefilterte, self-pollende Liste.
+        # Der Schedules-Screen (Seite): Nav + Ops-Handles + Status-Kacheln
+        # (Host/Mode/Git/Job-Status, wie /-/) + Stat-Grid/Landungs-Histogramm
+        # (PLAN-21 Befund 11) + Filter + gefilterte, self-pollende Liste.
+        from bibi import config
         eff_typ, eff_status = _effective_filter(request, typ, status)
         items = render.filter_schedules(_schedules(), typ=eff_typ, status=eff_status)
         resp = HTMLResponse(render.schedules_page(
             items, typ=eff_typ, status=eff_status, daemon_status=_status(),
-            landings=_landings()))
+            landings=_landings(), git_status=_feed_git_status(), host_url=_scheduler_url(),
+            status_poll_interval_s=config.status_poll_interval()))
         _set_filter_cookies(resp, eff_typ, eff_status)
         return resp
 

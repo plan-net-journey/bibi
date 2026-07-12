@@ -826,13 +826,18 @@ def _header(active: str, status: dict | None = None) -> str:
 def schedules_page(schedules: list[dict], typ: str | None = None,
                    status: str | None = None, now: float | None = None,
                    *, daemon_status: dict | None = None,
-                   landings: list[dict] | None = None) -> str:
+                   landings: list[dict] | None = None,
+                   git_status: dict | None = None, host_url: str | None = None,
+                   status_poll_interval_s: int = 30) -> str:
     """Der Schedules-Screen: Nav + Ops-Handles (RESCAN/MAINT, User-Feedback
-    2026-07-03) + Stat-Grid/Landungs-Histogramm (PLAN-21 Befund 11) +
-    Filterleiste + (gefilterte) self-pollende Liste. ``schedules`` ist bereits
-    gefiltert; ``typ``/``status`` spiegeln die Auswahl — ``status`` ist hier
-    der Filterwert (z. B. "error"), nicht zu verwechseln mit ``daemon_status``
-    (``/-/status``-JSON für den MAINT-Toggle **und** die Stat-Grid-Zählung,
+    2026-07-03) + Status-Kacheln (Host/Mode/Git/Job-Status, User-Fund: "diesen
+    Header möchte ich auch im /-/ui/schedules haben" — dieselbe
+    ``feed_status_fragment()`` wie auf ``/-/``) + Stat-Grid/Landungs-
+    Histogramm (PLAN-21 Befund 11) + Filterleiste + (gefilterte) self-
+    pollende Liste. ``schedules`` ist bereits gefiltert; ``typ``/``status``
+    spiegeln die Auswahl — ``status`` ist hier der Filterwert (z. B.
+    "error"), nicht zu verwechseln mit ``daemon_status`` (``/-/status``-JSON
+    für den MAINT-Toggle **und** die Stat-Grid-Zählung,
     ``daemon_status["job_stats"]``)."""
     now = time.time() if now is None else now
     daemon_status = daemon_status or {}
@@ -846,6 +851,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f'<script src="{_CHARTJS}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Schedules', daemon_status)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s)}"
         f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now)}"
         f"{_filter_bar(typ, status)}"
         f"{schedules_fragment(schedules, now, typ=typ, status=status)}"
