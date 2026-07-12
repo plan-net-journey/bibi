@@ -470,11 +470,18 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
 def create_app(
     roles: Roles, synchronizer=None, worker: Worker | None = None, sweeper=None,
     rescanner=None, controller_client=None, controller_base_url: str | None = None,
-    sync_lock=None, heartbeat=None,
+    sync_lock=None, heartbeat=None, pinned_loop=None,
 ) -> FastAPI:
     started_at = time.time()
     if worker is None and roles.worker:
         worker = Worker(worker_name="local")
+    # PLAN-28: rollenunabhängig — jeder Knoten hat seine eigene lokale
+    # jobs.sqlite (kein zentraler, netzwerk-geteilter Scheduler), also braucht
+    # jeder Knoten seinen eigenen Sweep+Dispatch für pinned_host==sich-selbst
+    # (gepinnte /run-Läufe), unabhängig davon, ob er roles.scheduler/worker hat.
+    if pinned_loop is None:
+        from bibi.daemon.pinned import LocalPinnedLoop
+        pinned_loop = LocalPinnedLoop()
     # Merge-back für den **lokalen** Worker (PLAN-6): der geht nicht über die
     # HTTP-Route /-/scheduler/status, darum den Hook direkt an den LocalScheduler
     # hängen. Nur am Knoten mit Scheduler-Rolle (besitzt trunk-Repo + Job-DB).
@@ -522,9 +529,11 @@ def create_app(
             await heartbeat.start()
         if worker is not None:
             await worker.start()
+        await pinned_loop.start()
         try:
             yield
         finally:
+            await pinned_loop.stop()
             if worker is not None:
                 await worker.stop()
             if heartbeat is not None:

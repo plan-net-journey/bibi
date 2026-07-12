@@ -85,3 +85,26 @@ def test_no_synchronizer_role(team_repo):
         assert "synchronizer" not in client.get("/-/status").json()
         # Toggle-Endpunkte existieren nicht ohne Synchronizer-Rolle.
         assert client.post("/-/synchronizer/push").status_code == 404
+
+
+class FakePinnedLoop:
+    """Minimaler LocalPinnedLoop-Stand-in — PLAN-28."""
+
+    def __init__(self) -> None:
+        self.started = False
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.started = False
+
+
+def test_pinned_loop_starts_even_without_any_role(team_repo):
+    # PLAN-28: LocalPinnedLoop ist rollenunabhängig — jeder Knoten hat seine
+    # eigene lokale jobs.sqlite, ein reiner Client ohne scheduler/worker-Rolle
+    # braucht trotzdem Sweep+Dispatch für seine eigenen gepinnten /run-Läufe.
+    fake = FakePinnedLoop()
+    app = create_app(roles.resolve(set()), pinned_loop=fake)  # idle daemon, keine Rollen
+    with TestClient(app):
+        assert fake.started is True
