@@ -793,6 +793,11 @@ def report_status(
         fields["next_fire_at"] = (
             _next_cron(row["schedule"], now) if is_recurring(row["schedule"]) else None
         )
+        # job_stats.complete_since_uptime (PLAN-26 Befund 3) — nur hier erreicht
+        # bei einem echten neuen Übergang (idempotente Wiederholungs-Reports
+        # kehren oben, Zeile ~731, vorher zurück), zählt also nicht doppelt.
+        global _complete_count
+        _complete_count += 1
     if attempt is not None:
         fields["attempt"] = attempt
     if next_fire_at is not None:
@@ -1026,12 +1031,21 @@ def reconcile_startup_orphans(
 # (keine 48h-Kappung mehr).
 
 _dispatch_count = 0
+_complete_count = 0
 
 
 def dispatch_count() -> int:
     """Anzahl erfolgreicher ``reserve_next()``-Dispatches seit Prozessstart
     (In-Memory, kein DB-State) — Basis für ``job_stats.running_since_uptime``."""
     return _dispatch_count
+
+
+def complete_count() -> int:
+    """Anzahl erfolgreicher Übergänge nach ``complete`` seit Prozessstart
+    (In-Memory, kein DB-State, PLAN-26 Befund 3) — Basis für
+    ``job_stats.complete_since_uptime``. Löst sich mit dem Daemon-Neustart
+    auf, genau wie ``dispatch_count()``/``started_at``."""
+    return _complete_count
 
 
 # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────────

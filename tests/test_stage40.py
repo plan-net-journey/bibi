@@ -230,6 +230,20 @@ def test_status_job_stats_absent_without_scheduler_role(team_repo):
         assert "job_stats" not in client.get("/-/status").json()
 
 
+def test_status_job_stats_includes_complete_since_uptime(sched):
+    # PLAN-26 Befund 3 — Job-Status-Kachel: complete_since_uptime ist ein
+    # kumulativer Prozesslaufzeit-Zähler wie running_since_uptime, nicht die
+    # Live-Zählung aus counts (die sinkt, sobald abgeschlossene Jobs archiviert
+    # werden).
+    client, root = sched
+    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    client.post("/-/rescan")
+    jid = client.post("/-/scheduler/next").json()["id"]
+    client.post(f"/-/scheduler/status/{jid}", json={"status": "complete", "exit_code": 0})
+    stats = client.get("/-/status").json()["job_stats"]
+    assert stats["complete_since_uptime"] == 1
+
+
 def test_landings_route_returns_terminal_journal_entries(sched):
     client, root = sched
     _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')

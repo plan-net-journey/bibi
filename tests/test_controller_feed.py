@@ -171,6 +171,55 @@ def test_mode_and_git_card_use_kvgrid_container():
     assert ".kvgrid {" in render._CSS
 
 
+# --- Job-Status-Kachel (PLAN-26 Befund 3, User-Fund: "Als 4. Kachel nehmen
+# wir dazu die Job Status in 2 x 5 Zeilen") ----------------------------------
+
+
+def test_job_status_card_shows_all_ten_statuses_including_zero():
+    # Alle 10 Status unbedingt gezeigt, auch mit Zählung 0 — anders als
+    # _current_state_chips() (PLAN-21), das Nullen ausblendet; hier laut
+    # Originaltext explizit gewünscht ("Anzahl Job in diesem Status").
+    job_stats = {"counts": {"pending": 2, "awaiting": 1, "running": 1, "error": 1},
+                "complete_since_uptime": 47}
+    html = render._job_status_card(job_stats)
+    assert '<div class="k">Pending</div><div class="v">2</div>' in html
+    assert '<div class="k">Deferred</div><div class="v">0</div>' in html
+    assert '<div class="k">Inactive</div><div class="v">0</div>' in html
+    assert '<div class="k">Complete</div><div class="v">47</div>' in html
+
+
+def test_job_status_card_complete_uses_cumulative_counter_not_live_count():
+    # complete_since_uptime (kumulativ seit Start), NICHT counts["complete"]
+    # (Live-Zählung aktiver Jobs — sinkt, sobald abgeschlossene Jobs
+    # archiviert werden).
+    job_stats = {"counts": {"complete": 3}, "complete_since_uptime": 47}
+    html = render._job_status_card(job_stats)
+    assert '<div class="k">Complete</div><div class="v">47</div>' in html
+    assert '<div class="k">Complete</div><div class="v">3</div>' not in html
+
+
+def test_job_status_card_uses_kvgrid2_css():
+    html = render._job_status_card({"counts": {}, "complete_since_uptime": 0})
+    assert '<div class="kvgrid2">' in html
+    assert ".kvgrid2 {" in render._CSS
+
+
+def test_feed_status_fragment_includes_job_status_card_when_present():
+    html = render.feed_status_fragment(
+        {"job_stats": {"counts": {"running": 1}, "complete_since_uptime": 5}},
+        None, None, now=100.0)
+    assert html.count('<div class="card">') == 4
+    assert "Job Status" in html
+
+
+def test_feed_status_fragment_omits_job_status_card_without_job_stats():
+    # Client-Knoten haben kein job_stats (nur scheduler-Rolle hat es) — keine
+    # leere 4. Kachel; Client-Darstellung laut User bewusst "später".
+    html = render.feed_status_fragment({}, None, None, now=100.0)
+    assert html.count('<div class="card">') == 3
+    assert "Job Status" not in html
+
+
 # --- Feed-Kachel-Grid: jetzt 3 statt 6 (PLAN-19 Befund 4) -----------------------
 
 

@@ -302,6 +302,41 @@ def test_dispatch_count_unchanged_when_nothing_to_reserve(conn):
     assert job_db.dispatch_count() == 0
 
 
+# ── complete_count (PLAN-26 Befund 3, job_stats.complete_since_uptime) ──────
+
+
+def test_complete_count_increments_on_transition_to_complete(conn):
+    assert job_db.complete_count() == 0
+    jid = _insert(conn, "a", 0, time.time())
+    job_db.reserve_next(conn)  # → running
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    assert job_db.complete_count() == 1
+
+
+def test_complete_count_counts_each_recurring_completion(conn):
+    # Wiederkehrende Schedules laufen mehrfach durch complete — jeder echte
+    # Übergang zählt, nicht nur der erste (analog dispatch_count()).
+    jid = _seed_full(conn, slug="a", status="running", next_fire_at=0)
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    conn.execute(
+        "UPDATE jobs SET status='pending', locked_at=NULL, next_fire_at=0 WHERE id=?", (jid,))
+    job_db.reserve_next(conn, now=200.0)
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    assert job_db.complete_count() == 2
+
+
+def test_complete_count_unchanged_on_idempotent_repeat_report(conn):
+    # Doppelter Report desselben Terminal-Status (z. B. doppelter Kill-Klick-
+    # Analogon) ist ein No-Op (report_status() Zeile ~731-736) — zählt nicht
+    # doppelt.
+    jid = _insert(conn, "a", 0, time.time())
+    job_db.reserve_next(conn)
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    assert job_db.complete_count() == 1
+    assert job_db.report_status(conn, jid, status="complete", exit_code=0) == "ok"
+    assert job_db.complete_count() == 1
+
+
 # ── journal_landings (PLAN-21 Befund 11 v2, Lauf-Historie-Chart) ────────────
 
 

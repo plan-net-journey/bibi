@@ -170,6 +170,13 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .card .kvgrid .v { font-size: 1.05rem; font-weight: 600; }
 .card .kvgrid .v.ok { color: #5fb37a; }
 .card .kvgrid .v.bad { color: #e06c5a; }
+/* Wie .kvgrid, aber 2 Label/Wert-Paare je Zeile (PLAN-26 Befund 3, User-Fund:
+   "Job Status in 2 x 5 Zeilen") — Job-Status-Kachel, sonst identischer Stil. */
+.card .kvgrid2 { display: grid; grid-template-columns: auto 1fr auto 1fr; row-gap: .2rem;
+                 column-gap: .6em; margin-top: .15rem; }
+.card .kvgrid2 .k { font-size: .72rem; font-weight: 400; color: #888;
+                    text-transform: uppercase; letter-spacing: .03em; align-self: center; }
+.card .kvgrid2 .v { font-size: 1.05rem; font-weight: 600; }
 .side-empty { color: #888; font-size: .82rem; }
 .chip { font-family: ui-monospace, monospace; font-size: .7rem; font-weight: 700;
         padding: .1rem .45rem; border-radius: .3rem; display: inline-block; white-space: nowrap; }
@@ -1149,16 +1156,49 @@ def _git_segment_card(git_status: dict | None) -> str:
     return _kv_card("Git", rows, sub=f"Branch {branch}" if branch else "")
 
 
+_JOB_STATUS_LEFT = ("pending", "awaiting", "deferred", "failed", "running")
+_JOB_STATUS_RIGHT = ("inactive", "zombie", "error", "killed")
+
+
+def _job_status_card(job_stats: dict) -> str:
+    """Job-Status-Kachel (PLAN-26 Befund 3, User-Fund: "Als 4. Kachel nehmen
+    wir dazu die Job Status in 2 x 5 Zeilen") — 4. Kachel neben Host/Mode/Git,
+    nur gerendert wenn ``job_stats`` vorhanden ist (``scheduler``-Rolle, wie
+    ``job_stats`` selbst — Client-Darstellung laut User bewusst "später").
+
+    Alle 10 Status unbedingt gezeigt, auch mit Zählung 0 — anders als
+    ``_current_state_chips()`` (PLAN-21), das Null-Zustände ausblendet; hier
+    laut Originaltext explizit gewünscht ("Anzahl Job in diesem Status", ohne
+    Bedingung). ``complete`` kommt NICHT aus ``counts`` (Live-Zählung aktiver
+    Jobs — sinkt, sobald abgeschlossene Jobs archiviert werden), sondern aus
+    dem kumulativen ``complete_since_uptime`` (``job_db.complete_count()``,
+    analog ``running_since_uptime``)."""
+    counts = job_stats.get("counts") or {}
+    left = [(s.capitalize(), counts.get(s, 0)) for s in _JOB_STATUS_LEFT]
+    right = [(s.capitalize(), counts.get(s, 0)) for s in _JOB_STATUS_RIGHT]
+    right.append(("Complete", job_stats.get("complete_since_uptime", 0)))
+    cells = "".join(
+        f'<div class="k">{lk}</div><div class="v">{lv}</div>'
+        f'<div class="k">{rk}</div><div class="v">{rv}</div>'
+        for (lk, lv), (rk, rv) in zip(left, right)
+    )
+    return (f'<div class="card"><div class="label">Job Status</div>'
+           f'<div class="kvgrid2">{cells}</div></div>')
+
+
 def feed_status_fragment(
     status: dict, git_status: dict | None, host_url: str | None, now: float,
     *, poll_interval_s: int = 30,
 ) -> str:
-    """Die 3 Feed-Header-Kacheln (PLAN-19 Befund 4: Host-Connection, Mode,
+    """Die Feed-Header-Kacheln (PLAN-19 Befund 4: Host-Connection, Mode,
     Git — löst die bisherigen 6 Kacheln von PLAN-18 Stufe 18.3 ab, u. a. fällt
     die Rollen-Kachel weg, deckungsgleich mit der ursprünglichen Umbau-Vorgabe
     „Rollen sind eh klar"). Baut **nicht** mehr auf ``_status_card_list()``
     auf (die bleibt unverändert für ``_status_cards()``/``daemon_page()`` als
     Baustein bestehen, auch ohne eigene Route seit PLAN-18 Stufe 18.4).
+
+    Optionale 4. Kachel seit PLAN-26 Befund 3: ``_job_status_card()``, nur
+    wenn ``status["job_stats"]`` vorhanden ist (``scheduler``-Rolle).
 
     Self-pollend seit PLAN-25 Befund 4 (User-Fund: "Header kontinuierlich
     aktualisieren") — vorher nur beim initialen Seitenaufbau gerendert.
@@ -1170,6 +1210,9 @@ def feed_status_fragment(
     ``BIBI_STATUS_POLL_INTERVAL``), damit diese Funktion config-frei bleibt."""
     cards = [_host_card(status, host_url, now), _mode_card(status, now),
              _git_segment_card(git_status)]
+    job_stats = status.get("job_stats")
+    if job_stats is not None:
+        cards.append(_job_status_card(job_stats))
     attrs = (f'id="feedstatus" hx-get="/-/ui/feed/status" '
             f'hx-trigger="every {poll_interval_s}s [window.bibiFollow]" hx-swap="outerHTML"')
     return f'<div {attrs}><div class="statuscards">{"".join(cards)}</div></div>'
