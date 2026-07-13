@@ -183,17 +183,28 @@ def test_run_endpoint(gitrepo: Path):
     with TestClient(app) as c:
         r = c.post("/-/run", json={"cmd": "echo via-endpoint"})
         assert r.status_code == 200
-        # PLAN-21 Befund 10, 2. Nachtrag: /-/run antwortet jetzt sofort nach
-        # Subprozess-Start (status="running"), nicht erst nach Lauf-Ende —
-        # der Hintergrund-Thread committet/schreibt das Journal danach.
+        # PLAN-21 Befund 10, 2. Nachtrag: /-/run antwortet sofort nach
+        # Subprozess-Start (status="running"), nicht erst nach Lauf-Ende.
+        # PLAN-28: run_pinned() ersetzt run_local() für diese Route — der
+        # Wrapper-Subprozess (detach=True) meldet Commit/Terminal-Status
+        # selbständig, kein Hintergrund-Thread mehr im Daemon nötig.
         slug = r.json()["slug"]
         assert r.json()["status"] == "running"
         assert _wait_until(lambda: slug not in c.get("/-/run/live").json())
-        # rein lokal: nichts in der Scheduler-Queue
+        # PLAN-28: /run bekommt jetzt eine echte, gepinnte jobs-Zeile (volle
+        # Scheduler-Lifecycle) — bleibt aber lokal: pinned_host erzwingt
+        # genau diesen Knoten, kein anderer Worker kann sie je reservieren.
+        # domain ist jetzt 'scheduled' (echter jobs-Report-Pfad), pinned_host
+        # bleibt trotzdem gesetzt — das unterscheidet "meine eigene
+        # /run-Historie" weiterhin von echten Team-Queue-Läufen.
         conn = _conn(gitrepo)
         try:
-            assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
-            assert any(j["domain"] == "local" for j in job_db.list_journal(conn))
+            rows = conn.execute("SELECT status, pinned_host FROM jobs").fetchall()
+            assert len(rows) == 1
+            assert rows[0]["status"] == "complete"
+            assert rows[0]["pinned_host"] is not None
+            assert any(j["domain"] == "scheduled" and j["pinned_host"] is not None
+                      for j in job_db.list_journal(conn))
         finally:
             conn.close()
         # unbekannter slug → 404
@@ -226,7 +237,10 @@ def test_run_journal_endpoint_works_without_any_worker_or_scheduler_role(gitrepo
     # PLAN-17 Stufe 17.1: die eigene /run-Historie muss ein reiner Client (kein
     # --scheduler, kein --worker) lesen können — /-/journal selbst bleibt
     # scheduler-gated (frozen contract), /-/run/journal ist die dafür neue,
-    # bewusst rollenunabhängige Route (nur domain="local").
+    # bewusst rollenunabhängige Route. PLAN-28: filtert jetzt "domain='local'
+    # ODER pinned_host gesetzt" (mine_only) statt starr domain="local" — /run
+    # bekommt jetzt domain='scheduled' (echte jobs-Zeile), bleibt aber über
+    # pinned_host als eigene /run-Historie erkennbar.
     from fastapi.testclient import TestClient
 
     from bibi.daemon import roles
@@ -239,7 +253,8 @@ def test_run_journal_endpoint_works_without_any_worker_or_scheduler_role(gitrepo
         r = c.get("/-/run/journal")
         assert r.status_code == 200
         rows = r.json()
-        assert rows and all(row["domain"] == "local" for row in rows)
+        assert rows and all(row["domain"] == "scheduled" and row["pinned_host"] is not None
+                            for row in rows)
 
 
 def test_journal_endpoint_filters_by_domain(gitrepo: Path):
@@ -249,15 +264,28 @@ def test_journal_endpoint_filters_by_domain(gitrepo: Path):
     # slug/host/limit/offset, kein domain-Filter. Bleibt scheduler-gated (§1.1
     # gefrorener Vertrag, s. test_daemon_contract.py) — anders als /-/run selbst
     # (rollenunabhängig) ist /-/journal Teil des eingefrorenen v3.0-Vertrags.
+    #
+    # PLAN-28: /-/run selbst erzeugt jetzt domain='scheduled'-Einträge (echte
+    # gepinnte jobs-Zeile) — eine echte domain='local'-Zeile kommt nur noch
+    # über den alten CLI-Pfad (bibi-ctrl run/write_local_journal()) zustande,
+    # hier direkt nachgestellt, um den domain-Filter selbst unabhängig davon
+    # zu testen.
     from fastapi.testclient import TestClient
 
     from bibi.daemon import roles
     from bibi.daemon.app import create_app
 
     app = create_app(roles.resolve({"scheduler", "synchronizer", "controller"}))
+    conn = _conn(gitrepo)
+    try:
+        job_db.write_local_journal(
+            conn, run_id="adhoc:1", slug="adhoc", kind="job", status="complete",
+            exit_code=0, output_ref=None, host="h", worker="w",
+            started_at=time.time(), finished_at=time.time(),
+        )
+    finally:
+        conn.close()
     with TestClient(app) as c:
-        slug = c.post("/-/run", json={"cmd": "echo local-lauf"}).json()["slug"]
-        assert _wait_until(lambda: slug not in c.get("/-/run/live").json())
         r = c.get("/-/journal", params={"domain": "local"})
         assert r.status_code == 200
         rows = r.json()

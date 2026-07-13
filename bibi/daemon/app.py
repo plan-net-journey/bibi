@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import socket
-import threading
 import time
 from contextlib import asynccontextmanager
 
@@ -32,7 +31,7 @@ from bibi.daemon.openapi import (
     WorkerHeartbeat, WorkerView,
 )
 from bibi.daemon.roles import Roles
-from bibi.daemon.worker import Worker, run_local
+from bibi.daemon.worker import Worker, run_pinned
 from bibi.daemon.worker_registry import WorkerRegistry
 from bibi.schedule.lifecycle import TERMINAL
 from bibi.schedule.models import Status
@@ -649,6 +648,13 @@ def create_app(
     # dort).
     @app.post("/-/run", tags=["job"])
     def run(req: RunRequest):
+        # PLAN-28: run_pinned() ersetzt run_local() — der Lauf bekommt jetzt
+        # eine echte jobs-Zeile (pinned_host=dieser Host) und läuft durch
+        # dieselbe Retry/Error/Deferred/Zombie-Maschine wie ein Scheduler-Job,
+        # bleibt aber hier (pinned_host) und sofort (execute_reservation()s
+        # detach=True kehrt gleich nach dem Subprozess-Spawn zurück — kein
+        # eigener Hintergrund-Thread/Timeout mehr nötig, run_pinned() selbst
+        # blockiert nur für die kurze Setup-Phase, nicht für den ganzen Lauf).
         if not req.slug and not req.cmd:
             return JSONResponse(status_code=400, content={"error": "slug oder cmd nötig"})
         slug = req.slug or "adhoc"
@@ -656,61 +662,22 @@ def create_app(
             return JSONResponse(status_code=409,
                                 content={"error": "already running", "slug": slug})
 
-        ready = threading.Event()
-        handle: dict = {}
-        root = repo.root()
-
         def on_spawn(job_id: str, proc) -> None:
-            out_ref = (root / "data" / "job" / job_id / "output.jsonl").relative_to(root).as_posix()
-            worker_mod.local_run_start(
-                slug, job_id, out_ref, req.kind, req.cmd or req.slug or "", proc)
-            handle["id"] = job_id
-            handle["output_ref"] = out_ref
-            ready.set()
+            # Nur noch fürs Kill-Tracking (_local_runs_procs) — die "läuft
+            # gerade?"-Quelle ist jetzt die jobs-Zeile selbst (pinned_host).
+            worker_mod.local_run_start(slug, job_id, "", req.kind, req.cmd or req.slug or "", proc)
 
-        def go() -> None:
-            try:
-                run_local(slug=req.slug, cmd=req.cmd, kind=req.kind, register=on_spawn)
-            except LookupError as exc:
-                handle["error"] = str(exc)
-                handle["status_code"] = 404
-                ready.set()
-            except Exception as exc:  # noqa: BLE001 — Hintergrund-Thread darf nie
-                # unbeobachtet sterben: die auslösende Response ist zu diesem
-                # Zeitpunkt oft schon zurück (register() hat ready schon
-                # gesetzt), ein stiller Traceback auf stderr wäre die einzige
-                # Spur. Wenigstens ins Activity-Log (§2.7).
-                #
-                # Bug gefunden bei der Live-Verifikation 2026-07-10: eine
-                # Exception VOR dem Wrapper-Spawn (register() nie erreicht —
-                # z. B. GitOpError bei worktree.prepare(), live beobachtet an
-                # einem Repo mit liegengebliebenem Merge-Konflikt) ließ diesen
-                # Zweig nur loggen, ohne ready.set() — die Route wartete dann
-                # sinnlos bis zum vollen 30s-Timeout statt sofort den Fehler
-                # zurückzugeben. ready.is_set() unterscheidet die beiden
-                # Fälle: schon gesetzt (register() lief, Response ist längst
-                # raus) → nur loggen; noch nicht gesetzt → Fehler + sofort
-                # freigeben (500, nicht 404 — kein "not found"-Fall wie
-                # LookupError, sondern ein echter Startfehler, z. B. ein
-                # Worktree-Konflikt).
-                if not ready.is_set():
-                    handle["error"] = str(exc)
-                    handle["status_code"] = 500
-                    ready.set()
-                activity.emit(log, logging.ERROR, "run.local_background_error",
-                              "Lokaler /run-Hintergrund-Lauf abgebrochen", role="daemon",
-                              slug=slug, error=str(exc))
-            finally:
-                worker_mod.local_run_end(slug)
-
-        threading.Thread(target=go, daemon=True).start()
-        if not ready.wait(timeout=30):
-            return JSONResponse(status_code=504, content={"error": "timeout starting run"})
-        if "error" in handle:
-            return JSONResponse(status_code=handle["status_code"],
-                                content={"error": handle["error"]})
-        return {"id": handle["id"], "slug": slug, "status": "running",
-                "output_ref": handle["output_ref"]}
+        try:
+            res = run_pinned(slug=req.slug, cmd=req.cmd, kind=req.kind, register=on_spawn)
+        except LookupError as exc:
+            return JSONResponse(status_code=404, content={"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 — Route darf nie unbehandelt crashen
+            activity.emit(log, logging.ERROR, "run.pinned_error",
+                          "Gepinnter /run-Lauf fehlgeschlagen", role="daemon",
+                          slug=slug, error=str(exc))
+            return JSONResponse(status_code=500, content={"error": str(exc)})
+        return {"id": res["id"], "slug": slug, "status": "running",
+                "output_ref": res["output_ref"]}
 
     # ── /run/live: Zwischenstand laufender lokaler /run-Ausführungen ──────────
     # PLAN-21 Befund 10, 2. Nachtrag — s. Kommentar bei POST /-/run. Schlank
@@ -753,6 +720,14 @@ def create_app(
             return JSONResponse(status_code=404, content={"error": "not running", "slug": slug})
         return {"slug": slug, "signaled": True}
 
+    def _is_own_run(entry: dict | None) -> bool:
+        # PLAN-28: "meine eigene /run-Historie" — domain='local' (alter CLI-Pfad,
+        # write_local_journal()) ODER pinned_host gesetzt (neuer HTTP-Pfad,
+        # run_pinned() — echte jobs-Zeile, domain='scheduled', aber pinned_host
+        # macht sie trotzdem eindeutig von Team-Queue-Läufen unterscheidbar).
+        return entry is not None and (entry.get("domain") == "local"
+                                      or entry.get("pinned_host") is not None)
+
     # ── /run/journal: lokale Lauf-Historie (§1.4) — rollenunabhängig ───────────
     # PLAN-17 Stufe 17.1 (Jobs-Screen): bewusst NICHT einfach /-/journal um
     # domain=local erweitert und dessen Gate gelockert — /-/journal ist Teil des
@@ -766,7 +741,7 @@ def create_app(
                     offset: int | None = None):
         conn = job_db.connect()
         try:
-            return job_db.list_journal(conn, slug=slug, domain="local", limit=limit, offset=offset)
+            return job_db.list_journal(conn, slug=slug, mine_only=True, limit=limit, offset=offset)
         finally:
             conn.close()
 
@@ -784,7 +759,7 @@ def create_app(
             entry = job_db.get_journal(conn, jid)
         finally:
             conn.close()
-        if entry is None or entry.get("domain") != "local":
+        if not _is_own_run(entry):
             return JSONResponse(status_code=404,
                                 content={"error": "local run not found", "id": jid})
         return entry
@@ -798,7 +773,7 @@ def create_app(
         conn = job_db.connect()
         try:
             entry = job_db.get_journal(conn, jid)
-            if entry is None or entry.get("domain") != "local":
+            if not _is_own_run(entry):
                 return JSONResponse(status_code=404,
                                     content={"error": "local run not found", "id": jid})
             job_db.delete_journal(conn, jid)
@@ -814,7 +789,7 @@ def create_app(
             entry = job_db.get_journal(conn, jid)
         finally:
             conn.close()
-        if entry is None or entry.get("domain") != "local":
+        if not _is_own_run(entry):
             return JSONResponse(status_code=404,
                                 content={"error": "local run not found", "id": jid})
         ref = entry.get("output_ref")

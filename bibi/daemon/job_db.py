@@ -26,7 +26,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -145,6 +145,15 @@ def _mig_jobs_pinned_host(conn: sqlite3.Connection) -> None:  # v14 → v15
         conn.execute("ALTER TABLE jobs ADD COLUMN pinned_host TEXT")
 
 
+def _mig_journal_pinned_host(conn: sqlite3.Connection) -> None:  # v15 → v16
+    # PLAN-28: spiegelt jobs.pinned_host zum Schreibzeitpunkt — /-/run/journal
+    # kann so "meine eigene /run-Historie" (domain='local' ODER pinned_host
+    # gesetzt) von echten Team-Queue-Läufen unterscheiden, unabhängig von
+    # domain (die für gepinnte Läufe jetzt 'scheduled' ist, echte jobs-Zeile).
+    if not _has_column(conn, "journal", "pinned_host"):
+        conn.execute("ALTER TABLE journal ADD COLUMN pinned_host TEXT")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -163,6 +172,7 @@ _MIGRATIONS: dict[int, list] = {
     12: [_mig_jobs_active],
     13: [_mig_transitions],
     14: [_mig_jobs_pinned_host],
+    15: [_mig_journal_pinned_host],
 }
 
 
@@ -1154,9 +1164,9 @@ def _write_journal(
     cur = conn.execute(
         "INSERT INTO journal (run_id, slug, kind, status, reason, started_at, "
         "finished_at, exit_code, exec_runtime, host, worker, output_ref, commit_sha, "
-        "branch, payload, snapshot, archived_at) VALUES (:run_id,:slug,:kind,:status,:reason,"
-        ":started_at,:finished_at,:exit_code,:exec_runtime,:host,:worker,:output_ref,"
-        ":commit_sha,:branch,:payload,:snapshot,:archived_at)",
+        "branch, payload, pinned_host, snapshot, archived_at) VALUES (:run_id,:slug,:kind,"
+        ":status,:reason,:started_at,:finished_at,:exit_code,:exec_runtime,:host,:worker,"
+        ":output_ref,:commit_sha,:branch,:payload,:pinned_host,:snapshot,:archived_at)",
         {
             "run_id": run_id, "slug": row["slug"], "kind": row["kind"],
             "status": row["status"], "reason": row["reason"],
@@ -1164,6 +1174,7 @@ def _write_journal(
             "exit_code": row["exit_code"], "exec_runtime": exec_runtime,
             "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
             "commit_sha": commit_sha, "branch": branch, "payload": row["payload"],
+            "pinned_host": row["pinned_host"],
             # job_full_view() statt job_view() (User-Feedback 2026-07-03: "ein
             # Schedule oder Attempts kann sich ändern" — der Snapshot muss ALLE
             # Konfig-Felder einfrieren, nicht nur die kleine Live-Sicht, sonst
@@ -1183,8 +1194,11 @@ def journal_view(row: sqlite3.Row) -> dict:
         "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
         "commit_sha": row["commit_sha"], "branch": row["branch"],
         "domain": row["domain"],
-        # nur intern genutzt (Ausgabefilter, PLAN-12 Stufe 12.4/12.5).
-        "payload": row["payload"],
+        # nur intern genutzt (Ausgabefilter, PLAN-12 Stufe 12.4/12.5;
+        # pinned_host seit PLAN-28 für die /-/run/journal*-Routen, die
+        # "meine eigene /run-Historie" unabhängig von domain erkennen müssen —
+        # gepinnte Läufe haben domain='scheduled', aber pinned_host gesetzt).
+        "payload": row["payload"], "pinned_host": row["pinned_host"],
     }
 
 
@@ -1210,8 +1224,14 @@ def delete_journal(conn: sqlite3.Connection, journal_id: int) -> bool:
 def list_journal(
     conn: sqlite3.Connection, slug: str | None = None,
     host: str | None = None, domain: str | None = None,
-    limit: int | None = None, offset: int | None = None,
+    limit: int | None = None, offset: int | None = None, mine_only: bool = False,
 ) -> list[dict]:
+    """``mine_only`` (PLAN-28): "meine eigene /run-Historie" unabhängig von
+    ``domain`` — deckt sowohl alte CLI-Läufe (``domain='local'``,
+    ``write_local_journal()``) als auch gepinnte HTTP-``/run``-Läufe ab
+    (``domain='scheduled'`` — echte ``jobs``-Zeile, volle Lifecycle — aber
+    ``pinned_host`` gesetzt). Echte Team-Queue-Läufe (``pinned_host IS NULL``)
+    bleiben ausgeschlossen, auch wenn sie zufällig auf demselben Host liefen."""
     sql = "SELECT * FROM journal"
     clauses, params = [], []
     if slug:
@@ -1220,6 +1240,8 @@ def list_journal(
         clauses.append("host=?"); params.append(host)
     if domain:
         clauses.append("domain=?"); params.append(domain)
+    if mine_only:
+        clauses.append("(domain='local' OR pinned_host IS NOT NULL)")
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY finished_at DESC"  # PLAN-14 Stufe 14.3 (war archived_at)

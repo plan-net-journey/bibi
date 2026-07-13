@@ -1,35 +1,35 @@
-"""Live-Zwischenstand laufender lokaler /run-Ausführungen (PLAN-21 Befund 10,
-2. Nachtrag — User-Fund 2026-07-09: "warum erscheinen keine Details während
-des Laufes?"). Schnell: die reine Registry (worker.py) braucht keinen
-Subprozess, und die Route-Logik (Hintergrund-Thread, 409 bei Doppelstart,
-Bereinigung) wird gegen einen gefakten run_local() getestet statt gegen einen
-echten — die echte End-to-End-Kette (echter Subprozess, echte output.jsonl)
-deckt tests/test_run_local.py ab (@pytest.mark.slow)."""
+"""Live-Zwischenstand laufender gepinnter /run-Ausführungen (PLAN-21 Befund 10,
+2. Nachtrag; PLAN-28: jobs-tabellen-basiert statt In-Memory-Dict).
+
+Schnell: die reine Registry-Query (worker.py) braucht keinen Subprozess, und
+die Route-Logik (409 bei Doppelstart, Fehlerpfade) wird gegen einen gefakten
+run_pinned() getestet statt gegen einen echten — die echte End-to-End-Kette
+(echter Subprozess, echte output.jsonl) deckt tests/test_run_local.py ab
+(@pytest.mark.slow)."""
 
 from __future__ import annotations
 
 import json
-import threading
+import secrets
 import time
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from bibi.daemon import roles, worker
+from bibi.daemon import job_db, roles, worker
 from bibi.daemon.app import create_app
 from bibi.wrapper import output
 
 
 @pytest.fixture(autouse=True)
-def _reset_live_registry():
+def _reset_proc_registry():
     # Modul-globaler State (wie job_db._dispatch_count) — zwischen Tests
     # zurücksetzen, sonst leaken Einträge früherer Tests in denselben
-    # pytest-Prozess hinein.
-    worker._local_runs_live.clear()
+    # pytest-Prozess hinein. Die "läuft gerade?"-Metadaten selbst kommen
+    # jetzt aus der jobs-Tabelle (pinned_host), s. Modul-Kommentar in worker.py.
     worker._local_runs_procs.clear()
     yield
-    worker._local_runs_live.clear()
     worker._local_runs_procs.clear()
 
 
@@ -46,63 +46,73 @@ class _FakeProc:
         return None if self._alive else 0
 
 
-# ── Reine Registry (worker.py) ───────────────────────────────────────────────
+def _seed_pinned_job(root: Path, bucket_slug: str, *, status: str = "running",
+                     output_ref: str | None = None, host: str | None = None) -> str:
+    """Legt eine echte, gepinnte ``jobs``-Zeile an (PLAN-28: die reale Quelle
+    für local_run_live()/local_runs_live()) — analog zu run_pinned()s eigenem
+    INSERT, nur direkt per SQL für Tests, ohne echten Dispatch."""
+    import socket
+    host = host or socket.gethostname()
+    jid = secrets.token_hex(4)
+    unique_slug = f"{bucket_slug}:{secrets.token_hex(2)}"
+    output_ref = output_ref or f"data/job/{jid}/output.jsonl"
+    conn = job_db.connect(root / "data" / "jobs.sqlite")
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+            "pinned_host, output_ref, started_at, enqueued_at) VALUES "
+            "(?,?,?,?,?,?,?,?,?,?)",
+            (jid, unique_slug, unique_slug, "job", "echo hi", status, host,
+             output_ref, time.time(), time.time()),
+        )
+    finally:
+        conn.close()
+    return jid
 
 
-def test_local_run_start_and_live():
-    worker.local_run_start("a", "jid1", "data/job/jid1/output.jsonl", "job", "echo hi")
+# ── Reine Registry-Query (worker.py, jobs-tabellen-basiert) ─────────────────
+
+
+def test_local_run_live_finds_seeded_pinned_row(team_repo: Path):
+    jid = _seed_pinned_job(team_repo, "a", output_ref="data/job/jid1/output.jsonl")
     live = worker.local_run_live("a")
-    assert live["id"] == "jid1" and live["output_ref"] == "data/job/jid1/output.jsonl"
+    assert live["id"] == jid and live["output_ref"] == "data/job/jid1/output.jsonl"
     assert live["kind"] == "job" and "started_at" in live
 
 
-def test_local_run_live_none_when_not_running():
+def test_local_run_live_none_when_not_running(team_repo: Path):
     assert worker.local_run_live("nope") is None
 
 
-def test_local_run_end_removes_entry():
-    worker.local_run_start("a", "jid1", "ref", "job", "echo hi")
-    worker.local_run_end("a")
+def test_local_run_live_ignores_terminal_status(team_repo: Path):
+    _seed_pinned_job(team_repo, "a", status="complete")
     assert worker.local_run_live("a") is None
 
 
-def test_local_run_end_unknown_slug_is_noop():
-    worker.local_run_end("never-started")  # kein KeyError
+def test_local_run_live_ignores_other_hosts_pinned_jobs(team_repo: Path):
+    _seed_pinned_job(team_repo, "a", host="sarasate")
+    assert worker.local_run_live("a", host="mac") is None
 
 
-def test_local_runs_live_lists_all_slim():
-    worker.local_run_start("a", "jid1", "ref-a", "job", "echo a")
-    worker.local_run_start("b", "jid2", "ref-b", "job", "echo b")
+def test_local_runs_live_lists_all_by_bucket_slug(team_repo: Path):
+    _seed_pinned_job(team_repo, "a")
+    _seed_pinned_job(team_repo, "b")
     live = worker.local_runs_live()
     assert set(live) == {"a", "b"}
-    assert live["a"]["id"] == "jid1" and "output_ref" not in live["a"]  # schlank
+    assert "id" in live["a"] and "started_at" in live["a"] and "status" in live["a"]
 
 
-def test_local_run_live_returns_copy_not_live_reference():
-    worker.local_run_start("a", "jid1", "ref", "job", "echo hi")
-    snap = worker.local_run_live("a")
-    snap["id"] = "mutated"
-    assert worker.local_run_live("a")["id"] == "jid1"
-
-
-def test_local_runs_live_defaults_status_running_without_signals(team_repo):
-    worker.local_run_start("a", "jid1", "data/job/jid1/output.jsonl", "job", "echo hi")
-    live = worker.local_runs_live()
-    assert live["a"]["status"] == "running"
-
-
-def test_local_runs_live_includes_awaiting_status(team_repo):
-    # PLAN-27 Befund 4, User-Fund: "der Status awaiting wird in /ui/jobs nicht
-    # angezeigt. Im Job Detail bereits schon." — local_runs_live() (Quelle für
-    # die Jobs-Übersicht) las bisher gar keinen Output, kannte deshalb nur
-    # "läuft/läuft nicht", nie "awaiting" (anders als run_live_detail(), das
-    # lokal per local_run_signal_state() schon immer korrekt "awaiting" zeigt).
-    out_ref = "data/job/jid1/output.jsonl"
-    output.append(team_repo / out_ref, "signal",
-                  json.dumps({"name": "awaiting", "input_request": "ja/j?", "port": 9100}))
-    worker.local_run_start("a", "jid1", out_ref, "job", "echo hi")
+def test_local_runs_live_includes_awaiting_status(team_repo: Path):
+    # PLAN-27 Befund 4 / PLAN-28: status kommt jetzt direkt aus der jobs-Zeile,
+    # kein Output-Read mehr nötig.
+    _seed_pinned_job(team_repo, "a", status="awaiting")
     live = worker.local_runs_live()
     assert live["a"]["status"] == "awaiting"
+
+
+def test_local_runs_live_excludes_terminal_rows(team_repo: Path):
+    _seed_pinned_job(team_repo, "a", status="complete")
+    assert worker.local_runs_live() == {}
 
 
 # ── local_run_signal_state() (Ausbau User-Fund 2026-07-10: awaiting/app_url ──
@@ -180,54 +190,61 @@ def test_signal_state_malformed_signal_line_is_skipped_not_crashed():
 
 
 # ── local_run_kill() (User-Fund 2026-07-10: "natürlich müssen wir kill können") ─
+# PLAN-28: braucht jetzt eine echte gepinnte jobs-Zeile (lokal_run_live()) UND
+# den Proc-Handle (_local_runs_procs, weiterhin per local_run_start() gesetzt).
 
 
-def test_local_run_kill_terminates_and_returns_true(monkeypatch, team_repo):
+def test_local_run_kill_terminates_and_returns_true(monkeypatch, team_repo: Path):
     # _terminate() (worker.py) fragt _is_container() ab, was ohne Mock den
     # globalen Knoten-Default liest (auf diesem Mac: container) und einen
     # echten `docker stop`-Subprozess anstoßen würde — hier wie in
     # test_worker_container.py hermetisch weggemockt.
-    #
-    # team_repo ist Pflicht, kein Nice-to-have: local_run_kill() baut
-    # out_path = repo.root() / output_ref und _terminate() schreibt dorthin
-    # echte Phase-Zeilen (auch verzögert aus dem SIGKILL-Backstop-Thread,
-    # s. worker.py::_terminate) — ohne team_repo landet das im echten
-    # Checkout statt in einem Tempdir (beobachtet: eine "ref"-Datei mit
-    # Kill-Phase-Zeilen im Repo-Root nach jedem Testlauf).
     monkeypatch.setattr("bibi.daemon.worker._is_container", lambda: False)
     monkeypatch.setattr("bibi.daemon.worker._docker", lambda args: None)
+    _seed_pinned_job(team_repo, "a", output_ref="ref")
     proc = _FakeProc(alive=True)
     worker.local_run_start("a", "jid1", "ref", "job", "echo hi", proc)
     assert worker.local_run_kill("a") is True
 
 
-def test_local_run_kill_false_when_nothing_running():
+def test_local_run_kill_false_when_nothing_running(team_repo: Path):
     assert worker.local_run_kill("nope") is False
 
 
-def test_local_run_kill_false_when_no_proc_handle():
+def test_local_run_kill_false_when_no_proc_handle(team_repo: Path):
     # register()-Callback nie erreicht (z. B. Fehler vor dem Spawn) — kein
     # Prozess-Handle vorhanden, kill() darf nicht crashen, nur False liefern.
-    worker.local_run_start("a", "jid1", "ref", "job", "echo hi")  # proc=None
+    _seed_pinned_job(team_repo, "a", output_ref="ref")
     assert worker.local_run_kill("a") is False
 
 
-def test_local_run_kill_false_when_proc_already_exited():
+def test_local_run_kill_false_when_proc_already_exited(team_repo: Path):
+    _seed_pinned_job(team_repo, "a", output_ref="ref")
     proc = _FakeProc(alive=False)  # .poll() != None → schon beendet
     worker.local_run_start("a", "jid1", "ref", "job", "echo hi", proc)
     assert worker.local_run_kill("a") is False
 
 
-def test_local_run_end_clears_proc_handle_too(monkeypatch):
+def test_local_run_kill_false_when_job_row_not_live(team_repo: Path):
+    # Proc-Handle vorhanden, aber die jobs-Zeile ist schon terminal (z. B. der
+    # Wrapper hat gerade selbst "complete" gemeldet) — kein Kill mehr nötig.
+    _seed_pinned_job(team_repo, "a", status="complete", output_ref="ref")
+    proc = _FakeProc(alive=True)
+    worker.local_run_start("a", "jid1", "ref", "job", "echo hi", proc)
+    assert worker.local_run_kill("a") is False
+
+
+def test_local_run_end_clears_proc_handle_too(monkeypatch, team_repo: Path):
     monkeypatch.setattr("bibi.daemon.worker._is_container", lambda: False)
     monkeypatch.setattr("bibi.daemon.worker._docker", lambda args: None)
+    _seed_pinned_job(team_repo, "a", output_ref="ref")
     proc = _FakeProc(alive=True)
     worker.local_run_start("a", "jid1", "ref", "job", "echo hi", proc)
     worker.local_run_end("a")
     assert worker.local_run_kill("a") is False  # kein Handle mehr da
 
 
-# ── POST /-/run + GET /-/run/live (gefakter run_local, kein echter Subprozess) ─
+# ── POST /-/run + GET /-/run/live (gefakter run_pinned, kein echter Subprozess) ─
 
 
 @pytest.fixture
@@ -237,42 +254,24 @@ def client_only(team_repo: Path):
         yield c
 
 
-def _fake_run_local_factory(hold: threading.Event, *, jid: str = "fakejid"):
-    def fake(*, slug=None, cmd=None, kind="job", register=None):
-        register(jid, None)
-        hold.wait(timeout=5)
-        return {"id": jid, "slug": slug or "adhoc", "kind": kind, "status": "complete",
-                "exit_code": 0, "output_ref": f"data/job/{jid}/output.jsonl", "commit": None}
+def _fake_run_pinned_factory(*, jid: str = "fakejid", slug_suffix: str = "abcd"):
+    def fake(*, slug=None, cmd=None, kind="job", register=None, **_kw):
+        bucket = slug or "adhoc"
+        if register is not None:
+            register(jid, None)
+        return {"id": jid, "slug": f"{bucket}:{slug_suffix}", "kind": kind,
+                "output_ref": f"data/job/{jid}/output.jsonl"}
     return fake
 
 
-def _wait_until(predicate, *, timeout=2.0) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.01)
-    return predicate()
-
-
 def test_run_route_returns_running_immediately(client_only, monkeypatch):
-    hold = threading.Event()
-    monkeypatch.setattr("bibi.daemon.app.run_local", _fake_run_local_factory(hold))
+    # PLAN-28: run_pinned() kehrt synchron zurück (detach=True, kein
+    # Hintergrund-Thread mehr in der Route nötig) — kein Warten/Event mehr.
+    monkeypatch.setattr("bibi.daemon.app.run_pinned", _fake_run_pinned_factory())
     r = client_only.post("/-/run", json={"cmd": "irrelevant"})
     assert r.status_code == 200
-    body = r.json()
-    assert body == {"id": "fakejid", "slug": "adhoc", "status": "running",
-                    "output_ref": "data/job/fakejid/output.jsonl"}
-    hold.set()  # Hintergrund-Thread freigeben, sonst Leak in den nächsten Test
-
-
-def test_run_live_list_shows_entry_while_running_then_clears(client_only, monkeypatch):
-    hold = threading.Event()
-    monkeypatch.setattr("bibi.daemon.app.run_local", _fake_run_local_factory(hold))
-    client_only.post("/-/run", json={"slug": "myjob", "cmd": "irrelevant"})
-    assert "myjob" in client_only.get("/-/run/live").json()
-    hold.set()
-    assert _wait_until(lambda: "myjob" not in client_only.get("/-/run/live").json())
+    assert r.json() == {"id": "fakejid", "slug": "adhoc", "status": "running",
+                        "output_ref": "data/job/fakejid/output.jsonl"}
 
 
 def test_run_live_detail_404_when_not_running(client_only):
@@ -290,7 +289,7 @@ def test_run_live_detail_includes_signal_derived_status_and_app_url(client_only,
         {"t": 0.0, "s": "signal",
          "line": json.dumps({"name": "awaiting", "input_request": "ja/j?", "port": 9100})}
     ) + "\n")
-    worker.local_run_start("myjob", "jid1", out_ref, "job", "python3 app.py")
+    _seed_pinned_job(team_repo, "myjob", output_ref=out_ref)
     body = client_only.get("/-/run/live/myjob").json()
     assert body["status"] == "awaiting"
     assert body["app_url"] == "http://localhost:9100/"
@@ -300,62 +299,48 @@ def test_run_live_detail_includes_signal_derived_status_and_app_url(client_only,
 def test_run_live_detail_status_running_when_no_signal_events(client_only, team_repo):
     out_ref = "data/job/jid2/output.jsonl"
     (team_repo / "data" / "job" / "jid2").mkdir(parents=True)
-    worker.local_run_start("plainjob", "jid2", out_ref, "job", "echo hi")
+    _seed_pinned_job(team_repo, "plainjob", output_ref=out_ref)
     body = client_only.get("/-/run/live/plainjob").json()
     assert body["status"] == "running"
     assert body["app_url"] is None
     assert body["demand"] is None
 
 
-def test_run_second_start_same_slug_is_409_while_first_still_running(client_only, monkeypatch):
-    hold = threading.Event()
-    monkeypatch.setattr("bibi.daemon.app.run_local", _fake_run_local_factory(hold))
-    r1 = client_only.post("/-/run", json={"slug": "myjob", "cmd": "irrelevant"})
-    assert r1.status_code == 200
+def test_run_second_start_same_slug_is_409_while_first_still_running(client_only, team_repo,
+                                                                      monkeypatch):
+    _seed_pinned_job(team_repo, "myjob")  # simuliert den ersten, noch laufenden Lauf
     r2 = client_only.post("/-/run", json={"slug": "myjob", "cmd": "irrelevant"})
     assert r2.status_code == 409
-    hold.set()
-    assert _wait_until(lambda: "myjob" not in client_only.get("/-/run/live").json())
-    # nach Ende wieder frei:
+
+    # nach Ende (Zeile terminal) wieder frei:
+    conn = job_db.connect(team_repo / "data" / "jobs.sqlite")
+    conn.execute("UPDATE jobs SET status='complete' WHERE slug LIKE 'myjob:%'")
+    conn.close()
+    monkeypatch.setattr("bibi.daemon.app.run_pinned", _fake_run_pinned_factory())
     r3 = client_only.post("/-/run", json={"slug": "myjob", "cmd": "irrelevant"})
     assert r3.status_code == 200
-    hold.set()
 
 
-def test_run_route_404_on_lookup_error_does_not_hang(client_only, monkeypatch):
-    def fake_raises(*, slug=None, cmd=None, kind="job", register=None):
+def test_run_route_404_on_lookup_error(client_only, monkeypatch):
+    def fake_raises(*, slug=None, cmd=None, kind="job", register=None, **_kw):
         raise LookupError(f"kein Schedule mit Slug {slug!r}")
-    monkeypatch.setattr("bibi.daemon.app.run_local", fake_raises)
+    monkeypatch.setattr("bibi.daemon.app.run_pinned", fake_raises)
     r = client_only.post("/-/run", json={"slug": "nope"})
     assert r.status_code == 404
     assert worker.local_run_live("nope") is None  # nie registriert
 
 
-def test_run_live_registry_cleared_even_on_background_exception(client_only, monkeypatch):
-    # register() feuert, aber run_local() wirft danach (z. B. Commit-Fehler) —
-    # local_run_end() muss trotzdem laufen (finally), sonst bleibt der Slug
-    # für immer als "läuft" hängen.
-    def fake_boom(*, slug=None, cmd=None, kind="job", register=None):
-        register("jidboom", None)
-        raise RuntimeError("boom")
-    monkeypatch.setattr("bibi.daemon.app.run_local", fake_boom)
-    client_only.post("/-/run", json={"slug": "boomjob", "cmd": "irrelevant"})
-    assert _wait_until(lambda: worker.local_run_live("boomjob") is None)
-
-
-def test_run_route_500s_immediately_on_generic_exception_before_spawn(client_only, monkeypatch):
-    # Live-Fund 2026-07-10: eine Exception VOR register() (z. B. GitOpError
-    # bei worktree.prepare() — hier mit einer generischen RuntimeError
-    # nachgestellt, register() wird nie aufgerufen) ließ die Route bisher bis
-    # zum vollen 30s-Timeout warten (504) statt sofort den echten Fehler
-    # zurückzugeben. Muss 500 sein (kein "not found"-Fall wie LookupError).
-    def fake_boom_before_spawn(*, slug=None, cmd=None, kind="job", register=None):
-        raise RuntimeError("worktree conflict")  # register() nie aufgerufen
-    monkeypatch.setattr("bibi.daemon.app.run_local", fake_boom_before_spawn)
+def test_run_route_500s_on_generic_exception(client_only, monkeypatch):
+    # Live-Fund 2026-07-10 (galt für den alten Hintergrund-Thread-Pfad, gilt
+    # als API-Vertrag weiter): ein Startfehler (z. B. GitOpError bei
+    # worktree.prepare()) muss als 500 mit der echten Fehlermeldung zurück-
+    # kommen, kein "not found"-Fall wie LookupError.
+    def fake_boom(*, slug=None, cmd=None, kind="job", register=None, **_kw):
+        raise RuntimeError("worktree conflict")
+    monkeypatch.setattr("bibi.daemon.app.run_pinned", fake_boom)
     r = client_only.post("/-/run", json={"slug": "conflictjob", "cmd": "irrelevant"})
     assert r.status_code == 500
     assert r.json() == {"error": "worktree conflict"}
-    assert worker.local_run_live("conflictjob") is None
 
 
 # ── POST /-/run/live/{slug}/kill (User-Fund 2026-07-10) ─────────────────────
@@ -366,14 +351,10 @@ def test_run_live_kill_route_404_when_nothing_running(client_only):
     assert r.status_code == 404
 
 
-def test_run_live_kill_route_signals_running_job(client_only, monkeypatch):
-    # on_spawn() (app.py) reicht proc nur über register() durch — hier direkt
-    # über worker.local_run_start() nachgestellt, denn der gefakte run_local()
-    # in diesem Modul ruft register() ohne echten Prozess auf. Der laufende
-    # Slug wird stattdessen unabhängig vom /-/run-Fake registriert, wie es
-    # on_spawn() in Produktion via local_run_start(..., proc) täte.
+def test_run_live_kill_route_signals_running_job(client_only, team_repo, monkeypatch):
     monkeypatch.setattr("bibi.daemon.worker._is_container", lambda: False)
     monkeypatch.setattr("bibi.daemon.worker._docker", lambda args: None)
+    _seed_pinned_job(team_repo, "myjob", output_ref="data/job/jid1/output.jsonl")
     proc = _FakeProc(alive=True)
     worker.local_run_start("myjob", "jid1", "data/job/jid1/output.jsonl", "job", "echo hi", proc)
     r = client_only.post("/-/run/live/myjob/kill")
@@ -381,7 +362,8 @@ def test_run_live_kill_route_signals_running_job(client_only, monkeypatch):
     assert r.json() == {"slug": "myjob", "signaled": True}
 
 
-def test_run_live_kill_route_404_when_proc_already_exited(client_only):
+def test_run_live_kill_route_404_when_proc_already_exited(client_only, team_repo):
+    _seed_pinned_job(team_repo, "myjob", output_ref="ref")
     proc = _FakeProc(alive=False)
     worker.local_run_start("myjob", "jid1", "ref", "job", "echo hi", proc)
     r = client_only.post("/-/run/live/myjob/kill")

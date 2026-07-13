@@ -99,8 +99,15 @@ CREATE TABLE IF NOT EXISTS journal (
     snapshot      TEXT NOT NULL DEFAULT '{}',
     archived_at   REAL NOT NULL,
     -- Ausführungs-Domäne (§1.4): 'scheduled' (disponiert, über den Scheduler) vs.
-    -- 'local' (/run, umgeht den Scheduler — kein jobs-Eintrag). Föderierte A13-Sicht.
-    domain        TEXT NOT NULL DEFAULT 'scheduled'
+    -- 'local' (CLI bibi-ctrl run, /run vor PLAN-28 — umgeht den Scheduler
+    -- vollständig, kein jobs-Eintrag). Föderierte A13-Sicht.
+    domain        TEXT NOT NULL DEFAULT 'scheduled',
+    -- (v16, PLAN-28) Spiegelt jobs.pinned_host zum Schreibzeitpunkt — /run
+    -- über run_pinned() bekommt jetzt domain='scheduled' (echte jobs-Zeile,
+    -- volle Lifecycle), bleibt aber über pinned_host als "meine eigene
+    -- /run-Historie" von echten Team-Queue-Läufen unterscheidbar
+    -- (/-/run/journal filtert domain='local' OR pinned_host IS NOT NULL).
+    pinned_host   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS journal_slug_idx

@@ -20,6 +20,7 @@ import os
 import secrets
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -606,99 +607,113 @@ def _resolve_spec(repo_root: Path, slug: str):
     return res.found.get(slug)
 
 
-#: In-Memory-Register laufender lokaler /run-Ausführungen (PLAN-21 Befund 10,
-#: 2. Nachtrag: "auch hier streamen" — User-Fund 2026-07-09, der Jobs-Screen
-#: zeigte einen laufenden lokalen Job erst nach dessen Ende, weil run_local()
-#: komplett synchron läuft und lokale Läufe bewusst keinen jobs-Eintrag
-#: bekommen, s. Docstring unten). Kein DB-State — löst sich mit einem Daemon-
-#: Neustart auf (dann läuft ohnehin kein alter Hintergrund-Thread mehr, s.
-#: app.py::run()), pro Slug höchstens ein aktiver Eintrag. run_local() selbst
-#: bleibt unverändert synchron (auch von der CLI, bibi-ctrl run, direkt
-#: aufgerufen — die MUSS blockieren) — nur app.py::run() (die HTTP-Route)
-#: registriert sich hier, über den längst vorhandenen ``register``-Callback
-#: von _run_wrapper() (der bisher nur fürs Kill-Tracking scheduler-seitiger
-#: Jobs genutzt wurde).
-_local_runs_live: dict[str, dict] = {}
-
-#: Prozess-Handle je laufendem lokalen Run, getrennt von ``_local_runs_live``
-#: (die Metadaten gehen roh in HTTP-JSON-Antworten, s. app.py — ein
-#: ``subprocess.Popen`` darin wäre nicht serialisierbar). Nur für
-#: ``local_run_kill()`` gebraucht (User-Fund 2026-07-10: "Da müssen wir dann
-#: aber wohl nochmal ran! Natürlich müssen wir kill können" — ohne das blieb
-#: ein langlebiger App-Job über /run nur per manuellem ``docker kill``/SIGTERM
-#: von außen beendbar, kein API-Weg).
+#: Prozess-Handle je laufendem gepinnten ``/run``, keyed nach dem
+#: **Bucket-Slug** (dem MD-/Cmd-Slug, nicht dem eindeutigen ``jobs.slug`` je
+#: Lauf) — nur für ``local_run_kill()`` gebraucht (User-Fund 2026-07-10:
+#: "Da müssen wir dann aber wohl nochmal ran! Natürlich müssen wir kill
+#: können"). Ein ``subprocess.Popen`` ist nicht JSON-serialisierbar, darum
+#: getrennt von den unten jobs-tabellen-basierten Metadaten-Funktionen.
+#:
+#: PLAN-28: die eigentliche "läuft gerade?"-Quelle ist jetzt die ``jobs``-
+#: Tabelle (``pinned_host``, s. run_pinned()) — der frühere In-Memory-Dict-
+#: Ansatz (``_local_runs_live``) hatte einen Prozessgrenzen-Bug: mit
+#: ``execute_reservation()``/``detach=True`` meldet der Wrapper-Subprozess
+#: seinen Terminal-Status jetzt **selbständig** (SQLite-Direct) — niemand im
+#: Daemon-Prozess selbst beobachtet mehr "Lauf fertig", also konnte auch
+#: niemand mehr zuverlässig ``local_run_end()`` aufrufen. Ein Slug wäre sonst
+#: für immer als "läuft" hängen geblieben. Dieser Proc-Registry hier bleibt
+#: bewusst ungereinigt (derselbe Grund) — harmlos: ``proc.poll()`` erkennt
+#: einen längst beendeten Prozess trotzdem korrekt, ``local_run_kill()``
+#: bricht dann einfach früh ab, statt fälschlich zu killen.
 _local_runs_procs: dict[str, subprocess.Popen] = {}
 
-#: Slugs, deren aktueller lokaler Lauf per local_run_kill() beendet wurde —
-#: run_local() liest das nach _run_wrapper() aus, um den Endstatus als
-#: "killed"/"by_user" zu melden statt der reinen Exit-Code-Ableitung (PLAN-22
-#: Befund 5: ein KILL landete bisher als nicht unterscheidbares "failed" mit
-#: zufälligem Exit-Code, Grund-Spalte leer — write_local_journal() hat den
-#: reason-Parameter längst, er wurde nur nie befüllt).
-_local_runs_killed: set[str] = set()
+#: Live-Status-Werte (kein Terminalzustand) — deckungsgleich mit dem, was ein
+#: gerade tatsächlich laufender Wrapper-Subprozess haben kann.
+_PINNED_LIVE_STATUSES = ("running", "awaiting")
 
 
 def local_run_start(slug: str, job_id: str, output_ref: str, kind: str, payload: str,
                     proc: subprocess.Popen | None = None) -> None:
-    _local_runs_live[slug] = {
-        "id": job_id, "output_ref": output_ref, "kind": kind, "payload": payload,
-        "started_at": time.time(),
-    }
     if proc is not None:
         _local_runs_procs[slug] = proc
 
 
 def local_run_end(slug: str) -> None:
-    _local_runs_live.pop(slug, None)
     _local_runs_procs.pop(slug, None)
-    # Sicherheitsnetz: falls das Kill-Flag nie von run_local() konsumiert wurde
-    # (z. B. Kill kurz vor einem Fehler in _run_wrapper() selbst), darf es
-    # keinen späteren, unabhängigen Lauf desselben Slugs fälschlich als
-    # "killed" melden.
-    _local_runs_killed.discard(slug)
 
 
-def local_run_live(slug: str) -> dict | None:
-    """Metadaten des gerade laufenden lokalen Runs für ``slug``, oder ``None``."""
-    live = _local_runs_live.get(slug)
-    return dict(live) if live is not None else None
+def _pinned_live_row(slug: str, *, db_path: Path | None = None,
+                     host: str | None = None) -> sqlite3.Row | None:
+    """Die jüngste laufende ``jobs``-Zeile für den **Bucket-Slug** ``slug`` an
+    diesem Host, oder ``None`` — Query-Basis für ``local_run_live()``/
+    ``local_runs_live()`` (PLAN-28: reale ``jobs``-Zeile statt In-Memory-Dict,
+    s. Modul-Kommentar oben). ``jobs.slug`` ist pro Lauf eindeutig
+    (``f"{bucket_slug}:{token}"``, s. ``run_pinned()``) — ``LIKE``-Präfix
+    matcht alle Läufe desselben Buckets, ``:`` verhindert Fehltreffer wie
+    ``"job"`` vs. ``"job2"``."""
+    host = host or socket.gethostname()
+    conn = job_db.connect(db_path)
+    try:
+        placeholders = ",".join("?" * len(_PINNED_LIVE_STATUSES))
+        return conn.execute(
+            f"SELECT * FROM jobs WHERE pinned_host=? AND slug LIKE ? "
+            f"AND status IN ({placeholders}) ORDER BY enqueued_at DESC LIMIT 1",
+            (host, f"{slug}:%", *_PINNED_LIVE_STATUSES),
+        ).fetchone()
+    finally:
+        conn.close()
 
 
-def local_runs_live() -> dict[str, dict]:
-    """Alle aktuell laufenden lokalen Runs, ``{slug: {id, started_at, status}}``.
+def local_run_live(slug: str, *, db_path: Path | None = None,
+                   host: str | None = None) -> dict | None:
+    """Metadaten des gerade laufenden gepinnten Runs für den Bucket-Slug
+    ``slug``, oder ``None`` (PLAN-28: jobs-tabellen-basiert, s. oben)."""
+    row = _pinned_live_row(slug, db_path=db_path, host=host)
+    if row is None:
+        return None
+    return {"id": row["id"], "output_ref": row["output_ref"], "kind": row["kind"],
+            "payload": row["payload"], "started_at": row["started_at"]}
 
-    ``status`` (PLAN-27 Befund 4, User-Fund: "der Status awaiting wird in
-    /ui/jobs nicht angezeigt. Im Job Detail bereits schon.") liest pro Zeile
-    einmal die bisherige ``output.jsonl`` + ``local_run_signal_state()`` —
-    derselbe Weg, über den ``run_live_detail()`` (Job-Detailseite) "awaiting"
-    schon immer korrekt zeigte; die Übersichtsliste hier tat das bisher nicht
-    (bewusst schlank gehalten, "kein Output" — aber genau das verschluckte
-    awaiting). In der Praxis läuft auf einem Client so gut wie nie mehr als
-    ein lokaler Job gleichzeitig, der zusätzliche Datei-Read je Poll ist
-    vernachlässigbar. Kein ``output_ref`` im Rückgabewert (bleibt schlank für
-    die Liste, die pro Zeile nur Status + Link braucht)."""
+
+def local_runs_live(*, db_path: Path | None = None, host: str | None = None) -> dict[str, dict]:
+    """Alle aktuell laufenden gepinnten Runs dieses Hosts, ``{bucket_slug:
+    {id, started_at, status}}`` (PLAN-28: jobs-tabellen-basiert — löst den
+    früheren Prozessgrenzen-Bug des In-Memory-Dicts, s. Modul-Kommentar oben;
+    ``status`` kommt jetzt direkt aus der DB-Zeile, kein extra Output-Read
+    mehr nötig, anders als das frühere ``local_run_signal_state()``-basierte
+    Verfahren)."""
+    host = host or socket.gethostname()
+    conn = job_db.connect(db_path)
+    try:
+        placeholders = ",".join("?" * len(_PINNED_LIVE_STATUSES))
+        rows = conn.execute(
+            f"SELECT slug, id, started_at, status FROM jobs "
+            f"WHERE pinned_host=? AND status IN ({placeholders})",
+            (host, *_PINNED_LIVE_STATUSES),
+        ).fetchall()
+    finally:
+        conn.close()
     out = {}
-    for slug, v in _local_runs_live.items():
-        path = repo.root() / v["output_ref"]
-        raw = output.read_events(path) if path.exists() else []
-        sig_state = local_run_signal_state(raw)
-        out[slug] = {"id": v["id"], "started_at": v["started_at"], "status": sig_state["status"]}
+    for r in rows:
+        bucket_slug = r["slug"].rsplit(":", 1)[0]
+        out[bucket_slug] = {"id": r["id"], "started_at": r["started_at"], "status": r["status"]}
     return out
 
 
 def local_run_kill(slug: str) -> bool:
-    """Einen laufenden lokalen Run beenden — dieselbe ``_terminate()`` wie
+    """Einen laufenden gepinnten Run beenden — dieselbe ``_terminate()`` wie
     ``Worker.kill()`` (container-aware: ``docker stop`` + Host-Signalgruppe,
     SIGKILL-Backstop nach 5s). ``False``, wenn gerade nichts läuft oder kein
-    Prozess-Handle vorliegt (Callback nie erreicht, s. app.py::run())."""
-    live = _local_runs_live.get(slug)
+    Prozess-Handle vorliegt (Callback nie erreicht, s. app.py::run()).
+
+    PLAN-28: kein ``_local_runs_killed``-Flag mehr nötig — der Wrapper-
+    Subprozess meldet "killed"/"by_user" jetzt selbständig via
+    ``report_status()`` (derselbe Mechanismus wie beim Scheduler-seitigen
+    ``Worker.kill()``, das dieses Flag nie brauchte)."""
+    live = local_run_live(slug)
     proc = _local_runs_procs.get(slug)
     if live is None or proc is None or proc.poll() is not None:
         return False
-    # Vor _terminate() setzen (PLAN-22 Befund 5): run_local() liest das Flag
-    # nach dem Warten auf den Prozess aus, um den Endstatus als "killed" statt
-    # als Exit-Code-Ableitung zu melden.
-    _local_runs_killed.add(slug)
     out_path = repo.root() / live["output_ref"]
     _terminate(proc, job_id=live["id"], out_path=out_path)
     activity.emit(log, logging.INFO, "worker.local_kill", "Lokaler Lauf beendet (graceful)",
@@ -799,16 +814,12 @@ def run_local(
         repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=True,
     )
     finished = time.time()
-    # PLAN-22 Befund 5: ein per local_run_kill() beendeter Lauf soll sich als
-    # "killed"/"by_user" melden, nicht als nicht unterscheidbares "failed" mit
-    # zufälligem Exit-Code (127/137/241/… je nachdem, wie der Prozess auf das
-    # Signal reagiert hat) — Flag konsumieren, bevor local_run_end() es sonst
-    # als Sicherheitsnetz aufräumt.
-    if eff_slug in _local_runs_killed:
-        _local_runs_killed.discard(eff_slug)
-        status, reason = "killed", "by_user"
-    else:
-        status, reason = ("complete" if code == 0 else "failed"), None
+    # PLAN-28: die frühere "wurde per local_run_kill() beendet"-Sonderbehandlung
+    # (Flag _local_runs_killed) galt nur, solange die HTTP-Route /-/run selbst
+    # run_local() aufrief und dabei local_run_start()/local_run_kill()
+    # verdrahtete — das übernimmt inzwischen run_pinned(). run_local() bleibt
+    # nur noch der CLI-Pfad (bibi-ctrl run, kein register/Kill-Tracking).
+    status, reason = ("complete" if code == 0 else "failed"), None
     rel = out_path.relative_to(repo_root).as_posix()
 
     conn = job_db.connect(db_path)
@@ -906,7 +917,14 @@ def run_pinned(
         reservation, repo_root=repo_root, work_dir=work_dir,
         client=LocalScheduler(db_path), worker_name=worker_name, host=host, register=register,
     )
-    return {"id": reservation["id"], "slug": unique_slug, "kind": eff_kind}
+    # Derselbe run_id/Output-Pfad-Aufbau wie execute_reservation() intern
+    # nutzt (job_db.run_id_for() + _output_path()) — muss identisch sein,
+    # sonst zeigt die Response auf eine Datei, die der Wrapper nie schreibt
+    # (run_id_for()s eigener Docstring warnt explizit davor).
+    run_id = job_db.run_id_for(unique_slug, reservation["id"], reservation.get("fire", 0))
+    output_ref = _output_path(repo_root, run_id).relative_to(repo_root).as_posix()
+    return {"id": reservation["id"], "slug": unique_slug, "kind": eff_kind,
+            "output_ref": output_ref}
 
 
 class Worker:
