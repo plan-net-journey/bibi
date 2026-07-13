@@ -351,7 +351,7 @@ def test_run_live_kill_route_signals_running_job(client_with_pinned_worker, team
     monkeypatch.setattr("bibi.daemon.worker._is_container", lambda: False)
     monkeypatch.setattr("bibi.daemon.worker._docker", lambda args: None)
     c, pinned = client_with_pinned_worker
-    jid, _real_output_ref = _seed_pinned_job(team_repo, "myjob")
+    jid, real_output_ref = _seed_pinned_job(team_repo, "myjob")
     proc = _FakeProc(alive=True)
     pinned._register(jid, proc)  # wie execute_reservation() es in Produktion täte
     r = c.post("/-/run/live/myjob/kill")
@@ -363,10 +363,17 @@ def test_run_live_kill_route_signals_running_job(client_with_pinned_worker, team
     # selbst den Status — verließ sich komplett auf den (separat kaputten,
     # s. test_wrapper_signals.py) Wrapper-Selbstreport nach SIGTERM.
     conn = job_db.connect(team_repo / "data" / "jobs.sqlite")
-    row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+    row = conn.execute("SELECT status, reason, output_ref FROM jobs WHERE id=?", (jid,)).fetchone()
     conn.close()
     assert row["status"] == "killed"
     assert row["reason"] == "by_user"
+
+    # User-Fund 2026-07-13 ("kein Output nach Kill"): ohne explizites
+    # output_ref bliebe die Spalte NULL, weil run_pinned()s INSERT sie nie
+    # füllt und der (jetzt korrekte) spätere Wrapper-Report auf eine bereits
+    # terminale Zeile trifft und als No-Op verworfen wird (report_status()s
+    # target-is-current-Kurzschluss).
+    assert row["output_ref"] == real_output_ref
 
 
 def test_run_live_kill_route_404_when_proc_already_exited(client_with_pinned_worker, team_repo):
@@ -399,13 +406,16 @@ def test_run_live_reset_route_forces_killed_even_without_registered_proc(
     # abdeckt: die Zeile steht auf "running", aber es gibt keinen greifbaren
     # Prozess mehr (worker.kill() würde nichts signalisieren können).
     c, _pinned = client_with_pinned_worker
-    jid, _real_output_ref = _seed_pinned_job(team_repo, "myjob")
+    jid, real_output_ref = _seed_pinned_job(team_repo, "myjob")
     r = c.post("/-/run/live/myjob/reset")
     assert r.status_code == 200
     assert r.json() == {"slug": "myjob", "reset": True}
 
     conn = job_db.connect(team_repo / "data" / "jobs.sqlite")
-    row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+    row = conn.execute("SELECT status, reason, output_ref FROM jobs WHERE id=?", (jid,)).fetchone()
     conn.close()
     assert row["status"] == "killed"
     assert row["reason"] == "reset_by_user"
+    # User-Fund 2026-07-13 ("kein Output nach Kill") — s. Kill-Test oben,
+    # gleicher Mechanismus gilt für RESET.
+    assert row["output_ref"] == real_output_ref

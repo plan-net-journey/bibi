@@ -719,9 +719,21 @@ def create_app(
         # nach SIGTERM — der über einen separaten Bug (SystemExit umging
         # main()s except Exception, s. wrapper/__init__.py::_on_sigterm())
         # nie ankam. Jetzt wie beim Host: direkt schreiben, statt zu warten.
+        #
+        # User-Fund 2026-07-13 ("kein Output nach Kill"): report_status() setzt
+        # output_ref nur, wenn explizit übergeben — sonst bleibt die Spalte, wie
+        # sie ist (hier: NULL, da run_pinned()s INSERT sie nie füllt). Der
+        # spätere, jetzt korrekte Wrapper-Terminal-Report käme zwar MIT
+        # berechnetem output_ref, trifft aber auf eine bereits terminale Zeile
+        # (unser direkter Write hier) und wird von report_status() als
+        # idempotenter Wiederholungs-Report früh (target is current) ohne
+        # Feld-Update verworfen — output_ref bliebe für immer NULL. live[] hat
+        # den Pfad schon (lokal von local_run_live() berechnet, exakt wie es
+        # der Wrapper selbst täte), also hier direkt mitschreiben.
         conn = job_db.connect(pinned_worker.db_path)
         try:
-            job_db.report_status(conn, live["id"], status="killed", reason="by_user")
+            job_db.report_status(conn, live["id"], status="killed", reason="by_user",
+                                  output_ref=live["output_ref"])
         finally:
             conn.close()
         return {"slug": slug, "signaled": True}
@@ -742,9 +754,13 @@ def create_app(
         if live is None:
             return JSONResponse(status_code=404, content={"error": "not running", "slug": slug})
         pinned_worker.kill(live["id"])  # best-effort, Rückgabewert bewusst ignoriert
+        # output_ref: gleicher Grund wie in run_live_kill() oben — sonst bleibt
+        # die Spalte NULL und der spätere (falls doch noch einer kommt)
+        # Wrapper-Report wird als No-Op verworfen.
         conn = job_db.connect(pinned_worker.db_path)
         try:
-            job_db.report_status(conn, live["id"], status="killed", reason="reset_by_user")
+            job_db.report_status(conn, live["id"], status="killed", reason="reset_by_user",
+                                  output_ref=live["output_ref"])
         finally:
             conn.close()
         return {"slug": slug, "reset": True}
