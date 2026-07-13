@@ -374,9 +374,9 @@ def test_list_schedules_includes_journal_only_phantom_entries(conn):
     assert ghost["last_status"] == "complete"
 
 
-def test_list_schedules_excludes_local_domain_phantom_entries(conn):
+def test_list_schedules_excludes_local_domain_phantom_entries(conn, seed_journal_row):
     # /run-lokale Läufe sind nie Schedules gewesen — kein Phantom-Eintrag.
-    job_db.write_local_journal(
+    seed_journal_row(
         conn, run_id="adhoc:1", slug="adhoc", kind="job", status="complete",
         exit_code=0, output_ref=None, host="h", worker="w",
         started_at=1.0, finished_at=2.0)
@@ -741,26 +741,6 @@ def test_journal_view_exposes_payload_after_real_run(conn, tmp_path: Path):
     assert job_db.journal_view(
         conn.execute("SELECT * FROM journal WHERE id=?", (entry["id"],)).fetchone()
     )["payload"] == "claude: tu was"
-
-
-def test_write_local_journal_accepts_payload(conn):
-    job_db.write_local_journal(
-        conn, run_id="adhoc:1", slug="adhoc", kind="job", status="complete",
-        exit_code=0, output_ref=None, host="h", worker="w",
-        started_at=1.0, finished_at=2.0, payload="echo local",
-    )
-    row = conn.execute("SELECT * FROM journal WHERE run_id='adhoc:1'").fetchone()
-    assert job_db.journal_view(row)["payload"] == "echo local"
-
-
-def test_write_local_journal_payload_defaults_to_none(conn):
-    job_db.write_local_journal(
-        conn, run_id="adhoc:2", slug="adhoc", kind="job", status="complete",
-        exit_code=0, output_ref=None, host="h", worker="w",
-        started_at=1.0, finished_at=2.0,
-    )
-    row = conn.execute("SELECT * FROM journal WHERE run_id='adhoc:2'").fetchone()
-    assert job_db.journal_view(row)["payload"] is None
 
 
 def test_migration_v11_to_v12_adds_journal_payload(tmp_path: Path):

@@ -630,35 +630,22 @@ def create_app(
 
     # ── /run: lokale On-Demand-Ausführung (PLAN-3 §3.3b) — rollenunabhängig ────
     # User-Feedback 2026-07-06: hing bisher an _add_worker_routes() (nur mit
-    # --worker registriert), obwohl run_local() selbst kein Worker-Objekt
+    # --worker registriert), obwohl der Dispatch selbst kein Worker-Objekt
     # braucht — sich repo_root/work_dir/db_path genau wie die CLI (run_cmd.py)
     # selbst über repo.root() auflöst. Ein reiner Client (kein --worker) konnte
     # /run dadurch nur per CLI nutzen, nie über den Browser/die API — dieselbe
     # Art Lücke wie beim Heartbeat (PLAN-17 Stufe 17.0).
-    #
-    # PLAN-21 Befund 10, 2. Nachtrag (User-Fund 2026-07-09: "warum erscheinen
-    # keine Details während des Laufes?"): run_local() läuft komplett synchron
-    # (Subprozess spawnen → blockierend warten → Journal schreiben → erst dann
-    # zurückkehren) — vorher blockierte diese Route bis zum Lauf-Ende, nichts
-    # war währenddessen abfragbar (lokale Läufe haben bewusst keinen
-    # jobs-Eintrag, s. run_local()-Docstring). run_local() selbst bleibt
-    # SYNCHRON (die CLI, bibi-ctrl run, ruft es direkt auf und muss blockieren)
-    # — nur diese Route startet es jetzt in einem Hintergrund-Thread und
-    # antwortet, sobald der Wrapper-Subprozess gespawnt ist (über den längst
-    # vorhandenen ``register``-Callback von _run_wrapper(), vorher nur fürs
-    # Kill-Tracking scheduler-seitiger Jobs genutzt) — nicht erst, wenn der
-    # Lauf fertig ist. GET /-/run/live[/{slug}] macht den Zwischenstand dann
-    # abfragbar (dieselbe längst inkrementell geschriebene output.jsonl, s.
-    # dort).
     @app.post("/-/run", tags=["job"])
     def run(req: RunRequest):
-        # PLAN-28: run_pinned() ersetzt run_local() — der Lauf bekommt jetzt
-        # eine echte jobs-Zeile (pinned_host=dieser Host) und läuft durch
-        # dieselbe Retry/Error/Deferred/Zombie-Maschine wie ein Scheduler-Job,
-        # bleibt aber hier (pinned_host) und sofort (execute_reservation()s
-        # detach=True kehrt gleich nach dem Subprozess-Spawn zurück — kein
-        # eigener Hintergrund-Thread/Timeout mehr nötig, run_pinned() selbst
-        # blockiert nur für die kurze Setup-Phase, nicht für den ganzen Lauf).
+        # PLAN-28: run_pinned() (Nachfolger des früheren, rein synchronen
+        # run_local()) gibt dem Lauf jetzt eine echte jobs-Zeile
+        # (pinned_host=dieser Host) und läuft durch dieselbe Retry/Error/
+        # Deferred/Zombie-Maschine wie ein Scheduler-Job, bleibt aber hier
+        # (pinned_host) und sofort (execute_reservation()s detach=True kehrt
+        # gleich nach dem Subprozess-Spawn zurück, kein Hintergrund-Thread
+        # nötig — run_pinned() selbst blockiert nur für die kurze
+        # Setup-Phase, nicht für den ganzen Lauf; GET /-/run/live[/{slug}]
+        # macht den Zwischenstand abfragbar).
         if not req.slug and not req.cmd:
             return JSONResponse(status_code=400, content={"error": "slug oder cmd nötig"})
         slug = req.slug or "adhoc"
@@ -729,8 +716,9 @@ def create_app(
         return {"slug": slug, "signaled": True}
 
     def _is_own_run(entry: dict | None) -> bool:
-        # PLAN-28: "meine eigene /run-Historie" — domain='local' (alter CLI-Pfad,
-        # write_local_journal()) ODER pinned_host gesetzt (neuer HTTP-Pfad,
+        # PLAN-28: "meine eigene /run-Historie" — domain='local' (historische
+        # Zeilen vom alten CLI-Pfad, Refactor D entfernt — auf Bestandsknoten
+        # können sie noch existieren) ODER pinned_host gesetzt (neuer HTTP-Pfad,
         # run_pinned() — echte jobs-Zeile, domain='scheduled', aber pinned_host
         # macht sie trotzdem eindeutig von Team-Queue-Läufen unterscheidbar).
         return entry is not None and (entry.get("domain") == "local"

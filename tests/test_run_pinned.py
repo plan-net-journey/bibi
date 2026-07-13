@@ -121,3 +121,72 @@ def test_run_pinned_other_host_cannot_reserve_it(gitrepo, monkeypatch):
     assert job_db.reserve_next(conn, host="sarasate", pinned_only=True) is None
     assert job_db.reserve_next(conn, host="sarasate") is None  # auch nicht im Team-Pfad
     conn.close()
+
+
+# ── app_port/app_prefix/exec_mode/image-Passthrough (migriert aus dem mit ────
+# run_local() entfernten tests/test_run_local_app_fields.py, PLAN-28 Refactor D
+# — der Bug (Fund 2026-07-10 HITL-Test-App-Migration / PLAN-24 Befund 1) galt
+# run_local()s eigener Resolution-Logik; run_pinned() geht stattdessen über
+# execute_reservation()s reservation.get(...)-Pfad, der das schon immer korrekt
+# weiterreicht — dieser Test deckt also die ganze Kette INSERT→reserve_next()→
+# execute_reservation()→_run_wrapper() ab, nicht nur die Slug-Auflösung.
+
+
+def _capturing_run_wrapper(tmp_path: Path, captured: dict):
+    def fake(**kwargs):
+        captured.update(kwargs)
+        return 0, None, tmp_path / "data" / "job" / "jid" / "output.jsonl", "detached", 999
+    return fake
+
+
+def test_run_pinned_passes_app_port_and_exec_mode_to_wrapper(gitrepo, monkeypatch):
+    import bibi.daemon.worker as W
+    _seed(gitrepo, "myapp/README.md",
+          '---\nschedule: "never"\njob: "python3 myapp.py"\napp_port: 9100\n'
+          'app_prefix: /myapp\nexec_mode: host\n---\n# myapp\n')
+    captured: dict = {}
+    monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
+    run_pinned(slug="myapp", repo_root=gitrepo, host="mac")
+    assert captured["app_port"] == 9100
+    assert captured["app_prefix"] == "/myapp"
+    assert captured["exec_mode"] == "host"
+
+
+def test_run_pinned_passes_schedule_image_override_to_wrapper(gitrepo, monkeypatch):
+    import bibi.daemon.worker as W
+    _seed(gitrepo, "customimg/README.md",
+          '---\nschedule: "never"\njob: "python3 customimg.py"\n'
+          'image: "registry.local/custom:7"\n---\n# customimg\n')
+    captured: dict = {}
+    monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
+    run_pinned(slug="customimg", repo_root=gitrepo, host="mac")
+    assert captured["image"] == "registry.local/custom:7"
+
+
+def test_run_pinned_plain_job_passes_none_for_app_fields(gitrepo, monkeypatch):
+    # Ein normaler (Nicht-App-)Job hat keine app_port/exec_mode-Frontmatter —
+    # die Felder müssen dann sauber None bleiben, nicht z. B. 0/"" (was
+    # _run_wrapper()/exec_backend.build_exec() als "gesetzt" missverstehen
+    # könnte).
+    import bibi.daemon.worker as W
+    _seed(gitrepo, "plainjob/README.md", '---\nschedule: "never"\njob: "echo hi"\n---\n# plain\n')
+    captured: dict = {}
+    monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
+    run_pinned(slug="plainjob", repo_root=gitrepo, host="mac")
+    assert captured["app_port"] is None
+    assert captured["app_prefix"] is None
+    assert captured["exec_mode"] is None
+    assert captured["image"] is None
+
+
+def test_run_pinned_by_cmd_has_no_app_fields(gitrepo, monkeypatch):
+    # Ad-hoc-Kommando (kein Slug/MD) — es gibt kein Frontmatter, aus dem
+    # app_port/exec_mode kommen könnten; muss weiterhin funktionieren.
+    import bibi.daemon.worker as W
+    captured: dict = {}
+    monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
+    run_pinned(cmd="echo hi", repo_root=gitrepo, host="mac")
+    assert captured["app_port"] is None
+    assert captured["app_prefix"] is None
+    assert captured["exec_mode"] is None
+    assert captured["image"] is None

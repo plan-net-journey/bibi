@@ -346,7 +346,7 @@ def _run_wrapper(
 
     ``detach=True`` (disponierte Jobs): Wrapper läuft eigenständig — kein Wait,
     kein Commit, kein Report im Worker. Wrapper übernimmt alles.
-    ``detach=False`` (``run_local``, ephemeral): bisheriger blockierender Pfad.
+    ``detach=False``: blockierender Pfad (wartet synchron auf Prozessende).
     ``run_id`` bestimmt den ``output.jsonl``-Pfad (pro Run eindeutig).
     Der Container-Name bleibt an ``job_id`` (Docker-Namensregel, §3.3b).
     5. Rückgabewert: Wrapper-PID (detach) oder ``None`` (nicht-detach)."""
@@ -369,7 +369,7 @@ def _run_wrapper(
     env["BIBI_JOB_ID"] = job_id
     # PLAN-24 Befund 5: der Wrapper-Prozess braucht den Slug fürs per-Job-Image
     # (exec_backend.finalize_container()/job_image_tag()) — vorher stand
-    # BIBI_JOB_SLUG nur im Detach-Zweig, für run_local()/ephemeral fehlte es.
+    # BIBI_JOB_SLUG nur im Detach-Zweig, im nicht-detachten Pfad fehlte es.
     env["BIBI_JOB_SLUG"] = slug
     env["BIBI_OUTPUT_PATH"] = str(out_path)
     env["BIBI_WORKTREE"] = str(wt_path)
@@ -469,7 +469,7 @@ def _run_wrapper(
         # Wrapper-Prozess läuft eigenständig — sofort zurückkehren.
         return 0, None, out_path, "detached", proc.pid
 
-    # Blockierender Pfad (run_local / ephemeral): warten, committen, zurückgeben.
+    # Blockierender Pfad: warten, committen, zurückgeben.
     code, outcome = _monitored_wait(
         proc, out_path=out_path, started=started,
         wall_time=wall_time, silence_timeout=silence_timeout, job_id=job_id,
@@ -507,11 +507,19 @@ def _report_level(status: str) -> int:
 def execute_reservation(
     reservation: dict, *, repo_root: Path, work_dir: Path, client,
     worker_name: str | None = None, host: str | None = None, register=None,
+    ephemeral: bool = False,
 ) -> dict:
     """Einen **disponierten** (reservierten) Job ausführen + via ``client`` melden,
     inkl. Lifecycle-Kanten (§5.5): wall_time→killed, silence→zombie, exit≠0→failed
     (mit Backoff, attempt++). Alle Ausführungs-/Retry-Parameter kommen aus der
     **Reservierung** (so braucht ein Remote-Worker keine lokale DB, §3.6).
+
+    ``ephemeral`` (Default False, an echte Scheduler-Jobs mit wiederverwendetem
+    Worktree gedacht): ``True`` lässt den (detachten) Wrapper-Subprozess seinen
+    Worktree nach dem Commit selbst entfernen (``BIBI_EPHEMERAL=1``, s.
+    ``bibi/wrapper/__init__.py::_commit_worktree()``) — nötig für
+    ``run_pinned()``, dessen ``unique_slug`` pro Aufruf einen frischen,
+    nie wiederverwendeten Worktree anlegt (sonst Leak, Fund PLAN-28 Refactor D).
 
     Der Status wird über ``client.report`` gesetzt; ist der Job bereits terminal
     (z. B. ``killed`` per ``/-/job/{id}/kill``), lehnt der Scheduler den Übergang ab
@@ -548,7 +556,7 @@ def execute_reservation(
             exec_mode=reservation.get("exec_mode"),
             image=reservation.get("image"),
             defer_time=reservation.get("defer_time"),
-            repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=False,
+            repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=ephemeral,
             run_id=run_id, detach=True,
             worker_name=worker_name, host=host,
             attempt=attempt, attempts=attempts,
@@ -708,83 +716,6 @@ def local_run_signal_state(events: list[dict]) -> dict:
     return {"status": status, "app_url": app_url, "demand": demand}
 
 
-def run_local(
-    *, slug: str | None = None, cmd: str | None = None, kind: str = "job",
-    model: str | None = None, repo_root: Path | None = None,
-    work_dir: Path | None = None, db_path: Path | None = None,
-    worker_name: str = "local", register=None,
-) -> dict:
-    """**Lokale** On-Demand-Ausführung (§3.3b). Umgeht den Scheduler vollständig:
-    **kein** ``jobs``-Eintrag, **kein** ``/-/scheduler/status`` — nur die lokale
-    Journal-Zeile (``domain='local'``) + ``output.jsonl`` bleiben am Knoten.
-
-    Entweder ``slug`` (erfasste MD) **oder** ``cmd`` (ad-hoc, rein lokal)."""
-    repo_root = repo_root or repo.root()
-    work_dir = work_dir or (repo_root / "data" / "worktrees")
-    eff_soul = eff_session = None
-    eff_schedule_ref: str | None = None
-    eff_app_port = eff_app_prefix = eff_exec_mode = eff_image = None
-    if cmd is not None:
-        eff_slug, payload, eff_kind, eff_model = slug or "adhoc", cmd, kind, model
-    else:
-        if not slug:
-            raise ValueError("run_local braucht entweder slug oder cmd")
-        pr = _resolve_spec(repo_root, slug)
-        if pr is None or pr.spec is None:
-            raise LookupError(f"kein Schedule mit Slug {slug!r}")
-        s = pr.spec
-        eff_slug, payload, eff_kind, eff_model = s.slug, s.payload, s.kind.value, s.model
-        eff_soul, eff_session = s.soul, s.session
-        eff_schedule_ref = pr.schedule_ref
-        # Bug gefunden 2026-07-10 (HITL-Test-App-Migration): app_port/
-        # app_prefix/exec_mode aus dem Schedule-MD gingen bisher spurlos
-        # verloren — run_local() reichte sie nie an _run_wrapper() durch (im
-        # Unterschied zu execute_reservation(), dem Scheduler-Dispatch-Pfad,
-        # der reservation.get("app_port"/"app_prefix"/"exec_mode") längst
-        # korrekt weiterreicht). Betraf jeden App-Typ-Job, der lokal per
-        # /run statt über den Scheduler gestartet wurde: kein App-Port im
-        # Wrapper-Env, kein Docker-Port-Mapping, kein Traefik-Routing, und
-        # ein exec_mode:-Override im MD hatte keine Wirkung (nur die
-        # globale Knoten-Config zählte).
-        eff_app_port, eff_app_prefix, eff_exec_mode = s.app_port, s.app_prefix, s.exec_mode
-        # PLAN-24 Befund 1: image: gleiches Bug-Muster wie app_port/app_prefix/
-        # exec_mode oben — ging bislang nur execute_reservation() (Scheduler-
-        # Dispatch) mit, run_local() (/run) verlor es spurlos.
-        eff_image = s.image
-
-    jid = secrets.token_hex(4)
-    started = time.time()
-    code, commit_sha, out_path, outcome, _ = _run_wrapper(
-        job_id=jid, slug=eff_slug, kind=eff_kind, payload=payload, model=eff_model,
-        schedule_ref=eff_schedule_ref,
-        soul=eff_soul, session=eff_session,
-        app_port=eff_app_port, app_prefix=eff_app_prefix, exec_mode=eff_exec_mode,
-        image=eff_image,
-        repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=True,
-    )
-    finished = time.time()
-    # PLAN-28: die frühere "wurde per local_run_kill() beendet"-Sonderbehandlung
-    # (Flag _local_runs_killed) galt nur, solange die HTTP-Route /-/run selbst
-    # run_local() aufrief und dabei local_run_start()/local_run_kill()
-    # verdrahtete — das übernimmt inzwischen run_pinned(). run_local() bleibt
-    # nur noch der CLI-Pfad (bibi-ctrl run, kein register/Kill-Tracking).
-    status, reason = ("complete" if code == 0 else "failed"), None
-    rel = out_path.relative_to(repo_root).as_posix()
-
-    conn = job_db.connect(db_path)
-    try:
-        job_db.write_local_journal(
-            conn, run_id=f"{eff_slug}:{jid}", slug=eff_slug, kind=eff_kind,
-            status=status, exit_code=code, output_ref=rel, reason=reason,
-            host=socket.gethostname(), worker=worker_name,
-            started_at=started, finished_at=finished, payload=payload,
-        )
-    finally:
-        conn.close()
-    return {"id": jid, "slug": eff_slug, "kind": eff_kind, "status": status,
-            "exit_code": code, "output_ref": rel, "commit": commit_sha}
-
-
 def run_pinned(
     *, slug: str | None = None, cmd: str | None = None, kind: str = "job",
     model: str | None = None, repo_root: Path | None = None,
@@ -794,9 +725,10 @@ def run_pinned(
 ) -> dict:
     """**Lokale** On-Demand-Ausführung mit voller Scheduler-Lifecycle (PLAN-28).
 
-    Nachfolger von ``run_local()``s Einstiegspunkt für ``/-/run`` — anders als
-    dort bekommt der Lauf jetzt eine echte ``jobs``-Zeile (``pinned_host`` =
-    dieser Host, s. ``reserve_next()``s ``pinned_only``-Filter), läuft also
+    Ersetzt den früheren, rein lokalen ``/run``-Pfad (vor PLAN-28: ``run_local()``,
+    seither entfernt) — anders als dort bekommt der Lauf jetzt eine echte
+    ``jobs``-Zeile (``pinned_host`` = dieser Host, s. ``reserve_next()``s
+    ``pinned_only``-Filter), läuft also
     durch dieselbe Retry/Error/Deferred/Zombie-Maschine wie ein Scheduler-Job
     (``report_status()``, der zweite, gepinnte ``Worker`` aus ``create_app()``).
     Beide bisherigen ``/run``-Garantien bleiben erhalten: **hier**
@@ -848,8 +780,10 @@ def run_pinned(
 
     # Eindeutiger jobs.slug (UNIQUE-Constraint) — unabhängig vom MD-/Cmd-Slug,
     # sonst kollidiert ein zweiter ▶ Start mit der noch nicht aufgeräumten
-    # Zeile des ersten Laufs (analog zur run_id-Konvention in
-    # write_local_journal(), nur hier als eigenständige Job-Identität).
+    # Zeile des ersten Laufs. Nebeneffekt (und Grund für execute_reservation()s
+    # ephemeral=True unten): jeder Aufruf bekommt so einen frischen, nie
+    # wiederverwendeten Worktree — anders als ein rekurrierender Scheduler-Job,
+    # dessen stabiler Slug denselben Worktree über mehrere Läufe hinweg nutzt.
     unique_slug = f"{eff_slug}:{secrets.token_hex(4)}"
     now = time.time()
     jid = secrets.token_hex(4)
@@ -878,6 +812,7 @@ def run_pinned(
     execute_reservation(
         reservation, repo_root=repo_root, work_dir=work_dir,
         client=LocalScheduler(db_path), worker_name=worker_name, host=host, register=register,
+        ephemeral=True,
     )
     # Derselbe run_id/Output-Pfad-Aufbau wie execute_reservation() intern
     # nutzt (job_db.run_id_for() + _output_path()) — muss identisch sein,

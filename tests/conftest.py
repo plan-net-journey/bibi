@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -73,6 +74,37 @@ def _isolate_node_config(tmp_path_factory, monkeypatch: pytest.MonkeyPatch):
               # Adress-Tests leaken (analog zur bestehenden Begründung oben).
               "BIBI_SCHEDULER_URL", "BIBI_PUBLIC_HOST"):
         monkeypatch.delenv(k, raising=False)
+
+
+@pytest.fixture
+def seed_journal_row():
+    """Test-Helfer: legt eine vollständige ``journal``-Zeile direkt per SQL an —
+    Ersatz für die (PLAN-28 Refactor D) entfernte ``job_db.write_local_journal()``,
+    deren einzige Aufgabe für die meisten Aufrufer genau das war: eine fertige
+    Zeile für Lese-Pfad-Tests seeden, unabhängig von ``domain`` (Default weiterhin
+    ``'local'``, wie bisher — Tests, die den Wert wirklich brauchen, geben ihn an)."""
+    def _seed(conn, *, run_id: str, slug: str, kind: str, status: str,
+              exit_code: int | None, output_ref: str | None, host: str | None,
+              worker: str | None, started_at: float, finished_at: float,
+              reason: str | None = None, payload: str | None = None,
+              domain: str = "local") -> None:
+        conn.execute(
+            "INSERT INTO journal (run_id, slug, kind, status, reason, started_at, "
+            "finished_at, exit_code, exec_runtime, host, worker, output_ref, payload, "
+            "snapshot, archived_at, domain) VALUES (:run_id,:slug,:kind,:status,:reason,"
+            ":started_at,:finished_at,:exit_code,:exec_runtime,:host,:worker,:output_ref,"
+            ":payload,:snapshot,:archived_at,:domain)",
+            {
+                "run_id": run_id, "slug": slug, "kind": kind, "status": status,
+                "reason": reason, "started_at": started_at, "finished_at": finished_at,
+                "exit_code": exit_code, "exec_runtime": finished_at - started_at,
+                "host": host, "worker": worker, "output_ref": output_ref, "payload": payload,
+                "snapshot": json.dumps({"slug": slug, "kind": kind, "status": status,
+                                        "exit_code": exit_code}, ensure_ascii=False),
+                "archived_at": finished_at, "domain": domain,
+            },
+        )
+    return _seed
 
 
 @pytest.fixture

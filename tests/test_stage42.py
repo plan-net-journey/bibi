@@ -33,10 +33,12 @@ def _seed_run(root: Path, *, slug: str, kind: str, out_rel: str,
             output.append(p, stream, line)
     conn = job_db.connect()
     try:
-        job_db.write_local_journal(
-            conn, run_id=f"{slug}:1", slug=slug, kind=kind, status="complete",
-            exit_code=0, output_ref=out_rel, host="h", worker="w",
-            started_at=1.0, finished_at=2.0, payload=payload)
+        conn.execute(
+            "INSERT INTO journal (run_id, slug, kind, status, started_at, finished_at, "
+            "exit_code, host, worker, output_ref, payload, archived_at, domain) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'local')",
+            (f"{slug}:1", slug, kind, "complete", 1.0, 2.0, 0, "h", "w", out_rel, payload, 2.0),
+        )
     finally:
         conn.close()
 
@@ -82,10 +84,11 @@ def test_journal_output_empty_when_no_ref(sched):
     client, root = sched
     conn = job_db.connect()
     try:
-        job_db.write_local_journal(
-            conn, run_id="y:1", slug="y", kind="job", status="complete",
-            exit_code=0, output_ref=None, host="h", worker="w",
-            started_at=1.0, finished_at=2.0)
+        conn.execute(
+            "INSERT INTO journal (run_id, slug, kind, status, started_at, finished_at, "
+            "exit_code, host, worker, archived_at, domain) VALUES (?,?,?,?,?,?,?,?,?,?,'local')",
+            ("y:1", "y", "job", "complete", 1.0, 2.0, 0, "h", "w", 2.0),
+        )
     finally:
         conn.close()
     jid = client.get("/-/journal").json()[0]["id"]
@@ -144,10 +147,11 @@ def test_journal_out_empty_when_no_ref(sched):
     client, root = sched
     conn = job_db.connect()
     try:
-        job_db.write_local_journal(
-            conn, run_id="z:1", slug="z", kind="job", status="complete",
-            exit_code=0, output_ref=None, host="h", worker="w",
-            started_at=1.0, finished_at=2.0)
+        conn.execute(
+            "INSERT INTO journal (run_id, slug, kind, status, started_at, finished_at, "
+            "exit_code, host, worker, archived_at, domain) VALUES (?,?,?,?,?,?,?,?,?,?,'local')",
+            ("z:1", "z", "job", "complete", 1.0, 2.0, 0, "h", "w", 2.0),
+        )
     finally:
         conn.close()
     jid = client.get("/-/journal").json()[0]["id"]

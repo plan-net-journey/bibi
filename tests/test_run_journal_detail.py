@@ -34,10 +34,12 @@ def _seed_local_run(root: Path, *, slug: str = "x", out_rel: str = "data/job/x/o
     output.append(p, "out", "hallo welt", t=1.0)
     conn = job_db.connect()
     try:
-        job_db.write_local_journal(
-            conn, run_id=f"{slug}:1", slug=slug, kind="job", status="complete",
-            exit_code=0, output_ref=out_rel, host="h", worker="w",
-            started_at=1.0, finished_at=2.0)
+        conn.execute(
+            "INSERT INTO journal (run_id, slug, kind, status, started_at, finished_at, "
+            "exit_code, host, worker, output_ref, archived_at, domain) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,'local')",
+            (f"{slug}:1", slug, "job", "complete", 1.0, 2.0, 0, "h", "w", out_rel, 2.0),
+        )
     finally:
         conn.close()
 

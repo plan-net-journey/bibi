@@ -1227,11 +1227,13 @@ def list_journal(
     limit: int | None = None, offset: int | None = None, mine_only: bool = False,
 ) -> list[dict]:
     """``mine_only`` (PLAN-28): "meine eigene /run-Historie" unabhängig von
-    ``domain`` — deckt sowohl alte CLI-Läufe (``domain='local'``,
-    ``write_local_journal()``) als auch gepinnte HTTP-``/run``-Läufe ab
-    (``domain='scheduled'`` — echte ``jobs``-Zeile, volle Lifecycle — aber
-    ``pinned_host`` gesetzt). Echte Team-Queue-Läufe (``pinned_host IS NULL``)
-    bleiben ausgeschlossen, auch wenn sie zufällig auf demselben Host liefen."""
+    ``domain`` — deckt sowohl historische ``domain='local'``-Zeilen ab (vor
+    PLAN-28 Refactor D geschrieben, damals von der inzwischen entfernten
+    ``write_local_journal()``; auf Bestandsknoten können solche Zeilen noch
+    existieren) als auch gepinnte HTTP-``/run``-Läufe (``domain='scheduled'``
+    — echte ``jobs``-Zeile, volle Lifecycle — aber ``pinned_host`` gesetzt).
+    Echte Team-Queue-Läufe (``pinned_host IS NULL``) bleiben ausgeschlossen,
+    auch wenn sie zufällig auf demselben Host liefen."""
     sql = "SELECT * FROM journal"
     clauses, params = [], []
     if slug:
@@ -1317,32 +1319,6 @@ def verdict(conn: sqlite3.Connection, now: float | None = None) -> dict:
         "deviations": deviations,
         "overdue_jobs": overdue,
     }
-
-
-def write_local_journal(
-    conn: sqlite3.Connection, *, run_id: str, slug: str, kind: str, status: str,
-    exit_code: int | None, output_ref: str | None, host: str | None,
-    worker: str | None, started_at: float, finished_at: float,
-    reason: str | None = None, payload: str | None = None,
-) -> None:
-    """Journal-Zeile der **lokalen** Domäne (§1.4) — von ``/run``. Bewusst **ohne**
-    ``jobs``-Eintrag: die zentrale Queue sieht den Lauf nie. ``domain='local'``."""
-    cur = conn.execute(
-        "INSERT INTO journal (run_id, slug, kind, status, reason, started_at, "
-        "finished_at, exit_code, exec_runtime, host, worker, output_ref, payload, snapshot, "
-        "archived_at, domain) VALUES (:run_id,:slug,:kind,:status,:reason,:started_at,"
-        ":finished_at,:exit_code,:exec_runtime,:host,:worker,:output_ref,:payload,:snapshot,"
-        ":archived_at,'local')",
-        {
-            "run_id": run_id, "slug": slug, "kind": kind, "status": status,
-            "reason": reason, "started_at": started_at, "finished_at": finished_at,
-            "exit_code": exit_code, "exec_runtime": finished_at - started_at,
-            "host": host, "worker": worker, "output_ref": output_ref, "payload": payload,
-            "snapshot": json.dumps({"slug": slug, "kind": kind, "status": status,
-                                    "exit_code": exit_code}, ensure_ascii=False),
-            "archived_at": finished_at,
-        },
-    )
 
 
 # ── PLAN-11.2: Ping + Demand ──────────────────────────────────────────────────

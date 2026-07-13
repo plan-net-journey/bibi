@@ -342,11 +342,11 @@ def test_count_completed_since_counts_each_recurring_completion(conn):
     assert job_db.count_completed_since(conn, 0.0) == 2
 
 
-def test_count_completed_since_excludes_local_runs(conn):
+def test_count_completed_since_excludes_local_runs(conn, seed_journal_row):
     # User-Entscheidung: konsistent zu den anderen 9 Status, die auch nur
     # Scheduler-Jobs sehen — lokale /-/run-Läufe (domain='local') zählen
     # bewusst nicht mit.
-    job_db.write_local_journal(
+    seed_journal_row(
         conn, run_id="x:1", slug="x", kind="job", status="complete", exit_code=0,
         output_ref=None, host="h", worker="w", started_at=100.0, finished_at=150.0)
     assert job_db.count_completed_since(conn, 0.0) == 0
