@@ -28,10 +28,15 @@ def client_only(team_repo: Path):
         yield c, team_repo
 
 
-def _seed_local_run(root: Path, *, slug: str = "x", out_rel: str = "data/job/x/output.jsonl") -> None:
+def _seed_local_run(root: Path, *, slug: str = "x", out_rel: str = "data/job/x/output.jsonl",
+                    lines: list[tuple[str, str]] | None = None) -> None:
     p = root / out_rel
     p.parent.mkdir(parents=True, exist_ok=True)
-    output.append(p, "out", "hallo welt", t=1.0)
+    if lines is None:
+        output.append(p, "out", "hallo welt", t=1.0)
+    else:
+        for stream, line in lines:
+            output.append(p, stream, line)
     conn = job_db.connect()
     try:
         conn.execute(
@@ -81,6 +86,9 @@ def test_run_journal_detail_404_for_unknown_id(client_only):
     c, _ = client_only
     assert c.get("/-/run/journal/99999").status_code == 404
     assert c.get("/-/run/journal/99999/output").status_code == 404
+    assert c.get("/-/run/journal/99999/out").status_code == 404
+    assert c.get("/-/run/journal/99999/err").status_code == 404
+    assert c.get("/-/run/journal/99999/stream").status_code == 404
 
 
 def test_run_journal_detail_404_for_scheduled_domain(client_only):
@@ -90,6 +98,46 @@ def test_run_journal_detail_404_for_scheduled_domain(client_only):
     jid = _seed_scheduled_run(root)
     assert c.get(f"/-/run/journal/{jid}").status_code == 404
     assert c.get(f"/-/run/journal/{jid}/output").status_code == 404
+    assert c.get(f"/-/run/journal/{jid}/out").status_code == 404
+    assert c.get(f"/-/run/journal/{jid}/err").status_code == 404
+    assert c.get(f"/-/run/journal/{jid}/stream").status_code == 404
+
+
+# ── /-/run/journal/{jid}/out|err|stream (User-Feedback 2026-07-13) ──────────
+# PLAN-28: execution_detail_page() unterdrückt für eigene/gepinnte Läufe die
+# rohen out/err/stream-Links, weil es dafür bisher keine rollenunabhängige
+# Route gab — Analogon zu /-/journal/{jid}/out|err|stream (§4.2/PLAN-14 Stufe
+# 14.0), nur über _is_own_run() statt scheduler-gated.
+
+
+def test_run_journal_out_raw_replays_out_events_only(client_only):
+    c, root = client_only
+    _seed_local_run(root, slug="x", lines=[("out", "hallo"), ("err", "warnung")])
+    jid = c.get("/-/run/journal").json()[0]["id"]
+    r = c.get(f"/-/run/journal/{jid}/out")
+    assert r.status_code == 200
+    assert "hallo" in r.text
+    assert "warnung" not in r.text
+
+
+def test_run_journal_err_raw_replays_err_events_only(client_only):
+    c, root = client_only
+    _seed_local_run(root, slug="x", lines=[("out", "hallo"), ("err", "warnung")])
+    jid = c.get("/-/run/journal").json()[0]["id"]
+    r = c.get(f"/-/run/journal/{jid}/err")
+    assert r.status_code == 200
+    assert "warnung" in r.text
+    assert "hallo" not in r.text
+
+
+def test_run_journal_stream_raw_combines_both_sources(client_only):
+    c, root = client_only
+    _seed_local_run(root, slug="x", lines=[("out", "hallo"), ("err", "warnung")])
+    jid = c.get("/-/run/journal").json()[0]["id"]
+    r = c.get(f"/-/run/journal/{jid}/stream")
+    assert r.status_code == 200
+    assert "hallo" in r.text
+    assert "warnung" in r.text
 
 
 def test_run_journal_detail_works_alongside_scheduler_role(team_repo: Path):

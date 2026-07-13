@@ -376,3 +376,36 @@ def test_run_live_kill_route_404_when_proc_already_exited(client_with_pinned_wor
     pinned._register(jid, proc)
     r = c.post("/-/run/live/myjob/kill")
     assert r.status_code == 404
+
+
+# ── POST /-/run/live/{slug}/reset (User-Feedback 2026-07-13) ────────────────
+# RESET ist der Not-Aus für eine hängen gebliebene Live-Anzeige — anders als
+# KILL (das nur bei tatsächlich gesendetem Signal den Status schreibt) muss
+# RESET auch dann greifen, wenn der Prozess gar nicht mehr existiert (z. B.
+# nach einem Daemon-Neustart, dessen Proc-Registry leer ist) oder der Wrapper
+# ohne Terminal-Report abgestürzt ist — genau die Bug-Klasse, die diese
+# Session mehrfach fand.
+
+
+def test_run_live_reset_route_404_when_nothing_running(client_only):
+    r = client_only.post("/-/run/live/nope/reset")
+    assert r.status_code == 404
+
+
+def test_run_live_reset_route_forces_killed_even_without_registered_proc(
+    client_with_pinned_worker, team_repo,
+):
+    # Kein pinned._register() hier — simuliert genau den Fall, den KILL nicht
+    # abdeckt: die Zeile steht auf "running", aber es gibt keinen greifbaren
+    # Prozess mehr (worker.kill() würde nichts signalisieren können).
+    c, _pinned = client_with_pinned_worker
+    jid, _real_output_ref = _seed_pinned_job(team_repo, "myjob")
+    r = c.post("/-/run/live/myjob/reset")
+    assert r.status_code == 200
+    assert r.json() == {"slug": "myjob", "reset": True}
+
+    conn = job_db.connect(team_repo / "data" / "jobs.sqlite")
+    row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+    conn.close()
+    assert row["status"] == "killed"
+    assert row["reason"] == "reset_by_user"

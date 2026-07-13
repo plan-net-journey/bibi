@@ -726,6 +726,29 @@ def create_app(
             conn.close()
         return {"slug": slug, "signaled": True}
 
+    # User-Feedback 2026-07-13 ("warum nicht START, RESET und KILL wie auf
+    # Host"): RESET ist der Not-Aus für eine hängen gebliebene Live-Anzeige —
+    # anders als KILL oben (das nur bei tatsächlich gesendetem Signal den
+    # Status schreibt, also wirkungslos bleibt, sobald kein greifbarer
+    # Prozess mehr existiert, z. B. nach einem Daemon-Neustart oder einem
+    # Wrapper-Absturz ohne Terminal-Report — genau die Bug-Klasse, die diese
+    # Session mehrfach fand) erzwingt RESET den Terminalstatus IMMER, sobald
+    # eine Zeile als running/awaiting registriert ist. Best-effort-Signal
+    # zuerst (falls doch noch etwas lebt, wird es sauber beendet), aber der
+    # DB-Write hängt nicht am Erfolg des Signals.
+    @app.post("/-/run/live/{slug}/reset", tags=["job"])
+    def run_live_reset(slug: str):
+        live = worker_mod.local_run_live(slug)
+        if live is None:
+            return JSONResponse(status_code=404, content={"error": "not running", "slug": slug})
+        pinned_worker.kill(live["id"])  # best-effort, Rückgabewert bewusst ignoriert
+        conn = job_db.connect(pinned_worker.db_path)
+        try:
+            job_db.report_status(conn, live["id"], status="killed", reason="reset_by_user")
+        finally:
+            conn.close()
+        return {"slug": slug, "reset": True}
+
     def _is_own_run(entry: dict | None) -> bool:
         # PLAN-28: "meine eigene /run-Historie" — domain='local' (historische
         # Zeilen vom alten CLI-Pfad, Refactor D entfernt — auf Bestandsknoten
@@ -788,22 +811,59 @@ def create_app(
             conn.close()
         return {"deleted": jid}
 
-    @app.get("/-/run/journal/{jid}/output", tags=["job"])
-    def run_journal_output(jid: int):
-        # Analogon zu /-/journal/{jid}/output (§4.2), nur domain="local".
+    def _own_run_events(jid: int) -> tuple[dict | None, list]:
         conn = job_db.connect()
         try:
             entry = job_db.get_journal(conn, jid)
         finally:
             conn.close()
         if not _is_own_run(entry):
+            return None, []
+        ref = entry.get("output_ref")
+        events = output.read_events(repo.root() / ref) if ref else []
+        return entry, events
+
+    @app.get("/-/run/journal/{jid}/output", tags=["job"])
+    def run_journal_output(jid: int):
+        # Analogon zu /-/journal/{jid}/output (§4.2), nur über _is_own_run()
+        # statt scheduler-gated.
+        entry, raw = _own_run_events(jid)
+        if entry is None:
             return JSONResponse(status_code=404,
                                 content={"error": "local run not found", "id": jid})
-        ref = entry.get("output_ref")
-        raw = output.read_events(repo.root() / ref) if ref else []
         kind = models.effective_kind(entry.get("payload"))
         return {"id": jid, "kind": kind, "events": output_format.format_events(raw, kind),
                 "output_ref": entry.get("output_ref")}
+
+    def _own_run_sse(jid: int, stream: str | None) -> StreamingResponse | JSONResponse:
+        # User-Feedback 2026-07-13 ("Warum nicht die gleiche Ansicht? Warum
+        # nicht die gleiche Logik?"): execution_detail_page() unterdrückte
+        # die rohen out/err/stream-Links für eigene/gepinnte Läufe bisher,
+        # weil es dafür keine rollenunabhängige Route gab — Analogon zu
+        # _journal_sse() (§4.2/PLAN-14 Stufe 14.0), nur über _is_own_run()
+        # statt scheduler-gated.
+        entry, events = _own_run_events(jid)
+        if entry is None:
+            return JSONResponse(status_code=404,
+                                content={"error": "local run not found", "id": jid})
+
+        def gen():
+            for e in events:
+                if stream is None or e.get("s") == stream:
+                    yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n"
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.get("/-/run/journal/{jid}/out", tags=["job"])
+    def run_journal_out(jid: int):
+        return _own_run_sse(jid, "out")
+
+    @app.get("/-/run/journal/{jid}/err", tags=["job"])
+    def run_journal_err(jid: int):
+        return _own_run_sse(jid, "err")
+
+    @app.get("/-/run/journal/{jid}/stream", tags=["job"])
+    def run_journal_stream(jid: int):
+        return _own_run_sse(jid, None)
 
     # ── /feed: Git-Historie zu Entitäten + Heatmap (PLAN-18) — rollenunabhängig ─
     # Reine Git-/Filesystem-Introspektion (bibi/feed.py), kein job_db-Zugriff —

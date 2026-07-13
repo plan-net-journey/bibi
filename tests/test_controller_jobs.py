@@ -30,12 +30,12 @@ def _row(slug: str, *, git_status: str = "clean", live: dict | None = None) -> d
             "live": live}
 
 
-def test_jobs_table_start_button_always_enabled():
-    # Jede Zeile kommt aus dem lokalen Discovery-Scan (kein "nur remote"-Fall
-    # mehr) — der Start-Button ist also nie mehr deaktiviert.
+def test_jobs_table_has_no_start_button():
+    # PLAN-28 User-Feedback: "CTA START soll es hier gar nicht geben, das
+    # gibt es nur auf der Detail Seite" — die Übersicht dient reinem Review.
     html = render._jobs_table([_row("mein-testjob")], {}, now=100.0)
-    assert 'hx-post="/-/ui/jobs/start/mein-testjob"' in html
-    assert "disabled" not in html
+    assert "startbtn" not in html
+    assert "hx-post=" not in html
 
 
 def test_jobs_table_shows_git_status_chip():
@@ -77,18 +77,41 @@ def test_jobs_table_empty_shows_placeholder():
     assert "keine Job-MDs im Repository gefunden" in html
 
 
-def test_jobs_table_live_row_shows_running_and_disables_start():
+def test_jobs_table_live_row_shows_running():
     # PLAN-21 Befund 10, 2. Nachtrag: row["live"] gesetzt → "running" statt
     # letztem (abgeschlossenem) Status, Status-Link geht auf die Detailseite
     # (kein /-/ui/run/{jid} — für den laufenden Lauf existiert noch kein
-    # Journal-Eintrag), Start-Button deaktiviert (Server lehnt mit 409 ab).
+    # Journal-Eintrag).
     html = render._jobs_table(
         [_row("a", live={"id": "jid1", "started_at": 100.0})],
         {"a": {"id": 42, "status": "complete"}}, now=200.0)  # alter, abgeschlossener Lauf
     assert 'class="st running">running<' in html
     assert 'href="/-/ui/jobs/detail/a"><span class="st running"' in html
     assert 'href="/-/ui/run/42"' not in html  # alter Status tritt zurück
-    assert "disabled" in html
+
+
+def test_jobs_table_shows_started_finished_and_runtime_for_last_run():
+    # PLAN-28 User-Feedback: "letzter Start / letztes Ende / letzte Laufzeit".
+    lr = {"id": 42, "status": "complete", "started_at": 100.0,
+         "finished_at": 112.0, "exec_runtime": 12.0}
+    html = render._jobs_table([_row("a")], {"a": lr}, now=200.0)
+    assert render._abs_time(100.0) in html
+    assert render._abs_time(112.0) in html
+    assert "12 s" in html
+
+
+def test_jobs_table_no_local_run_yet_shows_dash_for_started_finished_runtime():
+    html = render._jobs_table([_row("a")], {}, now=100.0)
+    assert "<td>—</td><td>—</td><td>—</td>" in html
+
+
+def test_jobs_table_live_row_shows_started_and_ongoing_runtime():
+    # "aktuelle Laufzeit" — für einen laufenden Job die bisherige Dauer
+    # (now - started_at), kein "letztes Ende" (noch offen).
+    html = render._jobs_table(
+        [_row("a", live={"id": "jid1", "started_at": 100.0})], {}, now=130.0)
+    assert render._abs_time(100.0) in html
+    assert "30 s" in html
 
 
 def test_jobs_table_live_row_shows_awaiting_when_signaled():
@@ -141,6 +164,22 @@ def test_jobs_page_has_header_and_nav():
     html = render.jobs_page([], {}, [], now=100.0)
     assert 'href="/-/"' in html and 'href="/-/ui/logs"' in html
     assert "<title>bibi · Jobs</title>" in html
+
+
+def test_jobs_page_has_status_cards_header():
+    # PLAN-28 User-Feedback: "Der Header soll auch auf der Client Job Seite
+    # angezeigt werden" — derselbe feed_status_fragment()-Header wie
+    # /-/ und /-/ui/schedules (PLAN-27 Befund 2 hatte das nur fürs Live-Log
+    # erledigt, /-/ui/jobs blieb dabei außen vor).
+    html = render.jobs_page([], {}, [], now=100.0)
+    assert 'id="feedstatus"' in html
+
+
+def test_jobs_route_has_status_cards_header(team_repo: Path, app_with):
+    app, _ = app_with(_FakeClient())
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs")
+        assert 'id="feedstatus"' in r.text
 
 
 def test_screen_nav_includes_jobs_tab():
@@ -204,8 +243,36 @@ def test_local_job_meta_kill_button_only_enabled_while_live():
     assert "killbtn\" hx-post=\"/-/ui/jobs/detail/a/kill\" hx-target=\"#jobsdetail-live\" hx-swap=\"outerHTML\" disabled" not in running
 
 
+def test_local_job_meta_reset_button_only_enabled_while_live():
+    # User-Feedback 2026-07-13: "warum nicht START, RESET und KILL wie auf
+    # Host" — RESET nur aktiv, solange eine Live-Zeile existiert (sonst gibt
+    # es nichts zurückzusetzen).
+    idle = render._local_job_meta("a", _row("a"), {"status": "complete"})
+    assert 'class="resetbtn" hx-post="/-/ui/jobs/detail/a/reset" hx-target="#jobsdetail-live" hx-swap="outerHTML" disabled' in idle
+
+    running = render._local_job_meta("a", _row("a"), None, live={"id": "jid1", "events": []})
+    assert 'class="resetbtn" hx-post="/-/ui/jobs/detail/a/reset" hx-target="#jobsdetail-live" hx-swap="outerHTML" title=' in running
+    assert "resetbtn\" hx-post=\"/-/ui/jobs/detail/a/reset\" hx-target=\"#jobsdetail-live\" hx-swap=\"outerHTML\" disabled" not in running
+
+
 def test_local_live_output_empty_when_not_running():
     assert render._local_live_output(None) == ""
+
+
+def test_local_live_output_falls_back_to_last_run_output_when_not_live():
+    # PLAN-28 User-Feedback: "bei terminalen Status wurde der Output
+    # entfernt... beim Host wird der Output des letzten Laufes immer oben
+    # angezeigt bis RESET oder START" — derselbe Fallback beim Client.
+    html = render._local_live_output(
+        None, {"kind": "job", "events": [{"t": 1.0, "s": "out", "line": "archiviert"}]})
+    assert "archiviert" in html and "Output" in html
+
+
+def test_local_live_output_prefers_live_over_last_run_output():
+    html = render._local_live_output(
+        {"kind": "job", "events": [{"t": 1.0, "s": "out", "line": "live"}]},
+        {"kind": "job", "events": [{"t": 1.0, "s": "out", "line": "archiviert"}]})
+    assert "live" in html and "archiviert" not in html
 
 
 def test_local_live_output_renders_events():
@@ -285,13 +352,20 @@ def test_jobs_detail_page_with_live_shows_running_and_autorefresh_js():
 
 
 class _FakeClient:
-    def __init__(self, *, schedules=None, run_journal=None, live=None) -> None:
+    def __init__(self, *, schedules=None, run_journal=None, live=None,
+                run_outputs=None) -> None:
         self._schedules = schedules or []
         self._run_journal = run_journal or []
         self._live = live or {}  # {slug: {"id":..., "events": [...]}}
+        self._run_outputs = run_outputs or {}  # {journal_id: {"events": [...], "kind": ...}}
         self.run_calls: list[dict] = []
         self.delete_calls: list[int] = []
         self.schedules_called = False
+
+    def local_run_output(self, journal_id: int) -> dict:
+        if journal_id not in self._run_outputs:
+            raise RuntimeError("404 not found")  # spiegelt HTTPError des echten Clients
+        return self._run_outputs[journal_id]
 
     def status(self) -> dict:
         return {}
@@ -343,6 +417,12 @@ class _FakeClient:
             raise RuntimeError("404 not running")
         del self._live[slug]
         return {"slug": slug, "signaled": True}
+
+    def run_live_reset(self, slug: str) -> dict:
+        if slug not in self._live:
+            raise RuntimeError("404 not running")
+        del self._live[slug]
+        return {"slug": slug, "reset": True}
 
 
 def _seed_schedule_md(root: Path, slug: str, schedule: str, payload: str) -> None:
@@ -422,17 +502,6 @@ def test_jobs_route_per_job_status_finds_pinned_run_by_bucket_slug(team_repo: Pa
         assert 'href="/-/ui/run/5"><span class="st complete"' in r.text
 
 
-def test_jobs_start_route_calls_client_run_and_returns_board(team_repo: Path, app_with):
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    client = _FakeClient()
-    app, fake = app_with(client)
-    with TestClient(app) as c:
-        r = c.post("/-/ui/jobs/start/mein-testjob")
-        assert r.status_code == 200
-        assert fake.run_calls == [{"slug": "mein-testjob", "cmd": None}]
-        assert 'id="jobsboard"' in r.text
-
-
 def test_jobs_board_fragment_route(team_repo: Path, app_with):
     app, _ = app_with(_FakeClient())
     with TestClient(app) as c:
@@ -508,6 +577,25 @@ def test_jobs_detail_route_shows_live_output(team_repo: Path, app_with):
         assert r.status_code == 200
         assert 'data-running="1"' in r.text
         assert "läuft gerade" in r.text
+
+
+def test_jobs_detail_route_shows_last_run_output_when_not_live(team_repo: Path, app_with):
+    # PLAN-28 User-Feedback: "bei terminalen Status wurde der Output
+    # entfernt" — kein live-Eintrag mehr, aber der letzte (abgeschlossene)
+    # Lauf steht im Journal, dessen archivierter Output soll trotzdem stehen
+    # bleiben, bis RESET oder erneutes START.
+    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
+    client = _FakeClient(
+        run_journal=[{"id": 5, "slug": "mein-testjob", "status": "complete",
+                     "finished_at": 100.0, "domain": "local"}],
+        run_outputs={5: {"kind": "job",
+                        "events": [{"t": 1.0, "s": "out", "line": "archivierte ausgabe"}]}})
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/detail/mein-testjob")
+        assert r.status_code == 200
+        assert 'data-running="0"' in r.text
+        assert "archivierte ausgabe" in r.text
 
 
 def test_jobs_detail_live_fragment_route(team_repo: Path, app_with):
@@ -606,6 +694,24 @@ def test_jobs_detail_kill_route(team_repo: Path, app_with):
         assert "a" not in fake._live  # gekillt, aus der Live-Registry raus
         assert 'id="jobsdetail-live"' in r.text
         assert 'data-running="0"' in r.text  # sofort sichtbar, kein Warten auf den nächsten Poll
+
+
+def test_jobs_detail_reset_route(team_repo: Path, app_with):
+    client = _FakeClient(live={"a": {"id": "jid1", "kind": "job", "events": []}})
+    app, fake = app_with(client)
+    with TestClient(app) as c:
+        r = c.post("/-/ui/jobs/detail/a/reset")
+        assert r.status_code == 200
+        assert "a" not in fake._live  # zurückgesetzt, aus der Live-Registry raus
+        assert 'id="jobsdetail-live"' in r.text
+        assert 'data-running="0"' in r.text  # sofort sichtbar, kein Warten auf den nächsten Poll
+
+
+def test_jobs_detail_reset_route_survives_nothing_running(team_repo: Path, app_with):
+    app, _ = app_with(_FakeClient())
+    with TestClient(app) as c:
+        r = c.post("/-/ui/jobs/detail/nichts-los/reset")
+        assert r.status_code == 200  # kein 500, auch wenn client.run_live_reset() 404t
 
 
 def test_jobs_detail_kill_route_survives_nothing_running(team_repo: Path, app_with):

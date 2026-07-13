@@ -313,21 +313,15 @@ def add_controller_routes(
 
     @app.get("/-/ui/jobs", include_in_schema=False)
     def jobs_screen():
+        from bibi import config
         rows, local_runs, runs = _jobs_data()
-        return HTMLResponse(render.jobs_page(rows, local_runs, runs, daemon_status=_status()))
+        return HTMLResponse(render.jobs_page(
+            rows, local_runs, runs, daemon_status=_status(), git_status=_feed_git_status(),
+            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval()))
 
     @app.get("/-/ui/jobs/board", include_in_schema=False)
     def jobs_board():
         # Self-Poll-Ziel von #jobsboard (wie #live/#journal bei Schedules).
-        rows, local_runs, runs = _jobs_data()
-        return HTMLResponse(render.jobs_fragment(rows, local_runs, runs))
-
-    @app.post("/-/ui/jobs/start/{slug}", include_in_schema=False)
-    def jobs_start(slug: str):
-        try:
-            client.run(slug=slug)
-        except Exception:  # noqa: BLE001 — Board zeigt Fehlschlag beim nächsten Poll (defensiv, §2.7)
-            pass
         rows, local_runs, runs = _jobs_data()
         return HTMLResponse(render.jobs_fragment(rows, local_runs, runs))
 
@@ -359,18 +353,34 @@ def add_controller_routes(
         except Exception:  # noqa: BLE001
             return None
 
+    def _job_last_run_output(last_run: dict | None) -> dict | None:
+        # PLAN-28 User-Feedback: "bei terminalen Status wurde der Output
+        # entfernt... beim Host wird der Output des letzten Laufes immer
+        # oben angezeigt bis RESET oder START" — rollenunabhängig über
+        # dieselbe Route wie die Run-Detailseite (/-/run/journal/{id}/output).
+        if last_run is None:
+            return None
+        try:
+            return client.local_run_output(last_run["id"])
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return None
+
     @app.get("/-/ui/jobs/detail/{slug}", include_in_schema=False)
     def jobs_detail(slug: str):
         local, last_run, runs = _job_detail_data(slug)
+        live = _job_live(slug)
         return HTMLResponse(render.jobs_detail_page(
-            slug, local, last_run, runs, daemon_status=_status(), live=_job_live(slug)))
+            slug, local, last_run, runs, daemon_status=_status(), live=live,
+            last_run_output=None if live else _job_last_run_output(last_run)))
 
     @app.get("/-/ui/jobs/detail/{slug}/live", include_in_schema=False)
     def jobs_detail_live_fragment(slug: str):
         # Self-Poll-Ziel von #jobsdetail-live (wie #live bei Schedules).
         local, last_run, _runs = _job_detail_data(slug)
+        live = _job_live(slug)
         return HTMLResponse(render.jobs_detail_live_fragment(
-            slug, _job_live(slug), local, last_run))
+            slug, live, local, last_run,
+            last_run_output=None if live else _job_last_run_output(last_run)))
 
     @app.post("/-/ui/jobs/detail/{slug}/kill", include_in_schema=False)
     def jobs_detail_kill(slug: str):
@@ -381,24 +391,45 @@ def add_controller_routes(
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
         local, last_run, _runs = _job_detail_data(slug)
+        live = _job_live(slug)
         return HTMLResponse(render.jobs_detail_live_fragment(
-            slug, _job_live(slug), local, last_run))
+            slug, live, local, last_run,
+            last_run_output=None if live else _job_last_run_output(last_run)))
+
+    @app.post("/-/ui/jobs/detail/{slug}/reset", include_in_schema=False)
+    def jobs_detail_reset(slug: str):
+        # User-Feedback 2026-07-13: "warum nicht START, RESET und KILL wie
+        # auf Host" — Not-Aus für eine hängen gebliebene Live-Anzeige,
+        # analog zu jobs_detail_kill(), aber lokal (client.run_live_reset()).
+        try:
+            client.run_live_reset(slug)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        local, last_run, _runs = _job_detail_data(slug)
+        live = _job_live(slug)
+        return HTMLResponse(render.jobs_detail_live_fragment(
+            slug, live, local, last_run,
+            last_run_output=None if live else _job_last_run_output(last_run)))
 
     @app.post("/-/ui/jobs/detail/{slug}/start", include_in_schema=False)
     def jobs_detail_start(slug: str):
         # Bug gefunden beim Bau des Kill-Buttons (2026-07-10): der Start-Button
-        # auf der Detailseite postete bisher an die generische
-        # /-/ui/jobs/start/{slug} (jobs_start(), Ziel #jobsboard) — deren
-        # Antwort hätte #jobsdetail-live per outerHTML mit einem #jobsboard-
-        # Fragment überschrieben (falsche id, falsches Self-Poll-Ziel). Eigene
-        # Route, analog zu jobs_detail_kill(), gibt das richtige Fragment zurück.
+        # auf der Detailseite postete bisher an die generische, rollenweit
+        # geteilte /-/ui/jobs/start/{slug} (Ziel #jobsboard, inzwischen mit
+        # dem Start-CTA der Übersicht selbst entfernt, PLAN-28 User-Feedback)
+        # — deren Antwort hätte #jobsdetail-live per outerHTML mit einem
+        # #jobsboard-Fragment überschrieben (falsche id, falsches Self-Poll-
+        # Ziel). Eigene Route, analog zu jobs_detail_kill(), gibt das
+        # richtige Fragment zurück.
         try:
             client.run(slug=slug)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
         local, last_run, _runs = _job_detail_data(slug)
+        live = _job_live(slug)
         return HTMLResponse(render.jobs_detail_live_fragment(
-            slug, _job_live(slug), local, last_run))
+            slug, live, local, last_run,
+            last_run_output=None if live else _job_last_run_output(last_run)))
 
     @app.get("/-/ui/jobs/detail/{slug}/runs", include_in_schema=False)
     def jobs_detail_runs_fragment(slug: str, offset: int = 0):

@@ -1313,15 +1313,16 @@ _GIT_STATUS_LABEL = {
 
 
 def _jobs_row(row: dict, local_runs: dict[str, dict], now: float) -> str:
-    """Eine Zeile: Slug, Git-Status, letzter lokaler Lauf, Start-CTA (PLAN-21
-    Befund 10 — löst die vorherige Lokal/Remote/Abgleich-Zeile ab, kein
-    Remote-Bezug mehr). Slug verlinkt auf die lokale Job-Detailseite
-    (PLAN-21 Befund 10-Nachtrag, /-/ui/jobs/detail/{slug} — immer, analog zu
-    _sched_row()s Slug-Link auf dem Host); Status verlinkt auf den konkreten
-    letzten Lauf (/-/ui/run/{jid}), sofern schon mal gelaufen. ``row["live"]``
-    (PLAN-21 Befund 10, 2. Nachtrag): läuft der Job gerade, geht der Status-
-    Link stattdessen auf die Detailseite (dort lebt der Live-Output), und der
-    Start-Button deaktiviert sich (Server lehnt einen Doppelstart mit 409 ab)."""
+    """Eine Zeile: Slug, Git-Status, letzter Start/Ende/Laufzeit, Status
+    (PLAN-21 Befund 10 — löst die vorherige Lokal/Remote/Abgleich-Zeile ab,
+    kein Remote-Bezug mehr; PLAN-28 User-Feedback: kein Start-CTA mehr hier
+    — Start gibt es nur noch auf der Detailseite, diese Übersicht dient
+    reinem Review). Slug verlinkt auf die lokale Job-Detailseite; Status
+    verlinkt auf den konkreten letzten Lauf (/-/ui/run/{jid}), sofern schon
+    mal gelaufen. ``row["live"]`` (PLAN-21 Befund 10, 2. Nachtrag): läuft der
+    Job gerade, geht der Status-Link auf die Detailseite (dort lebt der
+    Live-Output), Start/Ende/Laufzeit zeigen den laufenden Versuch (Ende
+    "—", Laufzeit bis ``now``) statt des letzten ABGESCHLOSSENEN Laufs."""
     slug = row["slug"]
     s = _e(slug)
     live = row.get("live")
@@ -1336,23 +1337,27 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float) -> str:
         st = "awaiting" if live.get("status") == "awaiting" else "running"
         status_cell = (f'<a class="rowlink" href="/-/ui/jobs/detail/{s}">'
                        f'<span class="st {st}">{st}</span></a>')
+        started_cell = _abs_time(live.get("started_at"))
+        ended_cell = "—"
+        started_at = live.get("started_at")
+        runtime_cell = f"{round(now - started_at)} s" if started_at is not None else "—"
     elif jid is not None:
         status_cell = (f'<a class="rowlink" href="/-/ui/run/{jid}">'
                        f'<span class="st {_e(lr["status"])}">{_e(lr["status"])}</span></a>')
+        started_cell = _abs_time(lr.get("started_at"))
+        ended_cell = _abs_time(lr.get("finished_at"))
+        runtime_cell = _duration_cell(lr)
     else:
         status_cell = '<span class="side-empty">noch nie lokal gelaufen</span>'
+        started_cell = ended_cell = runtime_cell = "—"
 
     cls, label = _GIT_STATUS_LABEL.get(row.get("git_status", "clean"),
                                        ("chip", _e(str(row.get("git_status", "—")))))
     git_cell = f'<span class="{cls}">{label}</span>'
 
-    disabled = " disabled" if live else ""
-    btn_attrs = (f'hx-post="/-/ui/jobs/start/{s}" hx-target="#jobsboard" hx-swap="outerHTML"{disabled} '
-                f'title="/run {s} sofort auf diesem Rechner"')
-    start_cell = f'<button class="startbtn" {btn_attrs}>▶ Start</button>'
-
-    return (f"<tr><td>{slug_cell}</td><td>{git_cell}</td><td>{status_cell}</td>"
-            f"<td>{start_cell}</td></tr>")
+    return (f"<tr><td>{slug_cell}</td><td>{git_cell}</td>"
+            f"<td>{started_cell}</td><td>{ended_cell}</td><td>{runtime_cell}</td>"
+            f"<td>{status_cell}</td></tr>")
 
 
 def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float) -> str:
@@ -1360,8 +1365,8 @@ def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float) -> st
         return '<p class="out-empty">— keine Job-MDs im Repository gefunden —</p>'
     body = "".join(_jobs_row(r, local_runs, now) for r in rows)
     return (
-        '<table><thead><tr><th>Slug</th><th>Git</th><th>Letzter Lauf</th>'
-        "<th></th></tr></thead>"
+        '<table><thead><tr><th>Slug</th><th>Git</th><th>Letzter Start</th>'
+        '<th>Letztes Ende</th><th>Laufzeit</th><th>Status</th></tr></thead>'
         f"<tbody>{body}</tbody></table>"
     )
 
@@ -1395,12 +1400,13 @@ def jobs_fragment(
     *, now: float | None = None,
 ) -> str:
     """Der austauschbare Jobs-Kern (``#jobsboard``): lokale Job-MDs + Git-
-    Status + Start-Button je Zeile + lokale Lauf-Historie (PLAN-21 Befund 10
-    — löst die vorherige Lokal/Remote-Abgleich-Tabelle ab, kein Netzaufruf/
-    Remote-Bezug mehr, dient ausschließlich dem Review der lokalen
-    Repository-Realität). Self-pollt wie die anderen Screens (PLAN-17 Stufe
-    17.2) — eine Aktion (Start) swapt sofort dasselbe Fragment zurück, damit
-    der neue Lauf ohne Warten auf den nächsten Poll sichtbar wird."""
+    Status + letzter Start/Ende/Laufzeit je Zeile + lokale Lauf-Historie
+    (PLAN-21 Befund 10 — löst die vorherige Lokal/Remote-Abgleich-Tabelle ab,
+    kein Netzaufruf/Remote-Bezug mehr, dient ausschließlich dem Review der
+    lokalen Repository-Realität; PLAN-28 User-Feedback: kein Start-CTA mehr
+    hier, Start gibt es nur noch auf der Job-Detailseite). Self-pollt wie die
+    anderen Screens (PLAN-17 Stufe 17.2), damit ein anderswo (Detailseite,
+    CLI) gestarteter Lauf ohne Warten sichtbar wird."""
     now = time.time() if now is None else now
     return (
         f'<div id="jobsboard" hx-get="/-/ui/jobs/board" hx-trigger="{_POLL}" hx-swap="outerHTML">'
@@ -1414,12 +1420,18 @@ def jobs_fragment(
 
 def jobs_page(
     rows: list[dict], local_runs: dict[str, dict], runs: list[dict],
-    *, daemon_status: dict | None = None, now: float | None = None,
+    *, daemon_status: dict | None = None, git_status: dict | None = None,
+    host_url: str | None = None, status_poll_interval_s: int = 30,
+    now: float | None = None,
 ) -> str:
     """Jobs-Screen (PLAN-17 Stufe 17.2, umgebaut PLAN-21 Befund 10): lokale
-    Repository-Realität + Git-Status + Start-Button je Zeile + lokale Lauf-
-    Historie. Rein lokal — funktioniert auch auf einem reinen Client (kein
-    Scheduler/Worker im Ruhezustand), ohne je den Scheduler zu kontaktieren."""
+    Repository-Realität + Git-Status + letzter Start/Ende/Laufzeit je Zeile +
+    lokale Lauf-Historie. Rein lokal — funktioniert auch auf einem reinen
+    Client (kein Scheduler/Worker im Ruhezustand), ohne je den Scheduler zu
+    kontaktieren. Status-Kacheln (Host/Mode/Git/Job-Status) seit demselben
+    ``feed_status_fragment()`` wie ``/-/``/``/-/ui/schedules``/Live-Log
+    (PLAN-28 User-Feedback: "Der Header soll auch auf der Client Job Seite
+    angezeigt werden" — PLAN-27 Befund 2 hatte das nur fürs Live-Log erledigt)."""
     now = time.time() if now is None else now
     status = daemon_status or {}
     return (
@@ -1432,6 +1444,7 @@ def jobs_page(
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Jobs', status)}"
         f"<script>{_CLOCK_JS}</script>"
+        f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s)}"
         f"{jobs_fragment(rows, local_runs, runs, now=now)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"
@@ -1492,23 +1505,43 @@ def _local_job_meta(slug: str, local: dict, last_run: dict | None,
     kill_btn = (f'<button class="killbtn" hx-post="/-/ui/jobs/detail/{s}/kill" '
                f'hx-target="#jobsdetail-live" hx-swap="outerHTML"{kill_disabled} '
                f'title="laufenden Prozess beenden">■ Kill</button>')
+    # RESET (User-Feedback 2026-07-13: "warum nicht START, RESET und KILL wie
+    # auf Host") — Not-Aus für eine hängen gebliebene Live-Anzeige (Wrapper
+    # abgestürzt/Daemon neu gestartet, kein greifbarer Prozess mehr, aber die
+    # Zeile steht noch auf running/awaiting und START bleibt deaktiviert).
+    # Nur sichtbar/aktiv, solange überhaupt eine Live-Zeile existiert — sonst
+    # gibt es nichts zurückzusetzen, START funktioniert bereits jederzeit.
+    reset_disabled = "" if live else " disabled"
+    reset_btn = (f'<button class="resetbtn" hx-post="/-/ui/jobs/detail/{s}/reset" '
+                f'hx-target="#jobsdetail-live" hx-swap="outerHTML"{reset_disabled} '
+                f'title="hängen gebliebenen Live-Status aufräumen">↺ Reset</button>')
     return (
         f'<p class="muted">Typ <b>{kind}</b> · '
         f'Trigger <code>{trigger}</code> · Git <span class="{cls}">{git_label}</span>'
-        f"{status_html}</p>{start_btn} {kill_btn}"
+        f"{status_html}</p>{start_btn} {reset_btn} {kill_btn}"
     )
 
 
-def _local_live_output(live: dict | None) -> str:
+def _local_live_output(live: dict | None, last_run_output: dict | None = None) -> str:
     """Live-Output-Panel (PLAN-21 Befund 10, 2. Nachtrag) — dieselbe
     Zeilen-Formatierung wie die abgeschlossene Ansicht (output_block(), Host-
     Execution-Detail), nur alle _POLL-Sekunden aus /-/run/live/{slug}
     nachgelesen statt eingefroren. Kein SSE (bewusst): der 2s-Poll, den die
     ganze Seite ohnehin schon nutzt, reicht — kein eigener Streaming-Pfad
     nötig für ein Feature, das "sichtbar während des Laufs" leisten soll,
-    nicht "Zeichen-für-Zeichen-Latenz\"."""
+    nicht "Zeichen-für-Zeichen-Latenz".
+
+    ``last_run_output`` (PLAN-28 User-Feedback: "bei terminalen Status wurde
+    der Output entfernt... beim Host wird der Output des letzten Laufes immer
+    oben angezeigt bis RESET oder START"): ist gerade nichts live, aber ein
+    letzter Lauf bekannt, zeigt dieselbe Formatierung dessen archivierten
+    Output (``/-/run/journal/{id}/output``) — Analogon zu ``_live_panel()``
+    (Host), das den letzten Lauf ebenfalls bis RESET/START stehen lässt."""
     if not live:
-        return ""
+        if not last_run_output:
+            return ""
+        out = output_block(last_run_output.get("events", []), last_run_output.get("kind", "job"))
+        return f'<h3>Output</h3><div class="outscroll">{out}</div>'
     out = output_block(live.get("events", []), live.get("kind", "job"))
     # Ausbau User-Fund 2026-07-10: dasselbe HITL-Panel wie bei Scheduler-Jobs
     # (_hitl_panel() nimmt jeden Dict mit app_url — live hat die Form seit dem
@@ -1546,13 +1579,17 @@ _JOBS_LIVE_AUTOREFRESH_JS = """
 
 
 def jobs_detail_live_fragment(slug: str, live: dict | None, local: dict | None,
-                              last_run: dict | None) -> str:
-    """Self-pollende Region (``#jobsdetail-live``): Meta-Zeile + Live-Output,
-    falls gerade ein Lauf aktiv ist. Ziel = ``/-/ui/jobs/detail/{slug}/live``."""
+                              last_run: dict | None, *,
+                              last_run_output: dict | None = None) -> str:
+    """Self-pollende Region (``#jobsdetail-live``): Meta-Zeile + Output.
+    Ziel = ``/-/ui/jobs/detail/{slug}/live``. ``last_run_output`` (PLAN-28
+    User-Feedback): Fallback auf den archivierten Output des letzten Laufs,
+    solange nichts live ist — s. ``_local_live_output()``."""
     s = _e(slug)
     running_flag = "1" if live else "0"
     journal_url = f"/-/ui/jobs/detail/{s}/journal"
-    body = _local_job_meta(slug, local or {}, last_run, live=live) + _local_live_output(live)
+    body = (_local_job_meta(slug, local or {}, last_run, live=live)
+           + _local_live_output(live, last_run_output))
     attrs = (f'id="jobsdetail-live" data-running="{running_flag}" '
             f'data-journal-url="{journal_url}" '
             f'hx-get="/-/ui/jobs/detail/{s}/live" hx-trigger="{_POLL}" hx-swap="outerHTML"')
@@ -1561,17 +1598,19 @@ def jobs_detail_live_fragment(slug: str, live: dict | None, local: dict | None,
 
 def jobs_detail_inner(slug: str, local: dict, last_run: dict | None,
                       runs: list[dict], now: float | None = None,
-                      *, live: dict | None = None) -> str:
+                      *, live: dict | None = None,
+                      last_run_output: dict | None = None) -> str:
     now = time.time() if now is None else now
     return (
-        jobs_detail_live_fragment(slug, live, local, last_run)
+        jobs_detail_live_fragment(slug, live, local, last_run, last_run_output=last_run_output)
         + journal_fragment(runs, slug, now, base="/-/ui/jobs/detail")
     )
 
 
 def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
                      runs: list[dict], now: float | None = None,
-                     *, daemon_status: dict | None = None, live: dict | None = None) -> str:
+                     *, daemon_status: dict | None = None, live: dict | None = None,
+                     last_run_output: dict | None = None) -> str:
     """Lokale Job-Detailseite (ein Slug, nur lokale /run-Läufe dieses Knotens)
     — Gegenstück zu schedule_detail_page() auf dem Host, s. Modul-Kommentar."""
     now = time.time() if now is None else now
@@ -1589,7 +1628,7 @@ def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
         f'<div style="display:flex;gap:.75rem;align-items:baseline">'
         f'<a class="back" href="/-/ui/jobs">← Jobs</a></div>'
         f'<h1>{s}</h1>'
-        f"{jobs_detail_inner(slug, local, last_run, runs, now, live=live)}"
+        f"{jobs_detail_inner(slug, local, last_run, runs, now, live=live, last_run_output=last_run_output)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_LIVE_AUTOREFRESH_JS}</script>"
@@ -2612,34 +2651,35 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
     st = _e(e.get("status") or "")
     out = output_block(events, e.get("kind") or kind)
     jid = e.get("id")
+    # Follow-up (User-Feedback): "auch bei archivierten Jobs im Journal eine
+    # Möglichkeit, den Original Output zu sehen" — roher Zugriff neben dem
+    # formatierten Output (.../out|err|stream, PLAN-14 Stufe 14.0). target=
+    # _blank (User-Feedback 2026-07-01): roher Output soll die formatierte
+    # Ansicht nicht verdrängen. PLAN-28 User-Feedback ("Warum nicht die
+    # gleiche Ansicht? Warum nicht die gleiche Logik?"): eigene/gepinnte
+    # Läufe bekommen jetzt dieselben rohen Links wie Team-Queue-Läufe, nur
+    # über die rollenunabhängige /-/run/journal/{jid}/out|err|stream-Route
+    # (_is_own_run()) statt der scheduler-gated /-/journal/{jid}/....
+    raw_base = "/-/run/journal" if _is_own_run(e) else "/-/journal"
+    raw_links = (
+        f' <span class="muted">roh: '
+        f'<a class="back" href="{raw_base}/{jid}/out" target="_blank" rel="noopener">out</a> · '
+        f'<a class="back" href="{raw_base}/{jid}/err" target="_blank" rel="noopener">err</a> · '
+        f'<a class="back" href="{raw_base}/{jid}/stream" target="_blank" rel="noopener">stream</a></span>'
+        if jid is not None else ""
+    )
     if _is_own_run(e):
         # Eigener /run-Lauf (PLAN-21 Befund 10; PLAN-28 Refactor D um gepinnte
         # jobs-Zeilen erweitert): "zurück zum Schedule" wäre die scheduler-
         # gated Remote-Detailseite (auf einem reinen Client 404) — zurück zum
-        # Jobs-Screen stattdessen. Kein roher out/err/stream-Link: dafür gibt
-        # es keine rollenunabhängige Route (nur /-/run/journal/{id} +
-        # .../output, symmetrisch zu /-/journal — die drei Sub-Routen wurden
-        # bewusst nicht dupliziert, der formatierte Output deckt den Bedarf).
+        # Jobs-Screen stattdessen.
         back = '<a class="back" href="/-/ui/jobs">← Jobs</a>'
-        raw_links = ""
     else:
         # Breadcrumb statt eigenem "bibi ·"-Header (User-Feedback 2026-07-01:
         # doppeltes "bibi" + verschachtelte Nav) — derselbe Aufbau wie
         # schedule_detail_page().
         back = (f'<a class="back" href="/-/ui/schedule/{slug}">← {slug}</a>'
                 if slug else '<a class="back" href="/-/">← zurück</a>')
-        # Follow-up (User-Feedback): "auch bei archivierten Jobs im Journal eine
-        # Möglichkeit, den Original Output zu sehen" — roher Zugriff neben dem
-        # formatierten Output (/-/journal/{jid}/out|err|stream, PLAN-14 Stufe
-        # 14.0). target=_blank (User-Feedback 2026-07-01): roher Output soll
-        # die formatierte Ansicht nicht verdrängen.
-        raw_links = (
-            f' <span class="muted">roh: '
-            f'<a class="back" href="/-/journal/{jid}/out" target="_blank" rel="noopener">out</a> · '
-            f'<a class="back" href="/-/journal/{jid}/err" target="_blank" rel="noopener">err</a> · '
-            f'<a class="back" href="/-/journal/{jid}/stream" target="_blank" rel="noopener">stream</a></span>'
-            if jid is not None else ""
-        )
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'

@@ -53,30 +53,34 @@ def test_execution_detail_links_to_raw_journal_stream():
 
 
 def test_execution_detail_local_domain_links_back_to_jobs_not_raw_journal():
-    # PLAN-21 Befund 10: ein lokaler /run-Lauf hat keine scheduler-gated
-    # /-/journal/{jid}/out|err|stream-Route — kein roher Link, "zurück" führt
-    # zum Jobs-Screen statt zur (auf Clients 404en) Schedule-Detailseite.
+    # PLAN-21 Befund 10: "zurück" führt zum Jobs-Screen statt zur (auf
+    # Clients 404enden) Schedule-Detailseite. PLAN-28 User-Feedback ("Warum
+    # nicht die gleiche Ansicht?"): der rohe out/err/stream-Link existiert
+    # jetzt auch hier, nur über die rollenunabhängige /-/run/journal/-Route
+    # statt der scheduler-gated /-/journal/-Route.
     html = render.execution_detail_page(
         _entry(jid=7, slug="mein-testjob", domain="local"), events=[], kind="job")
     assert 'href="/-/ui/jobs"' in html
     assert 'href="/-/ui/schedule/mein-testjob"' not in html
     assert "/-/journal/7/stream" not in html
+    assert 'href="/-/run/journal/7/stream"' in html
 
 
 def test_execution_detail_pinned_run_links_back_to_jobs_not_raw_journal():
     # PLAN-28 Refactor D: ein gepinnter /run-Lauf hat seit run_pinned() eine
     # echte jobs-Zeile (domain='scheduled'), bleibt aber über pinned_host als
     # eigener Lauf erkennbar — derselbe Fall wie oben (domain='local', nur
-    # historische Zeilen von vor Refactor D), sonst landet jeder neue
-    # /run-Lauf in der "else"-Verzweigung: "zurück" zeigt auf die (auf
-    # Clients 404ende) Schedule-Detailseite, "roh"-Links auf die
-    # scheduler-gated /-/journal/{jid}/out|err|stream-Route (dead links).
+    # historische Zeilen von vor Refactor D). PLAN-28 User-Feedback: roher
+    # Link zeigt auf die rollenunabhängige /-/run/journal/-Route, nicht die
+    # scheduler-gated /-/journal/-Route (die auf einem reinen Client 404en
+    # würde).
     html = render.execution_detail_page(
         _entry(jid=7, slug="mein-testjob", domain="scheduled", pinned_host="mac"),
         events=[], kind="job")
     assert 'href="/-/ui/jobs"' in html
     assert 'href="/-/ui/schedule/mein-testjob"' not in html
     assert "/-/journal/7/stream" not in html
+    assert 'href="/-/run/journal/7/stream"' in html
 
 
 def test_execution_detail_output_job_preformatted():

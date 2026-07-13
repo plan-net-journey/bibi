@@ -82,6 +82,14 @@ class ControllerClient:
         return self._request(
             "POST", f"/-/run/live/{urllib.parse.quote(slug, safe='')}/kill") or {}
 
+    def run_live_reset(self, slug: str) -> dict:
+        # Not-Aus für eine hängen gebliebene Live-Anzeige (User-Feedback
+        # 2026-07-13: "warum nicht START, RESET und KILL wie auf Host") —
+        # erzwingt den Terminalstatus, auch ohne greifbaren Prozess.
+        # 404 → HTTPError.
+        return self._request(
+            "POST", f"/-/run/live/{urllib.parse.quote(slug, safe='')}/reset") or {}
+
     def jobs(self, *, status: str | None = None) -> list[dict]:
         return self._get("/-/job", {"status": status}) or []
 
