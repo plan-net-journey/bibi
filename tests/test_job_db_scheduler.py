@@ -874,6 +874,39 @@ def test_reserve_next_pinned_only_skips_other_host(conn):
     assert job_db.reserve_next(conn, host="mac", pinned_only=True) is None
 
 
+# ── User-Fund 2026-07-13: list_journal(slug=...) findet gepinnte Läufe nicht ──
+# run_pinned() vergibt pro Aufruf einen eindeutigen jobs.slug
+# (f"{bucket_slug}-{token}", worker.py) — _write_journal() übernimmt den
+# unverändert nach journal.slug. Eine Exact-Match-Suche nach dem stabilen
+# Bucket-Slug (z. B. "myjob") fand die Journal-Zeile deshalb nie, obwohl sie
+# existiert — Symptom: "Job noch nie gelaufen" + fehlender COMPLETE-Lauf im
+# Journal der Job-Detailseite.
+
+
+def test_list_journal_by_bucket_slug_finds_pinned_run(conn):
+    jid = _seed_full(conn, slug="myjob-abc12345", pinned_host="mac",
+                     status="running", started_at=1.0)
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    rows = job_db.list_journal(conn, slug="myjob")
+    assert len(rows) == 1 and rows[0]["status"] == "complete"
+
+
+def test_list_journal_by_bucket_slug_ignores_unrelated_similar_slug(conn):
+    # "job-runner" ist ein ECHTER, anderer Schedule-Slug (pinned_host=NULL) —
+    # darf bei der Suche nach "job" nicht fälschlich mit auftauchen, nur weil
+    # er zufällig mit "job-" beginnt.
+    jid = _seed_full(conn, slug="job-runner", status="running", started_at=1.0)
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    assert job_db.list_journal(conn, slug="job") == []
+
+
+def test_list_journal_by_exact_slug_still_works_for_real_schedules(conn):
+    jid = _seed_full(conn, slug="realschedule", status="running", started_at=1.0)
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    rows = job_db.list_journal(conn, slug="realschedule")
+    assert len(rows) == 1 and rows[0]["status"] == "complete"
+
+
 # ── #4 no_process-Reconcile ──────────────────────────────────────────────────
 
 

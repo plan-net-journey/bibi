@@ -307,10 +307,15 @@ class _FakeClient:
         return []
 
     def run_journal(self, *, slug=None, **_):
-        # Spiegelt die echte HTTP-Route: slug filtert, wenn gesetzt.
+        # Spiegelt die echte HTTP-Route (job_db.list_journal()): slug filtert
+        # exakt ODER (nur für gepinnte Zeilen, pinned_host gesetzt) per
+        # Bucket-Präfix — s. User-Fund 2026-07-13, job_db.py::list_journal().
         if slug is None:
             return self._run_journal
-        return [r for r in self._run_journal if r.get("slug") == slug]
+        def _matches(r):
+            return r.get("slug") == slug or (
+                bool(r.get("pinned_host")) and r.get("slug", "").startswith(f"{slug}-"))
+        return [r for r in self._run_journal if _matches(r)]
 
     def jobs(self, **_):
         return []
@@ -397,6 +402,26 @@ def test_jobs_route_shows_local_run_history(team_repo: Path, app_with):
         assert 'href="/-/ui/run/5"' in r.text
 
 
+def test_jobs_route_per_job_status_finds_pinned_run_by_bucket_slug(team_repo: Path, app_with):
+    # User-Fund 2026-07-13: run_pinned() vergibt pro Aufruf einen eindeutigen
+    # jobs.slug (f"{bucket_slug}-{token}") — die ungefilterte "Lokale Läufe"-
+    # Liste unten zeigt den Lauf zwar (s. test_jobs_route_shows_local_run_
+    # history), aber die Pro-Job-Statuszelle (_jobs_row(), Slug-Lookup gegen
+    # den STABILEN Bucket-Slug) fand ihn nie — zeigte immer "noch nie lokal
+    # gelaufen", obwohl der Job gerade erst komplett gelaufen war.
+    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
+    client = _FakeClient(run_journal=[
+        {"id": 5, "slug": "mein-testjob-abc12345", "status": "complete",
+         "exit_code": 0, "exec_runtime": 3.2, "finished_at": 100.0,
+         "domain": "scheduled", "pinned_host": "mac"},
+    ])
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs")
+        assert "noch nie lokal gelaufen" not in r.text
+        assert 'href="/-/ui/run/5"><span class="st complete"' in r.text
+
+
 def test_jobs_start_route_calls_client_run_and_returns_board(team_repo: Path, app_with):
     _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
     client = _FakeClient()
@@ -434,6 +459,26 @@ def test_jobs_detail_route_shows_meta_and_only_this_slugs_runs(team_repo: Path, 
         assert "mein-testjob" in r.text
         assert 'href="/-/ui/run/5"' in r.text
         assert "anderer-job" not in r.text  # slug-Filter greift
+
+
+def test_jobs_detail_route_shows_pinned_runs_for_this_slug(team_repo: Path, app_with):
+    # User-Fund 2026-07-13: "Bestätigt: ein abgeschlossener COMPLETE Lauf
+    # erscheint nicht in der Liste der Journaled Jobs" — die Detailseite
+    # filterte exakt gegen den ephemeren jobs.slug eines gepinnten Laufs
+    # (f"{bucket_slug}-{token}"), der stabile Bucket-Slug traf nie.
+    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
+    client = _FakeClient(run_journal=[
+        {"id": 5, "slug": "mein-testjob-abc12345", "status": "complete",
+         "finished_at": 100.0, "domain": "scheduled", "pinned_host": "mac"},
+        {"id": 6, "slug": "job-runner-xxxxxxxx", "status": "complete",
+         "finished_at": 100.0, "domain": "scheduled", "pinned_host": "mac"},
+    ])
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/detail/mein-testjob")
+        assert r.status_code == 200
+        assert 'href="/-/ui/run/5"' in r.text
+        assert 'href="/-/ui/run/6"' not in r.text  # anderer Bucket-Slug, kein Treffer
 
 
 def test_jobs_route_shows_running_for_live_job(team_repo: Path, app_with):

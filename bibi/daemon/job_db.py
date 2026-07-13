@@ -1233,11 +1233,23 @@ def list_journal(
     existieren) als auch gepinnte HTTP-``/run``-Läufe (``domain='scheduled'``
     — echte ``jobs``-Zeile, volle Lifecycle — aber ``pinned_host`` gesetzt).
     Echte Team-Queue-Läufe (``pinned_host IS NULL``) bleiben ausgeschlossen,
-    auch wenn sie zufällig auf demselben Host liefen."""
+    auch wenn sie zufällig auf demselben Host liefen.
+
+    ``slug`` (User-Fund 2026-07-13): ``run_pinned()`` vergibt pro Aufruf einen
+    eindeutigen ``jobs.slug`` (``f"{bucket_slug}-{token}"``, ``token`` immer
+    ``secrets.token_hex(4)`` = 8 Hex-Zeichen) — ``_write_journal()`` übernimmt
+    den unverändert nach ``journal.slug``. Eine reine Exact-Match-Suche nach
+    dem stabilen Bucket-Slug fand solche Zeilen deshalb nie. Fix: zusätzlich
+    zum Exact-Match ein ``LIKE``-Präfix, aber **nur** für Zeilen mit
+    ``pinned_host`` gesetzt — das verhindert Fehltreffer wie ``"job"`` vs.
+    einem echten, andersartigen Schedule-Slug ``"job-runner"`` (dessen
+    ``pinned_host`` immer ``NULL`` ist, s. ``worker.py``s ``_pinned_live_row()``
+    für dieselbe Konvention)."""
     sql = "SELECT * FROM journal"
     clauses, params = [], []
     if slug:
-        clauses.append("slug=?"); params.append(slug)
+        clauses.append("(slug=? OR (pinned_host IS NOT NULL AND slug LIKE ?))")
+        params.extend([slug, f"{slug}-________"])
     if host:
         clauses.append("host=?"); params.append(host)
     if domain:

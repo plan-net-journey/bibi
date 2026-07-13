@@ -295,9 +295,20 @@ def add_controller_routes(
             run_journal = []
         # Sortiert nach finished_at DESC (job_db.list_journal) — der erste
         # Treffer je Slug ist damit schon der jeweils letzte Lauf.
+        #
+        # User-Fund 2026-07-13: run_pinned() vergibt pro Aufruf einen
+        # eindeutigen jobs.slug (f"{bucket_slug}-{token}"), der unverändert
+        # nach journal.slug übernommen wird (job_db.py::_write_journal()).
+        # Der Pro-Job-Lookup unten (_jobs_row(), render.py) sucht aber gegen
+        # den STABILEN Bucket-Slug aus der lokalen MD-Discovery — ohne
+        # Rückrechnung fand er einen gepinnten Lauf deshalb nie, selbst wenn
+        # er gerade komplett gelaufen war ("noch nie lokal gelaufen" trotz
+        # sichtbarem Eintrag in der Liste unten). Dieselbe Rückrechnung nutzt
+        # bereits worker.local_runs_live() für den *live*-Fall.
         local_runs: dict[str, dict] = {}
         for run in run_journal:
-            local_runs.setdefault(run["slug"], run)
+            bucket = run["slug"].rsplit("-", 1)[0] if run.get("pinned_host") else run["slug"]
+            local_runs.setdefault(bucket, run)
         return rows, local_runs, run_journal[:20]
 
     @app.get("/-/ui/jobs", include_in_schema=False)
