@@ -344,6 +344,67 @@ def test_finish_silence_outcome_maps_to_silence_reason(tmp_path):
     assert row["reason"] == "silence"
 
 
+def test_finish_exhausted_retries_reaches_error_not_stuck_running(tmp_path):
+    # Bug gefunden bei PLAN-28 (erstmals beobachtet mit attempts=0, betrifft
+    # aber jeden Job, der seine Retries je ausschöpft): "error" ist von
+    # "running" aus KEIN gültiger lifecycle.py-Übergang (nur failed
+    # --exhaust--> error) — ein direkter Report wurde von report_status() als
+    # "invalid" verworfen, OHNE Exception, OHNE Journal-Eintrag — der Job
+    # blieb für immer sichtbar "running", obwohl der Prozess längst beendet
+    # war. _finish() muss jetzt erst den gültigen Zwischenschritt
+    # running→failed melden, dann sofort synchron failed→error.
+    db_path = tmp_path / "jobs.sqlite"
+    c = job_db.connect(db_path)
+    c.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempt, attempts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("z11", "z11", "z11.md", "job", "echo hi", "running", 0, 0),
+    )
+    c.close()
+    env = {"BIBI_JOB_ID": "z11", "BIBI_SCHEDULER_DB_PATH": str(db_path),
+           "BIBI_ATTEMPT": "0", "BIBI_ATTEMPTS": "0"}
+
+    _wrapper._finish(env, 1, "normal")
+
+    c2 = job_db.connect(db_path)
+    row = c2.execute("SELECT status, reason, exit_code FROM jobs WHERE id='z11'").fetchone()
+    jrows = job_db.list_journal(c2)
+    c2.close()
+    assert row["status"] == "error"
+    assert row["reason"] == "nonzero_exit"
+    assert row["exit_code"] == 1
+    # Genau ein Journal-Eintrag — der transiente "failed"-Zwischenschritt ist
+    # nicht TERMINAL, erzeugt also keinen zweiten (doppelten) Eintrag.
+    assert len(jrows) == 1 and jrows[0]["status"] == "error"
+
+
+def test_finish_retriable_failure_unaffected_by_exhaustion_fix(tmp_path):
+    # Regressionsschutz: die normale (noch nicht erschöpfte) Retry-Meldung
+    # bleibt unverändert ein einzelner running→failed-Report mit Backoff.
+    db_path = tmp_path / "jobs.sqlite"
+    c = job_db.connect(db_path)
+    c.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempt, attempts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("z12", "z12", "z12.md", "job", "echo hi", "running", 0, 3),
+    )
+    c.close()
+    env = {"BIBI_JOB_ID": "z12", "BIBI_SCHEDULER_DB_PATH": str(db_path),
+           "BIBI_ATTEMPT": "0", "BIBI_ATTEMPTS": "3"}
+
+    _wrapper._finish(env, 1, "normal")
+
+    c2 = job_db.connect(db_path)
+    row = c2.execute(
+        "SELECT status, attempt, next_fire_at FROM jobs WHERE id='z12'").fetchone()
+    jrows = job_db.list_journal(c2)
+    c2.close()
+    assert row["status"] == "failed"
+    assert row["attempt"] == 1
+    assert row["next_fire_at"] is not None
+    assert jrows == []  # "failed" ist nicht terminal, noch kein Journal-Eintrag
+
+
 # ── E2E: run_app mit stdout-Signalen ─────────────────────────────────────────
 
 

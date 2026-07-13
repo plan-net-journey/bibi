@@ -349,6 +349,15 @@ def _finish(env: dict[str, str], exit_code: int, outcome: str) -> None:
     report_attempt: int | None = None
     next_fire_at: float | None = None
 
+    out_path_str = env.get("BIBI_OUTPUT_PATH", "")
+    repo_root_str = env.get("BIBI_REPO_ROOT", "")
+    output_ref: str | None = None
+    if out_path_str and repo_root_str:
+        try:
+            output_ref = Path(out_path_str).relative_to(repo_root_str).as_posix()
+        except ValueError:
+            output_ref = out_path_str
+
     if outcome == "wall_time":
         status, reason = "killed", "by_wall_time"
     elif outcome == "silence":
@@ -368,16 +377,27 @@ def _finish(env: dict[str, str], exit_code: int, outcome: str) -> None:
         report_attempt = next_attempt
         status, reason = "failed", "nonzero_exit"
     else:
-        status, reason = "error", "nonzero_exit"
-
-    out_path_str = env.get("BIBI_OUTPUT_PATH", "")
-    repo_root_str = env.get("BIBI_REPO_ROOT", "")
-    output_ref: str | None = None
-    if out_path_str and repo_root_str:
-        try:
-            output_ref = Path(out_path_str).relative_to(repo_root_str).as_posix()
-        except ValueError:
-            output_ref = out_path_str
+        # Erschöpft (attempt_cur >= attempts_max): "error" ist von "running" aus
+        # KEIN gültiger Übergang (lifecycle.py: nur failed --exhaust--> error,
+        # keine (running, *) -> error-Kante) — ein direkter Report würde von
+        # report_status() als "invalid" verworfen, OHNE Exception, OHNE
+        # Journal-Eintrag — der Job bliebe für immer sichtbar "running", obwohl
+        # der Prozess längst beendet ist (Fund PLAN-28: erstmals beobachtet mit
+        # attempts=0, betrifft aber jeden Job, der seine Retries je ausschöpft
+        # — auch bei attempts>0 ist die letzte, exhaustierende Meldung immer
+        # ein direkter running→error-Versuch gewesen).
+        #
+        # Fix: erst der gültige Zwischenschritt running→failed (kein
+        # next_fire_at, kein weiterer Retry geplant — "failed" ist nicht
+        # TERMINAL, erzeugt also noch keinen Journal-Eintrag), dann sofort
+        # synchron failed→error (jetzt gültig, EXHAUST-Kante) — beides hier im
+        # selben Wrapper-Aufruf, kein Sweep/Daemon nötig.
+        _report_terminal(env, status="failed", reason="nonzero_exit", exit_code=exit_code,
+                         output_ref=output_ref, commit_sha=commit_sha, branch=branch,
+                         attempt=attempt_cur, next_fire_at=None)
+        _report_terminal(env, status="error", reason="nonzero_exit", exit_code=exit_code,
+                         output_ref=output_ref, commit_sha=commit_sha, branch=branch)
+        return
 
     _report_terminal(env, status=status, reason=reason, exit_code=exit_code,
                      output_ref=output_ref, commit_sha=commit_sha, branch=branch,
