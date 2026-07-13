@@ -344,6 +344,32 @@ def test_finish_silence_outcome_maps_to_silence_reason(tmp_path):
     assert row["reason"] == "silence"
 
 
+def test_finish_killed_outcome_maps_to_killed_by_user(tmp_path):
+    # User-Fund 2026-07-13 ("KILL führt nicht zum Status Wechsel"): _on_sigterm()
+    # (run_app()/run_job()) meldet jetzt outcome="killed" statt eine
+    # BaseException durchzureichen, die main()s except Exception umging und
+    # _finish() nie erreichte. _finish() selbst muss "killed" korrekt auf
+    # status=killed, reason=by_user abbilden (spiegelt job_kill()s Konvention).
+    db_path = tmp_path / "jobs.sqlite"
+    c = job_db.connect(db_path)
+    c.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("z13", "z13", "z13.md", "job", "echo hi", "running"),
+    )
+    c.close()
+    env = {"BIBI_JOB_ID": "z13", "BIBI_SCHEDULER_DB_PATH": str(db_path),
+           "BIBI_ATTEMPT": "0", "BIBI_ATTEMPTS": "1"}
+
+    _wrapper._finish(env, -15, "killed")
+
+    c2 = job_db.connect(db_path)
+    row = c2.execute("SELECT status, reason FROM jobs WHERE id='z13'").fetchone()
+    c2.close()
+    assert row["status"] == "killed"
+    assert row["reason"] == "by_user"
+
+
 def test_finish_exhausted_retries_reaches_error_not_stuck_running(tmp_path):
     # Bug gefunden bei PLAN-28 (erstmals beobachtet mit attempts=0, betrifft
     # aber jeden Job, der seine Retries je ausschöpft): "error" ist von
@@ -470,3 +496,56 @@ def test_run_app_deferred_via_bibi_job_exception(tmp_path):
     row = c2.execute("SELECT status FROM jobs WHERE id='d1'").fetchone()
     c2.close()
     assert row["status"] == "deferred"
+
+
+@pytest.mark.slow
+def test_run_job_real_sigterm_reports_killed_by_user(tmp_path):
+    """Echtes SIGTERM an den Wrapper-Prozess (simuliert worker.py::_terminate()s
+    os.killpg gegen die Wrapper-Prozessgruppe) — User-Fund 2026-07-13: führte
+    vorher zu einer BaseException (SystemExit), die main()s except Exception
+    umging — _finish() lief nie, der Job blieb für immer "running"."""
+    import os
+    import signal as _signal
+    import sys as _sys
+    from bibi import wrapper as _wrapper
+
+    db_path = tmp_path / "jobs.sqlite"
+    c = job_db.connect(db_path)
+    c.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("k1", "k1", "k1.md", "job", "sleep 30", "running"),
+    )
+    c.close()
+
+    script = tmp_path / "long_job.py"
+    script.write_text("import time\ntime.sleep(30)\n")
+
+    out = tmp_path / "output.jsonl"
+    env = {
+        "BIBI_JOB_TYPE": "job",
+        "BIBI_JOB_ID": "k1",
+        "BIBI_OUTPUT_PATH": str(out),
+        "BIBI_WORKTREE": str(tmp_path),
+        "BIBI_JOB_CMD": f"{_sys.executable} {script}",
+        "BIBI_SCHEDULER_DB_PATH": str(db_path),
+    }
+
+    def _send_sigterm_soon():
+        time.sleep(1.0)
+        os.kill(os.getpid(), _signal.SIGTERM)
+
+    threading.Thread(target=_send_sigterm_soon, daemon=True).start()
+
+    started = time.time()
+    code = _wrapper.run_job(env)
+    elapsed = time.time() - started
+
+    assert elapsed < 10.0  # deutlich vor den vollen 30s beendet — echt gekillt
+    assert code != 0
+
+    c2 = job_db.connect(db_path)
+    row = c2.execute("SELECT status, reason FROM jobs WHERE id='k1'").fetchone()
+    c2.close()
+    assert row["status"] == "killed"
+    assert row["reason"] == "by_user"

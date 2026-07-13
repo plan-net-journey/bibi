@@ -360,6 +360,11 @@ def _finish(env: dict[str, str], exit_code: int, outcome: str) -> None:
 
     if outcome == "wall_time":
         status, reason = "killed", "by_wall_time"
+    elif outcome == "killed":
+        # SIGTERM an den Wrapper (User-KILL, s. _on_sigterm() in run_app()/
+        # run_job()) — reason="by_user" spiegelt job_kill()s (app.py)
+        # Konvention für denselben Fall.
+        status, reason = "killed", "by_user"
     elif outcome == "silence":
         status, reason = "zombie", "silence"
     elif outcome == "deferred":
@@ -427,16 +432,30 @@ def run_app(env: dict[str, str]) -> int:
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, bufsize=1, start_new_session=True,
     )
-    if threading.current_thread() is threading.main_thread():
-        def _on_sigterm(signum, frame):
-            _terminate_proc(proc)
-            raise SystemExit(1)
-        signal.signal(signal.SIGTERM, _on_sigterm)
 
     lock = threading.Lock()
     outcome: list[str] = [""]
     current_status: list[str] = ["running"]  # shared mit deferred_watcher
     last_activity_ts: list[float] = [time.time()]
+
+    if threading.current_thread() is threading.main_thread():
+        def _on_sigterm(signum, frame):
+            # User-Fund 2026-07-13: ``raise SystemExit(1)`` hier sprang an
+            # main()s ``except Exception`` vorbei (SystemExit erbt von
+            # BaseException, nicht Exception) — _finish() lief nach einem
+            # Kill deshalb NIE, der Job blieb für immer "running" (auf dem
+            # Host durch job_kill()s direkten DB-Write verdeckt, beim
+            # gepinnten /run sichtbar geworden). Fix: outcome wie bei
+            # wall_time/silence VOR _terminate_proc() setzen (kein Race mit
+            # proc.wait()) und normal zurückkehren — proc.wait() retryt die
+            # unterbrochene waitpid() automatisch (PEP 475), der übliche
+            # Nachlauf (Threads joinen, _finish()) läuft danach ganz normal
+            # weiter, jetzt mit outcome="killed".
+            with lock:
+                if not outcome[0]:
+                    outcome[0] = "killed"
+            _terminate_proc(proc)
+        signal.signal(signal.SIGTERM, _on_sigterm)
 
     def pump(pipe, tag: str) -> None:
         assert pipe is not None
@@ -525,12 +544,6 @@ def run_job(env: dict[str, str]) -> int:
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, bufsize=1, start_new_session=True,
     )
-    if threading.current_thread() is threading.main_thread():
-        def _on_sigterm(signum, frame):
-            _terminate_proc(proc)
-            raise SystemExit(1)
-        signal.signal(signal.SIGTERM, _on_sigterm)
-
     lock = threading.Lock()
     last_activity_ts: list[float] = [time.time()]
 
@@ -542,6 +555,20 @@ def run_job(env: dict[str, str]) -> int:
             last_activity_ts[0] = time.time()
 
     outcome: list[str] = [""]
+
+    if threading.current_thread() is threading.main_thread():
+        def _on_sigterm(signum, frame):
+            # User-Fund 2026-07-13, s. run_app() für den vollen Kontext:
+            # ``raise SystemExit(1)`` sprang an main()s ``except Exception``
+            # vorbei — outcome VOR _terminate_proc() setzen (wie wall_time/
+            # silence) statt eine BaseException durchzureichen, proc.wait()
+            # retryt die unterbrochene waitpid() automatisch (PEP 475).
+            with lock:
+                if not outcome[0]:
+                    outcome[0] = "killed"
+            _terminate_proc(proc)
+        signal.signal(signal.SIGTERM, _on_sigterm)
+
     started = time.time()
     wall_str = env.get("BIBI_WALL_TIME")
     silence_str = env.get("BIBI_SILENCE_TIMEOUT")

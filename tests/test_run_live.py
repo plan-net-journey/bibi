@@ -358,6 +358,16 @@ def test_run_live_kill_route_signals_running_job(client_with_pinned_worker, team
     assert r.status_code == 200
     assert r.json() == {"slug": "myjob", "signaled": True}
 
+    # User-Fund 2026-07-13 ("KILL führt nicht zum Status Wechsel. Status
+    # bleibt RUNNING"): anders als job_kill() (Host) schrieb diese Route nie
+    # selbst den Status — verließ sich komplett auf den (separat kaputten,
+    # s. test_wrapper_signals.py) Wrapper-Selbstreport nach SIGTERM.
+    conn = job_db.connect(team_repo / "data" / "jobs.sqlite")
+    row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+    conn.close()
+    assert row["status"] == "killed"
+    assert row["reason"] == "by_user"
+
 
 def test_run_live_kill_route_404_when_proc_already_exited(client_with_pinned_worker, team_repo):
     c, pinned = client_with_pinned_worker

@@ -713,6 +713,17 @@ def create_app(
         signaled = pinned_worker.kill(live["id"])
         if not signaled:
             return JSONResponse(status_code=404, content={"error": "not running", "slug": slug})
+        # User-Fund 2026-07-13 ("KILL führt nicht zum Status Wechsel"): anders
+        # als job_kill() (Host, oben) schrieb diese Route den Status bisher nie
+        # selbst, sondern verließ sich komplett auf den Wrapper-Selbstreport
+        # nach SIGTERM — der über einen separaten Bug (SystemExit umging
+        # main()s except Exception, s. wrapper/__init__.py::_on_sigterm())
+        # nie ankam. Jetzt wie beim Host: direkt schreiben, statt zu warten.
+        conn = job_db.connect(pinned_worker.db_path)
+        try:
+            job_db.report_status(conn, live["id"], status="killed", reason="by_user")
+        finally:
+            conn.close()
         return {"slug": slug, "signaled": True}
 
     def _is_own_run(entry: dict | None) -> bool:
