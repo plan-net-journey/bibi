@@ -765,6 +765,24 @@ def create_app(
             conn.close()
         return {"slug": slug, "reset": True}
 
+    # User-Fund 2026-07-13 ("REBUILD müsste doch auch beim Client notwendig
+    # sein, oder?"): REBUILD (PLAN-24 Befund 5) verwirft das per-Job-Image
+    # eines Container-Jobs — auf dem Host längst verdrahtet (POST /-/job/{id}/
+    # rebuild oben), auf dem Client bisher komplett vergessen. Anders als
+    # KILL/RESET hängt REBUILD an keiner Live-Zeile — der Lookup geht direkt
+    # über die Schedule-MD (local_schedule_exec_mode()), nicht über die DB.
+    @app.post("/-/run/live/{slug}/rebuild", tags=["job"])
+    def run_live_rebuild(slug: str):
+        try:
+            exec_mode = worker_mod.local_schedule_exec_mode(slug)
+        except LookupError:
+            return JSONResponse(status_code=404, content={"error": "unknown schedule", "slug": slug})
+        if (exec_mode or "host").strip().lower() != "container":
+            return JSONResponse(status_code=409, content={"error": "not a container job", "slug": slug})
+        if not pinned_worker.rebuild_job_image(slug):
+            return JSONResponse(status_code=502, content={"error": "docker command failed", "slug": slug})
+        return {"slug": slug, "rebuilt": True}
+
     def _is_own_run(entry: dict | None) -> bool:
         # PLAN-28: "meine eigene /run-Historie" — domain='local' (historische
         # Zeilen vom alten CLI-Pfad, Refactor D entfernt — auf Bestandsknoten

@@ -90,6 +90,14 @@ class ControllerClient:
         return self._request(
             "POST", f"/-/run/live/{urllib.parse.quote(slug, safe='')}/reset") or {}
 
+    def run_rebuild(self, slug: str) -> dict:
+        # Verwirft das per-Job-Image eines Container-Jobs (PLAN-24 Befund 5) —
+        # User-Fund 2026-07-13: "REBUILD müsste doch auch beim Client
+        # notwendig sein, oder?". 404 (unbekannter Slug) / 409 (kein
+        # Container-Job) → HTTPError.
+        return self._request(
+            "POST", f"/-/run/live/{urllib.parse.quote(slug, safe='')}/rebuild") or {}
+
     def jobs(self, *, status: str | None = None) -> list[dict]:
         return self._get("/-/job", {"status": status}) or []
 

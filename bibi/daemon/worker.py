@@ -630,6 +630,22 @@ def _resolve_spec(repo_root: Path, slug: str):
     return res.found.get(slug)
 
 
+def local_schedule_exec_mode(slug: str, *, repo_root: Path | None = None) -> str | None:
+    """``exec_mode``-Override direkt aus der Schedule-MD — unabhängig von
+    irgendeiner ``jobs``-Zeile. Grundlage für REBUILD auf dem Client (User-
+    Fund 2026-07-13: "REBUILD müsste doch auch beim Client notwendig sein,
+    oder?") — anders als START/RESET/KILL hängt REBUILD an keinem bestimmten
+    Lauf, sondern rein am *Schedule*: das per-Job-Image existiert (oder auch
+    nicht) unabhängig davon, ob gerade etwas läuft oder je gelaufen ist.
+
+    Wirft ``LookupError`` für einen unbekannten Slug — dieselbe Konvention
+    wie ``run_pinned()``s eigene Slug-Resolution."""
+    pr = _resolve_spec(repo_root or repo.root(), slug)
+    if pr is None:
+        raise LookupError(f"kein Schedule mit Slug {slug!r}")
+    return pr.spec.exec_mode
+
+
 #: Live-Status-Werte (kein Terminalzustand) — deckungsgleich mit dem, was ein
 #: gerade tatsächlich laufender Wrapper-Subprozess haben kann.
 _PINNED_LIVE_STATUSES = ("running", "awaiting")

@@ -255,6 +255,22 @@ def test_local_job_meta_reset_button_only_enabled_while_live():
     assert "resetbtn\" hx-post=\"/-/ui/jobs/detail/a/reset\" hx-target=\"#jobsdetail-live\" hx-swap=\"outerHTML\" disabled" not in running
 
 
+def test_local_job_meta_shows_rebuild_button_for_container_job():
+    # User-Fund 2026-07-13: "REBUILD müsste doch auch beim Client notwendig
+    # sein, oder?" — wie beim Host (_action_bar()) nur sichtbar bei
+    # exec_mode: container, unabhängig von live/idle.
+    local = {**_row("a"), "exec_mode": "container"}
+    idle = render._local_job_meta("a", local, {"status": "complete"})
+    assert 'hx-post="/-/ui/jobs/detail/a/rebuild"' in idle
+    running = render._local_job_meta("a", local, None, live={"id": "jid1", "events": []})
+    assert 'hx-post="/-/ui/jobs/detail/a/rebuild"' in running  # nicht an live gebunden
+
+
+def test_local_job_meta_hides_rebuild_button_for_host_job():
+    idle = render._local_job_meta("a", _row("a"), {"status": "complete"})  # kein exec_mode
+    assert "rebuild" not in idle.lower()
+
+
 def test_local_live_output_empty_when_not_running():
     assert render._local_live_output(None) == ""
 
@@ -360,6 +376,7 @@ class _FakeClient:
         self._run_outputs = run_outputs or {}  # {journal_id: {"events": [...], "kind": ...}}
         self.run_calls: list[dict] = []
         self.delete_calls: list[int] = []
+        self.rebuild_calls: list[str] = []
         self.schedules_called = False
 
     def local_run_output(self, journal_id: int) -> dict:
@@ -423,6 +440,10 @@ class _FakeClient:
             raise RuntimeError("404 not running")
         del self._live[slug]
         return {"slug": slug, "reset": True}
+
+    def run_rebuild(self, slug: str) -> dict:
+        self.rebuild_calls.append(slug)
+        return {"slug": slug, "rebuilt": True}
 
 
 def _seed_schedule_md(root: Path, slug: str, schedule: str, payload: str) -> None:
@@ -719,3 +740,25 @@ def test_jobs_detail_kill_route_survives_nothing_running(team_repo: Path, app_wi
     with TestClient(app) as c:
         r = c.post("/-/ui/jobs/detail/nichts-los/kill")
         assert r.status_code == 200  # kein 500, auch wenn client.run_live_kill() 404t
+
+
+def test_jobs_detail_rebuild_route(team_repo: Path, app_with):
+    # User-Fund 2026-07-13: "REBUILD müsste doch auch beim Client notwendig
+    # sein, oder?" — Analogon zu jobs_detail_kill()/jobs_detail_reset().
+    _seed_schedule_md(team_repo, "a", "now", "echo x")
+    app, fake = app_with(_FakeClient())
+    with TestClient(app) as c:
+        r = c.post("/-/ui/jobs/detail/a/rebuild")
+        assert r.status_code == 200
+        assert fake.rebuild_calls == ["a"]
+        assert 'id="jobsdetail-live"' in r.text
+
+
+def test_jobs_detail_rebuild_route_survives_backend_error(team_repo: Path, app_with):
+    class _FailingRebuildClient(_FakeClient):
+        def run_rebuild(self, slug: str) -> dict:
+            raise RuntimeError("409 not a container job")
+    app, _ = app_with(_FailingRebuildClient())
+    with TestClient(app) as c:
+        r = c.post("/-/ui/jobs/detail/nichts-los/rebuild")
+        assert r.status_code == 200  # kein 500, auch wenn client.run_rebuild() fehlschlägt

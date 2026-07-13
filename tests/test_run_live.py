@@ -419,3 +419,69 @@ def test_run_live_reset_route_forces_killed_even_without_registered_proc(
     # User-Fund 2026-07-13 ("kein Output nach Kill") — s. Kill-Test oben,
     # gleicher Mechanismus gilt für RESET.
     assert row["output_ref"] == real_output_ref
+
+
+# ── local_schedule_exec_mode() + POST /-/run/live/{slug}/rebuild ────────────
+# User-Fund 2026-07-13 ("REBUILD müsste doch auch beim Client notwendig
+# sein, oder?"): REBUILD (PLAN-24 Befund 5) verwirft das per-Job-Image eines
+# Container-Jobs — auf dem Host längst verdrahtet (/-/job/{id}/rebuild,
+# _action_bar()), auf dem Client bisher komplett fehlend. Anders als START/
+# RESET/KILL hängt REBUILD an keiner bestimmten Lauf-Zeile, sondern rein am
+# *Schedule* (dessen exec_mode: container-Override) — deshalb ein eigener,
+# rein dateibasierter Lookup statt eines DB-Query wie bei _job_is_container().
+
+
+def _seed_schedule(root: Path, rel: str, body: str) -> None:
+    p = root / "vault" / "case" / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body, encoding="utf-8")
+
+
+def test_local_schedule_exec_mode_reads_container_override(team_repo: Path):
+    _seed_schedule(team_repo, "myjob/README.md",
+                  '---\nschedule: never\njob: "echo hi"\nexec_mode: container\n---\n')
+    assert worker.local_schedule_exec_mode("myjob") == "container"
+
+
+def test_local_schedule_exec_mode_none_for_host_default(team_repo: Path):
+    _seed_schedule(team_repo, "myjob/README.md", '---\nschedule: never\njob: "echo hi"\n---\n')
+    assert worker.local_schedule_exec_mode("myjob") is None
+
+
+def test_local_schedule_exec_mode_raises_lookup_error_for_unknown_slug(team_repo: Path):
+    with pytest.raises(LookupError):
+        worker.local_schedule_exec_mode("nope")
+
+
+def test_run_live_rebuild_route_404_for_unknown_slug(client_only):
+    assert client_only.post("/-/run/live/nope/rebuild").status_code == 404
+
+
+def test_run_live_rebuild_route_409_for_host_mode_job(client_only, team_repo: Path):
+    _seed_schedule(team_repo, "myjob/README.md", '---\nschedule: never\njob: "echo hi"\n---\n')
+    assert client_only.post("/-/run/live/myjob/rebuild").status_code == 409
+
+
+def test_run_live_rebuild_route_ok_for_container_mode_job(client_only, team_repo: Path,
+                                                          monkeypatch):
+    _seed_schedule(team_repo, "myjob/README.md",
+                  '---\nschedule: never\njob: "echo hi"\nexec_mode: container\n---\n')
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "bibi.daemon.worker.Worker.rebuild_job_image",
+        lambda self, slug, out_path=None: calls.append(slug) or True,
+    )
+    r = client_only.post("/-/run/live/myjob/rebuild")
+    assert r.status_code == 200
+    assert r.json() == {"slug": "myjob", "rebuilt": True}
+    assert calls == ["myjob"]
+
+
+def test_run_live_rebuild_route_502_on_docker_failure(client_only, team_repo: Path, monkeypatch):
+    _seed_schedule(team_repo, "myjob/README.md",
+                  '---\nschedule: never\njob: "echo hi"\nexec_mode: container\n---\n')
+    monkeypatch.setattr(
+        "bibi.daemon.worker.Worker.rebuild_job_image",
+        lambda self, slug, out_path=None: False,
+    )
+    assert client_only.post("/-/run/live/myjob/rebuild").status_code == 502

@@ -1515,10 +1515,20 @@ def _local_job_meta(slug: str, local: dict, last_run: dict | None,
     reset_btn = (f'<button class="resetbtn" hx-post="/-/ui/jobs/detail/{s}/reset" '
                 f'hx-target="#jobsdetail-live" hx-swap="outerHTML"{reset_disabled} '
                 f'title="hängen gebliebenen Live-Status aufräumen">↺ Reset</button>')
+    # REBUILD (User-Fund 2026-07-13: "REBUILD müsste doch auch beim Client
+    # notwendig sein, oder?") — wie beim Host (_action_bar()) nur sichtbar bei
+    # exec_mode: container, unabhängig vom Live-/Journal-Status (verwirft nur
+    # das per-Job-Image, betrifft keinen laufenden Prozess).
+    rebuild_btn = ""
+    if (local.get("exec_mode") or "host").strip().lower() == "container":
+        rebuild_btn = (f' <button class="rebuildbtn" hx-post="/-/ui/jobs/detail/{s}/rebuild" '
+                      f'hx-target="#jobsdetail-live" hx-swap="outerHTML" '
+                      f'title="Verwirft das per-Job-Image, nächster Lauf startet vom '
+                      f'Default-Image">REBUILD</button>')
     return (
         f'<p class="muted">Typ <b>{kind}</b> · '
         f'Trigger <code>{trigger}</code> · Git <span class="{cls}">{git_label}</span>'
-        f"{status_html}</p>{start_btn} {reset_btn} {kill_btn}"
+        f"{status_html}</p>{start_btn} {reset_btn} {kill_btn}{rebuild_btn}"
     )
 
 

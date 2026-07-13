@@ -60,6 +60,11 @@ def _local_schedules() -> dict[str, dict]:
         slug: {
             "schedule": pr.spec.schedule, "at": pr.spec.at, "payload": pr.spec.payload,
             "repo_path": (case_dir / pr.schedule_ref).relative_to(root).as_posix(),
+            # User-Fund 2026-07-13 ("REBUILD müsste doch auch beim Client
+            # notwendig sein, oder?"): Grundlage für die REBUILD-Sichtbarkeit
+            # auf der Client-Job-Detailseite (_local_job_meta(), render.py) —
+            # bisher fehlte exec_mode hier komplett, das Feld war unsichtbar.
+            "exec_mode": pr.spec.exec_mode,
         }
         for slug, pr in found.items()
     }
@@ -403,6 +408,23 @@ def add_controller_routes(
         # analog zu jobs_detail_kill(), aber lokal (client.run_live_reset()).
         try:
             client.run_live_reset(slug)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        local, last_run, _runs = _job_detail_data(slug)
+        live = _job_live(slug)
+        return HTMLResponse(render.jobs_detail_live_fragment(
+            slug, live, local, last_run,
+            last_run_output=None if live else _job_last_run_output(last_run)))
+
+    @app.post("/-/ui/jobs/detail/{slug}/rebuild", include_in_schema=False)
+    def jobs_detail_rebuild(slug: str):
+        # User-Fund 2026-07-13: "REBUILD müsste doch auch beim Client
+        # notwendig sein, oder?" — Analogon zu schedule_action()s REBUILD-Verb
+        # (Host), aber lokal (client.run_rebuild()). Anders als KILL/RESET
+        # hängt REBUILD an keiner Live-Zeile, deshalb kein _job_live()-Bezug
+        # nötig — nur Fragment neu rendern.
+        try:
+            client.run_rebuild(slug)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
         local, last_run, _runs = _job_detail_data(slug)
