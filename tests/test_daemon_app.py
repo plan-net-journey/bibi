@@ -87,8 +87,8 @@ def test_no_synchronizer_role(team_repo):
         assert client.post("/-/synchronizer/push").status_code == 404
 
 
-class FakePinnedLoop:
-    """Minimaler LocalPinnedLoop-Stand-in — PLAN-28."""
+class FakePinnedWorker:
+    """Minimaler Worker-Stand-in für den gepinnten Zweit-Worker — PLAN-28."""
 
     def __init__(self) -> None:
         self.started = False
@@ -100,11 +100,12 @@ class FakePinnedLoop:
         self.started = False
 
 
-def test_pinned_loop_starts_even_without_any_role(team_repo):
-    # PLAN-28: LocalPinnedLoop ist rollenunabhängig — jeder Knoten hat seine
-    # eigene lokale jobs.sqlite, ein reiner Client ohne scheduler/worker-Rolle
-    # braucht trotzdem Sweep+Dispatch für seine eigenen gepinnten /run-Läufe.
-    fake = FakePinnedLoop()
-    app = create_app(roles.resolve(set()), pinned_loop=fake)  # idle daemon, keine Rollen
+def test_pinned_worker_starts_even_without_any_role(team_repo):
+    # PLAN-28: der gepinnte Zweit-Worker ist rollenunabhängig — jeder Knoten
+    # hat seine eigene lokale jobs.sqlite, ein reiner Client ohne
+    # scheduler/worker-Rolle braucht trotzdem Retry-Redispatch/Deferred-
+    # Re-Arm für seine eigenen gepinnten /run-Läufe.
+    fake = FakePinnedWorker()
+    app = create_app(roles.resolve(set()), pinned_worker=fake)  # idle daemon, keine Rollen
     with TestClient(app):
         assert fake.started is True

@@ -469,18 +469,22 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
 def create_app(
     roles: Roles, synchronizer=None, worker: Worker | None = None, sweeper=None,
     rescanner=None, controller_client=None, controller_base_url: str | None = None,
-    sync_lock=None, heartbeat=None, pinned_loop=None,
+    sync_lock=None, heartbeat=None, pinned_worker: Worker | None = None,
 ) -> FastAPI:
     started_at = time.time()
     if worker is None and roles.worker:
         worker = Worker(worker_name="local")
     # PLAN-28: rollenunabhängig — jeder Knoten hat seine eigene lokale
     # jobs.sqlite (kein zentraler, netzwerk-geteilter Scheduler), also braucht
-    # jeder Knoten seinen eigenen Sweep+Dispatch für pinned_host==sich-selbst
-    # (gepinnte /run-Läufe), unabhängig davon, ob er roles.scheduler/worker hat.
-    if pinned_loop is None:
-        from bibi.daemon.pinned import LocalPinnedLoop
-        pinned_loop = LocalPinnedLoop()
+    # jeder Knoten seinen eigenen Retry-Redispatch/Deferred-Re-Arm für
+    # pinned_host==sich-selbst (gepinnte /run-Läufe), unabhängig davon, ob er
+    # roles.scheduler/worker hat. Kein eigenes Komponenten-Rad (die frühere
+    # LocalPinnedLoop-Erfindung fehlte z. B. das App-Port/Traefik-Routing,
+    # das Worker._poll_app_routes() längst kann) — einfach ein zweiter
+    # Worker mit einem Client, der nur pinned_host==dieser Host dispatcht.
+    if pinned_worker is None:
+        from bibi.daemon.scheduler_client import LocalScheduler
+        pinned_worker = Worker(client=LocalScheduler(pinned_only=True))
     # Merge-back für den **lokalen** Worker (PLAN-6): der geht nicht über die
     # HTTP-Route /-/scheduler/status, darum den Hook direkt an den LocalScheduler
     # hängen. Nur am Knoten mit Scheduler-Rolle (besitzt trunk-Repo + Job-DB).
@@ -528,11 +532,11 @@ def create_app(
             await heartbeat.start()
         if worker is not None:
             await worker.start()
-        await pinned_loop.start()
+        await pinned_worker.start()
         try:
             yield
         finally:
-            await pinned_loop.stop()
+            await pinned_worker.stop()
             if worker is not None:
                 await worker.stop()
             if heartbeat is not None:

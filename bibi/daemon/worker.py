@@ -1145,6 +1145,16 @@ class Worker:
             return False
 
     async def _loop(self) -> None:
+        # PLAN-28: erst schlafen, dann ticken, beim allerersten Durchlauf —
+        # ein zweiter, rollenunabhängig immer gestarteter Worker (gepinnte
+        # Läufe) lief sonst in praktisch jedem Test sofort per
+        # run_in_executor() in einem eigenen Thread gegen dieselbe frische
+        # jobs.sqlite, mit der der Test selbst synchron arbeitet —
+        # "database is locked" (dasselbe Muster wie beim ersten
+        # LocalPinnedLoop-Entwurf, PLAN-28 Schritt 3). Ab dem zweiten
+        # Durchlauf bleibt das bisherige "sofort weiter, solange Arbeit da
+        # ist"-Verhalten (kein Sleep bei ``did=True``) unverändert.
+        await asyncio.sleep(self.poll_interval)
         loop = asyncio.get_event_loop()
         while self._running:
             try:

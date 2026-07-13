@@ -30,16 +30,25 @@ class LocalScheduler:
     ``on_complete(branch)`` (optional): Hook, der nach einem erfolgreichen terminalen
     ``complete``-Report mit Ergebnis-Branch feuert — der lokale Worker geht **nicht**
     über die HTTP-Route ``/-/scheduler/status``, darum hängt der Merge-back hier
-    (PLAN-6; sonst mergt nur der Remote-Pfad). Wird in ``create_app`` verdrahtet."""
+    (PLAN-6; sonst mergt nur der Remote-Pfad). Wird in ``create_app`` verdrahtet.
 
-    def __init__(self, db_path: Path | None = None, *, on_complete=None) -> None:
+    ``pinned_only`` (PLAN-28): treibt einen zweiten, rollenunabhängigen ``Worker``
+    (in ``create_app`` immer gestartet), der ausschließlich ``jobs.pinned_host ==
+    dieser Host``-Zeilen dispatcht (Retry-Redispatch/Deferred-Re-Arm für gepinnte
+    ``/run``-Läufe) — nie die geteilte Team-Queue anfasst (s. ``reserve_next()``s
+    ``pinned_only``-Filter)."""
+
+    def __init__(self, db_path: Path | None = None, *, on_complete=None,
+                 pinned_only: bool = False) -> None:
         self.db_path = db_path
         self.on_complete = on_complete
+        self.pinned_only = pinned_only
 
     def next(self, worker: str | None = None, host: str | None = None) -> dict | None:
         conn = job_db.connect(self.db_path)
         try:
-            return job_db.reserve_next(conn, worker=worker, host=host)
+            return job_db.reserve_next(conn, worker=worker, host=host,
+                                       pinned_only=self.pinned_only)
         finally:
             conn.close()
 

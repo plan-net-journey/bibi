@@ -1090,3 +1090,30 @@ def test_poll_app_routes_deregisters_on_terminal(team_repo: Path, monkeypatch):
     w._poll_app_routes()
     assert registered == [(jid, 9100)]
     assert deregistered == [jid]
+
+
+# ── _loop() Timing (PLAN-28) ─────────────────────────────────────────────────
+
+
+def test_loop_does_not_tick_immediately_on_start(monkeypatch):
+    # PLAN-28: ein Worker läuft jetzt auch rollenunabhängig (gepinnte Läufe,
+    # s. create_app()) und damit in praktisch jedem Test mit. Ein Sofort-Tick
+    # beim Start würde per run_in_executor() in einem eigenen Thread sofort
+    # job_db.connect() gegen dieselbe frische jobs.sqlite auslösen, mit der
+    # ein Test selbst synchron arbeitet — live gefunden als "database is
+    # locked" beim ersten LocalPinnedLoop-Entwurf. Erst schlafen, dann
+    # ticken, verhindert das für alle Tests, die (wie praktisch alle)
+    # deutlich unter einem Poll-Intervall laufen.
+    import asyncio
+
+    calls = []
+    monkeypatch.setattr(Worker, "tick_once", lambda self: calls.append(1) or False)
+    w = Worker(worker_name="t", poll_interval=10.0)
+
+    async def run():
+        await w.start()
+        await asyncio.sleep(0.05)  # deutlich kürzer als das Poll-Intervall
+        await w.stop()
+
+    asyncio.run(run())
+    assert calls == []
