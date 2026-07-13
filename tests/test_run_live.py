@@ -43,7 +43,7 @@ def _seed_pinned_job(root: Path, bucket_slug: str, *, status: str = "running",
     import socket
     host = host or socket.gethostname()
     jid = secrets.token_hex(4)
-    unique_slug = f"{bucket_slug}:{secrets.token_hex(2)}"
+    unique_slug = f"{bucket_slug}-{secrets.token_hex(2)}"
     output_ref = output_ref or f"data/job/{jid}/output.jsonl"
     conn = job_db.connect(root / "data" / "jobs.sqlite")
     try:
@@ -263,7 +263,7 @@ def test_run_second_start_same_slug_is_409_while_first_still_running(client_only
 
     # nach Ende (Zeile terminal) wieder frei:
     conn = job_db.connect(team_repo / "data" / "jobs.sqlite")
-    conn.execute("UPDATE jobs SET status='complete' WHERE slug LIKE 'myjob:%'")
+    conn.execute("UPDATE jobs SET status='complete' WHERE slug LIKE 'myjob-%'")
     conn.close()
     monkeypatch.setattr("bibi.daemon.app.run_pinned", _fake_run_pinned_factory())
     r3 = client_only.post("/-/run", json={"slug": "myjob", "cmd": "irrelevant"})

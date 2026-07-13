@@ -626,9 +626,10 @@ def _pinned_live_row(slug: str, *, db_path: Path | None = None,
     diesem Host, oder ``None`` — Query-Basis für ``local_run_live()``/
     ``local_runs_live()`` (PLAN-28: reale ``jobs``-Zeile statt In-Memory-Dict,
     s. Modul-Kommentar oben). ``jobs.slug`` ist pro Lauf eindeutig
-    (``f"{bucket_slug}:{token}"``, s. ``run_pinned()``) — ``LIKE``-Präfix
-    matcht alle Läufe desselben Buckets, ``:`` verhindert Fehltreffer wie
-    ``"job"`` vs. ``"job2"``."""
+    (``f"{bucket_slug}-{token}"``, s. ``run_pinned()`` — ``-`` statt dem
+    ursprünglichen ``:``, da Git-Refs keinen Doppelpunkt erlauben) —
+    ``LIKE``-Präfix matcht alle Läufe desselben Buckets, ``-`` verhindert
+    Fehltreffer wie ``"job"`` vs. ``"job2"``."""
     host = host or socket.gethostname()
     conn = job_db.connect(db_path)
     try:
@@ -636,7 +637,7 @@ def _pinned_live_row(slug: str, *, db_path: Path | None = None,
         return conn.execute(
             f"SELECT * FROM jobs WHERE pinned_host=? AND slug LIKE ? "
             f"AND status IN ({placeholders}) ORDER BY enqueued_at DESC LIMIT 1",
-            (host, f"{slug}:%", *_PINNED_LIVE_STATUSES),
+            (host, f"{slug}-%", *_PINNED_LIVE_STATUSES),
         ).fetchone()
     finally:
         conn.close()
@@ -673,7 +674,7 @@ def local_runs_live(*, db_path: Path | None = None, host: str | None = None) -> 
         conn.close()
     out = {}
     for r in rows:
-        bucket_slug = r["slug"].rsplit(":", 1)[0]
+        bucket_slug = r["slug"].rsplit("-", 1)[0]
         out[bucket_slug] = {"id": r["id"], "started_at": r["started_at"], "status": r["status"]}
     return out
 
@@ -784,7 +785,18 @@ def run_pinned(
     # ephemeral=True unten): jeder Aufruf bekommt so einen frischen, nie
     # wiederverwendeten Worktree — anders als ein rekurrierender Scheduler-Job,
     # dessen stabiler Slug denselben Worktree über mehrere Läufe hinweg nutzt.
-    unique_slug = f"{eff_slug}:{secrets.token_hex(4)}"
+    #
+    # Bug gefunden (2026-07-13, User-Fund: bibi-ctrl run hing endlos): ``:``
+    # als Trenner ist in Git-Refs UNGÜLTIG (worktree.branch_name() baut
+    # ``agent/<slug>``) — worktree.prepare()s ``git worktree add -B`` schlug
+    # deshalb IMMER fehl (nie zuvor real durchlaufen, alle bisherigen Tests
+    # mockten _run_wrapper()). execute_reservation() fing das als Setup-Fehler
+    # ab und meldete "failed" — nicht TERMINAL, kein Retry-Daemon in der CLI
+    # bedient das je, die CLI-Poll-Schleife (_wait_until_terminal()) hing für
+    # immer. Fix: ``-`` statt ``:`` (git-ref-sicher, auch für die
+    # LIKE-Präfix-Matches/rsplit() in _pinned_live_row()/local_runs_live()
+    # unten mitgeändert).
+    unique_slug = f"{eff_slug}-{secrets.token_hex(4)}"
     now = time.time()
     jid = secrets.token_hex(4)
     conn = job_db.connect(db_path)
