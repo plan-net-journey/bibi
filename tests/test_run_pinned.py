@@ -58,7 +58,12 @@ def test_run_pinned_with_cmd_creates_pinned_row_and_dispatches(gitrepo, monkeypa
     assert row["pinned_host"] == "mac"
     assert row["status"] == "running"  # detach=True: sofort reserviert+dispatcht
     assert row["payload"] == "echo hi"
-    assert row["attempts"] == 1
+    # attempts=0 (nicht 1!) ist "kein Retry" — der Wrapper prüft attempt_cur
+    # (0 bei einem frischen Job) < attempts_max; attempts=1 würde also einen
+    # Retry auslösen, s. run_pinned()s Docstring. 0 matcht das historische
+    # /run-Verhalten (ein Versuch, sofortiger Fehlschlag) und ist nötig, weil
+    # die CLI (kein laufender Daemon) einen fälligen Retry nie bedienen könnte.
+    assert row["attempts"] == 0
 
 
 def test_run_pinned_with_slug_resolves_existing_schedule(gitrepo, monkeypatch):

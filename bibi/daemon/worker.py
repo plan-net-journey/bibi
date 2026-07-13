@@ -790,7 +790,7 @@ def run_pinned(
     model: str | None = None, repo_root: Path | None = None,
     work_dir: Path | None = None, db_path: Path | None = None,
     worker_name: str | None = None, host: str | None = None,
-    attempts: int = 1, register=None,
+    attempts: int = 0, register=None,
 ) -> dict:
     """**Lokale** On-Demand-Ausführung mit voller Scheduler-Lifecycle (PLAN-28).
 
@@ -798,19 +798,32 @@ def run_pinned(
     dort bekommt der Lauf jetzt eine echte ``jobs``-Zeile (``pinned_host`` =
     dieser Host, s. ``reserve_next()``s ``pinned_only``-Filter), läuft also
     durch dieselbe Retry/Error/Deferred/Zombie-Maschine wie ein Scheduler-Job
-    (``report_status()``, ``Sweeper``/``LocalPinnedLoop``). Beide bisherigen
-    ``/run``-Garantien bleiben erhalten: **hier** (``pinned_host`` erzwingt
-    genau diesen Knoten, kein anderer Worker kann die Zeile je reservieren)
-    und **sofort** (kein Warten auf einen Poll-Tick — die Zeile wird synchron
-    im selben Aufruf reserviert + über ``execute_reservation()`` dispatcht,
-    das mit ``detach=True`` fast augenblicklich zurückkehrt, während der
-    Wrapper-Subprozess eigenständig weiterläuft und terminale Status via
-    SQLite-Direct selbst meldet — kein Netz nötig, funktioniert offline).
+    (``report_status()``, der zweite, gepinnte ``Worker`` aus ``create_app()``).
+    Beide bisherigen ``/run``-Garantien bleiben erhalten: **hier**
+    (``pinned_host`` erzwingt genau diesen Knoten, kein anderer Worker kann
+    die Zeile je reservieren) und **sofort** (kein Warten auf einen
+    Poll-Tick — die Zeile wird synchron im selben Aufruf reserviert + über
+    ``execute_reservation()`` dispatcht, das mit ``detach=True`` fast
+    augenblicklich zurückkehrt, während der Wrapper-Subprozess eigenständig
+    weiterläuft und terminale Status via SQLite-Direct selbst meldet — kein
+    Netz nötig, funktioniert offline).
 
     Entweder ``slug`` (erfasste MD) **oder** ``cmd`` (ad-hoc, rein lokal).
-    ``attempts`` (Default 1, wie das bisherige ``/run``-Verhalten): >1 aktiviert
-    echtes Retry-mit-Backoff, gefangen vom ``LocalPinnedLoop`` (nicht von
-    diesem Aufruf selbst — der deckt nur den ersten Versuch ab)."""
+
+    ``attempts`` (Default **0** — bewusst *nicht* der Scheduler-Default 1):
+    der Wrapper selbst prüft ``attempt_cur < attempts_max`` (``bibi/wrapper/
+    __init__.py::_finish()``) — bei einem frischen Job ist ``attempt_cur=0``,
+    ``attempts=1`` würde also **einen Retry auslösen**, kein "kein Retry" wie
+    ein früherer Docstring hier fälschlich behauptete. ``attempts=0`` (``0 <
+    0`` ist falsch) meldet bei Fehlschlag sofort "error", ohne Backoff-Wartezeit
+    — deckungsgleich mit dem historischen ``/run``-Verhalten (ein Versuch,
+    sofortiger Fehlschlag), das insbesondere die CLI (``bibi-ctrl run``,
+    **ohne** laufenden Daemon/gepinnten Worker) braucht: ein echter Retry
+    bräuchte den gepinnten ``Worker``-Loop aus ``create_app()``, um den
+    fälligen Backoff-Redispatch zu bedienen — ohne laufenden Daemon bliebe
+    ein wartender Retry für immer unbedient hängen. Aufrufer mit laufendem
+    Daemon (die HTTP-Route ``/-/run``) können bei Bedarf explizit
+    ``attempts>0`` übergeben, um echtes Retry-mit-Backoff zu aktivieren."""
     repo_root = repo_root or repo.root()
     work_dir = work_dir or (repo_root / "data" / "worktrees")
     host = host or socket.gethostname()
