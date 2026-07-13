@@ -658,9 +658,17 @@ def _pinned_live_row(slug: str, *, db_path: Path | None = None,
     ``local_runs_live()`` (PLAN-28: reale ``jobs``-Zeile statt In-Memory-Dict,
     s. Modul-Kommentar oben). ``jobs.slug`` ist pro Lauf eindeutig
     (``f"{bucket_slug}-{token}"``, s. ``run_pinned()`` — ``-`` statt dem
-    ursprünglichen ``:``, da Git-Refs keinen Doppelpunkt erlauben) —
-    ``LIKE``-Präfix matcht alle Läufe desselben Buckets, ``-`` verhindert
-    Fehltreffer wie ``"job"`` vs. ``"job2"``."""
+    ursprünglichen ``:``, da Git-Refs keinen Doppelpunkt erlauben).
+
+    Bug gefunden (2026-07-13, User-Fund: "hitl-test-app-container und
+    hitl-test-app geraten beim Output durcheinander"): ein offenes
+    ``LIKE '<slug>-%'`` matcht nicht nur die eigenen Läufe, sondern auch jeden
+    Lauf eines längeren Geschwister-Slugs, der ``slug`` als echtes Präfix hat
+    (``"hitl-test-app-container-<token>"`` beginnt mit ``"hitl-test-app-"``).
+    ``token`` ist immer ``secrets.token_hex(4)`` (8 Hex-Zeichen, s.
+    ``run_pinned()``) — das feste 8-Zeichen-Muster (dieselbe Konvention wie
+    ``job_db.list_journal()``s Slug-Filter) schließt so etwas per Länge aus,
+    ein offenes ``%`` nicht."""
     host = host or socket.gethostname()
     conn = job_db.connect(db_path)
     try:
@@ -668,7 +676,7 @@ def _pinned_live_row(slug: str, *, db_path: Path | None = None,
         return conn.execute(
             f"SELECT * FROM jobs WHERE pinned_host=? AND slug LIKE ? "
             f"AND status IN ({placeholders}) ORDER BY enqueued_at DESC LIMIT 1",
-            (host, f"{slug}-%", *_PINNED_LIVE_STATUSES),
+            (host, f"{slug}-________", *_PINNED_LIVE_STATUSES),
         ).fetchone()
     finally:
         conn.close()

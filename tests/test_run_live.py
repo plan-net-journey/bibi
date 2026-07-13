@@ -54,13 +54,20 @@ def _seed_pinned_job(root: Path, bucket_slug: str, *, status: str = "running",
     ``local_run_live()`` seit dem Fix unabhängig von der DB-Spalte selbst
     berechnet (``job_db.run_id_for()`` + ``worker._output_path()``); Tests,
     die eine echte ``output.jsonl`` fürs Live-Lesen vorbereiten wollen,
-    müssen sie dort ablegen, nicht unter einem frei gewählten Pfad."""
+    müssen sie dort ablegen, nicht unter einem frei gewählten Pfad.
+
+    Suffix bewusst ``secrets.token_hex(4)`` (8 Hex-Zeichen) — muss exakt
+    ``run_pinned()``s eigene Konvention treffen (User-Fund 2026-07-13:
+    ``_pinned_live_row()``s LIKE-Muster prüft seit dem Fix für "hitl-test-app
+    vs. hitl-test-app-container" genau 8 Zeichen; ein kürzerer Test-Fake-
+    Suffix wie zuvor ``token_hex(2)`` würde an diesem festen Muster
+    vorbeilaufen und real existierende Zeilen unauffindbar machen)."""
     import socket
 
     from bibi.daemon import worker as _worker
     host = host or socket.gethostname()
     jid = secrets.token_hex(4)
-    unique_slug = f"{bucket_slug}-{secrets.token_hex(2)}"
+    unique_slug = f"{bucket_slug}-{secrets.token_hex(4)}"
     conn = job_db.connect(root / "data" / "jobs.sqlite")
     try:
         conn.execute(
@@ -126,6 +133,24 @@ def test_local_run_live_ignores_terminal_status(team_repo: Path):
 def test_local_run_live_ignores_other_hosts_pinned_jobs(team_repo: Path):
     _seed_pinned_job(team_repo, "a", host="sarasate")
     assert worker.local_run_live("a", host="mac") is None
+
+
+def test_local_run_live_does_not_confuse_prefix_slug_with_longer_sibling(team_repo: Path):
+    # User-Fund 2026-07-13 ("hitl-test-app-container und hitl-test-app geraten
+    # beim Output durcheinander"): _pinned_live_row()s LIKE-Muster war bisher
+    # f"{slug}-%" (offenes Wildcard) statt eines festen 8-Hex-Suffix-Musters
+    # (wie job_db.list_journal(), s. dort) — "hitl-test-app-" ist ein echtes
+    # Präfix von "hitl-test-app-container-<token>", der offene Wildcard matcht
+    # deshalb IRRTÜMLICH auch Läufe des längeren Geschwister-Slugs.
+    _seed_pinned_job(team_repo, "hitl-test-app-container")
+    assert worker.local_run_live("hitl-test-app") is None
+
+
+def test_local_run_live_still_finds_its_own_runs_alongside_longer_sibling(team_repo: Path):
+    jid, _ = _seed_pinned_job(team_repo, "hitl-test-app")
+    _seed_pinned_job(team_repo, "hitl-test-app-container")
+    live = worker.local_run_live("hitl-test-app")
+    assert live is not None and live["id"] == jid
 
 
 def test_local_runs_live_lists_all_by_bucket_slug(team_repo: Path):
