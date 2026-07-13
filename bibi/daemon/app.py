@@ -666,13 +666,12 @@ def create_app(
             return JSONResponse(status_code=409,
                                 content={"error": "already running", "slug": slug})
 
-        def on_spawn(job_id: str, proc) -> None:
-            # Nur noch fürs Kill-Tracking (_local_runs_procs) — die "läuft
-            # gerade?"-Quelle ist jetzt die jobs-Zeile selbst (pinned_host).
-            worker_mod.local_run_start(slug, job_id, "", req.kind, req.cmd or req.slug or "", proc)
-
         try:
-            res = run_pinned(slug=req.slug, cmd=req.cmd, kind=req.kind, register=on_spawn)
+            # register=pinned_worker._register (PLAN-28 Refactor B): derselbe
+            # Proc-Registry-Callback wie beim teamweiten Worker — kein eigenes
+            # Kill-Tracking mehr nötig, pinned_worker.kill() übernimmt das.
+            res = run_pinned(slug=req.slug, cmd=req.cmd, kind=req.kind,
+                             register=pinned_worker._register)
         except LookupError as exc:
             return JSONResponse(status_code=404, content={"error": str(exc)})
         except Exception as exc:  # noqa: BLE001 — Route darf nie unbehandelt crashen
@@ -715,11 +714,16 @@ def create_app(
     # wohl nochmal ran! Natürlich müssen wir kill können" — ein langlebiger
     # App-Job über /run (z. B. eine HITL-Test-App mit serve_forever()) blieb
     # sonst nur per manuellem docker kill/SIGTERM von außen beendbar, kein
-    # API-Weg. Analog zu POST /-/job/{id}/kill (Scheduler-Jobs), aber
-    # rollenunabhängig + domain="local"-only (worker_mod.local_run_kill()).
+    # API-Weg. Analog zu POST /-/job/{id}/kill (Scheduler-Jobs) — PLAN-28
+    # Refactor B: nutzt jetzt denselben pinned_worker.kill() wie der
+    # Scheduler-Pfad (container-aware, DB-PID-Fallback nach Neustart), statt
+    # einer eigenen, schmaleren Kill-Implementierung.
     @app.post("/-/run/live/{slug}/kill", tags=["job"])
     def run_live_kill(slug: str):
-        signaled = worker_mod.local_run_kill(slug)
+        live = worker_mod.local_run_live(slug)
+        if live is None:
+            return JSONResponse(status_code=404, content={"error": "not running", "slug": slug})
+        signaled = pinned_worker.kill(live["id"])
         if not signaled:
             return JSONResponse(status_code=404, content={"error": "not running", "slug": slug})
         return {"slug": slug, "signaled": True}

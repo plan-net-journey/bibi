@@ -22,20 +22,9 @@ from bibi.daemon.app import create_app
 from bibi.wrapper import output
 
 
-@pytest.fixture(autouse=True)
-def _reset_proc_registry():
-    # Modul-globaler State (wie job_db._dispatch_count) — zwischen Tests
-    # zurücksetzen, sonst leaken Einträge früherer Tests in denselben
-    # pytest-Prozess hinein. Die "läuft gerade?"-Metadaten selbst kommen
-    # jetzt aus der jobs-Tabelle (pinned_host), s. Modul-Kommentar in worker.py.
-    worker._local_runs_procs.clear()
-    yield
-    worker._local_runs_procs.clear()
-
-
 class _FakeProc:
-    """Minimaler subprocess.Popen-Stand-in für local_run_kill()-Tests — kein
-    echter Subprozess nötig, nur .poll()/.pid, die _terminate() (worker.py)
+    """Minimaler subprocess.Popen-Stand-in für Kill-Tests — kein echter
+    Subprozess nötig, nur .poll()/.pid, die _terminate() (worker.py)
     tatsächlich anfasst."""
     def __init__(self, *, alive: bool = True) -> None:
         self.pid = 999999  # garantiert kein echter Prozess — os.killpg no-opt defensiv
@@ -189,61 +178,6 @@ def test_signal_state_malformed_signal_line_is_skipped_not_crashed():
     assert state == {"status": "running", "app_url": None, "demand": None}
 
 
-# ── local_run_kill() (User-Fund 2026-07-10: "natürlich müssen wir kill können") ─
-# PLAN-28: braucht jetzt eine echte gepinnte jobs-Zeile (lokal_run_live()) UND
-# den Proc-Handle (_local_runs_procs, weiterhin per local_run_start() gesetzt).
-
-
-def test_local_run_kill_terminates_and_returns_true(monkeypatch, team_repo: Path):
-    # _terminate() (worker.py) fragt _is_container() ab, was ohne Mock den
-    # globalen Knoten-Default liest (auf diesem Mac: container) und einen
-    # echten `docker stop`-Subprozess anstoßen würde — hier wie in
-    # test_worker_container.py hermetisch weggemockt.
-    monkeypatch.setattr("bibi.daemon.worker._is_container", lambda: False)
-    monkeypatch.setattr("bibi.daemon.worker._docker", lambda args: None)
-    _seed_pinned_job(team_repo, "a", output_ref="ref")
-    proc = _FakeProc(alive=True)
-    worker.local_run_start("a", "jid1", "ref", "job", "echo hi", proc)
-    assert worker.local_run_kill("a") is True
-
-
-def test_local_run_kill_false_when_nothing_running(team_repo: Path):
-    assert worker.local_run_kill("nope") is False
-
-
-def test_local_run_kill_false_when_no_proc_handle(team_repo: Path):
-    # register()-Callback nie erreicht (z. B. Fehler vor dem Spawn) — kein
-    # Prozess-Handle vorhanden, kill() darf nicht crashen, nur False liefern.
-    _seed_pinned_job(team_repo, "a", output_ref="ref")
-    assert worker.local_run_kill("a") is False
-
-
-def test_local_run_kill_false_when_proc_already_exited(team_repo: Path):
-    _seed_pinned_job(team_repo, "a", output_ref="ref")
-    proc = _FakeProc(alive=False)  # .poll() != None → schon beendet
-    worker.local_run_start("a", "jid1", "ref", "job", "echo hi", proc)
-    assert worker.local_run_kill("a") is False
-
-
-def test_local_run_kill_false_when_job_row_not_live(team_repo: Path):
-    # Proc-Handle vorhanden, aber die jobs-Zeile ist schon terminal (z. B. der
-    # Wrapper hat gerade selbst "complete" gemeldet) — kein Kill mehr nötig.
-    _seed_pinned_job(team_repo, "a", status="complete", output_ref="ref")
-    proc = _FakeProc(alive=True)
-    worker.local_run_start("a", "jid1", "ref", "job", "echo hi", proc)
-    assert worker.local_run_kill("a") is False
-
-
-def test_local_run_end_clears_proc_handle_too(monkeypatch, team_repo: Path):
-    monkeypatch.setattr("bibi.daemon.worker._is_container", lambda: False)
-    monkeypatch.setattr("bibi.daemon.worker._docker", lambda args: None)
-    _seed_pinned_job(team_repo, "a", output_ref="ref")
-    proc = _FakeProc(alive=True)
-    worker.local_run_start("a", "jid1", "ref", "job", "echo hi", proc)
-    worker.local_run_end("a")
-    assert worker.local_run_kill("a") is False  # kein Handle mehr da
-
-
 # ── POST /-/run + GET /-/run/live (gefakter run_pinned, kein echter Subprozess) ─
 
 
@@ -252,6 +186,21 @@ def client_only(team_repo: Path):
     app = create_app(roles.resolve({"synchronizer", "controller"}))
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def client_with_pinned_worker(team_repo: Path):
+    # PLAN-28 Refactor B: Kill für gepinnte Läufe läuft jetzt über denselben
+    # Worker wie der Scheduler-Pfad (pinned_worker.kill()) statt einer eigenen
+    # Registry — für Kill-Tests brauchen wir Zugriff auf genau diese Instanz,
+    # um einen Fake-Proc direkt zu registrieren (wie es execute_reservation()
+    # in Produktion über register=pinned_worker._register tut).
+    from bibi.daemon.scheduler_client import LocalScheduler
+    from bibi.daemon.worker import Worker
+    pinned = Worker(client=LocalScheduler(pinned_only=True), autopoll=False)
+    app = create_app(roles.resolve({"synchronizer", "controller"}), pinned_worker=pinned)
+    with TestClient(app) as c:
+        yield c, pinned
 
 
 def _fake_run_pinned_factory(*, jid: str = "fakejid", slug_suffix: str = "abcd"):
@@ -351,20 +300,23 @@ def test_run_live_kill_route_404_when_nothing_running(client_only):
     assert r.status_code == 404
 
 
-def test_run_live_kill_route_signals_running_job(client_only, team_repo, monkeypatch):
+def test_run_live_kill_route_signals_running_job(client_with_pinned_worker, team_repo,
+                                                   monkeypatch):
     monkeypatch.setattr("bibi.daemon.worker._is_container", lambda: False)
     monkeypatch.setattr("bibi.daemon.worker._docker", lambda args: None)
-    _seed_pinned_job(team_repo, "myjob", output_ref="data/job/jid1/output.jsonl")
+    c, pinned = client_with_pinned_worker
+    jid = _seed_pinned_job(team_repo, "myjob", output_ref="data/job/jid1/output.jsonl")
     proc = _FakeProc(alive=True)
-    worker.local_run_start("myjob", "jid1", "data/job/jid1/output.jsonl", "job", "echo hi", proc)
-    r = client_only.post("/-/run/live/myjob/kill")
+    pinned._register(jid, proc)  # wie execute_reservation() es in Produktion täte
+    r = c.post("/-/run/live/myjob/kill")
     assert r.status_code == 200
     assert r.json() == {"slug": "myjob", "signaled": True}
 
 
-def test_run_live_kill_route_404_when_proc_already_exited(client_only, team_repo):
-    _seed_pinned_job(team_repo, "myjob", output_ref="ref")
+def test_run_live_kill_route_404_when_proc_already_exited(client_with_pinned_worker, team_repo):
+    c, pinned = client_with_pinned_worker
+    jid = _seed_pinned_job(team_repo, "myjob", output_ref="ref")
     proc = _FakeProc(alive=False)
-    worker.local_run_start("myjob", "jid1", "ref", "job", "echo hi", proc)
-    r = client_only.post("/-/run/live/myjob/kill")
+    pinned._register(jid, proc)
+    r = c.post("/-/run/live/myjob/kill")
     assert r.status_code == 404

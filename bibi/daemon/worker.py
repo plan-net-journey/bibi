@@ -607,39 +607,9 @@ def _resolve_spec(repo_root: Path, slug: str):
     return res.found.get(slug)
 
 
-#: Prozess-Handle je laufendem gepinnten ``/run``, keyed nach dem
-#: **Bucket-Slug** (dem MD-/Cmd-Slug, nicht dem eindeutigen ``jobs.slug`` je
-#: Lauf) — nur für ``local_run_kill()`` gebraucht (User-Fund 2026-07-10:
-#: "Da müssen wir dann aber wohl nochmal ran! Natürlich müssen wir kill
-#: können"). Ein ``subprocess.Popen`` ist nicht JSON-serialisierbar, darum
-#: getrennt von den unten jobs-tabellen-basierten Metadaten-Funktionen.
-#:
-#: PLAN-28: die eigentliche "läuft gerade?"-Quelle ist jetzt die ``jobs``-
-#: Tabelle (``pinned_host``, s. run_pinned()) — der frühere In-Memory-Dict-
-#: Ansatz (``_local_runs_live``) hatte einen Prozessgrenzen-Bug: mit
-#: ``execute_reservation()``/``detach=True`` meldet der Wrapper-Subprozess
-#: seinen Terminal-Status jetzt **selbständig** (SQLite-Direct) — niemand im
-#: Daemon-Prozess selbst beobachtet mehr "Lauf fertig", also konnte auch
-#: niemand mehr zuverlässig ``local_run_end()`` aufrufen. Ein Slug wäre sonst
-#: für immer als "läuft" hängen geblieben. Dieser Proc-Registry hier bleibt
-#: bewusst ungereinigt (derselbe Grund) — harmlos: ``proc.poll()`` erkennt
-#: einen längst beendeten Prozess trotzdem korrekt, ``local_run_kill()``
-#: bricht dann einfach früh ab, statt fälschlich zu killen.
-_local_runs_procs: dict[str, subprocess.Popen] = {}
-
 #: Live-Status-Werte (kein Terminalzustand) — deckungsgleich mit dem, was ein
 #: gerade tatsächlich laufender Wrapper-Subprozess haben kann.
 _PINNED_LIVE_STATUSES = ("running", "awaiting")
-
-
-def local_run_start(slug: str, job_id: str, output_ref: str, kind: str, payload: str,
-                    proc: subprocess.Popen | None = None) -> None:
-    if proc is not None:
-        _local_runs_procs[slug] = proc
-
-
-def local_run_end(slug: str) -> None:
-    _local_runs_procs.pop(slug, None)
 
 
 def _pinned_live_row(slug: str, *, db_path: Path | None = None,
@@ -698,27 +668,6 @@ def local_runs_live(*, db_path: Path | None = None, host: str | None = None) -> 
         bucket_slug = r["slug"].rsplit(":", 1)[0]
         out[bucket_slug] = {"id": r["id"], "started_at": r["started_at"], "status": r["status"]}
     return out
-
-
-def local_run_kill(slug: str) -> bool:
-    """Einen laufenden gepinnten Run beenden — dieselbe ``_terminate()`` wie
-    ``Worker.kill()`` (container-aware: ``docker stop`` + Host-Signalgruppe,
-    SIGKILL-Backstop nach 5s). ``False``, wenn gerade nichts läuft oder kein
-    Prozess-Handle vorliegt (Callback nie erreicht, s. app.py::run()).
-
-    PLAN-28: kein ``_local_runs_killed``-Flag mehr nötig — der Wrapper-
-    Subprozess meldet "killed"/"by_user" jetzt selbständig via
-    ``report_status()`` (derselbe Mechanismus wie beim Scheduler-seitigen
-    ``Worker.kill()``, das dieses Flag nie brauchte)."""
-    live = local_run_live(slug)
-    proc = _local_runs_procs.get(slug)
-    if live is None or proc is None or proc.poll() is not None:
-        return False
-    out_path = repo.root() / live["output_ref"]
-    _terminate(proc, job_id=live["id"], out_path=out_path)
-    activity.emit(log, logging.INFO, "worker.local_kill", "Lokaler Lauf beendet (graceful)",
-                  role="worker", slug=slug, run_id=live["id"])
-    return True
 
 
 def local_run_signal_state(events: list[dict]) -> dict:
