@@ -379,9 +379,24 @@ def _run_wrapper(
     # Zugriff auf andere Repo-Verzeichnisse bleibt möglich, nur der Default
     # ändert sich. ``schedule_ref`` ist relativ zu ``vault/<case_dir>``
     # (§ ``repo.case_dir()`` / ``job_db.rescan``s Default).
+    #
+    # Bug gefunden (2026-07-13, User-Fund: bibi-ctrl run hing erneut, diesmal
+    # mit exit_code=1): ``run_pinned()`` braucht für ad-hoc ``cmd=``-Läufe
+    # (kein echtes Schedule-MD) trotzdem einen ``schedule_ref``-Wert für die
+    # ``jobs``-Zeile (Spalte ``NOT NULL``) und setzt dafür ``unique_slug`` ein
+    # (kein echter Vault-Pfad) — dieser synthetische Wert landete unverändert
+    # hier und ergab einen ``job_cwd``, den es im frischen Worktree nie gibt
+    # (``vault/case/`` selbst ist ohnehin nie committet, git kennt keine
+    # leeren Verzeichnisse). ``exec_backend`` reichte das direkt als
+    # Subprozess-``cwd`` durch → ``FileNotFoundError`` im Wrapper, der Job
+    # blieb ohne Terminal-Report auf ``failed`` hängen. Fix: nur einen
+    # tatsächlich existierenden Pfad verwenden, sonst Worktree-Root (wie
+    # zuvor für ``schedule_ref=None``).
     job_cwd = wt_path
     if schedule_ref:
-        job_cwd = wt_path / "vault" / repo.case_dir_name() / Path(schedule_ref).parent
+        candidate = wt_path / "vault" / repo.case_dir_name() / Path(schedule_ref).parent
+        if candidate.is_dir():
+            job_cwd = candidate
     env["BIBI_JOB_CWD"] = str(job_cwd)
 
     # PLAN-10 Stufe 10.0: claude:-Prefix-Expansion beim Spawn.
