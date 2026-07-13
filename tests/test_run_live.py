@@ -36,15 +36,31 @@ class _FakeProc:
 
 
 def _seed_pinned_job(root: Path, bucket_slug: str, *, status: str = "running",
-                     output_ref: str | None = None, host: str | None = None) -> str:
+                     output_ref: str | None = None, host: str | None = None,
+                     ) -> tuple[str, str]:
     """Legt eine echte, gepinnte ``jobs``-Zeile an (PLAN-28: die reale Quelle
     für local_run_live()/local_runs_live()) — analog zu run_pinned()s eigenem
-    INSERT, nur direkt per SQL für Tests, ohne echten Dispatch."""
+    INSERT, nur direkt per SQL für Tests, ohne echten Dispatch.
+
+    ``output_ref`` (die DB-Spalte) bleibt bewusst ``NULL``, wenn nicht
+    explizit übergeben — genau wie beim echten ``run_pinned()``-INSERT (die
+    Spalte wird dort NIE mitgeschrieben, erst der Wrapper füllt sie beim
+    Terminal-Report). Ein Default-Wert hier hätte den Live-Fund maskiert:
+    ``local_run_live()`` las früher diese Spalte direkt, obwohl sie während
+    ``running``/``awaiting`` immer ``NULL`` ist (User-Fund 2026-07-13, echter
+    Client-Test auf localhost — ``TypeError`` in ``run_live_detail()``).
+
+    Gibt ``(job_id, real_output_ref)`` zurück — Letzteres ist der Pfad, den
+    ``local_run_live()`` seit dem Fix unabhängig von der DB-Spalte selbst
+    berechnet (``job_db.run_id_for()`` + ``worker._output_path()``); Tests,
+    die eine echte ``output.jsonl`` fürs Live-Lesen vorbereiten wollen,
+    müssen sie dort ablegen, nicht unter einem frei gewählten Pfad."""
     import socket
+
+    from bibi.daemon import worker as _worker
     host = host or socket.gethostname()
     jid = secrets.token_hex(4)
     unique_slug = f"{bucket_slug}-{secrets.token_hex(2)}"
-    output_ref = output_ref or f"data/job/{jid}/output.jsonl"
     conn = job_db.connect(root / "data" / "jobs.sqlite")
     try:
         conn.execute(
@@ -56,17 +72,46 @@ def _seed_pinned_job(root: Path, bucket_slug: str, *, status: str = "running",
         )
     finally:
         conn.close()
-    return jid
+    run_id = job_db.run_id_for(unique_slug, jid, 0)
+    real_output_ref = _worker._output_path(root, run_id).relative_to(root).as_posix()
+    return jid, real_output_ref
 
 
 # ── Reine Registry-Query (worker.py, jobs-tabellen-basiert) ─────────────────
 
 
 def test_local_run_live_finds_seeded_pinned_row(team_repo: Path):
-    jid = _seed_pinned_job(team_repo, "a", output_ref="data/job/jid1/output.jsonl")
+    jid, real_output_ref = _seed_pinned_job(team_repo, "a")
     live = worker.local_run_live("a")
-    assert live["id"] == jid and live["output_ref"] == "data/job/jid1/output.jsonl"
+    assert live["id"] == jid and live["output_ref"] == real_output_ref
     assert live["kind"] == "job" and "started_at" in live
+
+
+def test_local_run_live_computes_output_ref_even_when_db_column_is_null(team_repo: Path):
+    # User-Fund 2026-07-13 (echter Client-Test auf localhost): run_pinned()s
+    # INSERT setzt jobs.output_ref NIE (erst der Wrapper beim Terminal-Report)
+    # — lesen dieser Spalte während running/awaiting lieferte also immer
+    # None, und app.py::run_live_detail()s `repo.root() / live["output_ref"]`
+    # crashte mit TypeError. local_run_live() muss den Pfad unabhängig von
+    # der (garantiert NULL) DB-Spalte selbst berechnen.
+    conn = job_db.connect(team_repo / "data" / "jobs.sqlite")
+    try:
+        assert conn.execute(
+            "SELECT output_ref FROM jobs WHERE pinned_host IS NOT NULL"
+        ).fetchall() == []  # noch keine Zeile — nur zur Doku der Prämisse
+    finally:
+        conn.close()
+    jid, real_output_ref = _seed_pinned_job(team_repo, "a")  # output_ref-Param bewusst weggelassen
+    conn = job_db.connect(team_repo / "data" / "jobs.sqlite")
+    try:
+        row = conn.execute("SELECT output_ref FROM jobs WHERE id=?", (jid,)).fetchone()
+        assert row["output_ref"] is None  # Prämisse bestätigt: Spalte ist NULL
+    finally:
+        conn.close()
+    live = worker.local_run_live("a")
+    assert live is not None
+    assert live["output_ref"] == real_output_ref
+    assert live["output_ref"] is not None
 
 
 def test_local_run_live_none_when_not_running(team_repo: Path):
@@ -231,14 +276,16 @@ def test_run_live_detail_includes_signal_derived_status_and_app_url(client_only,
     # Ausbau User-Fund 2026-07-10: /-/run/live/{slug} muss awaiting/app_url aus
     # den "signal"-Events in output.jsonl ableiten (worker.local_run_signal_
     # state()), nicht nur "running" pauschal für jeden laufenden lokalen Job.
-    out_ref = "data/job/jid1/output.jsonl"
-    out_path = team_repo / out_ref
+    # Die Datei muss unter dem von local_run_live() selbst berechneten Pfad
+    # liegen (real_output_ref, s. _seed_pinned_job()) — nicht unter einem frei
+    # gewählten, die jobs.output_ref-Spalte ist während running immer NULL.
+    _jid, real_output_ref = _seed_pinned_job(team_repo, "myjob")
+    out_path = team_repo / real_output_ref
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(
         {"t": 0.0, "s": "signal",
          "line": json.dumps({"name": "awaiting", "input_request": "ja/j?", "port": 9100})}
     ) + "\n")
-    _seed_pinned_job(team_repo, "myjob", output_ref=out_ref)
     body = client_only.get("/-/run/live/myjob").json()
     assert body["status"] == "awaiting"
     assert body["app_url"] == "http://localhost:9100/"
@@ -246,9 +293,8 @@ def test_run_live_detail_includes_signal_derived_status_and_app_url(client_only,
 
 
 def test_run_live_detail_status_running_when_no_signal_events(client_only, team_repo):
-    out_ref = "data/job/jid2/output.jsonl"
-    (team_repo / "data" / "job" / "jid2").mkdir(parents=True)
-    _seed_pinned_job(team_repo, "plainjob", output_ref=out_ref)
+    _jid, real_output_ref = _seed_pinned_job(team_repo, "plainjob")
+    (team_repo / real_output_ref).parent.mkdir(parents=True, exist_ok=True)
     body = client_only.get("/-/run/live/plainjob").json()
     assert body["status"] == "running"
     assert body["app_url"] is None
@@ -305,7 +351,7 @@ def test_run_live_kill_route_signals_running_job(client_with_pinned_worker, team
     monkeypatch.setattr("bibi.daemon.worker._is_container", lambda: False)
     monkeypatch.setattr("bibi.daemon.worker._docker", lambda args: None)
     c, pinned = client_with_pinned_worker
-    jid = _seed_pinned_job(team_repo, "myjob", output_ref="data/job/jid1/output.jsonl")
+    jid, _real_output_ref = _seed_pinned_job(team_repo, "myjob")
     proc = _FakeProc(alive=True)
     pinned._register(jid, proc)  # wie execute_reservation() es in Produktion täte
     r = c.post("/-/run/live/myjob/kill")
@@ -315,7 +361,7 @@ def test_run_live_kill_route_signals_running_job(client_with_pinned_worker, team
 
 def test_run_live_kill_route_404_when_proc_already_exited(client_with_pinned_worker, team_repo):
     c, pinned = client_with_pinned_worker
-    jid = _seed_pinned_job(team_repo, "myjob", output_ref="ref")
+    jid, _real_output_ref = _seed_pinned_job(team_repo, "myjob")
     proc = _FakeProc(alive=False)
     pinned._register(jid, proc)
     r = c.post("/-/run/live/myjob/kill")

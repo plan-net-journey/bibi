@@ -659,13 +659,27 @@ def _pinned_live_row(slug: str, *, db_path: Path | None = None,
 
 
 def local_run_live(slug: str, *, db_path: Path | None = None,
-                   host: str | None = None) -> dict | None:
+                   host: str | None = None, repo_root: Path | None = None) -> dict | None:
     """Metadaten des gerade laufenden gepinnten Runs für den Bucket-Slug
-    ``slug``, oder ``None`` (PLAN-28: jobs-tabellen-basiert, s. oben)."""
+    ``slug``, oder ``None`` (PLAN-28: jobs-tabellen-basiert, s. oben).
+
+    Bug gefunden (2026-07-13, User-Fund: echter Client-Test auf localhost,
+    ``TypeError`` in ``app.py::run_live_detail()``): ``jobs.output_ref`` wird
+    von ``run_pinned()``s INSERT nie gesetzt — erst der Wrapper füllt die
+    Spalte beim Terminal-Report (§ ``execute_reservation()``/``_finish()``).
+    Während ``running``/``awaiting`` (genau das Zeitfenster, für das diese
+    Funktion existiert) ist die Spalte also **immer** ``NULL``. Kein bisheriger
+    Test bemerkte das, weil der Seed-Helper stets einen Wert vorgab. Fix:
+    denselben Pfad wie ``run_pinned()``/``execute_reservation()`` selbst
+    berechnen (``job_db.run_id_for()`` + ``_output_path()``), statt die
+    (garantiert leere) Spalte zu lesen."""
     row = _pinned_live_row(slug, db_path=db_path, host=host)
     if row is None:
         return None
-    return {"id": row["id"], "output_ref": row["output_ref"], "kind": row["kind"],
+    repo_root = repo_root or repo.root()
+    run_id = job_db.run_id_for(row["slug"], row["id"], row["fire"])
+    output_ref = _output_path(repo_root, run_id).relative_to(repo_root).as_posix()
+    return {"id": row["id"], "output_ref": output_ref, "kind": row["kind"],
             "payload": row["payload"], "started_at": row["started_at"]}
 
 
