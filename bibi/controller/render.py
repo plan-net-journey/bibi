@@ -2591,6 +2591,16 @@ def _run_config_rows(e: dict) -> list[str]:
     return _attrs_rows(_ATTRS_CONFIG_ORDER, snap)
 
 
+def _is_own_run(e: dict) -> bool:
+    """Eigener, gepinnter /run-Lauf — historisch ``domain='local'`` (vor PLAN-28
+    Refactor D geschrieben, auf Bestandsknoten evtl. noch vorhanden), seither
+    ``domain='scheduled'`` (echte ``jobs``-Zeile) **mit** ``pinned_host``
+    gesetzt. Spiegelt ``app.py``s gleichnamigen Helper — dort wie hier
+    entscheidet das, ob ein Lauf zur eigenen Jobs-Historie zählt statt zu
+    einem echten Team-Queue-Job."""
+    return e.get("domain") == "local" or e.get("pinned_host") is not None
+
+
 def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
                           now: float | None = None,
                           *, daemon_status: dict | None = None) -> str:
@@ -2602,12 +2612,13 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
     st = _e(e.get("status") or "")
     out = output_block(events, e.get("kind") or kind)
     jid = e.get("id")
-    if e.get("domain") == "local":
-        # Lokaler /run-Lauf (PLAN-21 Befund 10): "zurück zum Schedule" wäre die
-        # scheduler-gated Remote-Detailseite (auf einem reinen Client 404) —
-        # zurück zum Jobs-Screen stattdessen. Kein roher out/err/stream-Link:
-        # dafür gibt es keine rollenunabhängige Route (nur /-/run/journal/{id}
-        # + .../output, symmetrisch zu /-/journal — die drei Sub-Routen wurden
+    if _is_own_run(e):
+        # Eigener /run-Lauf (PLAN-21 Befund 10; PLAN-28 Refactor D um gepinnte
+        # jobs-Zeilen erweitert): "zurück zum Schedule" wäre die scheduler-
+        # gated Remote-Detailseite (auf einem reinen Client 404) — zurück zum
+        # Jobs-Screen stattdessen. Kein roher out/err/stream-Link: dafür gibt
+        # es keine rollenunabhängige Route (nur /-/run/journal/{id} +
+        # .../output, symmetrisch zu /-/journal — die drei Sub-Routen wurden
         # bewusst nicht dupliziert, der formatierte Output deckt den Bedarf).
         back = '<a class="back" href="/-/ui/jobs">← Jobs</a>'
         raw_links = ""

@@ -18,12 +18,13 @@ from bibi.daemon.app import create_app
 def _entry(*, jid=1, run_id="Witz:54", slug="Witz", kind="claude", status="complete",
            exit_code=0, started_at=1000.0, finished_at=1012.0, host="mac",
            worker="mac", commit_sha=None, branch=None, reason=None,
-           exec_runtime=None, domain="scheduled") -> dict:
+           exec_runtime=None, domain="scheduled", pinned_host=None) -> dict:
     return {"id": jid, "run_id": run_id, "slug": slug, "kind": kind, "status": status,
             "reason": reason, "started_at": started_at, "finished_at": finished_at,
             "exit_code": exit_code, "exec_runtime": exec_runtime, "host": host,
             "worker": worker, "output_ref": f"data/job/{run_id}/output.jsonl",
-            "commit_sha": commit_sha, "branch": branch, "domain": domain}
+            "commit_sha": commit_sha, "branch": branch, "domain": domain,
+            "pinned_host": pinned_host}
 
 
 # ── pure Renderer ─────────────────────────────────────────────────────────────
@@ -57,6 +58,22 @@ def test_execution_detail_local_domain_links_back_to_jobs_not_raw_journal():
     # zum Jobs-Screen statt zur (auf Clients 404en) Schedule-Detailseite.
     html = render.execution_detail_page(
         _entry(jid=7, slug="mein-testjob", domain="local"), events=[], kind="job")
+    assert 'href="/-/ui/jobs"' in html
+    assert 'href="/-/ui/schedule/mein-testjob"' not in html
+    assert "/-/journal/7/stream" not in html
+
+
+def test_execution_detail_pinned_run_links_back_to_jobs_not_raw_journal():
+    # PLAN-28 Refactor D: ein gepinnter /run-Lauf hat seit run_pinned() eine
+    # echte jobs-Zeile (domain='scheduled'), bleibt aber über pinned_host als
+    # eigener Lauf erkennbar — derselbe Fall wie oben (domain='local', nur
+    # historische Zeilen von vor Refactor D), sonst landet jeder neue
+    # /run-Lauf in der "else"-Verzweigung: "zurück" zeigt auf die (auf
+    # Clients 404ende) Schedule-Detailseite, "roh"-Links auf die
+    # scheduler-gated /-/journal/{jid}/out|err|stream-Route (dead links).
+    html = render.execution_detail_page(
+        _entry(jid=7, slug="mein-testjob", domain="scheduled", pinned_host="mac"),
+        events=[], kind="job")
     assert 'href="/-/ui/jobs"' in html
     assert 'href="/-/ui/schedule/mein-testjob"' not in html
     assert "/-/journal/7/stream" not in html
@@ -191,6 +208,27 @@ def test_ui_run_detail_route(team_repo: Path):
         assert "Witz:54" in r.text and "ein witz" in r.text
 
 
+def test_ui_run_detail_route_pinned_run_on_combined_scheduler_node(team_repo: Path):
+    # PLAN-28 Refactor D: auf einem Knoten MIT scheduler-Rolle (z. B. sarasate)
+    # liefert /-/journal/{jid} (journal_entry(), erster Versuch in run_detail())
+    # JEDE Zeile zurück, auch die eines gepinnten /run-Laufs — der lokale
+    # Fallback (local_run_entry()) greift hier also nie. Ohne den pinned_host-
+    # Check in execution_detail_page() würde so ein Lauf trotzdem wie ein
+    # echter Team-Queue-Job gerendert (toter "roh"-Link, "zurück" zur
+    # Schedule-Detailseite).
+    client = FakeClient(
+        _entry(jid=9, run_id="adhoc-abc123:0:9", slug="adhoc-abc123", kind="job",
+              domain="scheduled", pinned_host="mac"),
+        {"id": 9, "kind": "job", "events": [{"t": 1, "s": "out", "line": "gepinnt gelaufen"}]})
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/run/9")
+        assert r.status_code == 200
+        assert "gepinnt gelaufen" in r.text
+        assert 'href="/-/ui/jobs"' in r.text
+        assert "/-/journal/9/stream" not in r.text
+
+
 class _NoSchedulerRoleClient:
     """Simuliert einen Client-Knoten ohne scheduler-Rolle (PLAN-21 Befund 10):
     journal_entry()/run_output() (scheduler-gated /-/journal/*) werfen wie
@@ -229,6 +267,24 @@ def test_ui_run_detail_route_falls_back_to_local_journal_without_scheduler_role(
         r = c.get("/-/ui/run/9")
         assert r.status_code == 200
         assert "mein-testjob:1" in r.text and "lokal gelaufen" in r.text
+        assert 'href="/-/ui/jobs"' in r.text  # "zurück" führt zum Jobs-Screen, nicht zum (404) Schedule
+
+
+def test_ui_run_detail_route_falls_back_to_local_journal_for_pinned_run(team_repo: Path):
+    # PLAN-28 Refactor D: dieselbe Situation wie oben, aber mit der Form, die
+    # run_pinned() auf einem reinen Client (kein --scheduler, /-/journal/{jid}
+    # bleibt 501-Stub) tatsächlich erzeugt — domain='scheduled' + pinned_host
+    # statt des historischen domain='local'. Der Fallback-Pfad
+    # (local_run_entry()) muss auch diese Form korrekt behandeln.
+    client = _NoSchedulerRoleClient(
+        _entry(jid=9, run_id="adhoc-abc123:0:9", slug="adhoc-abc123", kind="job",
+              domain="scheduled", pinned_host="mac"),
+        {"id": 9, "kind": "job", "events": [{"t": 1, "s": "out", "line": "gepinnt gelaufen"}]})
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/run/9")
+        assert r.status_code == 200
+        assert "adhoc-abc123:0:9" in r.text and "gepinnt gelaufen" in r.text
         assert 'href="/-/ui/jobs"' in r.text  # "zurück" führt zum Jobs-Screen, nicht zum (404) Schedule
 
 

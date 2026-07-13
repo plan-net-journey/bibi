@@ -51,7 +51,9 @@ class ControllerClient:
     def run_journal(self, *, slug: str | None = None, limit: int | None = None,
                     offset: int | None = None) -> list[dict]:
         # Rollenunabhängiges Gegenstück zu journal() (PLAN-17 Stufe 17.1): nur
-        # domain="local", funktioniert auch ohne scheduler-Rolle (/-/run/journal).
+        # die eigene /run-Historie (domain="local" ODER pinned_host gesetzt,
+        # PLAN-28 Refactor D — s. job_db.list_journal()s mine_only-Filter),
+        # funktioniert auch ohne scheduler-Rolle (/-/run/journal).
         return self._get(
             "/-/run/journal", {"slug": slug, "limit": limit, "offset": offset}) or []
 
@@ -105,15 +107,18 @@ class ControllerClient:
     def local_run_entry(self, journal_id: int) -> dict:
         # PLAN-21 Befund 10: Gegenstück zu journal_entry(), aber rollenunabhängig
         # (/-/run/journal/{id} statt des scheduler-gated /-/journal/{id}) — nur
-        # domain="local", für die eigene Lauf-Historie-Detailseite eines Clients.
+        # die eigene /run-Historie (domain="local" ODER pinned_host gesetzt,
+        # PLAN-28 Refactor D), für die eigene Lauf-Historie-Detailseite eines
+        # Clients.
         return self._get(f"/-/run/journal/{journal_id}") or {}
 
     def local_run_output(self, journal_id: int) -> dict:
         return self._get(f"/-/run/journal/{journal_id}/output") or {}
 
     def local_run_delete(self, journal_id: int) -> dict:
-        # Gegenstück zu delete_journal(), aber rollenunabhängig (nur
-        # domain="local") — die Jobs-Detailseite eines reinen Clients.
+        # Gegenstück zu delete_journal(), aber rollenunabhängig (nur die
+        # eigene /run-Historie, domain="local" ODER pinned_host gesetzt) —
+        # die Jobs-Detailseite eines reinen Clients.
         return self._request("DELETE", f"/-/run/journal/{journal_id}") or {}
 
     def job_output(self, job_id: str) -> dict:
