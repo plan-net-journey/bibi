@@ -52,6 +52,7 @@ def test_container_runs_as_mapped_host_user_with_working_sudo(tmp_path: Path):
         "BIBI_JOB_IMAGE": "bibi-base:dev",
         "BIBI_WORKTREE": str(wt),
         "BIBI_JOB_ID": "sudosmoke" + os.urandom(3).hex(),
+        "BIBI_DATA_HOME": str(tmp_path / "data-home"),
     }
     spec = exec_backend.build_exec(["bash", "-c", "sudo whoami > sudo_out.txt"], env)
     r = subprocess.run(spec.argv, capture_output=True, text=True, env=spec.env, timeout=60)
@@ -78,6 +79,7 @@ def test_claude_runs_in_container_output_captured(tmp_path: Path):
         "BIBI_WORKTREE": str(wt),
         "BIBI_OUTPUT_PATH": str(out),
         "BIBI_JOB_ID": "claudesmoke" + os.urandom(3).hex(),
+        "BIBI_DATA_HOME": str(tmp_path / "data-home"),
     }
     run_job(env)
     # Kette bewiesen: claude lief im Container, der Host-Wrapper fing Output.

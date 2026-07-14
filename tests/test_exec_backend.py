@@ -35,44 +35,54 @@ def test_host_mode_falls_back_to_worktree_without_job_cwd():
     assert spec.cwd == "/wt"
 
 
-def test_container_mode_wraps_in_docker_run(monkeypatch):
+def test_container_mode_wraps_in_docker_run(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(exec_backend, "_host_uid", lambda: 1000)
+    data_home = tmp_path / "data-home"
     env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
            "BIBI_JOB_ID": "abc123", "BIBI_DOCKER_BIN": "/d/docker",
-           "BIBI_JOB_IMAGE": "img:1", "PATH": "/usr/bin"}
+           "BIBI_JOB_IMAGE": "img:1", "PATH": "/usr/bin",
+           "BIBI_DATA_HOME": str(data_home)}
     spec = exec_backend.build_exec(["claude", "-p", "x"], env)
     assert spec.cwd is None
-    assert spec.argv[:13] == [
+    assert spec.argv[:15] == [
         "/d/docker", "run", "--rm", "--name", "bibi-abc123",
         "--user", "1000:0",
         "-v", "/wt:/workspace", "-w", "/workspace",
-        "-e", "HOME=/root"]
+        "-e", "HOME=/root",
+        "-v", f"{data_home}:/root/.local/share/bibi"]
     assert spec.argv[-3:] == ["img:1", "claude", "-p", "x"][-3:]
     assert spec.argv[-4:] == ["img:1", "claude", "-p", "x"]
     # docker-bin-Dir vorne im PATH (Cred-Helper)
     assert spec.env["PATH"].startswith("/d" + os.pathsep)
+    # generischer Daten-Mount legt sein Ziel an, falls es noch fehlt (User-Fund
+    # 2026-07-14: gmail-transfer verlor externen State ohne diesen Mount).
+    assert data_home.is_dir()
 
 
-def test_container_mode_uses_job_cwd_as_workdir_subpath(monkeypatch):
+def test_container_mode_uses_job_cwd_as_workdir_subpath(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(exec_backend, "_host_uid", lambda: 1000)
+    data_home = tmp_path / "data-home"
     env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
            "BIBI_JOB_CWD": "/wt/vault/case/foo",
            "BIBI_JOB_ID": "abc123", "BIBI_DOCKER_BIN": "/d/docker",
-           "BIBI_JOB_IMAGE": "img:1", "PATH": "/usr/bin"}
+           "BIBI_JOB_IMAGE": "img:1", "PATH": "/usr/bin",
+           "BIBI_DATA_HOME": str(data_home)}
     spec = exec_backend.build_exec(["claude", "-p", "x"], env)
-    assert spec.argv[:13] == [
+    assert spec.argv[:15] == [
         "/d/docker", "run", "--rm", "--name", "bibi-abc123",
         "--user", "1000:0",
         "-v", "/wt:/workspace", "-w", "/workspace/vault/case/foo",
-        "-e", "HOME=/root"]
+        "-e", "HOME=/root",
+        "-v", f"{data_home}:/root/.local/share/bibi"]
 
 
-def test_container_mode_runs_as_mapped_host_user():
+def test_container_mode_runs_as_mapped_host_user(tmp_path: Path):
     # PLAN-24 Befund 5: "arbitrary UID"-Konvention statt dauerhaft root — GID
     # immer 0 ("root"-Gruppe, passwortloses sudo im Image), UID = Host-UID
     # (im Bind-Mount geschriebene Dateien gehören dadurch dem Host-User).
     env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
-           "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker"}
+           "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker",
+           "BIBI_DATA_HOME": str(tmp_path / "data-home")}
     spec = exec_backend.build_exec(["sh"], env)
     assert "--user" in spec.argv
     i = spec.argv.index("--user")
@@ -80,9 +90,10 @@ def test_container_mode_runs_as_mapped_host_user():
     assert "HOME=/root" in spec.argv
 
 
-def test_container_passes_api_key_only_when_set():
+def test_container_passes_api_key_only_when_set(tmp_path: Path):
     base = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
-            "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker"}
+            "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker",
+            "BIBI_DATA_HOME": str(tmp_path / "data-home")}
     without = exec_backend.build_exec(["sh"], base)
     assert "ANTHROPIC_API_KEY" not in without.argv
     with_key = exec_backend.build_exec(["sh"], {**base, "ANTHROPIC_API_KEY": "sk-x"})
@@ -91,38 +102,79 @@ def test_container_passes_api_key_only_when_set():
     assert with_key.argv[i - 1] == "-e"   # nur Name, Wert vom Host
 
 
-def test_container_passes_oauth_token():
+def test_container_passes_oauth_token(tmp_path: Path):
     # claude-code Abo-Auth via CLAUDE_CODE_OAUTH_TOKEN (sk-ant-oat…), nicht API-Key.
     spec = exec_backend.build_exec(["claude"], {
         "BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt", "BIBI_JOB_ID": "j",
-        "BIBI_DOCKER_BIN": "/d/docker", "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-x"})
+        "BIBI_DOCKER_BIN": "/d/docker", "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-x",
+        "BIBI_DATA_HOME": str(tmp_path / "data-home")})
     assert "CLAUDE_CODE_OAUTH_TOKEN" in spec.argv
     i = spec.argv.index("CLAUDE_CODE_OAUTH_TOKEN")
     assert spec.argv[i - 1] == "-e"   # -e CLAUDE_CODE_OAUTH_TOKEN (Wert vom Host)
 
 
-def test_default_image_when_unset():
+def test_default_image_when_unset(tmp_path: Path):
     spec = exec_backend.build_exec(
         ["sh"], {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
-                 "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker"})
+                 "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker",
+                 "BIBI_DATA_HOME": str(tmp_path / "data-home")})
     assert exec_backend.DEFAULT_IMAGE in spec.argv
+
+
+# ── Generischer Daten-Mount (User-Fund 2026-07-14) ───────────────────────────
+
+def test_container_mode_mounts_data_home(tmp_path: Path):
+    data_home = tmp_path / "data-home"
+    env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
+           "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker",
+           "BIBI_DATA_HOME": str(data_home)}
+    spec = exec_backend.build_exec(["sh"], env)
+    assert "-v" in spec.argv
+    mounts = [spec.argv[i + 1] for i, a in enumerate(spec.argv) if a == "-v"]
+    assert f"{data_home}:/root/.local/share/bibi" in mounts
+
+
+def test_container_mode_creates_data_home_if_missing(tmp_path: Path):
+    data_home = tmp_path / "nested" / "data-home"
+    assert not data_home.exists()
+    env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
+           "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker",
+           "BIBI_DATA_HOME": str(data_home)}
+    exec_backend.build_exec(["sh"], env)
+    assert data_home.is_dir()
+
+
+def test_data_home_default_is_xdg_local_share_bibi():
+    # Ohne BIBI_DATA_HOME-Override (Normalfall) — dieselbe Konvention wie die
+    # Vault-Scripts (Path.home()/".local/share/bibi"/<subsystem>), sonst
+    # würde derselbe Pfad im Host- und Container-Modus auseinanderlaufen.
+    assert exec_backend._data_home({}) == Path.home() / ".local" / "share" / "bibi"
+
+
+def test_host_mode_does_not_touch_data_home():
+    # Host-Modus braucht keinen Mount (echtes Dateisystem) — build_exec() darf
+    # dort nichts anlegen/anfassen.
+    spec = exec_backend.build_exec(["echo", "hi"], {"BIBI_WORKTREE": "/wt"})
+    assert "-v" not in spec.argv
 
 
 # ── PLAN-24 Befund 5: Job-Image-Persistenz ───────────────────────────────────
 
-def test_container_mode_uses_rm_without_persist_flag():
+def test_container_mode_uses_rm_without_persist_flag(tmp_path: Path):
     env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
-           "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker"}
+           "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker",
+           "BIBI_DATA_HOME": str(tmp_path / "data-home")}
     spec = exec_backend.build_exec(["sh"], env)
     assert "--rm" in spec.argv
 
 
-def test_container_mode_omits_rm_with_persist_flag():
+def test_container_mode_omits_rm_with_persist_flag(tmp_path: Path):
     # Der Container muss nach dem Lauf noch existieren, damit `docker commit`
     # ihn snapshotten kann — finalize_container() räumt danach selbst auf.
     env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
            "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker",
-           "BIBI_JOB_IMAGE_PERSIST": "1"}
+           "BIBI_JOB_IMAGE_PERSIST": "1",
+           "BIBI_DATA_HOME": str(tmp_path / "data-home")}
     spec = exec_backend.build_exec(["sh"], env)
     assert "--rm" not in spec.argv
     assert spec.argv[:2] == ["/d/docker", "run"]
@@ -238,6 +290,8 @@ def test_smoke_container_job_writes_workspace_and_output(tmp_path: Path):
         "BIBI_WORKTREE": str(wt),
         "BIBI_OUTPUT_PATH": str(out),
         "BIBI_JOB_ID": "smoke" + os.urandom(3).hex(),
+        # isoliert vom echten ~/.local/share/bibi der Testmaschine:
+        "BIBI_DATA_HOME": str(tmp_path / "data-home"),
     }
     code = run_job(env)
     assert code == 0
@@ -245,3 +299,42 @@ def test_smoke_container_job_writes_workspace_and_output(tmp_path: Path):
     assert output.lines(out, "out") == ["hallo", "fertig"]
     # Container schrieb in /workspace ⇒ Host-Worktree:
     assert (wt / "probe.txt").read_text().strip() == "neu"
+
+
+@docker
+def test_smoke_container_job_persists_data_home_across_runs(tmp_path: Path):
+    # Der eigentliche Zweck des Mounts (User-Fund 2026-07-14): ein Job, der
+    # unter ~/.local/share/bibi/... schreibt (die Vault-Konvention für
+    # externe, worktree-übergreifende Job-Daten), muss das im NÄCHSTEN --rm-
+    # Container-Lauf wiederfinden — vorher ging es mit jedem --rm verloren.
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    data_home = tmp_path / "data-home"
+    base_env = {
+        **os.environ,
+        "BIBI_EXEC_MODE": "container",
+        "BIBI_JOB_TYPE": "job",
+        "BIBI_JOB_IMAGE": "bash:5",
+        "BIBI_WORKTREE": str(wt),
+        "BIBI_DATA_HOME": str(data_home),
+    }
+
+    # Absoluter Pfad (nicht relativ zu /workspace!) — genau wie ein echtes
+    # Vault-Skript per Path.home()/".local/share/bibi"/... auflöst, sobald
+    # HOME=/root im Container gilt.
+    env1 = {**base_env,
+            "BIBI_JOB_CMD": "mkdir -p /root/.local/share/bibi/probe && "
+                            "echo lauf1 >> /root/.local/share/bibi/probe/state.txt",
+            "BIBI_OUTPUT_PATH": str(tmp_path / "out1.jsonl"),
+            "BIBI_JOB_ID": "smoke" + os.urandom(3).hex()}
+    assert run_job(env1) == 0
+
+    env2 = {**base_env,
+            "BIBI_JOB_CMD": "echo lauf2 >> /root/.local/share/bibi/probe/state.txt && "
+                            "cat /root/.local/share/bibi/probe/state.txt",
+            "BIBI_OUTPUT_PATH": str(tmp_path / "out2.jsonl"),
+            "BIBI_JOB_ID": "smoke" + os.urandom(3).hex()}
+    assert run_job(env2) == 0
+
+    state = (data_home / "probe" / "state.txt").read_text()
+    assert state.splitlines() == ["lauf1", "lauf2"]

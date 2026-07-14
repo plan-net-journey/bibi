@@ -160,6 +160,31 @@ def _traefik_labels(job_id: str, *, app_port: int | None, app_prefix: str | None
     return result
 
 
+def _data_home(env: dict[str, str]) -> Path:
+    """Externer Job-Daten-Root, generisch in jeden Container gemountet (User-
+    Fund 2026-07-14: gmail-transfer bootstrappte bei jedem Container-Fire neu,
+    weil sein externes ``items.ndjson`` — außerhalb des Worktrees, damit es
+    den Worktree-Wipe pro Fire überlebt, s. ``worktree.prepare()`` — im
+    Container unsichtbar war, nur der Worktree wird gemountet).
+
+    Vault-Konvention (mehrfach etabliert: ``gmail``/``calendar``-Collector,
+    ``ticker/_paths.py`` TopAktienScreening): externe Job-DATEN liegen unter
+    ``Path.home()/".local/share/bibi"/<subsystem>``, analog XDG
+    ``~/.local/share``. Ein einziger Mount des gemeinsamen ``bibi``-Roots
+    deckt jedes Subsystem ab, das dieser Konvention folgt — kein Job-
+    spezifisches Wissen im Engine-Code nötig.
+
+    Bewusst NICHT für Secrets (``Path.home()/".config"/"bibi-<name>"``) — die
+    laufen über den bestehenden ``BIBI_JOB_ENV_*``-Mechanismus (Team-
+    Vertrauen-Modell, s. Vault ``gmail/README.md`` "Container-Auth"): ein
+    Datei-Mount wäre pro Secret-Verzeichnis nötig, ein Env-Var ist es schon.
+
+    ``BIBI_DATA_HOME``-Override nur für Tests/Sonderfälle gedacht (kein
+    Schedule-Override wie ``exec_mode`` — dieselbe Konvention gilt für jeden
+    Job gleich)."""
+    return Path(env.get("BIBI_DATA_HOME") or (Path.home() / ".local" / "share" / "bibi"))
+
+
 def build_exec(child_argv: list[str], env: dict[str, str]) -> ExecSpec:
     """Child-argv + env → konkrete Popen-Spezifikation, je nach ``BIBI_EXEC_MODE``.
 
@@ -167,13 +192,15 @@ def build_exec(child_argv: list[str], env: dict[str, str]) -> ExecSpec:
       Schedule-MD innerhalb des Worktrees), Fallback Worktree-Root ohne ``BIBI_JOB_CWD``.
     - ``container``: ``docker run --rm --name bibi-<id> --user <host-uid>:0
       -v <worktree>:/workspace -w /workspace[/<md-relativ>] -e HOME=/root
-      [-e KEY…] <image> <child-argv>``; der ganze Worktree bleibt gemountet
-      (Zugriff auf andere Repo-Verzeichnisse bleibt möglich), nur der
-      Arbeitsordner (``-w``) zeigt auf den ``BIBI_JOB_CWD``-Unterpfad; PATH um
-      das docker-bin-Dir ergänzt (Cred-Helper). ``--user <host-uid>:0`` +
-      ``HOME=/root`` (PLAN-24 Befund 5, "arbitrary UID"-Konvention): im
-      Bind-Mount geschriebene Dateien gehören exakt dem Host-User, GID bleibt
-      immer 0 ("root"-Gruppe) für eine feste Identität + passwortloses sudo.
+      -v <data-home>:/root/.local/share/bibi [-e KEY…] <image> <child-argv>``;
+      der ganze Worktree bleibt gemountet (Zugriff auf andere Repo-Verzeichnisse
+      bleibt möglich), nur der Arbeitsordner (``-w``) zeigt auf den
+      ``BIBI_JOB_CWD``-Unterpfad; PATH um das docker-bin-Dir ergänzt
+      (Cred-Helper). ``--user <host-uid>:0`` + ``HOME=/root`` (PLAN-24 Befund 5,
+      "arbitrary UID"-Konvention): im Bind-Mount geschriebene Dateien gehören
+      exakt dem Host-User, GID bleibt immer 0 ("root"-Gruppe) für eine feste
+      Identität + passwortloses sudo — gilt genauso für den Daten-Mount
+      (``_data_home()``), damit dort geschriebene Dateien nicht root-only werden.
     - ``container`` + ``app``-Typ: zusätzlich ``--network bibi-net`` + statisches
       App-Content-Traefik-Label, falls ``app_port``/``app_prefix`` beim Spawn schon
       feststehen (PLAN-9 §2, Slice 9.0; bereinigt PLAN-11.5 — kein Wrapper-Routing
@@ -202,13 +229,16 @@ def build_exec(child_argv: list[str], env: dict[str, str]) -> ExecSpec:
     # Container muss nach dem Lauf noch existieren, damit `docker commit`
     # ihn snapshotten kann (finalize_container() räumt danach selbst auf).
     persist = (env.get("BIBI_JOB_IMAGE_PERSIST") or "").strip() == "1"
+    data_home = _data_home(env)
+    data_home.mkdir(parents=True, exist_ok=True)
     argv = [docker_bin, "run"]
     if not persist:
         argv.append("--rm")
     argv += ["--name", name,
              "--user", f"{_host_uid()}:0",
              "-v", f"{worktree}:{WORKSPACE}", "-w", workdir,
-             "-e", "HOME=/root"]
+             "-e", "HOME=/root",
+             "-v", f"{data_home}:/root/.local/share/bibi"]
 
     app_port_str = env.get("BIBI_APP_PORT")
     if app_port_str:

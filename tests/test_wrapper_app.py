@@ -49,6 +49,9 @@ def _base_env(tmp_path: Path, job_type: str = "app") -> dict:
         "BIBI_WORKTREE": str(tmp_path),
         "BIBI_APP_PORT": "8081",
         "BIBI_APP_PREFIX": "/myapp",
+        # isoliert vom echten ~/.local/share/bibi der Testmaschine (build_exec()
+        # legt das an — s. exec_backend._data_home()):
+        "BIBI_DATA_HOME": str(tmp_path / "data-home"),
     }
 
 
@@ -101,6 +104,7 @@ def test_job_container_no_traefik_labels(tmp_path):
         "BIBI_JOB_TYPE": "job",
         "BIBI_JOB_ID": "aabbccdd",
         "BIBI_WORKTREE": str(tmp_path),
+        "BIBI_DATA_HOME": str(tmp_path / "data-home"),
     }
     with patch.object(exec_backend, "resolve_docker_bin", return_value="docker"):
         spec = exec_backend.build_exec(["bash", "-c", "echo hi"], env)
