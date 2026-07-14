@@ -76,6 +76,26 @@ def test_container_mode_uses_job_cwd_as_workdir_subpath(monkeypatch, tmp_path: P
         "-v", f"{data_home}:/root/.local/share/bibi"]
 
 
+def test_container_mode_mounts_repo_root_when_worktree_is_repo_root(
+    monkeypatch, tmp_path: Path):
+    # User-Fund 2026-07-14 (bibi-ctrl test / in_place): build_exec() braucht
+    # KEINE Änderung, um "dirty trunk containerisiert testen" zu unterstützen —
+    # es behandelt BIBI_WORKTREE ohnehin als reinen, opaken Pfad. _run_wrapper()
+    # setzt bei in_place=True einfach BIBI_WORKTREE=repo_root statt eines
+    # frischen Worktree-Pfads; dieser Test dokumentiert/beweist genau das:
+    # der Live-Checkout landet unverändert als Mount-Quelle im argv.
+    monkeypatch.setattr(exec_backend, "_host_uid", lambda: 1000)
+    repo_root = tmp_path / "live-checkout"
+    repo_root.mkdir()
+    data_home = tmp_path / "data-home"
+    env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": str(repo_root),
+           "BIBI_JOB_ID": "abc123", "BIBI_DOCKER_BIN": "/d/docker",
+           "BIBI_JOB_IMAGE": "img:1", "PATH": "/usr/bin",
+           "BIBI_DATA_HOME": str(data_home)}
+    spec = exec_backend.build_exec(["bash", "-c", "echo hi"], env)
+    assert f"{repo_root}:/workspace" in spec.argv
+
+
 def test_container_mode_runs_as_mapped_host_user(tmp_path: Path):
     # PLAN-24 Befund 5: "arbitrary UID"-Konvention statt dauerhaft root — GID
     # immer 0 ("root"-Gruppe, passwortloses sudo im Image), UID = Host-UID

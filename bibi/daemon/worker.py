@@ -338,6 +338,7 @@ def _run_wrapper(
     exec_mode: str | None = None, image: str | None = None,
     defer_time: int | None = None,
     repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
+    in_place: bool = False,
     run_id: str | None = None,
     # Detach-Modus: Wrapper-Prozess meldet selbst Terminal-Status + Commit (§9).
     detach: bool = False,
@@ -364,11 +365,21 @@ def _run_wrapper(
     # except-Block kann den Fehler hineinschreiben statt output_ref=None.
     out_path = _output_path(repo_root, out_run_id)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    output.append(out_path, "phase", "worktree: wird vorbereitet …")
-    wt_path = worktree.prepare(repo_root=repo_root, work_dir=work_dir, slug=slug)
-    output.append(out_path, "phase", f"worktree: bereit ({wt_path})")
+    # in_place (User-Fund 2026-07-14, bibi-ctrl test): kein frischer Checkout
+    # von trunk — direkt gegen repo_root, dirty tree eingeschlossen. wt_path
+    # bleibt dieselbe Variable wie im Normalfall, damit alles Nachgelagerte
+    # (BIBI_WORKTREE, job_cwd-Ableitung unten, exec_backend.build_exec()s
+    # Container-Mount über BIBI_WORKTREE) unverändert funktioniert — der
+    # Unterschied ist nur, WAS wt_path ist, nicht wie es benutzt wird.
+    if in_place:
+        wt_path = repo_root
+        output.append(out_path, "phase", "worktree: übersprungen (in-place, dirty trunk)")
+    else:
+        output.append(out_path, "phase", "worktree: wird vorbereitet …")
+        wt_path = worktree.prepare(repo_root=repo_root, work_dir=work_dir, slug=slug)
+        output.append(out_path, "phase", f"worktree: bereit ({wt_path})")
     activity.emit(log, logging.DEBUG, "worktree.prepare", role="worker",
-                  slug=slug, run_id=out_run_id, path=str(wt_path))
+                  slug=slug, run_id=out_run_id, path=str(wt_path), in_place=in_place)
 
     env = os.environ.copy()
     env["BIBI_JOB_ID"] = job_id
@@ -378,6 +389,8 @@ def _run_wrapper(
     env["BIBI_JOB_SLUG"] = slug
     env["BIBI_OUTPUT_PATH"] = str(out_path)
     env["BIBI_WORKTREE"] = str(wt_path)
+    if in_place:
+        env["BIBI_IN_PLACE"] = "1"
     # Job-cwd = Verzeichnis der Schedule-MD (User-Feedback 2026-07-05: ein Job
     # soll dort laufen, wo seine MD liegt, nicht im Worktree-Root — verhindert,
     # dass versehentliche relative Schreibzugriffe im ganzen Repo landen).
@@ -434,7 +447,15 @@ def _run_wrapper(
     if detach:
         env["BIBI_REPO_ROOT"] = str(repo_root)
         env["BIBI_RUN_ID"] = out_run_id
-        if ephemeral:
+        # Eigene, von "ephemeral" unabhängige Absicherung (User-Fund 2026-07-14,
+        # Plan-Review zu bibi-ctrl test): in_place heißt wt_path is repo_root —
+        # BIBI_EPHEMERAL darf hier NIE gesetzt werden, egal was der Aufrufer für
+        # ephemeral übergibt (run_pinned() erzwingt zwar schon ephemeral=False
+        # bei in_place, aber diese Zeile verlässt sich nicht darauf, dass jeder
+        # künftige Aufrufer das korrekt macht — dritte, unabhängige Schicht
+        # neben run_pinned()s ephemeral=not in_place und worktree.remove()s
+        # eigenem worktree==repo_root-Guard).
+        if ephemeral and not in_place:
             env["BIBI_EPHEMERAL"] = "1"
         if wall_time is not None:
             env["BIBI_WALL_TIME"] = str(wall_time)
@@ -527,7 +548,7 @@ def _report_level(status: str) -> int:
 def execute_reservation(
     reservation: dict, *, repo_root: Path, work_dir: Path, client,
     worker_name: str | None = None, host: str | None = None, register=None,
-    ephemeral: bool = False,
+    ephemeral: bool = False, in_place: bool = False,
 ) -> dict:
     """Einen **disponierten** (reservierten) Job ausführen + via ``client`` melden,
     inkl. Lifecycle-Kanten (§5.5): wall_time→killed, silence→zombie, exit≠0→failed
@@ -540,6 +561,11 @@ def execute_reservation(
     ``bibi/wrapper/__init__.py::_commit_worktree()``) — nötig für
     ``run_pinned()``, dessen ``unique_slug`` pro Aufruf einen frischen,
     nie wiederverwendeten Worktree anlegt (sonst Leak, Fund PLAN-28 Refactor D).
+
+    ``in_place`` (User-Fund 2026-07-14, ``bibi-ctrl test``): kein Worktree,
+    lief direkt gegen ``repo_root`` — ``run_pinned()`` erzwingt dafür
+    ``ephemeral=False`` (kein Worktree, den man entfernen dürfte/müsste),
+    hier nur durchgereicht an ``_run_wrapper()``.
 
     Der Status wird über ``client.report`` gesetzt; ist der Job bereits terminal
     (z. B. ``killed`` per ``/-/job/{id}/kill``), lehnt der Scheduler den Übergang ab
@@ -589,6 +615,7 @@ def execute_reservation(
             image=reservation.get("image"),
             defer_time=reservation.get("defer_time"),
             repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=ephemeral,
+            in_place=in_place,
             run_id=run_id, detach=True,
             worker_name=worker_name, host=host,
             attempt=attempt, attempts=attempts,
@@ -792,7 +819,7 @@ def run_pinned(
     model: str | None = None, repo_root: Path | None = None,
     work_dir: Path | None = None, db_path: Path | None = None,
     worker_name: str | None = None, host: str | None = None,
-    attempts: int = 0, register=None,
+    attempts: int = 0, register=None, in_place: bool = False,
 ) -> dict:
     """**Lokale** On-Demand-Ausführung mit voller Scheduler-Lifecycle (PLAN-28).
 
@@ -826,7 +853,15 @@ def run_pinned(
     fälligen Backoff-Redispatch zu bedienen — ohne laufenden Daemon bliebe
     ein wartender Retry für immer unbedient hängen. Aufrufer mit laufendem
     Daemon (die HTTP-Route ``/-/run``) können bei Bedarf explizit
-    ``attempts>0`` übergeben, um echtes Retry-mit-Backoff zu aktivieren."""
+    ``attempts>0`` übergeben, um echtes Retry-mit-Backoff zu aktivieren.
+
+    ``in_place`` (User-Fund 2026-07-14, ``bibi-ctrl test``): läuft **ohne**
+    frischen Worktree direkt gegen ``repo_root`` (dirty tree erlaubt, kein
+    Commit vorher nötig) und committet **nie** danach — Gegenstück zu ``run``,
+    für schnelle lokale Iteration statt reproduzierbarer Dispatch. Erzwingt
+    ``ephemeral=False`` (kein separater Worktree existiert, den man aufräumen
+    könnte/dürfte — s. ``_run_wrapper()``s ``BIBI_IN_PLACE``-Zweig und
+    ``worktree.remove()``s Guard gegen ``worktree == repo_root``)."""
     repo_root = repo_root or repo.root()
     work_dir = work_dir or (repo_root / "data" / "worktrees")
     host = host or socket.gethostname()
@@ -912,7 +947,7 @@ def run_pinned(
     execute_reservation(
         reservation, repo_root=repo_root, work_dir=work_dir,
         client=LocalScheduler(db_path), worker_name=worker_name, host=host, register=register,
-        ephemeral=True,
+        ephemeral=not in_place, in_place=in_place,
     )
     # Derselbe run_id/Output-Pfad-Aufbau wie execute_reservation() intern
     # nutzt (job_db.run_id_for() + _output_path()) — muss identisch sein,

@@ -16,11 +16,14 @@ Defensiv: Fehler tragen die git-stderr als ``GitOpError`` nach oben.
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+log = logging.getLogger("bibi.worktree")
 
 BOT_EMAIL = "bibi@local"
 
@@ -111,7 +114,20 @@ def prepare(*, repo_root: Path, work_dir: Path, slug: str, trunk: str = "trunk")
 
 
 def remove(*, repo_root: Path, worktree: Path) -> None:
-    """Worktree entfernen (force, idempotent)."""
+    """Worktree entfernen (force, idempotent).
+
+    Defense-in-Depth-Guard (User-Fund 2026-07-14, ``bibi-ctrl test``): weigert
+    sich, wenn ``worktree`` auf denselben Pfad wie ``repo_root`` auflöst — für
+    ``in_place``-Läufe (kein separater Worktree, ``wt_path is repo_root``) darf
+    das nie passieren, sonst würde ``shutil.rmtree(..., ignore_errors=True)``
+    unten das komplette Live-Repo löschen, ``.git`` eingeschlossen. Die
+    eigentliche Absicherung ist ``run_pinned()``s erzwungenes
+    ``ephemeral=False`` bei ``in_place=True`` (kein Aufrufer sollte ``remove()``
+    für einen in-place-Lauf überhaupt erreichen) — dieser Guard ist die zweite,
+    unabhängige Sicherung, falls diese Verdrahtung je auseinanderdriftet."""
+    if worktree.resolve() == repo_root.resolve():
+        log.error("worktree.remove() verweigert: worktree == repo_root (%s) — kein Löschen", repo_root)
+        return
     if worktree.exists():
         _git(["worktree", "remove", "--force", str(worktree)], cwd=repo_root, check=False)
     if worktree.exists():

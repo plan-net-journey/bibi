@@ -143,6 +143,65 @@ def test_run_endpoint(gitrepo: Path):
         # unbekannter slug → 404
 
 
+def test_test_endpoint_runs_in_place_and_never_commits(gitrepo: Path):
+    # User-Fund 2026-07-14 (bibi-ctrl test): POST /-/test läuft direkt gegen
+    # den Live-Checkout — genau die Reibung, die /test entfernen soll: eine
+    # UNCOMMITTETE Datei neben einer committeten Schedule-MD, die ein /-/run
+    # nie sähe (frischer Worktree von trunk), muss hier lesbar sein, UND
+    # weder sie noch die vom Job neu geschriebene Datei dürfen danach
+    # committet sein.
+    from fastapi.testclient import TestClient
+
+    from bibi.daemon import roles
+    from bibi.daemon.app import create_app
+    from bibi.daemon.worker import Worker
+
+    job_dir = gitrepo / "vault" / "case" / "myjob"
+    job_dir.mkdir(parents=True)
+    (job_dir / "README.md").write_text(
+        '---\nschedule: never\njob: "cat dirty.txt && echo touched >> new.txt"\n---\n',
+        encoding="utf-8")
+    _git(gitrepo, "add", "-A")
+    _git(gitrepo, "commit", "-q", "-m", "seed myjob")
+    (job_dir / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")  # NIE committet
+
+    w = Worker(autopoll=False, repo_root=gitrepo,
+               work_dir=gitrepo / "data" / "worktrees",
+               db_path=gitrepo / "data" / "jobs.sqlite")
+    app = create_app(roles.resolve({"worker"}), worker=w)
+    with TestClient(app) as c:
+        r = c.post("/-/test", json={"slug": "myjob"})
+        assert r.status_code == 200
+        slug = r.json()["slug"]
+        assert r.json()["status"] == "running"
+        assert _wait_until(lambda: slug not in c.get("/-/run/live").json())
+
+        conn = _conn(gitrepo)
+        try:
+            rows = conn.execute("SELECT status FROM jobs").fetchall()
+            assert len(rows) == 1
+            assert rows[0]["status"] == "complete"
+        finally:
+            conn.close()
+
+        # Beide Dateien bleiben uncommittet, kein agent/<slug>-Branch entsteht.
+        status = _git(gitrepo, "status", "--porcelain")
+        assert "dirty.txt" in status
+        assert "new.txt" in status
+        assert _git(gitrepo, "branch", "--list", "agent/*") == ""
+
+        # Regressionstest für den im Plan-Review gefundenen output_ref-Bug:
+        # das Journal-Transkript muss den echten Output tragen (der Beweis,
+        # dass dirty.txt tatsächlich gelesen wurde UND output_ref korrekt
+        # berechnet wird, obwohl kein Commit passiert ist).
+        journal = c.get("/-/run/journal", params={"slug": slug}).json()
+        assert len(journal) == 1
+        jid = journal[0]["id"]
+        out = c.get(f"/-/run/journal/{jid}/output").json()
+        assert out["events"]
+        assert any("uncommitted" in str(e.get("line", "")) for e in out["events"])
+
+
 def test_run_endpoint_works_without_any_worker_role(gitrepo: Path):
     # User-Feedback 2026-07-06: /-/run hing bisher an _add_worker_routes()
     # (nur mit --worker registriert) — ein reiner Client (Synchronizer +

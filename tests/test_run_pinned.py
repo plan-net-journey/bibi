@@ -246,3 +246,32 @@ def test_run_pinned_by_cmd_claude_prefix_uses_claude_silence_timeout_default(git
     run_pinned(cmd="claude: hallo", repo_root=gitrepo, host="mac")
     assert captured["silence_timeout"] == DEFAULT_SILENCE_TIMEOUT
     assert captured["image"] is None
+
+
+# ── in_place (User-Fund 2026-07-14, bibi-ctrl test): kein frischer Worktree, ─
+# nie ein Commit — s. bibi/ctrl/test_cmd.py. Diese beiden Tests decken nur
+# run_pinned()s eigene Verantwortung ab (korrekte Weitergabe von in_place/
+# ephemeral bis zu _run_wrapper() — _run_wrapper() selbst ist hier komplett
+# gemockt, ruft also so oder so nie worktree.prepare() auf). Der eigentliche
+# Beweis "worktree.prepare() wird übersprungen, keine agent/<slug>-Branch
+# entsteht" läuft mit echtem _run_wrapper() in tests/test_worker.py.
+
+def test_run_pinned_in_place_forces_ephemeral_false(gitrepo, monkeypatch):
+    import bibi.daemon.worker as W
+    captured: dict = {}
+    monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
+    run_pinned(cmd="echo hi", repo_root=gitrepo, host="mac", in_place=True)
+    assert captured["in_place"] is True
+    # Kein separater Worktree existiert bei in_place — ephemeral=True würde
+    # sonst versuchen, ihn aufzuräumen (s. worktree.remove()s rm-rf-Risiko,
+    # Kommentar in worker.py::run_pinned()).
+    assert captured["ephemeral"] is False
+
+
+def test_run_pinned_default_is_not_in_place(gitrepo, monkeypatch):
+    import bibi.daemon.worker as W
+    captured: dict = {}
+    monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
+    run_pinned(cmd="echo hi", repo_root=gitrepo, host="mac")
+    assert captured["in_place"] is False
+    assert captured["ephemeral"] is True

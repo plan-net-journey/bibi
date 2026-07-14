@@ -24,6 +24,7 @@ from . import (
     status_cmd,
     statusline_cmd,
     sync_cmd,
+    test_cmd,
 )
 
 
@@ -42,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     daemon_cmd.register(sub)
     job_cmd.register(sub)
     run_cmd.register(sub)
+    test_cmd.register(sub)
     at_cmd.register(sub)
     doctor_cmd.register(sub)
     mergeback_cmd.register(sub)

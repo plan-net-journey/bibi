@@ -393,6 +393,52 @@ def test_run_wrapper_logs_worktree_and_spawn_phases(gitrepo: Path, monkeypatch):
     assert any("wird gestartet" in p for p in phases)
 
 
+def test_run_wrapper_in_place_skips_worktree_and_never_sets_ephemeral(
+    gitrepo: Path, monkeypatch):
+    # User-Fund 2026-07-14 (bibi-ctrl test): in_place=True läuft direkt gegen
+    # repo_root — kein `git worktree add`, kein agent/<slug>-Branch. Und:
+    # selbst wenn ephemeral=True (fälschlich) mitgegeben wird, darf
+    # BIBI_EPHEMERAL nie gesetzt werden — sonst würde der Wrapper später
+    # worktree.remove() auf repo_root selbst aufrufen (rm-rf-Risiko, s.
+    # worker.py::run_pinned()s Docstring und worktree.py::remove()s Guard).
+    import sys
+    import types
+
+    import bibi.daemon.worker as W
+    from bibi.wrapper import output as _output
+
+    real_popen = W.subprocess.Popen
+    captured_env: dict = {}
+
+    def fake_popen(*a, **kw):
+        if a and isinstance(a[0], list) and a[0][:1] == [sys.executable]:
+            captured_env.update(kw.get("env") or {})
+            return types.SimpleNamespace(pid=999)
+        return real_popen(*a, **kw)
+    monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
+
+    _, _, out_path, outcome, pid = W._run_wrapper(
+        job_id="j1", slug="inplacejob", kind="job", payload="echo hi",
+        repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
+        run_id="inplacejob:0", detach=True,
+        in_place=True, ephemeral=True,  # ephemeral=True bewusst falsch mitgegeben
+    )
+    assert outcome == "detached" and pid == 999
+    assert captured_env["BIBI_WORKTREE"] == str(gitrepo)
+    assert captured_env["BIBI_IN_PLACE"] == "1"
+    assert captured_env.get("BIBI_EPHEMERAL") != "1"
+    assert captured_env["BIBI_REPO_ROOT"] == str(gitrepo)  # output_ref muss weiter funktionieren
+
+    # Kein Worktree-Verzeichnis, kein agent/<slug>-Branch entstanden:
+    assert not (gitrepo / "data" / "worktrees" / "inplacejob").exists()
+    branches = _git(gitrepo, "branch", "--list", "agent/inplacejob")
+    assert branches == ""
+
+    phases = _output.lines(out_path, "phase")
+    assert any("übersprungen" in p for p in phases)
+    assert not any(p.startswith("worktree: wird vorbereitet") for p in phases)
+
+
 def test_run_wrapper_respects_schedule_exec_mode_override_for_cleanup(
     gitrepo: Path, monkeypatch):
     # PLAN-22 Befund 3: Knoten-weite Config sagt "container" (z. B. Mac-Dogfood-

@@ -266,7 +266,16 @@ def _deferred_watcher(proc: subprocess.Popen, current_status: list[str],
 # ── Post-completion: Commit + Report ─────────────────────────────────────────
 
 def _commit_worktree(env: dict[str, str]) -> tuple[str | None, str | None]:
-    """Worktree committen und (commit_sha, branch) zurückgeben."""
+    """Worktree committen und (commit_sha, branch) zurückgeben.
+
+    ``BIBI_IN_PLACE=1`` (``bibi-ctrl test``, User-Fund 2026-07-14) überspringt
+    den Commit bewusst — bewusst NICHT an ``BIBI_REPO_ROOT``s Präsenz gekoppelt
+    wie in einer früheren Version: ``_finish()`` unten liest dieselbe Variable
+    für ``output_ref`` (ein ganz anderer Zweck), ein gemeinsames Gate hätte
+    also auch den Output-Verweis für in-place-Läufe stumm auf ``None`` gelassen
+    (leeres Journal-Transkript, dauerhaft) statt nur den Commit zu unterdrücken."""
+    if env.get("BIBI_IN_PLACE") == "1":
+        return None, None
     repo_root_str = env.get("BIBI_REPO_ROOT")
     if not repo_root_str:
         return None, None

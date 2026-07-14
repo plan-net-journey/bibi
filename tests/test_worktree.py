@@ -116,3 +116,23 @@ def test_remove_idempotent(repo: Path):
     wt.remove(repo_root=repo, worktree=path)
     assert not path.exists()
     wt.remove(repo_root=repo, worktree=path)  # zweites Mal kein Fehler
+
+
+def test_remove_refuses_when_worktree_is_repo_root(repo: Path):
+    # Defense-in-Depth (User-Fund 2026-07-14, bibi-ctrl test/in_place): wenn
+    # worktree auf repo_root auflöst (in_place-Läufe setzen wt_path=repo_root),
+    # darf remove() NIE git-worktree-remove/rmtree ausführen — das würde das
+    # Live-Repo löschen, .git eingeschlossen. Zweite, von der ephemeral-Flag-
+    # Weitergabe unabhängige Sicherung.
+    wt.remove(repo_root=repo, worktree=repo)
+    assert repo.exists() and (repo / ".git").exists() and (repo / "f.txt").exists()
+
+
+def test_remove_refuses_via_non_canonical_path_to_repo_root(repo: Path):
+    # Guard vergleicht resolvte Pfade, nicht rohe Strings — ein Pfad mit
+    # einem ".."-Segment, der auf denselben Ort auflöst, muss genauso
+    # geschützt sein wie der exakte repo_root-Pfad selbst.
+    sneaky = repo / "data" / ".."  # == repo, nach .resolve()
+    assert sneaky.resolve() == repo.resolve()
+    wt.remove(repo_root=repo, worktree=sneaky)
+    assert repo.exists() and (repo / ".git").exists()

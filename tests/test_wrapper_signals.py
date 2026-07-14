@@ -379,6 +379,54 @@ def test_finish_silence_outcome_maps_to_silence_reason(tmp_path):
     assert row["reason"] == "silence"
 
 
+def test_commit_worktree_skips_commit_when_in_place(tmp_path):
+    # User-Fund 2026-07-14 (bibi-ctrl test): BIBI_IN_PLACE=1 überspringt den
+    # Commit, ruft dafür also auch keinen git-Befehl auf — repo_root muss
+    # dafür nicht mal ein echtes Repo sein.
+    env = {"BIBI_IN_PLACE": "1", "BIBI_REPO_ROOT": str(tmp_path),
+           "BIBI_WORKTREE": str(tmp_path), "BIBI_JOB_SLUG": "s"}
+    assert _wrapper._commit_worktree(env) == (None, None)
+
+
+def test_finish_in_place_skips_commit_but_still_sets_output_ref(tmp_path):
+    # Regressionstest für den im Plan-Review gefundenen Bug: eine frühere
+    # Fassung unterdrückte den Commit, indem sie BIBI_REPO_ROOT wegließ — das
+    # brach output_ref STILL mit (dieselbe Variable, ganz anderer Zweck in
+    # _finish() unten), Journal-Transkripte für TEST-Läufe wären für immer
+    # leer geblieben. BIBI_IN_PLACE ist jetzt das eigene, unabhängige Gate für
+    # NUR den Commit — BIBI_REPO_ROOT bleibt gesetzt und muss output_ref
+    # weiterhin korrekt berechnen.
+    db_path = tmp_path / "jobs.sqlite"
+    out_path = tmp_path / "data" / "job" / "z14" / "output.jsonl"
+    out_path.parent.mkdir(parents=True)
+    out_path.write_text('{"t": 1.0, "s": "out", "line": "hi"}\n', encoding="utf-8")
+    c = job_db.connect(db_path)
+    c.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("z14", "z14", "z14.md", "job", "echo hi", "running"),
+    )
+    c.close()
+    env = {"BIBI_JOB_ID": "z14", "BIBI_SCHEDULER_DB_PATH": str(db_path),
+           "BIBI_ATTEMPT": "0", "BIBI_ATTEMPTS": "1",
+           "BIBI_IN_PLACE": "1", "BIBI_REPO_ROOT": str(tmp_path),
+           "BIBI_WORKTREE": str(tmp_path), "BIBI_JOB_SLUG": "z14",
+           "BIBI_OUTPUT_PATH": str(out_path)}
+
+    _wrapper._finish(env, 0, "normal")
+
+    c2 = job_db.connect(db_path)
+    row = c2.execute("SELECT status, output_ref FROM jobs WHERE id='z14'").fetchone()
+    journal_row = c2.execute(
+        "SELECT commit_sha, branch FROM journal WHERE slug='z14' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    c2.close()
+    assert row["status"] == "complete"
+    assert row["output_ref"] == str(out_path.relative_to(tmp_path).as_posix())
+    assert journal_row["commit_sha"] is None
+    assert journal_row["branch"] is None
+
+
 def test_finish_killed_outcome_maps_to_killed_by_user(tmp_path):
     # User-Fund 2026-07-13 ("KILL führt nicht zum Status Wechsel"): _on_sigterm()
     # (run_app()/run_job()) meldet jetzt outcome="killed" statt eine

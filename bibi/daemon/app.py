@@ -669,6 +669,33 @@ def create_app(
         return {"id": res["id"], "slug": slug, "status": "running",
                 "output_ref": res["output_ref"]}
 
+    # ── /test: wie /-/run, aber in-place gegen den Live-Checkout ──────────────
+    # User-Fund 2026-07-14 (bibi-ctrl test): kein frischer Worktree von trunk —
+    # läuft direkt gegen repo_root (dirty erlaubt), committet nie danach.
+    # Gleiches RunRequest-Schema, gleiche Rollen-Unabhängigkeit wie /-/run
+    # (dieselbe Begründung: der Dispatch selbst braucht kein Worker-Objekt).
+    @app.post("/-/test", tags=["job"])
+    def test(req: RunRequest):
+        if not req.slug and not req.cmd:
+            return JSONResponse(status_code=400, content={"error": "slug oder cmd nötig"})
+        slug = req.slug or "adhoc"
+        if worker_mod.local_run_live(slug) is not None:
+            return JSONResponse(status_code=409,
+                                content={"error": "already running", "slug": slug})
+
+        try:
+            res = run_pinned(slug=req.slug, cmd=req.cmd, kind=req.kind,
+                             register=pinned_worker._register, in_place=True)
+        except LookupError as exc:
+            return JSONResponse(status_code=404, content={"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 — Route darf nie unbehandelt crashen
+            activity.emit(log, logging.ERROR, "test.pinned_error",
+                          "In-place /test-Lauf fehlgeschlagen", role="daemon",
+                          slug=slug, error=str(exc))
+            return JSONResponse(status_code=500, content={"error": str(exc)})
+        return {"id": res["id"], "slug": slug, "status": "running",
+                "output_ref": res["output_ref"]}
+
     # ── /run/live: Zwischenstand laufender lokaler /run-Ausführungen ──────────
     # PLAN-21 Befund 10, 2. Nachtrag — s. Kommentar bei POST /-/run. Schlank
     # (nur id+started_at je Slug) für die Jobs-Liste; die Slug-Variante trägt
