@@ -246,125 +246,147 @@ def test_screen_nav_hides_jobs_tab_without_connect_role():
 # ── Lokale Job-Detailseite (PLAN-21 Befund 10-Nachtrag) — Rendering ──────────
 
 
-def test_local_job_meta_shows_type_trigger_git_and_last_status():
-    local = _row("a", git_status="modified")
-    html = render._local_job_meta("a", local, {"status": "complete"})
-    assert "job" in html and "now" in html
-    assert 'class="chip modified"' in html and ">geändert<" in html
-    assert 'class="st complete">complete' in html
-    assert 'hx-post="/-/ui/jobs/detail/a/start"' in html
+def test_local_job_view_never_run_returns_none():
+    assert render._local_job_view(_row("a"), None, None) is None
 
 
-def test_local_job_meta_no_last_run_omits_status():
-    html = render._local_job_meta("a", _row("a"), None)
-    assert "letzter Lauf" not in html
+def test_local_job_view_last_run_carries_status_and_timestamps():
+    last_run = {"id": 5, "status": "complete", "started_at": 90.0,
+               "finished_at": 100.0, "reason": None}
+    job = render._local_job_view(_row("a"), last_run, None)
+    assert job == {"id": 5, "status": "complete", "started_at": 90.0,
+                   "finished_at": 100.0, "reason": None, "app_port": None}
 
 
-def test_local_job_meta_live_shows_running_and_disables_start():
-    # PLAN-21 Befund 10, 2. Nachtrag: live gesetzt → "running" statt letztem
-    # Status, Start-Button deaktiviert, Ziel jetzt #jobsdetail-live.
-    html = render._local_job_meta("a", _row("a"), {"status": "complete"},
-                                  live={"id": "jid1", "events": []})
+def test_local_job_view_live_defaults_to_running_status():
+    # Dieselbe Fallunterscheidung wie vormals _local_job_meta()/_jobs_row():
+    # ein live-Eintrag ohne explizites Signal gilt als "running".
+    job = render._local_job_view(_row("a"), None, {"id": "jid1", "started_at": 200.0})
+    assert job["status"] == "running" and job["id"] == "jid1"
+
+
+def test_local_job_view_live_awaiting_from_signal():
+    job = render._local_job_view(
+        _row("a"), None,
+        {"id": "jid1", "status": "awaiting", "app_url": "http://127.0.0.1:9100/"})
+    assert job["status"] == "awaiting" and job["app_url"] == "http://127.0.0.1:9100/"
+
+
+def test_local_job_view_carries_app_port_from_local_regardless_of_run_state():
+    local = {**_row("a"), "app_port": 9100}
+    assert render._local_job_view(local, {"id": 5, "status": "complete"}, None)["app_port"] == 9100
+    assert render._local_job_view(local, None, {"id": "jid1"})["app_port"] == 9100
+
+
+# ── Client-Job-Detailseite: dieselben Bausteine wie beim Host (PLAN-29 Befund 3+5) ──
+
+
+def test_jobs_detail_live_fragment_never_run_shows_host_style_start_only():
+    # PLAN-29 Befund 3, User-Entscheidung: "Host-Großschreibung, konsistent
+    # mit dem Rest der App" statt der bisherigen Icon-Buttons (▶/↺/■).
+    html = render.jobs_detail_live_fragment("a", None, _row("a"), None)
+    assert '<button hx-post="/-/ui/jobs/detail/a/start" hx-target="#jobsdetail-live" hx-swap="outerHTML">START</button>' in html
+    assert 'hx-post="/-/ui/jobs/detail/a/kill" hx-target="#jobsdetail-live" hx-swap="outerHTML" disabled' in html
+    assert 'hx-post="/-/ui/jobs/detail/a/reset" hx-target="#jobsdetail-live" hx-swap="outerHTML" disabled' in html
+    assert "▶" not in html and "↺" not in html and "■" not in html
+    assert "startbtn" not in html and "killbtn" not in html and "resetbtn" not in html
+
+
+def test_jobs_detail_live_fragment_while_live_enables_kill_disables_start():
+    html = render.jobs_detail_live_fragment(
+        "a", {"id": "jid1", "started_at": 100.0, "events": []}, _row("a"), None)
+    assert 'hx-post="/-/ui/jobs/detail/a/kill" hx-target="#jobsdetail-live" hx-swap="outerHTML">KILL</button>' in html
+    assert 'hx-post="/-/ui/jobs/detail/a/start" hx-target="#jobsdetail-live" hx-swap="outerHTML" disabled' in html
     assert 'class="st running">running<' in html
-    assert "letzter Lauf" not in html  # tritt zurück, solange live
-    assert 'class="startbtn" hx-post="/-/ui/jobs/detail/a/start"' in html
-    assert 'class="startbtn" hx-post="/-/ui/jobs/detail/a/start" hx-target="#jobsdetail-live" hx-swap="outerHTML" disabled' in html
-    assert 'hx-target="#jobsdetail-live"' in html
 
 
-def test_local_job_meta_live_awaiting_shows_awaiting_badge():
-    # Ausbau User-Fund 2026-07-10: lokale App-Jobs melden jetzt auch awaiting
-    # über den Signal-Kanal (worker.local_run_signal_state()) — vorher stand
-    # hier für jeden laufenden lokalen Job unbedingt "running".
-    html = render._local_job_meta(
-        "a", _row("a"), None, live={"id": "jid1", "events": [], "status": "awaiting"})
-    assert 'class="st awaiting">awaiting<' in html
-    assert 'class="st running">running<' not in html
-
-
-def test_local_job_meta_kill_button_only_enabled_while_live():
-    # User-Fund 2026-07-10: "natürlich müssen wir kill können" — KILL nur
-    # aktiv, solange wirklich etwas läuft.
-    idle = render._local_job_meta("a", _row("a"), {"status": "complete"})
-    assert 'class="killbtn" hx-post="/-/ui/jobs/detail/a/kill" hx-target="#jobsdetail-live" hx-swap="outerHTML" disabled' in idle
-
-    running = render._local_job_meta("a", _row("a"), None, live={"id": "jid1", "events": []})
-    assert 'class="killbtn" hx-post="/-/ui/jobs/detail/a/kill" hx-target="#jobsdetail-live" hx-swap="outerHTML" title=' in running
-    assert "killbtn\" hx-post=\"/-/ui/jobs/detail/a/kill\" hx-target=\"#jobsdetail-live\" hx-swap=\"outerHTML\" disabled" not in running
-
-
-def test_local_job_meta_reset_button_only_enabled_while_live():
-    # User-Feedback 2026-07-13: "warum nicht START, RESET und KILL wie auf
-    # Host" — RESET nur aktiv, solange eine Live-Zeile existiert (sonst gibt
-    # es nichts zurückzusetzen).
-    idle = render._local_job_meta("a", _row("a"), {"status": "complete"})
-    assert 'class="resetbtn" hx-post="/-/ui/jobs/detail/a/reset" hx-target="#jobsdetail-live" hx-swap="outerHTML" disabled' in idle
-
-    running = render._local_job_meta("a", _row("a"), None, live={"id": "jid1", "events": []})
-    assert 'class="resetbtn" hx-post="/-/ui/jobs/detail/a/reset" hx-target="#jobsdetail-live" hx-swap="outerHTML" title=' in running
-    assert "resetbtn\" hx-post=\"/-/ui/jobs/detail/a/reset\" hx-target=\"#jobsdetail-live\" hx-swap=\"outerHTML\" disabled" not in running
-
-
-def test_local_job_meta_shows_rebuild_button_for_container_job():
-    # User-Fund 2026-07-13: "REBUILD müsste doch auch beim Client notwendig
-    # sein, oder?" — wie beim Host (_action_bar()) nur sichtbar bei
-    # exec_mode: container, unabhängig von live/idle.
+def test_jobs_detail_live_fragment_shows_rebuild_for_container_job():
     local = {**_row("a"), "exec_mode": "container"}
-    idle = render._local_job_meta("a", local, {"status": "complete"})
+    idle = render.jobs_detail_live_fragment("a", None, local, {"id": 5, "status": "complete"})
     assert 'hx-post="/-/ui/jobs/detail/a/rebuild"' in idle
-    running = render._local_job_meta("a", local, None, live={"id": "jid1", "events": []})
+    running = render.jobs_detail_live_fragment(
+        "a", {"id": "jid1", "events": []}, local, None)
     assert 'hx-post="/-/ui/jobs/detail/a/rebuild"' in running  # nicht an live gebunden
 
 
-def test_local_job_meta_hides_rebuild_button_for_host_job():
-    idle = render._local_job_meta("a", _row("a"), {"status": "complete"})  # kein exec_mode
-    assert "rebuild" not in idle.lower()
+def test_jobs_detail_live_fragment_hides_rebuild_for_host_job():
+    html = render.jobs_detail_live_fragment("a", None, _row("a"), {"id": 5, "status": "complete"})
+    assert "rebuild" not in html.lower()
 
 
-def test_local_live_output_empty_when_not_running():
-    assert render._local_live_output(None) == ""
+def test_jobs_detail_live_fragment_meta_line_shows_type_trigger_git():
+    local = _row("a", git_status="modified")
+    html = render.jobs_detail_live_fragment("a", None, local, None)
+    assert "job" in html and "now" in html
+    assert 'class="chip modified"' in html and ">geändert<" in html
 
 
-def test_local_live_output_falls_back_to_last_run_output_when_not_live():
-    # PLAN-28 User-Feedback: "bei terminalen Status wurde der Output
-    # entfernt... beim Host wird der Output des letzten Laufes immer oben
-    # angezeigt bis RESET oder START" — derselbe Fallback beim Client.
-    html = render._local_live_output(
-        None, {"kind": "job", "events": [{"t": 1.0, "s": "out", "line": "archiviert"}]})
-    assert "archiviert" in html and "Output" in html
+def test_jobs_detail_live_fragment_no_status_duplicated_in_meta_line():
+    # _local_job_meta_line() zeigt bewusst keinen eigenen Status mehr (anders
+    # als die alte _local_job_meta()) — "letzter Lauf" kommt nur noch einmal,
+    # aus _live_panel()s eigenem Label.
+    html = render.jobs_detail_live_fragment("a", None, _row("a"), {"id": 5, "status": "complete"})
+    assert html.count("letzter Lauf") == 1
 
 
-def test_local_live_output_prefers_live_over_last_run_output():
-    html = render._local_live_output(
-        {"kind": "job", "events": [{"t": 1.0, "s": "out", "line": "live"}]},
-        {"kind": "job", "events": [{"t": 1.0, "s": "out", "line": "archiviert"}]})
-    assert "live" in html and "archiviert" not in html
+def test_jobs_detail_live_fragment_falls_back_to_last_run_output():
+    # PLAN-28 User-Feedback: "beim Host wird der Output des letzten Laufes
+    # immer oben angezeigt bis RESET oder START" — derselbe Fallback beim
+    # Client, jetzt über _live_panel() statt der alten _local_live_output().
+    html = render.jobs_detail_live_fragment(
+        "a", None, _row("a"), {"id": 5, "status": "complete", "finished_at": 100.0},
+        last_run_output={"kind": "job",
+                         "events": [{"t": 1.0, "s": "out", "line": "archiviert"}]})
+    assert "archiviert" in html
 
 
-def test_local_live_output_renders_events():
-    html = render._local_live_output(
-        {"kind": "job", "events": [{"t": 1.0, "s": "out", "line": "hallo welt"}]})
-    assert "hallo welt" in html and "Output" in html
-
-
-def test_local_live_output_no_hitl_panel_when_running():
-    html = render._local_live_output({"kind": "job", "events": [], "status": "running"})
-    assert "Eingabe erforderlich" not in html
-
-
-def test_local_live_output_shows_hitl_panel_when_awaiting():
-    # Ausbau User-Fund 2026-07-10: dasselbe HITL-Panel wie bei Scheduler-Jobs
-    # (_hitl_panel()), gespeist aus dem neuen Signal-Kanal für lokale Läufe.
-    html = render._local_live_output(
-        {"kind": "job", "events": [], "status": "awaiting",
-         "app_url": "http://127.0.0.1:9100/"})
+def test_jobs_detail_live_fragment_shows_hitl_panel_when_awaiting():
+    html = render.jobs_detail_live_fragment(
+        "a", {"id": "jid1", "status": "awaiting", "app_url": "http://127.0.0.1:9100/",
+             "events": []},
+        _row("a"), None)
     assert "Eingabe erforderlich" in html
     assert 'href="http://127.0.0.1:9100/"' in html
 
 
-def test_local_live_output_hitl_panel_shows_placeholder_without_app_url():
-    html = render._local_live_output({"kind": "job", "events": [], "status": "awaiting"})
-    assert "app_url nicht verfügbar" in html
+def test_jobs_detail_live_fragment_no_raw_stream_link():
+    # PLAN-29 Befund 3+5: /-/job/{id}/stream existiert nur über
+    # _add_worker_routes() (roles.worker) — auf einem reinen Client (Rolle
+    # connect) ein toter Link (live 501 bestätigt), deshalb raw_stream_base=
+    # None fest verdrahtet für die Client-Detailseite.
+    html = render.jobs_detail_live_fragment(
+        "a", {"id": "jid1", "started_at": 100.0, "events": []}, _row("a"), None)
+    assert "roher Stream" not in html
+    assert "/-/job/jid1/stream" not in html
+
+
+def test_jobs_detail_page_has_attribute_link():
+    html = render.jobs_detail_page("a", _row("a"), None, [], now=100.0)
+    assert 'href="/-/ui/jobs/detail/a/attrs">Attribute →</a>' in html
+
+
+def test_jobs_detail_attrs_page_shows_local_config():
+    local = {**_row("a"), "app_port": 9100, "exec_mode": "container"}
+    html = render.jobs_detail_attrs_page("a", local)
+    assert "<h1>a · Attribute</h1>" in html
+    assert "Konfiguration" in html
+    assert "<code>echo x</code>" in html  # payload
+    assert "<code>9100</code>" in html
+    assert "<code>container</code>" in html
+
+
+def test_jobs_detail_attrs_page_omits_scheduling_section():
+    # id/next_fire_at/fire sind Scheduler-Laufzeitstand — den hat ein rein
+    # lokal entdeckter Job strukturell nicht (anders als schedule_attrs_page()).
+    html = render.jobs_detail_attrs_page("a", _row("a"))
+    assert "Scheduling" not in html
+
+
+def test_jobs_detail_attrs_page_handles_missing_local():
+    # Job-MD gelöscht/umbenannt, aber die Attribute-Seite noch aufgerufen —
+    # kein 500, nur Platzhalter.
+    html = render.jobs_detail_attrs_page("gone", None)
+    assert "<h1>gone · Attribute</h1>" in html
 
 
 def test_jobs_detail_live_fragment_data_attrs_reflect_running_state():
@@ -539,6 +561,28 @@ def test_jobs_route_shows_app_port_link_for_discovered_app_job(team_repo: Path, 
         assert r.status_code == 200
         assert ('<a href="http://localhost:9100/" target="_blank" '
                'rel="noopener">app :9100</a>') in r.text
+
+
+def test_jobs_detail_attrs_route(team_repo: Path, app_with):
+    # PLAN-29 Befund 3+5: end-to-end-Nachweis, dass die neue, lokal gespeiste
+    # Attribute-Seite tatsächlich erreichbar ist und echte MD-Daten zeigt —
+    # anders als schedule_attrs()/schedule_config() (Host), das auf einem
+    # Client live nur leere Platzhalter liefert (s. PLAN-29.md Befund 3+5).
+    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x", app_port=9100)
+    app, _ = app_with(_FakeClient())
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/detail/mein-testjob/attrs")
+        assert r.status_code == 200
+        assert "<h1>mein-testjob · Attribute</h1>" in r.text
+        assert "<code>9100</code>" in r.text
+
+
+def test_jobs_detail_page_route_links_to_attrs_route(team_repo: Path, app_with):
+    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
+    app, _ = app_with(_FakeClient())
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/detail/mein-testjob")
+        assert 'href="/-/ui/jobs/detail/mein-testjob/attrs">Attribute →</a>' in r.text
 
 
 def test_jobs_route_never_calls_remote_schedules_even_with_scheduler_role(

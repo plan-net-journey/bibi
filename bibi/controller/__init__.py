@@ -62,13 +62,23 @@ def _local_schedules() -> dict[str, dict]:
             "repo_path": (case_dir / pr.schedule_ref).relative_to(root).as_posix(),
             # User-Fund 2026-07-13 ("REBUILD müsste doch auch beim Client
             # notwendig sein, oder?"): Grundlage für die REBUILD-Sichtbarkeit
-            # auf der Client-Job-Detailseite (_local_job_meta(), render.py) —
-            # bisher fehlte exec_mode hier komplett, das Feld war unsichtbar.
+            # auf der Client-Job-Detailseite (render._action_bar(), s.
+            # PLAN-29 Befund 3+5) — bisher fehlte exec_mode hier komplett.
             "exec_mode": pr.spec.exec_mode,
             # PLAN-29 Befund 2, User-Fund: Type-Spalte der Jobs-Tabelle soll
             # bei Apps den Port als Link zeigen — bisher fehlten app_port/
             # app_prefix hier komplett, obwohl ScheduleSpec beide trägt.
             "app_port": pr.spec.app_port, "app_prefix": pr.spec.app_prefix,
+            # PLAN-29 Befund 3+5: Grundlage für jobs_detail_attrs_page() —
+            # alles hier ist statische Frontmatter (ScheduleSpec), keine
+            # Scheduler-Laufzeit, deshalb genauso read-only verfügbar wie
+            # die Felder oben, unabhängig von einer scheduler-Rolle.
+            "priority": pr.spec.priority, "model": pr.spec.model,
+            "soul": pr.spec.soul, "session": pr.spec.session,
+            "attempts": pr.spec.attempts, "backoff": pr.spec.backoff,
+            "silence_timeout": pr.spec.silence_timeout, "wall_time": pr.spec.wall_time,
+            "defer_time": pr.spec.defer_time, "defer_max": pr.spec.defer_max,
+            "image": pr.spec.image,
         }
         for slug, pr in found.items()
     }
@@ -379,25 +389,39 @@ def add_controller_routes(
 
     @app.get("/-/ui/jobs/detail/{slug}", include_in_schema=False)
     def jobs_detail(slug: str):
+        from bibi import config
         local, last_run, runs = _job_detail_data(slug)
         live = _job_live(slug)
         return HTMLResponse(render.jobs_detail_page(
             slug, local, last_run, runs, daemon_status=_status(), live=live,
-            last_run_output=None if live else _job_last_run_output(last_run)))
+            last_run_output=None if live else _job_last_run_output(last_run),
+            public_host=config.public_host()))
+
+    @app.get("/-/ui/jobs/detail/{slug}/attrs", include_in_schema=False)
+    def jobs_detail_attrs(slug: str):
+        # PLAN-29 Befund 3+5: Gegenstück zu schedule_attrs()/schedule_config()
+        # (Host) — lokal gespeist statt scheduler-gated, funktioniert deshalb
+        # auch auf einem reinen Client (dort läuft schedule_attrs() heute
+        # still ins Leere, s. render.jobs_detail_attrs_page()-Docstring).
+        local = _local_schedules().get(slug)
+        return HTMLResponse(render.jobs_detail_attrs_page(slug, local))
 
     @app.get("/-/ui/jobs/detail/{slug}/live", include_in_schema=False)
     def jobs_detail_live_fragment(slug: str):
         # Self-Poll-Ziel von #jobsdetail-live (wie #live bei Schedules).
+        from bibi import config
         local, last_run, _runs = _job_detail_data(slug)
         live = _job_live(slug)
         return HTMLResponse(render.jobs_detail_live_fragment(
             slug, live, local, last_run,
-            last_run_output=None if live else _job_last_run_output(last_run)))
+            last_run_output=None if live else _job_last_run_output(last_run),
+            public_host=config.public_host()))
 
     @app.post("/-/ui/jobs/detail/{slug}/kill", include_in_schema=False)
     def jobs_detail_kill(slug: str):
         # User-Fund 2026-07-10: "natürlich müssen wir kill können" — Analogon
         # zu schedule_action()s KILL-Verb (Host), aber lokal (client.run_live_kill()).
+        from bibi import config
         try:
             client.run_live_kill(slug)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
@@ -406,13 +430,15 @@ def add_controller_routes(
         live = _job_live(slug)
         return HTMLResponse(render.jobs_detail_live_fragment(
             slug, live, local, last_run,
-            last_run_output=None if live else _job_last_run_output(last_run)))
+            last_run_output=None if live else _job_last_run_output(last_run),
+            public_host=config.public_host()))
 
     @app.post("/-/ui/jobs/detail/{slug}/reset", include_in_schema=False)
     def jobs_detail_reset(slug: str):
         # User-Feedback 2026-07-13: "warum nicht START, RESET und KILL wie
         # auf Host" — Not-Aus für eine hängen gebliebene Live-Anzeige,
         # analog zu jobs_detail_kill(), aber lokal (client.run_live_reset()).
+        from bibi import config
         try:
             client.run_live_reset(slug)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
@@ -421,7 +447,8 @@ def add_controller_routes(
         live = _job_live(slug)
         return HTMLResponse(render.jobs_detail_live_fragment(
             slug, live, local, last_run,
-            last_run_output=None if live else _job_last_run_output(last_run)))
+            last_run_output=None if live else _job_last_run_output(last_run),
+            public_host=config.public_host()))
 
     @app.post("/-/ui/jobs/detail/{slug}/rebuild", include_in_schema=False)
     def jobs_detail_rebuild(slug: str):
@@ -430,6 +457,7 @@ def add_controller_routes(
         # (Host), aber lokal (client.run_rebuild()). Anders als KILL/RESET
         # hängt REBUILD an keiner Live-Zeile, deshalb kein _job_live()-Bezug
         # nötig — nur Fragment neu rendern.
+        from bibi import config
         try:
             client.run_rebuild(slug)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
@@ -438,7 +466,8 @@ def add_controller_routes(
         live = _job_live(slug)
         return HTMLResponse(render.jobs_detail_live_fragment(
             slug, live, local, last_run,
-            last_run_output=None if live else _job_last_run_output(last_run)))
+            last_run_output=None if live else _job_last_run_output(last_run),
+            public_host=config.public_host()))
 
     @app.post("/-/ui/jobs/detail/{slug}/start", include_in_schema=False)
     def jobs_detail_start(slug: str):
@@ -450,6 +479,7 @@ def add_controller_routes(
         # #jobsboard-Fragment überschrieben (falsche id, falsches Self-Poll-
         # Ziel). Eigene Route, analog zu jobs_detail_kill(), gibt das
         # richtige Fragment zurück.
+        from bibi import config
         try:
             client.run(slug=slug)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
@@ -458,7 +488,8 @@ def add_controller_routes(
         live = _job_live(slug)
         return HTMLResponse(render.jobs_detail_live_fragment(
             slug, live, local, last_run,
-            last_run_output=None if live else _job_last_run_output(last_run)))
+            last_run_output=None if live else _job_last_run_output(last_run),
+            public_host=config.public_host()))
 
     @app.get("/-/ui/jobs/detail/{slug}/runs", include_in_schema=False)
     def jobs_detail_runs_fragment(slug: str, offset: int = 0):

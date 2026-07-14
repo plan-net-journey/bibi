@@ -1474,112 +1474,61 @@ def jobs_page(
     )
 
 
-# ── Lokale Job-Detailseite (PLAN-21 Befund 10-Nachtrag) ──────────────────────
+# ── Lokale Job-Detailseite (PLAN-21 Befund 10-Nachtrag; PLAN-29 Befund 3+5) ──
 #
 # User-Fund 2026-07-09: der Jobs-Screen (Client) verlinkte bisher direkt von
 # der Liste auf den letzten EINZELNEN Lauf, ohne Zwischenseite "dieser Job,
 # alle lokalen Läufe" — anders als der Host, wo /-/ui/schedule/{slug} genau
-# das leistet. Diese Seite ist das Gegenstück, aber bewusst kein 1:1-Clone
-# von schedule_detail_page(): die Meta-Zeile speist sich aus der lokalen MD-
-# Discovery (_local_schedules()) statt der Scheduler-DB (die kennt ein reiner
-# Client nicht), keine Start/Reset/Kill-Verben (Scheduler-Konzepte — nur
-# "Start" bleibt, als erneuter /run). Die Journal-Tabelle (Historie,
-# Löschen, Detail-Link) ist dagegen **derselbe** Baustein wie beim Host
-# (journal_fragment() mit base="/-/ui/jobs/detail", s. dort) — genau die vom
-# User erhoffte Vereinheitlichung, ohne Fork.
+# das leistet. Diese Seite ist das Gegenstück.
+#
+# PLAN-29 Befund 3+5 (User-Entscheidung: "(2) sehr gerne", Vereinheitlichung
+# statt Parallel-Renderer): war bis 2026-07-14 ein bewusster Nicht-Clone von
+# schedule_detail_page() (eigene Buttons/Icons, keine Attribute-Seite) — vor
+# PLAN-28 auch nötig, weil lokale /run-Läufe keine echte jobs-Zeile hatten.
+# Seit PLAN-28 sind gepinnte Läufe echte jobs-Zeilen (nur in der eigenen
+# lokalen jobs.sqlite statt einer geteilten DB, s. dort), die Darstellung
+# nutzt jetzt deshalb dieselben Bausteine wie der Host: _action_bar()/
+# _live_panel() (mit base="/-/ui/jobs/detail", target="#jobsdetail-live",
+# raw_stream_base=None — der rohe SSE-Link existiert auf einem reinen Client
+# nicht, s. _live_panel()-Docstring) statt eigener Icon-Buttons/Output-Box.
+# _local_job_view() unten ist der Adapter: baut aus der lokalen MD-Discovery
+# + eigener /run-Journal-Historie + Live-Status dasselbe job-shaped Dict, das
+# _action_bar()/_live_panel() erwarten (Gegenstück zu _detail_data()s
+# Scheduler-DB-Lookup auf dem Host — die einzige echte Quelle des
+# Unterschieds ist WO die Zeile lebt, nicht WIE sie aussieht, exakt wie
+# gegen execute_reservation() als gemeinsamen Ausführungskern verifiziert).
+# Die Journal-Tabelle (Historie, Löschen, Detail-Link) war schon vorher
+# **derselbe** Baustein wie beim Host (journal_fragment() mit
+# base="/-/ui/jobs/detail").
 
 
-def _local_job_meta(slug: str, local: dict, last_run: dict | None,
-                    *, live: dict | None = None) -> str:
-    """Meta-Zeile der lokalen Job-Detailseite — Gegenstück zur Meta-Zeile in
-    live_fragment() (Host), aber aus der lokalen MD-Discovery statt der
-    Scheduler-DB gespeist (s. Modul-Kommentar oben). ``live`` (PLAN-21 Befund
-    10, 2. Nachtrag — User-Fund 2026-07-09 "warum erscheinen keine Details
-    während des Laufes?"): läuft der Job gerade, zeigt sie "running" statt
-    des letzten (bereits abgeschlossenen) Laufs, und der Start-Button
-    deaktiviert sich (der Server würde einen Doppelstart ohnehin mit 409
-    ablehnen, s. app.py — das hier ist nur die sichtbare Konsequenz davon)."""
-    kind = _e(_effective_sched_type(local))
-    trigger = _e(local.get("schedule") or local.get("at") or "—")
-    cls, git_label = _GIT_STATUS_LABEL.get(local.get("git_status", "clean"),
-                                           ("chip", _e(str(local.get("git_status", "—")))))
+def _local_job_view(local: dict, last_run: dict | None, live: dict | None) -> dict | None:
+    """Adapter (PLAN-29 Befund 3+5): normalisiert die lokal ohnehin schon
+    vorhandenen Datenquellen auf dasselbe job-shaped Dict, das
+    _action_bar()/_live_panel() erwarten — ``id``/``status`` (Button-
+    Aktivierung), ``started_at``/``finished_at``/``reason`` (Meta-Zeile),
+    ``app_port`` (Link, aus der MD-Discovery — job-Attribut, nicht
+    laufabhängig) und im Live-Fall ``app_url`` (HITL-Signal). Gibt ``None``
+    zurück, wenn der Job auf diesem Knoten noch nie lief UND gerade nichts
+    live ist — _action_bar() rendert dafür trotzdem eine Start-only-Leiste
+    (s. dortiger Aufrufer), _live_panel() bleibt dann bewusst leer (kein
+    "letzter Lauf"/"aktiver Lauf"-Kasten ohne jeden Lauf)."""
+    app_port = local.get("app_port")
     if live:
         # Ausbau User-Fund 2026-07-10: lokale App-Jobs melden jetzt auch
-        # awaiting über den Signal-Kanal (s. worker.local_run_signal_state()) —
-        # vorher stand hier für jeden laufenden lokalen Job unbedingt "running".
-        st = "awaiting" if live.get("status") == "awaiting" else "running"
-        status_html = f' · <span class="st {st}">{st}</span>'
-    elif last_run:
-        st = _e(last_run.get("status"))
-        status_html = f' · letzter Lauf <span class="st {st}">{st}</span>'
-    else:
-        status_html = ""
-    s = _e(slug)
-    disabled = " disabled" if live else ""
-    start_btn = (f'<button class="startbtn" hx-post="/-/ui/jobs/detail/{s}/start" '
-                f'hx-target="#jobsdetail-live" hx-swap="outerHTML"{disabled} '
-                f'title="/run {s} sofort auf diesem Rechner">▶ Start</button>')
-    # KILL nur sichtbar/aktiv, solange wirklich etwas läuft (User-Fund
-    # 2026-07-10: "natürlich müssen wir kill können" — ein langlebiger
-    # App-Job über /run blieb sonst nur per manuellem docker kill/SIGTERM
-    # von außen beendbar).
-    kill_disabled = "" if live else " disabled"
-    kill_btn = (f'<button class="killbtn" hx-post="/-/ui/jobs/detail/{s}/kill" '
-               f'hx-target="#jobsdetail-live" hx-swap="outerHTML"{kill_disabled} '
-               f'title="laufenden Prozess beenden">■ Kill</button>')
-    # RESET (User-Feedback 2026-07-13: "warum nicht START, RESET und KILL wie
-    # auf Host") — Not-Aus für eine hängen gebliebene Live-Anzeige (Wrapper
-    # abgestürzt/Daemon neu gestartet, kein greifbarer Prozess mehr, aber die
-    # Zeile steht noch auf running/awaiting und START bleibt deaktiviert).
-    # Nur sichtbar/aktiv, solange überhaupt eine Live-Zeile existiert — sonst
-    # gibt es nichts zurückzusetzen, START funktioniert bereits jederzeit.
-    reset_disabled = "" if live else " disabled"
-    reset_btn = (f'<button class="resetbtn" hx-post="/-/ui/jobs/detail/{s}/reset" '
-                f'hx-target="#jobsdetail-live" hx-swap="outerHTML"{reset_disabled} '
-                f'title="hängen gebliebenen Live-Status aufräumen">↺ Reset</button>')
-    # REBUILD (User-Fund 2026-07-13: "REBUILD müsste doch auch beim Client
-    # notwendig sein, oder?") — wie beim Host (_action_bar()) nur sichtbar bei
-    # exec_mode: container, unabhängig vom Live-/Journal-Status (verwirft nur
-    # das per-Job-Image, betrifft keinen laufenden Prozess).
-    rebuild_btn = ""
-    if (local.get("exec_mode") or "host").strip().lower() == "container":
-        rebuild_btn = (f' <button class="rebuildbtn" hx-post="/-/ui/jobs/detail/{s}/rebuild" '
-                      f'hx-target="#jobsdetail-live" hx-swap="outerHTML" '
-                      f'title="Verwirft das per-Job-Image, nächster Lauf startet vom '
-                      f'Default-Image">REBUILD</button>')
-    return (
-        f'<p class="muted">Typ <b>{kind}</b> · '
-        f'Trigger <code>{trigger}</code> · Git <span class="{cls}">{git_label}</span>'
-        f"{status_html}</p>{start_btn} {reset_btn} {kill_btn}{rebuild_btn}"
-    )
-
-
-def _local_live_output(live: dict | None, last_run_output: dict | None = None) -> str:
-    """Live-Output-Panel (PLAN-21 Befund 10, 2. Nachtrag) — dieselbe
-    Zeilen-Formatierung wie die abgeschlossene Ansicht (output_block(), Host-
-    Execution-Detail), nur alle _POLL-Sekunden aus /-/run/live/{slug}
-    nachgelesen statt eingefroren. Kein SSE (bewusst): der 2s-Poll, den die
-    ganze Seite ohnehin schon nutzt, reicht — kein eigener Streaming-Pfad
-    nötig für ein Feature, das "sichtbar während des Laufs" leisten soll,
-    nicht "Zeichen-für-Zeichen-Latenz".
-
-    ``last_run_output`` (PLAN-28 User-Feedback: "bei terminalen Status wurde
-    der Output entfernt... beim Host wird der Output des letzten Laufes immer
-    oben angezeigt bis RESET oder START"): ist gerade nichts live, aber ein
-    letzter Lauf bekannt, zeigt dieselbe Formatierung dessen archivierten
-    Output (``/-/run/journal/{id}/output``) — Analogon zu ``_live_panel()``
-    (Host), das den letzten Lauf ebenfalls bis RESET/START stehen lässt."""
-    if not live:
-        if not last_run_output:
-            return ""
-        out = output_block(last_run_output.get("events", []), last_run_output.get("kind", "job"))
-        return f'<h3>Output</h3><div class="outscroll">{out}</div>'
-    out = output_block(live.get("events", []), live.get("kind", "job"))
-    # Ausbau User-Fund 2026-07-10: dasselbe HITL-Panel wie bei Scheduler-Jobs
-    # (_hitl_panel() nimmt jeden Dict mit app_url — live hat die Form seit dem
-    # Signal-Kanal-Ausbau in worker.local_run_signal_state()).
-    panel = _hitl_panel(live) if live.get("status") == "awaiting" else ""
-    return f'<h3>Output</h3><div class="outscroll">{out}</div>{panel}'
+        # awaiting über den Signal-Kanal (worker.local_run_signal_state()) —
+        # ohne explizites Signal gilt ein live-Eintrag als "running" (dieselbe
+        # Fallunterscheidung wie _jobs_row()/vormals _local_job_meta()).
+        status = "awaiting" if live.get("status") == "awaiting" else "running"
+        return {"id": live.get("id"), "status": status,
+                "started_at": live.get("started_at"), "app_port": app_port,
+                "app_url": live.get("app_url")}
+    if last_run:
+        return {"id": last_run.get("id"), "status": last_run.get("status"),
+                "started_at": last_run.get("started_at"),
+                "finished_at": last_run.get("finished_at"),
+                "reason": last_run.get("reason"), "app_port": app_port}
+    return None
 
 
 #: Erkennt den running→(nicht mehr live)-Übergang auf der lokalen Job-
@@ -1610,18 +1559,50 @@ _JOBS_LIVE_AUTOREFRESH_JS = """
 """
 
 
+def _local_job_meta_line(local: dict) -> str:
+    """Typ/Trigger/Git-Zeile der Client-Job-Detailseite — reine MD-Discovery-
+    Info ohne 1:1-Host-Entsprechung (dessen Meta-Zeile, ``live_fragment()``,
+    zeigt Kind/Trigger/letzten-Status/nächsten-Lauf aus der Scheduler-DB,
+    kennt aber keinen Git-Status je Datei). Status selbst steht bewusst NICHT
+    hier (anders als beim Host), sondern ausschließlich im Status-Badge von
+    ``_live_panel()`` direkt darunter — keine doppelte Anzeige."""
+    kind = _e(_effective_sched_type(local))
+    trigger = _e(local.get("schedule") or local.get("at") or "—")
+    cls, git_label = _GIT_STATUS_LABEL.get(local.get("git_status", "clean"),
+                                           ("chip", _e(str(local.get("git_status", "—")))))
+    return (f'<p class="muted">Typ <b>{kind}</b> · '
+            f'Trigger <code>{trigger}</code> · Git <span class="{cls}">{git_label}</span></p>')
+
+
 def jobs_detail_live_fragment(slug: str, live: dict | None, local: dict | None,
                               last_run: dict | None, *,
-                              last_run_output: dict | None = None) -> str:
-    """Self-pollende Region (``#jobsdetail-live``): Meta-Zeile + Output.
-    Ziel = ``/-/ui/jobs/detail/{slug}/live``. ``last_run_output`` (PLAN-28
-    User-Feedback): Fallback auf den archivierten Output des letzten Laufs,
-    solange nichts live ist — s. ``_local_live_output()``."""
+                              last_run_output: dict | None = None,
+                              public_host: str = "localhost",
+                              now: float | None = None) -> str:
+    """Self-pollende Region (``#jobsdetail-live``): Meta-Zeile + Aktions-
+    Leiste + Live-/letzter-Lauf-Block — seit PLAN-29 Befund 3+5 dieselben
+    Bausteine wie beim Host (``_action_bar()``/``_live_panel()``, s. Modul-
+    Kommentar), nur mit lokal gespeisten Daten. Ziel = ``/-/ui/jobs/detail/
+    {slug}/live``. ``last_run_output`` (PLAN-28 User-Feedback): Fallback auf
+    den archivierten Output des letzten Laufs, solange nichts live ist."""
+    now = time.time() if now is None else now
+    local = local or {}
     s = _e(slug)
     running_flag = "1" if live else "0"
     journal_url = f"/-/ui/jobs/detail/{s}/journal"
-    body = (_local_job_meta(slug, local or {}, last_run, live=live)
-           + _local_live_output(live, last_run_output))
+    job = _local_job_view(local, last_run, live)
+    # _action_bar() rendert nichts ohne job["id"] — ein Client-Job kann aber
+    # echt noch nie gelaufen sein (anders als beim Host, s. _VERBS_FOR_STATUS
+    # "": Sentinel statt echtem Lauf, nur für die Button-Leiste).
+    action_job = job or {"id": "-", "status": ""}
+    live_output = live if live else last_run_output
+    body = (
+        _local_job_meta_line(local)
+        + _action_bar(slug, action_job, local.get("exec_mode"),
+                     base="/-/ui/jobs/detail", target="#jobsdetail-live")
+        + _live_panel(job, now, live_output, slug=slug, public_host=public_host,
+                     raw_stream_base=None)
+    )
     attrs = (f'id="jobsdetail-live" data-running="{running_flag}" '
             f'data-journal-url="{journal_url}" '
             f'hx-get="/-/ui/jobs/detail/{s}/live" hx-trigger="{_POLL}" hx-swap="outerHTML"')
@@ -1631,10 +1612,13 @@ def jobs_detail_live_fragment(slug: str, live: dict | None, local: dict | None,
 def jobs_detail_inner(slug: str, local: dict, last_run: dict | None,
                       runs: list[dict], now: float | None = None,
                       *, live: dict | None = None,
-                      last_run_output: dict | None = None) -> str:
+                      last_run_output: dict | None = None,
+                      public_host: str = "localhost") -> str:
     now = time.time() if now is None else now
     return (
-        jobs_detail_live_fragment(slug, live, local, last_run, last_run_output=last_run_output)
+        jobs_detail_live_fragment(slug, live, local, last_run,
+                                  last_run_output=last_run_output,
+                                  public_host=public_host, now=now)
         + journal_fragment(runs, slug, now, base="/-/ui/jobs/detail")
     )
 
@@ -1642,12 +1626,19 @@ def jobs_detail_inner(slug: str, local: dict, last_run: dict | None,
 def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
                      runs: list[dict], now: float | None = None,
                      *, daemon_status: dict | None = None, live: dict | None = None,
-                     last_run_output: dict | None = None) -> str:
+                     last_run_output: dict | None = None,
+                     public_host: str = "localhost") -> str:
     """Lokale Job-Detailseite (ein Slug, nur lokale /run-Läufe dieses Knotens)
-    — Gegenstück zu schedule_detail_page() auf dem Host, s. Modul-Kommentar."""
+    — seit PLAN-29 Befund 3+5 dieselben Bausteine wie schedule_detail_page()
+    (Host), s. Modul-Kommentar. "Attribute →" verlinkt auf die neue, lokal
+    gespeiste jobs_detail_attrs_page() (Gegenstück zu schedule_attrs_page(),
+    die auf einem Client mangels Scheduler-Rolle nur leere Platzhalter
+    zeigen würde, s. dortiger PLAN-29-Befund)."""
     now = time.time() if now is None else now
     local = local or {}
     s = _e(slug)
+    inner = jobs_detail_inner(slug, local, last_run, runs, now, live=live,
+                              last_run_output=last_run_output, public_host=public_host)
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'
@@ -1658,9 +1649,11 @@ def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
         f"<style>{_CSS}</style></head><body>"
         f"{_header('', daemon_status)}"
         f'<div style="display:flex;gap:.75rem;align-items:baseline">'
-        f'<a class="back" href="/-/ui/jobs">← Jobs</a></div>'
+        f'<a class="back" href="/-/ui/jobs">← Jobs</a>'
+        f'<a class="back" href="/-/ui/jobs/detail/{s}/attrs">Attribute →</a>'
+        f'</div>'
         f'<h1>{s}</h1>'
-        f"{jobs_detail_inner(slug, local, last_run, runs, now, live=live, last_run_output=last_run_output)}"
+        f"{inner}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_LIVE_AUTOREFRESH_JS}</script>"
@@ -2322,7 +2315,8 @@ def _run_rows(runs: list[dict], slug: str, now: float, *, base: str = _JOURNAL_B
 
 
 def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
-               slug: str = "", *, public_host: str = "localhost") -> str:
+               slug: str = "", *, public_host: str = "localhost",
+               raw_stream_base: str | None = "/-/job") -> str:
     """Eigener Block für den **aktuellen** Lauf (aktiv oder zuletzt beendet), nahe
     am Header. Bleibt auch nach einem Terminal-Übergang mit Status+Output stehen
     (User-Feedback 2026-07-01: "archiviert wird erst vor dem nächsten Rerun" —
@@ -2330,7 +2324,14 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
     überschreibt; das Journal bekommt seine Zeile trotzdem sofort beim Terminal-
     Übergang, s. job_db.py::_write_journal, nur diese Anzeige hier hängt nicht
     mehr daran). Der Output wird **default expanded** mitgerendert (server-seitig,
-    überlebt Poll)."""
+    überlebt Poll).
+
+    ``raw_stream_base`` (PLAN-29 Befund 3+5): der rohe SSE-Stream-Link
+    (``{base}/{jid}/stream``) existiert nur über ``_add_worker_routes()``
+    (``roles.worker``) — auf einem reinen Client (Rolle ``connect``, kein
+    ``worker``) wäre das ein toter Link (501, gefrorener v3.0-Contract-Stub,
+    live gegen den Mac-Client geprüft). ``None`` lässt den Link komplett weg,
+    ohne die formatierte Live-Output-Box selbst anzutasten."""
     if not job:
         return ""
     st = _e(job.get("status"))
@@ -2360,8 +2361,8 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
         # Follow-up (User-Feedback): "Es braucht auch den Zugriff/Ansicht des
         # originalen Streams (/stream)" — die Box zeigt nur noch formatiert.
         raw_link = (f'<span class="muted">'
-                    f'<a class="back" href="/-/job/{_e(jid)}/stream">roher Stream →</a>'
-                    f'</span>')
+                    f'<a class="back" href="{raw_stream_base}/{_e(jid)}/stream">roher Stream →</a>'
+                    f'</span>') if raw_stream_base else ""
         out = (f'<div class="liveout">{raw_link}'
                + live_output_box(jid, events, kind=(live_output or {}).get("kind", "job"))
                + "</div>")
@@ -2426,6 +2427,11 @@ _VERBS_FOR_STATUS: dict[str, tuple[str, ...]] = {
     "zombie":   ("start", "reset"),
     "inactive": ("start", "reset"),
     "complete": ("start",),
+    # PLAN-29 Befund 3+5: ein Client-Job kann echt noch nie gelaufen sein
+    # (keine jobs-Zeile existiert, anders als beim Host, wo jede entdeckte
+    # Schedule sofort eine bekommt) — "" markiert genau diesen Fall, START
+    # bleibt trotzdem nutzbar, KILL/RESET bleiben deaktiviert (nichts da).
+    "":         ("start",),
 }
 
 
@@ -2439,19 +2445,24 @@ _VERBS_FOR_STATUS: dict[str, tuple[str, ...]] = {
 _CONTAINER_VERBS = ("rebuild",)
 
 
-def _action_bar(slug: str, job: dict | None, exec_mode: str | None = None) -> str:
+def _action_bar(slug: str, job: dict | None, exec_mode: str | None = None,
+                *, base: str = "/-/ui/schedule", target: str = "#live") -> str:
+    """``base``/``target`` (PLAN-29 Befund 3+5, User-Entscheidung: Vereinheitlichung
+    statt Parallel-Renderer) — Default reproduziert exakt das bisherige Host-
+    Verhalten (``/-/ui/schedule/{slug}/{verb}`` → ``#live``); die Client-
+    Job-Detailseite ruft mit ``base="/-/ui/jobs/detail"``, ``target="#jobsdetail-live"``."""
     if not job or not job.get("id"):
         return ""
     s = _e(slug)
     status = job.get("status", "")
     enabled = _VERBS_FOR_STATUS.get(status, ())
     btns = "".join(
-        f'<button hx-post="/-/ui/schedule/{s}/{v}" hx-target="#live" '
+        f'<button hx-post="{base}/{s}/{v}" hx-target="{target}" '
         f'hx-swap="outerHTML"{"" if v in enabled else " disabled"}>{v.upper()}</button> '
         for v in _VERBS
     )
     if (exec_mode or "host").strip().lower() == "container":
-        btns += (f'<button hx-post="/-/ui/schedule/{s}/rebuild" hx-target="#live" '
+        btns += (f'<button hx-post="{base}/{s}/rebuild" hx-target="{target}" '
                  f'hx-swap="outerHTML" '
                  f'title="Verwirft das per-Job-Image, nächster Lauf startet vom '
                  f'Default-Image">REBUILD</button> ')
@@ -2816,6 +2827,43 @@ def schedule_attrs_page(slug: str, data: dict, now: float | None = None) -> str:
         f'<h1><span class="st {st}">{name}</span> · Attribute</h1>'
         f"{config_html}"
         f"{runtime_html}"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
+
+
+def jobs_detail_attrs_page(slug: str, local: dict | None) -> str:
+    """Attribute-Seite für einen lokal entdeckten Job (PLAN-29 Befund 3+5) —
+    Gegenstück zu ``schedule_attrs_page()`` (Host), aber aus der lokalen MD-
+    Discovery gespeist (``_local_schedules()``) statt der Scheduler-DB, die
+    ein reiner Client strukturell nicht hat (live geprüft: ``client.
+    schedule_config()`` liefert dort still ``{}`` statt eines Fehlers, s.
+    PLAN-29 Befund 3+5 — dieselbe Seite mit denselben Scheduler-Daten würde
+    auf einem Client also nur Platzhalter zeigen). Nur "Konfiguration"
+    (``_ATTRS_CONFIG_ORDER``) — "Scheduling" (``id``/``next_fire_at``/
+    ``fire``) ist Scheduler-Laufzeitstand, den es für einen rein lokal
+    entdeckten Job nicht gibt."""
+    name = _e(slug)
+    data = {**(local or {}), "slug": slug, "kind": "job"}
+    config_html = _attrs_section("Konfiguration", _ATTRS_CONFIG_ORDER, data)
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>bibi · {name} · Attribute</title>"
+        f"<style>{_CSS}"
+        ".attrtable { width: auto; margin: .4rem 0 1rem; font-size: .85rem; }"
+        ".attrtable td:first-child { padding-right: 1.5rem; white-space: nowrap; }"
+        ".attrtable td { padding: .2rem .3rem; vertical-align: top; }"
+        ".attrtable code { font-family: ui-monospace, monospace; font-size: .85em; }"
+        ".attrtable a { color: inherit; word-break: break-all; }"
+        "</style></head><body>"
+        f'<div style="display:flex;gap:.75rem;align-items:baseline">'
+        f'<a class="back" href="/-/ui/jobs">← Jobs</a>'
+        f'<a class="back" href="/-/ui/jobs/detail/{name}">← Detail</a>'
+        f'</div>'
+        f'<h1>{name} · Attribute</h1>'
+        f"{config_html}"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
