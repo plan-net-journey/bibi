@@ -24,10 +24,11 @@ from bibi.daemon.app import create_app
 # ── Rendering ─────────────────────────────────────────────────────────────
 
 
-def _row(slug: str, *, git_status: str = "clean", live: dict | None = None) -> dict:
-    return {"slug": slug, "schedule": "now", "at": None, "payload": "echo x",
+def _row(slug: str, *, git_status: str = "clean", live: dict | None = None,
+        payload: str = "echo x", app_port: int | None = None) -> dict:
+    return {"slug": slug, "schedule": "now", "at": None, "payload": payload,
             "repo_path": f"vault/case/{slug}/README.md", "git_status": git_status,
-            "live": live}
+            "live": live, "app_port": app_port}
 
 
 def test_jobs_table_has_no_start_button():
@@ -36,6 +37,39 @@ def test_jobs_table_has_no_start_button():
     html = render._jobs_table([_row("mein-testjob")], {}, now=100.0)
     assert "startbtn" not in html
     assert "hx-post=" not in html
+
+
+def test_jobs_table_header_includes_type_column():
+    assert "<th>Type</th>" in render._jobs_table([_row("a")], {}, now=100.0)
+
+
+def test_jobs_row_type_column_shows_job_by_default():
+    assert "<td>job</td>" in render._jobs_row(_row("a"), {}, now=100.0)
+
+
+def test_jobs_row_type_column_shows_claude_for_claude_payload():
+    html = render._jobs_row(_row("a", payload="claude: tell a joke"), {}, now=100.0)
+    assert "<td>claude</td>" in html
+
+
+def test_jobs_row_type_column_shows_app_with_port_link():
+    # PLAN-29 Befund 2, User-Fund: "Type, bei Apps mit Port und als Link
+    # (auch wenn die App down ist)". Bewusst eigenständig von
+    # _effective_sched_type()/models.effective_kind() (PLAN-25 Befund 7
+    # entfernte "app" dort absichtlich aus Schedules-Übersicht/Filter,
+    # User-Entscheidung: "Jobs mit Port und Prefix sollen einfach als Jobs
+    # erscheinen") — hier, in der separaten Jobs-Tabelle, soll ein App-Job
+    # weiterhin als "app" + Link erkennbar sein, unabhängig vom Live-Status
+    # (kein Live-Check hier, Link steht auch wenn die App down ist).
+    html = render._jobs_row(_row("a", app_port=9100), {}, now=100.0,
+                            public_host="example.ts.net")
+    assert ('<a href="http://example.ts.net:9100/" target="_blank" '
+           'rel="noopener">app :9100</a>') in html
+
+
+def test_jobs_row_type_column_defaults_to_localhost():
+    html = render._jobs_row(_row("a", app_port=9100), {}, now=100.0)
+    assert 'href="http://localhost:9100/"' in html
 
 
 def test_jobs_table_shows_git_status_chip():
@@ -158,6 +192,22 @@ def test_jobs_fragment_has_no_explanatory_note():
     html = render.jobs_fragment([], {}, [], now=100.0)
     assert "discovery.discover()" not in html
     assert "bildet nur ab, was gerade im Repository liegt" not in html
+
+
+def test_jobs_fragment_wraps_sections_in_own_panel_cards():
+    # PLAN-29 Befund 1, User-Fund: "wieder um 'Jobs im Repository' (besser:
+    # 'Jobs') und um 'Lokale Läufe' den Rahmen zeichnen" — analog zu PLAN-25
+    # Befund 5/6 (Feed, Schedules), die dasselbe .panel-card-Muster schon
+    # nutzen. Umbenennung "Jobs im Repository" -> "Jobs" ist Teil desselben
+    # Befunds.
+    runs = [{"id": 7, "slug": "mein-testjob", "status": "complete", "exit_code": 0,
+            "exec_runtime": 3.2, "finished_at": 100.0}]
+    html = render.jobs_fragment([_row("mein-testjob")], {}, runs, now=200.0)
+    assert html.count('class="panel-card"') == 2
+    assert "<h2>Jobs</h2>" in html
+    assert "Jobs im Repository" not in html
+    assert html.index('class="panel-card"') < html.index("Jobs</h2>")
+    assert html.index("Jobs</h2>") < html.index("Lokale Läufe")
 
 
 def test_jobs_page_has_header_and_nav():
@@ -446,11 +496,13 @@ class _FakeClient:
         return {"slug": slug, "rebuilt": True}
 
 
-def _seed_schedule_md(root: Path, slug: str, schedule: str, payload: str) -> None:
+def _seed_schedule_md(root: Path, slug: str, schedule: str, payload: str,
+                      *, app_port: int | None = None) -> None:
     d = root / "vault" / "case" / slug
     d.mkdir(parents=True, exist_ok=True)
+    port_line = f"app_port: {app_port}\n" if app_port is not None else ""
     (d / "README.md").write_text(
-        f'---\nschedule: "{schedule}"\njob: "{payload}"\n---\n', encoding="utf-8")
+        f'---\nschedule: "{schedule}"\njob: "{payload}"\n{port_line}---\n', encoding="utf-8")
 
 
 @pytest.fixture
@@ -470,6 +522,23 @@ def test_jobs_route_shows_local_md_with_git_status_new(team_repo: Path, app_with
         assert r.status_code == 200
         assert "mein-testjob" in r.text
         assert 'class="chip new"' in r.text and ">neu<" in r.text
+
+
+def test_jobs_route_shows_app_port_link_for_discovered_app_job(team_repo: Path, app_with):
+    # PLAN-29 Befund 2: end-to-end-Nachweis, dass app_port aus der MD-
+    # Frontmatter tatsächlich bis zur gerenderten Type-Spalte durchgereicht
+    # wird (_local_schedules() -> _jobs_data() -> jobs_page()), nicht nur,
+    # dass die reine Render-Funktion einen bereits befüllten Dict-Key
+    # akzeptiert.
+    _seed_schedule_md(team_repo, "hitl-test-app", "now", "python3 app.py",
+                      app_port=9100)
+    client = _FakeClient()
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs")
+        assert r.status_code == 200
+        assert ('<a href="http://localhost:9100/" target="_blank" '
+               'rel="noopener">app :9100</a>') in r.text
 
 
 def test_jobs_route_never_calls_remote_schedules_even_with_scheduler_role(

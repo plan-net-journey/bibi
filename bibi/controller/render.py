@@ -1312,7 +1312,27 @@ _GIT_STATUS_LABEL = {
 }
 
 
-def _jobs_row(row: dict, local_runs: dict[str, dict], now: float) -> str:
+def _jobs_type_cell(row: dict, public_host: str) -> str:
+    """Type-Zelle nur für die Jobs-Tabelle (PLAN-29 Befund 2, User-Fund:
+    "Type, bei Apps mit Port und als Link (auch wenn die App down ist)").
+    Bewusst **eigenständig** von ``_effective_sched_type()``/
+    ``models.effective_kind()`` — PLAN-25 Befund 7 entfernte "app" dort
+    absichtlich aus Schedules-Übersicht/Filter (User-Entscheidung: "Jobs mit
+    Port und Prefix sollen einfach als Jobs erscheinen"). Hier, in der
+    separaten Jobs-Tabelle, soll ein App-Job weiterhin als "app" + Link
+    erkennbar sein — rührt an der PLAN-25-Vereinfachung nicht. Der Link steht
+    unbedingt (kein Live-Check), auch wenn die App gerade nicht läuft."""
+    app_port = row.get("app_port")
+    if app_port:
+        href = _e(f"http://{public_host}:{app_port}/")
+        return f'<a href="{href}" target="_blank" rel="noopener">app :{app_port}</a>'
+    if models.is_claude_payload(row.get("payload")):
+        return "claude"
+    return "job"
+
+
+def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
+              *, public_host: str = "localhost") -> str:
     """Eine Zeile: Slug, Git-Status, letzter Start/Ende/Laufzeit, Status
     (PLAN-21 Befund 10 — löst die vorherige Lokal/Remote/Abgleich-Zeile ab,
     kein Remote-Bezug mehr; PLAN-28 User-Feedback: kein Start-CTA mehr hier
@@ -1354,18 +1374,20 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float) -> str:
     cls, label = _GIT_STATUS_LABEL.get(row.get("git_status", "clean"),
                                        ("chip", _e(str(row.get("git_status", "—")))))
     git_cell = f'<span class="{cls}">{label}</span>'
+    type_cell = _jobs_type_cell(row, public_host)
 
-    return (f"<tr><td>{slug_cell}</td><td>{git_cell}</td>"
+    return (f"<tr><td>{slug_cell}</td><td>{git_cell}</td><td>{type_cell}</td>"
             f"<td>{started_cell}</td><td>{ended_cell}</td><td>{runtime_cell}</td>"
             f"<td>{status_cell}</td></tr>")
 
 
-def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float) -> str:
+def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
+                *, public_host: str = "localhost") -> str:
     if not rows:
         return '<p class="out-empty">— keine Job-MDs im Repository gefunden —</p>'
-    body = "".join(_jobs_row(r, local_runs, now) for r in rows)
+    body = "".join(_jobs_row(r, local_runs, now, public_host=public_host) for r in rows)
     return (
-        '<table><thead><tr><th>Slug</th><th>Git</th><th>Letzter Start</th>'
+        '<table><thead><tr><th>Slug</th><th>Git</th><th>Type</th><th>Letzter Start</th>'
         '<th>Letztes Ende</th><th>Laufzeit</th><th>Status</th></tr></thead>'
         f"<tbody>{body}</tbody></table>"
     )
@@ -1397,7 +1419,7 @@ def _run_history(runs: list[dict], now: float) -> str:
 
 def jobs_fragment(
     rows: list[dict], local_runs: dict[str, dict], runs: list[dict],
-    *, now: float | None = None,
+    *, now: float | None = None, public_host: str = "localhost",
 ) -> str:
     """Der austauschbare Jobs-Kern (``#jobsboard``): lokale Job-MDs + Git-
     Status + letzter Start/Ende/Laufzeit je Zeile + lokale Lauf-Historie
@@ -1410,10 +1432,10 @@ def jobs_fragment(
     now = time.time() if now is None else now
     return (
         f'<div id="jobsboard" hx-get="/-/ui/jobs/board" hx-trigger="{_POLL}" hx-swap="outerHTML">'
-        '<h2>Jobs im Repository</h2>'
-        f"{_jobs_table(rows, local_runs, now)}"
-        '<h2>Lokale Läufe</h2>'
-        f"{_run_history(runs, now)}"
+        '<div class="panel-card"><h2>Jobs</h2>'
+        f"{_jobs_table(rows, local_runs, now, public_host=public_host)}</div>"
+        '<div class="panel-card"><h2>Lokale Läufe</h2>'
+        f"{_run_history(runs, now)}</div>"
         "</div>"
     )
 
@@ -1422,7 +1444,7 @@ def jobs_page(
     rows: list[dict], local_runs: dict[str, dict], runs: list[dict],
     *, daemon_status: dict | None = None, git_status: dict | None = None,
     host_url: str | None = None, status_poll_interval_s: int = 30,
-    now: float | None = None,
+    now: float | None = None, public_host: str = "localhost",
 ) -> str:
     """Jobs-Screen (PLAN-17 Stufe 17.2, umgebaut PLAN-21 Befund 10): lokale
     Repository-Realität + Git-Status + letzter Start/Ende/Laufzeit je Zeile +
@@ -1445,7 +1467,7 @@ def jobs_page(
         f"{_header('Jobs', status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s)}"
-        f"{jobs_fragment(rows, local_runs, runs, now=now)}"
+        f"{jobs_fragment(rows, local_runs, runs, now=now, public_host=public_host)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"

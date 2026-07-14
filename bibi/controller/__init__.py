@@ -65,6 +65,10 @@ def _local_schedules() -> dict[str, dict]:
             # auf der Client-Job-Detailseite (_local_job_meta(), render.py) —
             # bisher fehlte exec_mode hier komplett, das Feld war unsichtbar.
             "exec_mode": pr.spec.exec_mode,
+            # PLAN-29 Befund 2, User-Fund: Type-Spalte der Jobs-Tabelle soll
+            # bei Apps den Port als Link zeigen — bisher fehlten app_port/
+            # app_prefix hier komplett, obwohl ScheduleSpec beide trägt.
+            "app_port": pr.spec.app_port, "app_prefix": pr.spec.app_prefix,
         }
         for slug, pr in found.items()
     }
@@ -322,13 +326,16 @@ def add_controller_routes(
         rows, local_runs, runs = _jobs_data()
         return HTMLResponse(render.jobs_page(
             rows, local_runs, runs, daemon_status=_status(), git_status=_feed_git_status(),
-            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval()))
+            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
+            public_host=config.public_host()))
 
     @app.get("/-/ui/jobs/board", include_in_schema=False)
     def jobs_board():
         # Self-Poll-Ziel von #jobsboard (wie #live/#journal bei Schedules).
+        from bibi import config
         rows, local_runs, runs = _jobs_data()
-        return HTMLResponse(render.jobs_fragment(rows, local_runs, runs))
+        return HTMLResponse(render.jobs_fragment(
+            rows, local_runs, runs, public_host=config.public_host()))
 
     def _job_detail_data(slug: str):
         # Gegenstück zu _detail_data() (Host), aber lokal gespeist (PLAN-21
