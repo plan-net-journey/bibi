@@ -219,6 +219,30 @@ def test_retry_then_error(gitrepo: Path, monkeypatch):
 
 
 @pytest.mark.slow
+def test_attempts_zero_reaches_error_without_hanging(gitrepo: Path, monkeypatch):
+    """User-Fund 2026-07-14 (gmail-transfer via /run): execute_reservation()
+    las reservation.get("attempts") or 1 — bei absichtlich auf 0 gesetzten
+    attempts (run_pinned()s Default für /run: "kein Retry") macht Pythons
+    or aus der 0 fälschlich eine 1. Der Wrapper nahm dann bei Fehlschlag den
+    Retry-Zweig (failed + next_fire_at) statt sofort zu erschöpfen
+    (failed→error) — ohne laufenden Scheduler-Loop (CLI/`/-/run`) wird dieser
+    Retry nie bedient: der Job blieb für immer "failed" hängen (nicht
+    TERMINAL), landete nie im Journal."""
+    monkeypatch.setenv("BIBI_RETRY_BASE", "0")
+    jid = _seed(gitrepo, "boom0/README.md",
+                '---\nschedule: now\njob: "exit 1"\nattempts: 0\n---\n')
+    assert _worker(gitrepo).tick_once() is True
+    row = _wait_terminal(gitrepo, jid)
+    assert row["status"] == "error"
+    assert row["attempt"] == 0
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    try:
+        assert any(j["status"] == "error" for j in job_db.list_journal(conn))
+    finally:
+        conn.close()
+
+
+@pytest.mark.slow
 def test_retry_exponential_3x_to_error(gitrepo: Path, monkeypatch):
     """PLAN-10 §10.1: 3 Fehlversuche mit exponentialem Backoff → ERROR; Slot nach FAILED frei."""
     monkeypatch.setenv("BIBI_RETRY_BASE", "0")  # sofort retribar

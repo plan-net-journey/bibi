@@ -547,8 +547,20 @@ def execute_reservation(
     jid = reservation["id"]
     run_id = job_db.run_id_for(reservation["slug"], jid, reservation.get("fire", 0))
     host = host or socket.gethostname()
-    attempt = reservation.get("attempt") or 0
-    attempts = reservation.get("attempts") or 1
+    # ``or 0``/``or 1`` wären hier falsch: ``attempts=0`` ist ein gültiger,
+    # bewusst gesetzter Wert (run_pinned()s "kein Retry", s. dessen
+    # Docstring) — ``0 or 1`` liefert in Python fälschlich ``1`` und hebelt
+    # ihn aus. User-Fund 2026-07-14 (gmail-transfer via /run): der Wrapper sah
+    # dadurch attempts_max=1 statt 0, nahm bei Fehlschlag den Retry-Zweig
+    # (failed + next_fire_at) statt sofort zu erschöpfen (failed→error) — ohne
+    # laufenden Scheduler-Loop (CLI/`/-/run`) wird der Retry nie bedient: der
+    # Job blieb für immer "failed" hängen (lifecycle.TERMINAL schließt failed
+    # bewusst aus), landete nie im Journal, ``bibi-ctrl run`` hing in
+    # ``_wait_until_terminal()`` endlos.
+    attempt = reservation.get("attempt")
+    attempt = 0 if attempt is None else attempt
+    attempts = reservation.get("attempts")
+    attempts = 1 if attempts is None else attempts
     # Lokaler DB-Pfad (LocalScheduler): Wrapper kann direkt schreiben statt HTTP.
     # client.db_path kann None sein (kein expliziter Pfad) → Default auflösen.
     # App-Jobs nutzen immer HTTP, damit wrapper_url beim Relay registriert wird.
