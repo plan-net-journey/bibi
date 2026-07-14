@@ -137,8 +137,22 @@ def dirty_paths() -> list[str]:
     for line in proc.stdout.splitlines():
         if line.startswith("? "):
             paths.append(line[2:])
-        elif line.startswith("1 ") or line.startswith("u "):
-            paths.append(line.split(" ")[-1])
+        elif line.startswith("1 "):
+            # User-Fund 2026-07-14: bloßes line.split(" ")[-1] nahm nur das
+            # letzte Leerzeichen-Fragment — bei Pfaden mit Space (z. B.
+            # "Runner 3.md") blieb nur "3.md" übrig, git add -A -- 3.md
+            # scheiterte dann mit exit 128 (Pfad existiert nicht). Porcelain
+            # v2 "1"-Zeilen haben genau 8 feste Felder vor dem Pfad (XY, sub,
+            # mH, mI, mW, hH, hI — plus das führende "1"): 1 <XY> <sub> <mH>
+            # <mI> <mW> <hH> <hI> <path>. maxsplit=8 lässt den Pfad selbst
+            # (inkl. etwaiger Leerzeichen) als letztes, unzerlegtes Element
+            # stehen.
+            paths.append(line.split(" ", 8)[-1])
+        elif line.startswith("u "):
+            # Unmerged-Zeilen haben 10 feste Felder vor dem Pfad (u, XY, sub,
+            # m1, m2, m3, mW, h1, h2, h3), s. Kommentar oben — analog
+            # maxsplit=10.
+            paths.append(line.split(" ", 10)[-1])
     return paths
 
 

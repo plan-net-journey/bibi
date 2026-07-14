@@ -86,6 +86,35 @@ def test_dirty_paths_empty_on_clean_tree(repo_with_origin):
     assert git_ops.dirty_paths() == []
 
 
+def test_dirty_paths_handles_spaces_in_modified_path(repo_with_origin):
+    # User-Fund 2026-07-14 (/sync auf einem Pfad wie "Runner 3.md"):
+    # line.split(" ")[-1] nahm bei Porcelain-v2-"1"-Zeilen nur das letzte
+    # Leerzeichen-Fragment des Pfads — "Runner 3.md" wurde zu "3.md",
+    # stage_and_commit_paths() scheiterte danach mit
+    # `git add -A -- 3.md` (Pfad existiert nicht, exit 128). Muss für einen
+    # bereits GETRACKTEN, jetzt MODIFIZIERTEN Pfad gelten (Porcelain "1 ") —
+    # untracked ("? ") war nie betroffen, da line[2:] nie gesplittet hat.
+    root, _ = repo_with_origin
+    f = root / "Runner 3.md"
+    f.write_text("base\n", encoding="utf-8")
+    _sh(root, "add", "-A")
+    _sh(root, "commit", "-q", "-m", "seed Runner 3.md")
+    f.write_text("modified\n", encoding="utf-8")
+    assert git_ops.dirty_paths() == ["Runner 3.md"]
+
+
+def test_stage_and_commit_paths_handles_spaces_in_modified_path(repo_with_origin):
+    root, _ = repo_with_origin
+    f = root / "Runner 3.md"
+    f.write_text("base\n", encoding="utf-8")
+    _sh(root, "add", "-A")
+    _sh(root, "commit", "-q", "-m", "seed Runner 3.md")
+    f.write_text("modified\n", encoding="utf-8")
+    committed = git_ops.stage_and_commit_paths(git_ops.dirty_paths(), "sync: space path")
+    assert committed is True
+    assert "Runner 3.md" in _head_files(root)
+
+
 def test_stage_and_commit_paths_only_stages_listed_paths(repo_with_origin):
     root, _ = repo_with_origin
     (root / "a.txt").write_text("a", encoding="utf-8")
