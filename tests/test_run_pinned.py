@@ -189,4 +189,60 @@ def test_run_pinned_by_cmd_has_no_app_fields(gitrepo, monkeypatch):
     assert captured["app_port"] is None
     assert captured["app_prefix"] is None
     assert captured["exec_mode"] is None
+
+
+# ── silence_timeout/wall_time-Passthrough (Bug gefunden 2026-07-14, User-Fund:
+# "warum zeigt die Attribute-Seite bei gepinnten Läufen andere Timeouts als
+# beim Scheduler-Job?") — run_pinned() las s.silence_timeout/s.wall_time bisher
+# nie in die INSERT-Spaltenliste, ein gepinnter Lauf bekam dadurch den SQL-
+# Spalten-Default (3600s, nur für claude-Payloads richtig) statt des vom
+# Parser für diesen Job berechneten Werts (z. B. 48h für Job/App-Payloads) —
+# und jeden expliziten wall_time-Override aus der MD nie. ─────────────────────
+
+def test_run_pinned_slug_uses_parser_silence_timeout_default(gitrepo, monkeypatch):
+    # Kein explizites silence_timeout in der MD, Job-Payload (kein claude:) —
+    # der Parser-Default dafür ist DEFAULT_SILENCE_TIMEOUT_APP (48h), nicht
+    # der SQL-Spalten-Default (3600s/1h, der nur für claude-Payloads passt).
+    from bibi.schedule.models import DEFAULT_SILENCE_TIMEOUT_APP
+    import bibi.daemon.worker as W
+    _seed(gitrepo, "plainjob/README.md", '---\nschedule: "never"\njob: "echo hi"\n---\n# plain\n')
+    captured: dict = {}
+    monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
+    run_pinned(slug="plainjob", repo_root=gitrepo, host="mac")
+    assert captured["silence_timeout"] == DEFAULT_SILENCE_TIMEOUT_APP
+    assert captured["wall_time"] is None
+
+
+def test_run_pinned_slug_passes_explicit_silence_timeout_and_wall_time(gitrepo, monkeypatch):
+    import bibi.daemon.worker as W
+    _seed(gitrepo, "withlimits/README.md",
+          '---\nschedule: "never"\njob: "echo hi"\nsilence_timeout: 300\nwall_time: 120\n'
+          '---\n# withlimits\n')
+    captured: dict = {}
+    monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
+    run_pinned(slug="withlimits", repo_root=gitrepo, host="mac")
+    assert captured["silence_timeout"] == 300
+    assert captured["wall_time"] == 120
+
+
+def test_run_pinned_by_cmd_uses_job_type_silence_timeout_default(gitrepo, monkeypatch):
+    # Ad-hoc-Kommando (kein Slug/MD) — kein claude:-Präfix ⇒ derselbe App/Job-
+    # Default wie ein Schedule mit gleichwertigem Payload (DEFAULT_SILENCE_
+    # TIMEOUT_APP), nicht der SQL-Spalten-Default.
+    from bibi.schedule.models import DEFAULT_SILENCE_TIMEOUT_APP
+    import bibi.daemon.worker as W
+    captured: dict = {}
+    monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
+    run_pinned(cmd="echo hi", repo_root=gitrepo, host="mac")
+    assert captured["silence_timeout"] == DEFAULT_SILENCE_TIMEOUT_APP
+    assert captured["wall_time"] is None
+
+
+def test_run_pinned_by_cmd_claude_prefix_uses_claude_silence_timeout_default(gitrepo, monkeypatch):
+    from bibi.schedule.models import DEFAULT_SILENCE_TIMEOUT
+    import bibi.daemon.worker as W
+    captured: dict = {}
+    monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
+    run_pinned(cmd="claude: hallo", repo_root=gitrepo, host="mac")
+    assert captured["silence_timeout"] == DEFAULT_SILENCE_TIMEOUT
     assert captured["image"] is None

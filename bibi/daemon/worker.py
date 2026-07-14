@@ -34,7 +34,12 @@ from bibi.daemon import activity, job_db, worktree
 from bibi.wrapper import exec_backend, output
 from bibi.schedule import backoff, discovery
 from bibi.schedule.models import CLAUDE_PAYLOAD_RE as _CLAUDE_RE
-from bibi.schedule.models import Status
+from bibi.schedule.models import (
+    DEFAULT_SILENCE_TIMEOUT,
+    DEFAULT_SILENCE_TIMEOUT_APP,
+    Status,
+    is_claude_payload,
+)
 
 log = logging.getLogger("bibi.worker")
 
@@ -819,6 +824,15 @@ def run_pinned(
     eff_app_port = eff_app_prefix = eff_exec_mode = eff_image = None
     if cmd is not None:
         eff_slug, payload, eff_kind, eff_model = slug or "adhoc", cmd, kind, model
+        # Bug gefunden (2026-07-14, User-Fund: "warum zeigt die Attribute-
+        # Seite bei gepinnten Läufen andere Timeouts als beim Scheduler-Job?"):
+        # ohne Schedule-MD gibt es keine ScheduleSpec, aus der silence_timeout
+        # sich ableiten ließe — denselben Default wie parser.py anwenden
+        # (§ nächster Zweig), statt stillschweigend auf den SQL-Spalten-
+        # Default (3600s, nur für claude-Payloads richtig) zurückzufallen.
+        eff_silence_timeout = (DEFAULT_SILENCE_TIMEOUT if is_claude_payload(payload)
+                               else DEFAULT_SILENCE_TIMEOUT_APP)
+        eff_wall_time = None
     else:
         if not slug:
             raise ValueError("run_pinned braucht entweder slug oder cmd")
@@ -831,6 +845,14 @@ def run_pinned(
         eff_schedule_ref = pr.schedule_ref
         eff_app_port, eff_app_prefix, eff_exec_mode = s.app_port, s.app_prefix, s.exec_mode
         eff_image = s.image
+        # Bug gefunden (2026-07-14): silence_timeout/wall_time fehlten bisher
+        # in der INSERT-Spaltenliste unten — anders als soul/session/app_port/
+        # exec_mode/image wurden sie aus s (der voll aufgelösten ScheduleSpec,
+        # inkl. Parser-Defaults) nie gelesen. Ein gepinnter Lauf bekam dadurch
+        # den SQL-Spalten-Default (3600s) statt des tatsächlich für diesen Job
+        # geltenden Werts (z. B. 48h für Job/App-Payloads) — und jeden
+        # expliziten wall_time-Override aus der MD nie.
+        eff_silence_timeout, eff_wall_time = s.silence_timeout, s.wall_time
 
     # Eindeutiger jobs.slug (UNIQUE-Constraint) — unabhängig vom MD-/Cmd-Slug,
     # sonst kollidiert ein zweiter ▶ Start mit der noch nicht aufgeräumten
@@ -856,15 +878,16 @@ def run_pinned(
     try:
         conn.execute(
             "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, model, soul, "
-            "session, app_port, app_prefix, exec_mode, image, schedule, next_fire_at, "
-            "attempts, pinned_host, status, enqueued_at) VALUES "
+            "session, app_port, app_prefix, exec_mode, image, silence_timeout, wall_time, "
+            "schedule, next_fire_at, attempts, pinned_host, status, enqueued_at) VALUES "
             "(:id, :slug, :schedule_ref, :kind, :payload, :model, :soul, :session, "
-            ":app_port, :app_prefix, :exec_mode, :image, 'now', :now, "
-            ":attempts, :pinned_host, 'pending', :now)",
+            ":app_port, :app_prefix, :exec_mode, :image, :silence_timeout, :wall_time, "
+            "'now', :now, :attempts, :pinned_host, 'pending', :now)",
             {"id": jid, "slug": unique_slug, "schedule_ref": eff_schedule_ref or unique_slug,
              "kind": eff_kind, "payload": payload, "model": eff_model, "soul": eff_soul,
              "session": eff_session, "app_port": eff_app_port, "app_prefix": eff_app_prefix,
-             "exec_mode": eff_exec_mode, "image": eff_image, "now": now,
+             "exec_mode": eff_exec_mode, "image": eff_image,
+             "silence_timeout": eff_silence_timeout, "wall_time": eff_wall_time, "now": now,
              "attempts": attempts, "pinned_host": host},
         )
         reservation = job_db.reserve_next(conn, host=host, pinned_only=True, now=now)
