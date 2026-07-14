@@ -16,12 +16,21 @@ Defensiv: Fehler tragen die git-stderr als ``GitOpError`` nach oben.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 BOT_EMAIL = "bibi@local"
+
+#: Analog zu exec_backend._TAG_UNSAFE_RE: Slugs kommen oft roh aus einem
+#: Dateistamm (schedule.parser.derive_slug — kein slugify dort, da der Slug
+#: auch als CLI-Adressierung dient) und können Zeichen enthalten, die in
+#: Git-Refs ungültig sind (Leerzeichen, ``:`` u. a.) — ``git worktree add -B``
+#: schlägt sonst mit "not a valid branch name" fehl, bevor der Job überhaupt
+#: läuft (User-Fund 2026-07-14: ``bibi-ctrl run "Runner 1"``).
+_BRANCH_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def bot_identity(slug: str = "") -> tuple[str, str]:
@@ -52,7 +61,12 @@ def _git(args: list[str], *, cwd: Path, check: bool = True) -> GitResult:
 
 
 def branch_name(slug: str) -> str:
-    return f"agent/{slug}"
+    """``agent/<slug>``, Slug git-ref-sicher normalisiert. Unsichere Zeichen
+    zu ``-`` kollabiert; ``..`` zusätzlich entschärft (in Git-Refs verboten,
+    von der Zeichen-Whitelist allein nicht abgedeckt)."""
+    safe = _BRANCH_UNSAFE_RE.sub("-", slug).strip("-.")
+    safe = re.sub(r"\.{2,}", "-", safe) or "job"
+    return f"agent/{safe}"
 
 
 def head_commit(worktree: Path) -> str:

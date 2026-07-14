@@ -32,6 +32,21 @@ def test_branch_name():
     assert wt.branch_name("hello") == "agent/hello"
 
 
+def test_branch_name_sanitizes_unsafe_characters():
+    assert wt.branch_name("Runner 1") == "agent/Runner-1"
+    assert wt.branch_name("a:b~c^d?e*f[g") == "agent/a-b-c-d-e-f-g"
+    assert wt.branch_name("..leading..dots..") == "agent/leading-dots"
+    assert wt.branch_name("   ") == "agent/job"
+
+
+def test_prepare_with_space_in_slug_creates_valid_branch(repo: Path):
+    work = repo / "data" / "worktrees"
+    path = wt.prepare(repo_root=repo, work_dir=work, slug="Runner 1")
+    assert path.exists() and (path / "f.txt").exists()
+    branches = _git(repo, "branch", "--list", "agent/Runner-1")
+    assert "agent/Runner-1" in branches
+
+
 def test_prepare_creates_worktree_and_branch(repo: Path):
     work = repo / "data" / "worktrees"
     path = wt.prepare(repo_root=repo, work_dir=work, slug="run1")
