@@ -103,6 +103,31 @@ def finalize_container(env: dict[str, str]) -> None:
         pass
 
 
+def stop_container(env: dict[str, str]) -> None:
+    """Best-effort ``docker stop`` für den Job-Container — das Gegenstück zum
+    daemon-seitigen ``worker._docker(["stop", ...])`` (User-KILL-Pfad), hier
+    aber für Terminierungen, die der **Wrapper selbst** entscheidet (silence,
+    wall_time, deferred, eingehendes SIGTERM). Der von diesen Pfaden über
+    ``_terminate_proc()`` überwachte ``proc`` ist im Container-Modus nur der
+    attached ``docker run``-CLI-Prozess (s. ``build_exec``, kein ``-d``) —
+    SIGKILL auf dessen Prozessgruppe beendet nicht den vom Docker-Daemon
+    separat verwalteten Container, der sonst verwaist weiterläuft (ZOMBIE-
+    Befund, bibi-notes ``FeedbackOnJobManagement.md``). No-op außerhalb von
+    ``exec_mode: container`` oder ohne Job-ID."""
+    mode = (env.get("BIBI_EXEC_MODE") or "host").strip().lower()
+    if mode != "container":
+        return
+    job_id = env.get("BIBI_JOB_ID")
+    if not job_id:
+        return
+    docker_bin = resolve_docker_bin(env)
+    try:
+        subprocess.run([docker_bin, "stop", container_name(job_id)],
+                       capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 @dataclass(frozen=True, slots=True)
 class ExecSpec:
     argv: list[str]

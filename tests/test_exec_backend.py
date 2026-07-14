@@ -174,6 +174,39 @@ def test_container_name():
     assert exec_backend.container_name("deadbeef") == "bibi-deadbeef"
 
 
+# ── ZOMBIE-Fix: stop_container() — Gegenstück zu worker._docker(["stop", …])
+# für Terminierungen, die der Wrapper selbst entscheidet (silence/wall_time/
+# deferred/SIGTERM), s. _terminate_proc() in bibi/wrapper/__init__.py ──────
+
+def test_stop_container_calls_docker_stop_in_container_mode(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(exec_backend.subprocess, "run", fake_run)
+    monkeypatch.setattr(exec_backend, "resolve_docker_bin", lambda env: "/usr/bin/docker")
+
+    exec_backend.stop_container({"BIBI_EXEC_MODE": "container", "BIBI_JOB_ID": "abc123"})
+
+    assert calls == [["/usr/bin/docker", "stop", "bibi-abc123"]]
+
+
+def test_stop_container_noop_in_host_mode(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(exec_backend.subprocess, "run", lambda *a, **kw: calls.append(a))
+    exec_backend.stop_container({"BIBI_EXEC_MODE": "host", "BIBI_JOB_ID": "abc123"})
+    exec_backend.stop_container({"BIBI_JOB_ID": "abc123"})  # Default ist host
+    assert calls == []
+
+
+def test_stop_container_noop_without_job_id(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(exec_backend.subprocess, "run", lambda *a, **kw: calls.append(a))
+    exec_backend.stop_container({"BIBI_EXEC_MODE": "container"})
+    assert calls == []
+
+
 # ── Smoke gegen echtes Docker ────────────────────────────────────────────────
 
 def _docker_ok() -> bool:

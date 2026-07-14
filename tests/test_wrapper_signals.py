@@ -240,15 +240,18 @@ def test_record_signal_db_write_failure_is_swallowed(tmp_path):
 
 def test_wall_monitor_logs_phase_before_terminate(tmp_path, monkeypatch):
     killed = []
-    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc: killed.append(proc))
+    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc, env=None: killed.append((proc, env)))
     out_path = tmp_path / "output.jsonl"
     proc = SimpleNamespace(poll=lambda: None)
     outcome = [""]
     lock = threading.Lock()
+    env = {"BIBI_EXEC_MODE": "container", "BIBI_JOB_ID": "j1"}
 
-    _wrapper._wall_monitor(proc, 1, time.time() - 100, outcome, out_path, lock)
+    _wrapper._wall_monitor(proc, 1, time.time() - 100, outcome, out_path, lock, env)
 
-    assert killed == [proc]
+    # env muss bis zu _terminate_proc() durchgereicht werden — sonst bleibt
+    # der Container beim Wall-Time-Kill verwaist (derselbe Bug wie bei ZOMBIE).
+    assert killed == [(proc, env)]
     assert outcome[0] == "wall_time"
     phase_lines = output.lines(out_path, "phase")
     assert any("wall_time" in l and "1s" in l for l in phase_lines), phase_lines
@@ -256,16 +259,19 @@ def test_wall_monitor_logs_phase_before_terminate(tmp_path, monkeypatch):
 
 def test_silence_monitor_logs_phase_before_terminate(tmp_path, monkeypatch):
     killed = []
-    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc: killed.append(proc))
+    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc, env=None: killed.append((proc, env)))
     out_path = tmp_path / "output.jsonl"
     proc = SimpleNamespace(poll=lambda: None)
     outcome = [""]
     lock = threading.Lock()
     last_activity_ts = [time.time() - 100]
+    env = {"BIBI_EXEC_MODE": "container", "BIBI_JOB_ID": "j1"}
 
-    _wrapper._silence_monitor(proc, 1, last_activity_ts, outcome, out_path, lock)
+    _wrapper._silence_monitor(proc, 1, last_activity_ts, outcome, out_path, lock, env)
 
-    assert killed == [proc]
+    # ZOMBIE-Fix: env muss bis zu _terminate_proc() durchgereicht werden, sonst
+    # weiß _terminate_proc() nicht, dass es sich um einen Container-Job handelt.
+    assert killed == [(proc, env)]
     assert outcome[0] == "silence"
     phase_lines = output.lines(out_path, "phase")
     assert any("silence" in l and "1s" in l for l in phase_lines), phase_lines
@@ -276,7 +282,7 @@ def test_silence_monitor_does_not_fire_while_activity_is_recent(tmp_path, monkey
     # JEDER Zeile aktualisiert (Output wie BIBI-Signal) — solange das passiert,
     # bleibt der Monitor still, egal ob "silence" (Job) oder "awaiting" (App).
     killed = []
-    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc: killed.append(proc))
+    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc, env=None: killed.append((proc, env)))
     monkeypatch.setattr(_wrapper.time, "sleep", lambda s: None)
     out_path = tmp_path / "output.jsonl"
     polls = iter([None, None, "done"])  # zwei lebendige Ticks, dann Ende
@@ -293,23 +299,24 @@ def test_silence_monitor_does_not_fire_while_activity_is_recent(tmp_path, monkey
 
 def test_deferred_watcher_terminates_once_status_flips(tmp_path, monkeypatch):
     killed = []
-    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc: killed.append(proc))
+    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc, env=None: killed.append((proc, env)))
     monkeypatch.setattr(_wrapper.time, "sleep", lambda s: None)
     polls = iter([None, None])
     proc = SimpleNamespace(poll=lambda: next(polls))
     current_status = ["deferred"]
     outcome = [""]
     lock = threading.Lock()
+    env = {"BIBI_EXEC_MODE": "container", "BIBI_JOB_ID": "j1"}
 
-    _wrapper._deferred_watcher(proc, current_status, outcome, lock)
+    _wrapper._deferred_watcher(proc, current_status, outcome, lock, env)
 
-    assert killed == [proc]
+    assert killed == [(proc, env)]
     assert outcome[0] == "deferred"
 
 
 def test_deferred_watcher_ignores_running_status(tmp_path, monkeypatch):
     killed = []
-    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc: killed.append(proc))
+    monkeypatch.setattr(_wrapper, "_terminate_proc", lambda proc, env=None: killed.append((proc, env)))
     monkeypatch.setattr(_wrapper.time, "sleep", lambda s: None)
     polls = iter([None, None, "done"])
     proc = SimpleNamespace(poll=lambda: next(polls))
@@ -321,6 +328,34 @@ def test_deferred_watcher_ignores_running_status(tmp_path, monkeypatch):
 
     assert killed == []
     assert outcome[0] == ""
+
+
+# ── ZOMBIE-Fix: _terminate_proc()/stop_container() müssen den Container ────
+# stoppen, nicht nur die lokale docker-run-CLI-Prozessgruppe (User-Fund:
+# "beim lokalen Client wird mit Status ZOMBIE nicht der Container gestoppt").
+
+
+def test_terminate_proc_stops_container_when_env_is_container_mode(monkeypatch):
+    calls = []
+    monkeypatch.setattr(_wrapper.exec_backend, "stop_container", lambda env: calls.append(env))
+    monkeypatch.setattr(_wrapper.time, "sleep", lambda s: None)
+    proc = SimpleNamespace(pid=-1, poll=lambda: "done")  # pid -1 → getpgid wirft, wird geschluckt
+    env = {"BIBI_EXEC_MODE": "container", "BIBI_JOB_ID": "j1"}
+
+    _wrapper._terminate_proc(proc, env)
+
+    assert calls == [env]
+
+
+def test_terminate_proc_skips_docker_without_env(monkeypatch):
+    calls = []
+    monkeypatch.setattr(_wrapper.exec_backend, "stop_container", lambda env: calls.append(env))
+    monkeypatch.setattr(_wrapper.time, "sleep", lambda s: None)
+    proc = SimpleNamespace(pid=-1, poll=lambda: "done")
+
+    _wrapper._terminate_proc(proc)  # kein env — wie vor dem Fix
+
+    assert calls == []
 
 
 def test_finish_silence_outcome_maps_to_silence_reason(tmp_path):

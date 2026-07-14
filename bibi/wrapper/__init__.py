@@ -184,8 +184,16 @@ REGISTRY: dict[str, TypeHandler] = {
 
 # ── Monitoring-Threads ────────────────────────────────────────────────────────
 
-def _terminate_proc(proc: subprocess.Popen) -> None:
-    """Prozessgruppe graceful terminieren."""
+def _terminate_proc(proc: subprocess.Popen, env: dict[str, str] | None = None) -> None:
+    """Prozessgruppe graceful terminieren; bei ``exec_mode: container`` zuvor
+    den Docker-Container selbst stoppen (``exec_backend.stop_container()``) —
+    der überwachte ``proc`` ist dort nur der attached ``docker run``-CLI-
+    Prozess, nicht der vom Docker-Daemon separat verwaltete Container; SIGKILL
+    auf die lokale Prozessgruppe allein ließ ihn zuvor verwaist weiterlaufen
+    (ZOMBIE-Befund). ``env=None`` (z. B. in älteren Aufrufer-Kontexten ohne
+    Zugriff darauf) überspringt den Docker-Schritt unverändert wie zuvor."""
+    if env is not None:
+        exec_backend.stop_container(env)
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
     except (ProcessLookupError, OSError):
@@ -199,7 +207,8 @@ def _terminate_proc(proc: subprocess.Popen) -> None:
 
 
 def _wall_monitor(proc: subprocess.Popen, wall_time: int, started: float,
-                  outcome: list[str], out_path: Path, lock: threading.Lock) -> None:
+                  outcome: list[str], out_path: Path, lock: threading.Lock,
+                  env: dict[str, str] | None = None) -> None:
     """Thread: wall_time überwachen und Proc bei Überschreitung killen."""
     while proc.poll() is None:
         if time.time() - started > wall_time:
@@ -208,14 +217,15 @@ def _wall_monitor(proc: subprocess.Popen, wall_time: int, started: float,
                 output.append(out_path, "phase",
                               f"wall_time: Zeitlimit ({wall_time}s) überschritten — "
                               "Prozess wird beendet")
-            _terminate_proc(proc)
+            _terminate_proc(proc, env)
             return
         time.sleep(1.0)
 
 
 def _silence_monitor(proc: subprocess.Popen, silence_timeout: int,
                      last_activity_ts: list[float], outcome: list[str],
-                     out_path: Path, lock: threading.Lock) -> None:
+                     out_path: Path, lock: threading.Lock,
+                     env: dict[str, str] | None = None) -> None:
     """Thread: Aktivitäts-Timeout überwachen (keine Zeile/Signal → Zombie).
 
     ``last_activity_ts`` wird vom Pump-Loop bei JEDER Zeile aktualisiert — Output
@@ -230,13 +240,14 @@ def _silence_monitor(proc: subprocess.Popen, silence_timeout: int,
                 output.append(out_path, "phase",
                               f"silence: keine Aktivität seit {silence_timeout}s — "
                               "Prozess wird als Zombie beendet")
-            _terminate_proc(proc)
+            _terminate_proc(proc, env)
             return
         time.sleep(1.0)
 
 
 def _deferred_watcher(proc: subprocess.Popen, current_status: list[str],
-                      outcome: list[str], lock: threading.Lock) -> None:
+                      outcome: list[str], lock: threading.Lock,
+                      env: dict[str, str] | None = None) -> None:
     """Thread: wartet auf ein vom Kindprozess gesendetes ``deferred``-Signal und
     terminiert dann — kein Timeout, sondern ein expliziter Job-Wunsch, deshalb
     ein eigener Watcher statt Teil des Silence-Monitors."""
@@ -247,7 +258,7 @@ def _deferred_watcher(proc: subprocess.Popen, current_status: list[str],
         if cs == "deferred" and not oc:
             with lock:
                 outcome[0] = "deferred"
-            _terminate_proc(proc)
+            _terminate_proc(proc, env)
             return
         time.sleep(0.5)
 
@@ -454,7 +465,7 @@ def run_app(env: dict[str, str]) -> int:
             with lock:
                 if not outcome[0]:
                     outcome[0] = "killed"
-            _terminate_proc(proc)
+            _terminate_proc(proc, env)
         signal.signal(signal.SIGTERM, _on_sigterm)
 
     def pump(pipe, tag: str) -> None:
@@ -487,16 +498,16 @@ def run_app(env: dict[str, str]) -> int:
     silence_str = env.get("BIBI_SILENCE_TIMEOUT")
 
     monitors = [threading.Thread(
-        target=_deferred_watcher, args=(proc, current_status, outcome, lock),
+        target=_deferred_watcher, args=(proc, current_status, outcome, lock, env),
         daemon=True, name="deferred-watcher")]
     if silence_str:
         monitors.append(threading.Thread(
             target=_silence_monitor,
-            args=(proc, int(silence_str), last_activity_ts, outcome, out_path, lock),
+            args=(proc, int(silence_str), last_activity_ts, outcome, out_path, lock, env),
             daemon=True, name="silence-monitor"))
     if wall_str:
         monitors.append(threading.Thread(
-            target=_wall_monitor, args=(proc, int(wall_str), started, outcome, out_path, lock),
+            target=_wall_monitor, args=(proc, int(wall_str), started, outcome, out_path, lock, env),
             daemon=True, name="wall-monitor"))
 
     pump_threads = [
@@ -566,7 +577,7 @@ def run_job(env: dict[str, str]) -> int:
             with lock:
                 if not outcome[0]:
                     outcome[0] = "killed"
-            _terminate_proc(proc)
+            _terminate_proc(proc, env)
         signal.signal(signal.SIGTERM, _on_sigterm)
 
     started = time.time()
@@ -576,12 +587,12 @@ def run_job(env: dict[str, str]) -> int:
     monitors = []
     if wall_str:
         monitors.append(threading.Thread(
-            target=_wall_monitor, args=(proc, int(wall_str), started, outcome, out_path, lock),
+            target=_wall_monitor, args=(proc, int(wall_str), started, outcome, out_path, lock, env),
             daemon=True, name="wall-monitor"))
     if silence_str:
         monitors.append(threading.Thread(
             target=_silence_monitor,
-            args=(proc, int(silence_str), last_activity_ts, outcome, out_path, lock),
+            args=(proc, int(silence_str), last_activity_ts, outcome, out_path, lock, env),
             daemon=True, name="silence-monitor"))
 
     threads = [
