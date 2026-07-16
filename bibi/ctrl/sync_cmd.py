@@ -2,7 +2,15 @@
 Befund 8, committet seit PLAN-30 Ebene 5 nichts mehr — s. u.).
 
 - ``sync on|off``      — auto_sync-Flag (stehende Push-Zustimmung) umschalten
-- ``sync``            — manueller, (fast) immer wirksamer Abgleich:
+- ``sync``            — Vorschau (Nachtrag 2026-07-16, spiegelt ``bibi-ctrl
+                        mergeback``s Konvention: bare listet/sagt vorher,
+                        ``--apply`` führt aus). Zeigt für jeden Schritt unten
+                        die vorhergesagte Klassifikation — dieselbe Logik wie
+                        der echte Lauf (``dry_run=True``), keine Mutation,
+                        keine Quarantäne-Schreibvorgänge. Ein bereits offener
+                        Rebase/Merge ist kein Vorschau-Fall, sondern ein
+                        realer Zustand — dieselbe Meldung wie bei ``--apply``.
+- ``sync --apply``    — manueller, (fast) immer wirksamer Abgleich:
                         0. JEDEN unmergten Job-Branch zuerst klären (PLAN-30
                            Ebene 3 + Nachtrag 2026-07-16), nicht mehr nur
                            bereits eskalierte — ein anwesender Mensch, der
@@ -118,7 +126,97 @@ def _resolve_stuck_merge_branches() -> int | None:
     return None
 
 
-def run_sync(_: argparse.Namespace) -> int:
+def run_sync(args: argparse.Namespace) -> int:
+    """``sync`` ohne Flag: Vorschau, keine Mutation (Nachtrag 2026-07-16,
+    spiegelt ``bibi-ctrl mergeback``s Konvention — bare listet nur, ``--apply``
+    führt aus). ``--apply``: das bisherige, vollständig wirksame Verhalten."""
+    if getattr(args, "apply", False):
+        return _run_sync_apply()
+    return _run_sync_preview()
+
+
+def _run_sync_preview() -> int:
+    """Zeigt, was ``sync --apply`` täte, ohne irgendetwas anzufassen —
+    dieselbe Klassifikationslogik wie der echte Lauf (``dry_run=True`` bei
+    ``mergeback.merge_back()``/``git_ops.integrate()``, kein zweiter,
+    potenziell abweichender Vorhersage-Weg). Ein bereits offener Rebase/Merge
+    ist kein Vorschau-Fall, sondern ein realer, schon bestehender Zustand —
+    dieselbe Meldung wie bisher, dieselbe Bedeutung von Exitcode 1."""
+    if git_ops.is_rebase_in_progress():
+        print("Rebase offen — Marker auflösen, dann `bibi-ctrl sync continue` "
+              "(oder `sync abort`).", file=sys.stderr)
+        _print_conflicts()
+        return 1
+    if git_ops.is_merge_in_progress():
+        print("Merge offen (Job-Branch-Konflikt) — Marker auflösen, dann "
+              "`bibi-ctrl sync continue` (oder `sync abort`).", file=sys.stderr)
+        _print_conflicts()
+        return 1
+
+    root = repo.root()
+    noteworthy = False
+
+    pending = mergeback.unmerged_agent_branches(repo_root=root)
+    if pending:
+        job_branch = pending[0]
+        slug = job_branch.removeprefix("agent/")
+        res = mergeback.merge_back(repo_root=root, slug=slug, force=True,
+                                   keep_conflict=True, dry_run=True)
+        if res.status == "conflict":
+            print(f"{job_branch}: würde konfligieren — {res.detail}")
+            noteworthy = True
+        elif res.status == "merged":
+            print(f"{job_branch}: würde sauber gemergt")
+            noteworthy = True
+        elif res.status == "up_to_date":
+            print(f"{job_branch}: bereits aktuell (kein Merge nötig)")
+        else:  # live_edit/blocked/error/quarantined/repo_busy
+            print(f"{job_branch}: {res.status} — {res.detail}")
+        if len(pending) > 1:
+            print(f"({len(pending) - 1} weitere(r) unmergte(r) Branch(es), "
+                  f"erst nach diesem dran)")
+
+    branch = git_ops.current_branch()
+    ok, kind = git_ops.integrate(branch, keep_conflict=True, guard_live_paths=True,
+                                 dry_run=True)
+    if not ok:
+        if kind == "conflict":
+            print("Pull würde konfligieren — Marker müssten aufgelöst werden.")
+            noteworthy = True
+        elif kind == "live_edit":
+            print("Pull würde gerade übersprungen — Zieldatei wird bearbeitet.")
+        else:
+            print(f"Pull würde fehlschlagen: {kind}")
+            noteworthy = True
+    else:
+        n = git_ops.ahead_count(branch)
+        if n is None:
+            print("Pull: würde sauber integrieren (Push-Stand nicht ermittelbar)")
+        elif n > 0:
+            print(f"Pull: würde sauber integrieren, danach {n} Commit(s) pushen")
+        else:
+            print("Pull: nichts zu tun")
+
+    active_case_rel = state.get_path()
+    other_cases, caseless, active_dirty = git_ops.cluster_dirty_paths(
+        git_ops.dirty_paths(), case_dir_name=repo.case_dir_name(),
+        active_case_rel=active_case_rel)
+    if other_cases or caseless:
+        print("Unfertige Änderungen außerhalb des aktiven Projekts — dort `/save` ausführen:")
+        for case_rel in sorted(other_cases):
+            print(f"  {case_rel}")
+        if caseless:
+            print("  (weitere, case-lose Änderungen)")
+    if active_dirty:
+        print("Änderungen im aktiven Projekt — `/save` ausführen:")
+        for p in active_dirty:
+            print(f"  {p}")
+
+    print("--apply zum Ausführen." if noteworthy else "nichts zu tun.")
+    return 1 if noteworthy else 0
+
+
+def _run_sync_apply() -> int:
     """Manueller Abgleich — Neufassung PLAN-25 Befund 8: cluster-committen
     (case-fremde Änderungen) → integrieren (immer) → pushen (immer). Nur
     dirty Änderungen im aktiven Projekt bleiben unangetastet (→ ``/save``).
@@ -274,6 +372,8 @@ def run_hook_start(_: argparse.Namespace) -> int:
 
 def register(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("sync", help="Git-Abgleich (on|off|continue|abort|hook-* oder manuell)")
+    p.add_argument("--apply", action="store_true",
+                   help="tatsächlich ausführen statt nur Vorschau (Nachtrag 2026-07-16)")
     p.set_defaults(func=run_sync)
     ssub = p.add_subparsers(dest="sync_cmd")
     ssub.add_parser("on").set_defaults(func=_toggle_on)

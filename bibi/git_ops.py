@@ -143,6 +143,21 @@ def current_branch() -> str:
     return _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
 
 
+def ahead_count(branch: str) -> int | None:
+    """Wie viele lokale Commits stehen auf ``branch`` vor ``origin/<branch>``
+    — für ``/sync``s Vorschau (Nachtrag 2026-07-16), rein lesend. ``None``,
+    wenn ``origin/<branch>`` (noch) nicht existiert (z. B. ein Branch, der
+    noch nie gepusht wurde) — nicht 0, damit ein Aufrufer "nichts zu pushen"
+    von "kann nicht ermittelt werden" unterscheiden kann."""
+    proc = _git(["rev-list", "--count", f"origin/{branch}..HEAD"], check=False)
+    if proc.returncode != 0:
+        return None
+    try:
+        return int(proc.stdout.strip())
+    except ValueError:
+        return None
+
+
 def auto_commit_message() -> str:
     """Message für transiente Hintergrund-Commits (A9): ``auto: ts | user | host``."""
     ts = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -337,16 +352,9 @@ def _pull_live_overlap(fetch_head: str, *, within_s: int = 120,
     zusätzlich aus dem Dry-Run selbst extrahiert; (2) Pfade werden nie
     C-quoted, unabhängig von ``core.quotepath`` (das ``_git()`` ohnehin schon
     global auf ``false`` setzt — doppelt abgesichert)."""
-    dry = _git(["merge-tree", "--write-tree", "-z", "HEAD", fetch_head], check=False)
-    fields = dry.stdout.split("\x00")
-    tree_oid = fields[0].strip() if fields else ""
+    tree_oid, conflicted = _pull_merge_tree(fetch_head)
     if not tree_oid:
         return set()
-    conflicted: set[str] = set()
-    for field in fields[1:]:
-        m = _CONFLICT_INFO_LINE.match(field)
-        if m:
-            conflicted.add(m.group(1))
     changed_proc = _git(["diff", "--name-only", "HEAD", tree_oid], check=False)
     changed = {p.strip() for p in changed_proc.stdout.splitlines() if p.strip()} | conflicted
     if not changed:
@@ -355,9 +363,32 @@ def _pull_live_overlap(fetch_head: str, *, within_s: int = 120,
     return dirty | recently_touched_paths(repo.root(), sorted(changed), within_s=within_s, now=now)
 
 
+def _pull_merge_tree(fetch_head: str) -> tuple[str, set[str]]:
+    """``git merge-tree --write-tree -z HEAD fetch_head`` ausführen (reiner
+    Dry-Run, kein Working-Tree-Zugriff) und ``(tree_oid, konfliktende_pfade)``
+    zurückgeben — extrahiert aus ``_pull_live_overlap()`` (Nachtrag
+    2026-07-16, ``/sync``-Vorschau), damit sowohl die Idle-Guard-Überlapp-
+    Prüfung als auch eine reine Konfliktvorhersage dieselbe Berechnung
+    teilen, statt sie zweimal leicht unterschiedlich zu implementieren.
+    Identisches Prinzip wie ``mergeback.py::_merge_tree_paths()``, hier
+    bewusst dupliziert statt importiert (andere ``_git()``-Bindung: explizites
+    ``repo_root`` dort, ambientes ``repo.root()`` hier)."""
+    dry = _git(["merge-tree", "--write-tree", "-z", "HEAD", fetch_head], check=False)
+    fields = dry.stdout.split("\x00")
+    tree_oid = fields[0].strip() if fields else ""
+    if not tree_oid:
+        return "", set()
+    conflicted: set[str] = set()
+    for field in fields[1:]:
+        m = _CONFLICT_INFO_LINE.match(field)
+        if m:
+            conflicted.add(m.group(1))
+    return tree_oid, conflicted
+
+
 def integrate(branch: str, keep_conflict: bool = False,
              strategy: str = "rebase", guard_live_paths: bool = False,
-             now: float | None = None) -> tuple[bool, str | None]:
+             now: float | None = None, dry_run: bool = False) -> tuple[bool, str | None]:
     """Origin minimal integrieren: fetch + ff/rebase|merge (kein Push).
 
     Gibt (ok, kind) zurück. kind ist None bei Erfolg, sonst
@@ -398,7 +429,16 @@ def integrate(branch: str, keep_conflict: bool = False,
     fälschlich als eigener "conflict" klassifiziert werden, statt als das zu
     erkennen, was es ist: ein anderer, bereits laufender Vorgang. NICHT über
     ``force``/einen Parameter umgehbar — das wäre in genau diesem Szenario
-    der Fehler, den dieser Guard verhindern soll."""
+    der Fehler, den dieser Guard verhindern soll.
+
+    ``dry_run`` (``/sync``-Vorschau, Nachtrag 2026-07-16): fetcht weiterhin
+    wirklich (aktualisiert nur Remote-Tracking-Refs, keine Mutation am
+    lokalen Branch/Working-Tree) — ohne aktuelles ``FETCH_HEAD`` gäbe es
+    nichts Sinnvolles vorherzusagen. Alles danach bleibt rein lesend: ein
+    möglicher Fast-Forward wird als solcher erkannt, aber NICHT ausgeführt;
+    bei echter Divergenz liefert derselbe ``_pull_merge_tree()``-Dry-Run, den
+    der Idle-Guard ohnehin schon nutzt, die Vorhersage statt eines echten
+    ``rebase``/``merge``."""
     if is_conflict_resolution_pending():
         return False, "repo_busy"
 
@@ -417,8 +457,14 @@ def integrate(branch: str, keep_conflict: bool = False,
         return False, "live_edit"
 
     if _git(["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"], check=False).returncode == 0:
+        if dry_run:
+            return True, None  # würde sauber fast-forwarden, kein Konflikt möglich
         ff = _git(["merge", "--ff-only", "FETCH_HEAD"], check=False)
         return (True, None) if ff.returncode == 0 else (False, "conflict")
+
+    if dry_run:
+        _, conflicted = _pull_merge_tree(remote)
+        return (False, "conflict") if conflicted else (True, None)
 
     # echte Divergenz → rebase (Default) oder merge (bot-robust)
     if strategy == "merge":

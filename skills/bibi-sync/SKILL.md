@@ -1,6 +1,6 @@
 ---
 name: sync
-description: Synchronize the repo with origin. `/sync on|off` toggles auto-push; `/sync` runs a manual pull/push and resolves conflicts.
+description: Synchronize the repo with origin. `/sync on|off` toggles auto-push; `/sync` previews what a sync would do, then applies it after confirmation.
 argument-hint: on | off
 allowed-tools:
   - Bash
@@ -21,40 +21,60 @@ Toggles the `auto_sync` flag (the standing push consent, §4.9). When a daemon
 runs, its sync loop reads this on each tick; in a pure interactive setup the
 `SessionStart`/`Stop` hooks honor it.
 
-## /sync (no argument) — manual sync
+## /sync (no argument) — preview, then apply (2026-07-16)
 
 ```bash
-bibi-ctrl sync
+bibi-ctrl sync           # preview only — no mutation, nothing written
+bibi-ctrl sync --apply   # actually do it
 ```
 
-An explicit `/sync` call is itself the human-in-the-loop consent for
-everything below — nothing here needs a separate confirmation:
+Same convention as `bibi-ctrl mergeback`: bare = preview/list, `--apply` =
+execute. **Agent flow: run the bare command first, show the human what it
+found, wait for their go-ahead in conversation, then run `--apply`.** Do not
+run `--apply` without that explicit go-ahead — the confirmation happens in
+the chat, not inside the CLI (it has no interactive prompt and isn't run
+against a live terminal). The one exception: if the preview reports "nichts
+zu tun" (exit 0, nothing pending), there's nothing to confirm — no need to
+ask, just report that sync is clean.
 
-- **Every unmerged `agent/*` job branch** (PLAN-30 Ebene 3 + its 2026-07-16
-  extension) — not just branches that already failed 3 times in a row and
-  got escalated. The automatic sweep still waits for trunk to move before
-  retrying a not-yet-escalated branch (throttling, avoids hammering a
-  standing conflict); an explicit `/sync` call skips that wait and attempts
-  it right away. Resolves one branch per call, not all of them
-  automatically back-to-back — after a real conflict is opened, `/sync`
+The preview predicts, without touching anything, exactly what `--apply`
+would do:
+
+- **The first unmerged `agent/*` job branch** (PLAN-30 Ebene 3 + its
+  2026-07-16 extension) — not just branches that already failed 3 times in a
+  row and got escalated. The automatic sweep still waits for trunk to move
+  before retrying a not-yet-escalated branch (throttling, avoids hammering a
+  standing conflict); an explicit `/sync --apply` skips that wait and
+  attempts it right away. Resolves one branch per call, not all of them
+  automatically back-to-back — after a real conflict is opened, `--apply`
   stops there rather than unsupervised cascading into the next one. A quiet
   outcome (the branch is currently untouchable — e.g. it overlaps a file
   you're actively editing right now) does **not** hold up the rest of
-  `/sync`; only an actual conflict does.
-- **Already-committed work in the active case ("ahead")** — pushed
-  unconditionally, regardless of the `auto_sync` flag. An explicit `/sync`
-  call is itself the push consent.
-- **Origin** — always fetched and integrated (rebase), protected by the same
-  idle-window guard as the job-branch merges above: if the incoming pull
-  would touch a file that's dirty or was just edited, the *entire* pull
-  attempt is skipped this time, not just that one file (a merge is all-or-
-  nothing).
-- **Dirty changes — active case or any other case** — `/sync` never commits
-  them (PLAN-30 Ebene 5; committing is `/save`'s job only). It just lists
-  which cases have unfinished work and points you to `/save`.
-- **Merge conflict** (job-branch merge above, or the origin pull) — left in
-  the working tree, marker files shown. Resolve it (next section), do not
-  abort blindly.
+  `--apply`; only an actual conflict does. The preview shows exactly this:
+  "would merge cleanly" / "would conflict on: …" / a quiet status.
+- **Already-committed work in the active case ("ahead")** — `--apply` pushes
+  it unconditionally, regardless of the `auto_sync` flag (an explicit
+  `/sync --apply` is itself the push consent). The preview reports how many
+  commits would be pushed.
+- **Origin** — always fetched (the preview genuinely fetches — updates
+  remote-tracking refs only, no working-tree mutation) and, in `--apply`,
+  integrated (rebase), protected by the same idle-window guard as the
+  job-branch merge above: if the incoming pull would touch a file that's
+  dirty or was just edited, the *entire* pull attempt is skipped this time,
+  not just that one file (a merge is all-or-nothing). The preview predicts
+  whether the pull would succeed, conflict, or be skipped.
+- **Dirty changes — active case or any other case** — neither preview nor
+  `--apply` ever commits them (PLAN-30 Ebene 5; committing is `/save`'s job
+  only). Both just list which cases have unfinished work and point to
+  `/save`.
+- **Merge conflict** (job-branch merge above, or the origin pull) — only
+  possible under `--apply`; the preview only ever predicts one, never opens
+  it. When `--apply` hits a real one, it's left in the working tree, marker
+  files shown. Resolve it (next section), do not abort blindly.
+
+A rebase/merge already open from an earlier `--apply` run is not something
+the preview can predict around — both bare `sync` and `sync --apply` report
+it immediately and point to `sync continue`/`sync abort`.
 
 ## Conflict resolution (A8/A11 — shared)
 
@@ -63,7 +83,7 @@ conflicts here (they abort cleanly and tell you to run `/sync`). `sync
 continue`/`sync abort` detect on their own whether a job-branch merge or an
 origin-pull rebase is open — one command for both conflict kinds.
 
-When `bibi-ctrl sync` reports a conflict (or `bibi-ctrl status` shows
+When `bibi-ctrl sync --apply` reports a conflict (or `bibi-ctrl status` shows
 `sync_conflict`/a hanging branch count):
 
 1. List the conflicted files:
@@ -93,4 +113,5 @@ not resolve anything.
 
 ## Refuse
 
-No refuse — `/sync` is always available.
+No refuse — `/sync` (preview) is always available. `--apply` needs the
+human's go-ahead from the preview, per the agent flow above.

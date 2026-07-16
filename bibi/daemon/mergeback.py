@@ -220,7 +220,7 @@ def _live_overlap(repo_root: Path, branch: str, trunk: str, *,
 
 def merge_back(*, repo_root: Path, slug: str, trunk: str = "trunk", lock=None,
                force: bool = False, keep_conflict: bool = False,
-               now: float | None = None) -> MergeResult:
+               now: float | None = None, dry_run: bool = False) -> MergeResult:
     """``agent/<slug>`` nach ``trunk`` mergen (im trunk-Working-Copy ``repo_root``).
 
     ``lock`` (optional, ein ``threading.Lock``-artiger Kontext) wird um die
@@ -239,15 +239,26 @@ def merge_back(*, repo_root: Path, slug: str, trunk: str = "trunk", lock=None,
 
     ``now`` (PLAN-30 Ebene 4, optional): an den Idle-Fenster-Guard
     durchgereicht, für deterministische Tests — Default ``None`` nutzt die
-    echte Uhrzeit."""
+    echte Uhrzeit.
+
+    ``dry_run`` (``/sync``-Vorschau, Nachtrag 2026-07-16): alle vorgelagerten
+    Prüfungen (repo_busy/Branch/Quarantäne/Idle-Guard) laufen unverändert —
+    die sind schon rein lesend. Nur der letzte Schritt (echter ``git merge``)
+    entfällt; die vorhergesagte Klassifikation kommt stattdessen aus
+    demselben ``_merge_tree_paths()``-Dry-Run, den der Idle-Guard ohnehin
+    schon berechnet — eine Klassifikationslogik für Vorschau UND echten Lauf,
+    kein zweiter, potenziell abweichender Weg. Keine Schreibvorgänge
+    irgendeiner Art (auch keine Quarantäne-Aktualisierung); ``keep_conflict``
+    ist in diesem Modus wirkungslos, es öffnet nie ein echtes ``MERGE_HEAD``."""
     with (lock if lock is not None else contextlib.nullcontext()):
         return _merge_locked(repo_root=repo_root, slug=slug, trunk=trunk,
-                             force=force, keep_conflict=keep_conflict, now=now)
+                             force=force, keep_conflict=keep_conflict, now=now,
+                             dry_run=dry_run)
 
 
 def _merge_locked(*, repo_root: Path, slug: str, trunk: str,
                   force: bool = False, keep_conflict: bool = False,
-                  now: float | None = None) -> MergeResult:
+                  now: float | None = None, dry_run: bool = False) -> MergeResult:
     # Review-Runde 4, Fund 1 (kritisch): ALLERERSTE Prüfung, vor allem
     # anderen — nie über force umgehbar. Ein bereits offener Merge/Rebase
     # (von einem ANDEREN, früheren Aufruf — dieser Aufruf hat noch keinen
@@ -285,6 +296,23 @@ def _merge_locked(*, repo_root: Path, slug: str, trunk: str,
     if live:
         return MergeResult("live_edit", trunk_sha=trunk_sha_before,
                            detail=f"kürzlich/gerade bearbeitet: {', '.join(sorted(live))}")
+
+    if dry_run:
+        # Vorhersage statt echtem Merge — derselbe Dry-Run, den der Idle-Guard
+        # oben schon für _live_overlap() berechnet hat, hier ein zweites Mal
+        # (kleiner, bewusst in Kauf genommener Zusatzaufwand — ein einzelner
+        # `git merge-tree`-Aufruf, ~10ms) statt _live_overlap()s Signatur nur
+        # für diesen Zweck zu verbiegen. Keine Schreibvorgänge: kein `git
+        # merge`, kein `merge_quarantine.record_failure()`/`clear()`.
+        tree_oid, conflicted = _merge_tree_paths(repo_root, branch, trunk)
+        if conflicted:
+            return MergeResult("conflict", trunk_sha=trunk_sha_before,
+                               detail=f"würde konfliktieren auf: {', '.join(sorted(conflicted))}")
+        current_tree = _git(["rev-parse", "HEAD^{tree}"], cwd=repo_root).stdout.strip()
+        if tree_oid == current_tree:
+            return MergeResult("up_to_date", trunk_sha=trunk_sha_before)
+        return MergeResult("merged", trunk_sha=trunk_sha_before,
+                           detail="würde sauber mergen")
 
     # PLAN-21 Befund 8: Merge-back läuft unbeaufsichtigt (Worker-Report oder
     # Synchronizer-Sweep, nie ein Mensch) — bibi-Identität statt der
