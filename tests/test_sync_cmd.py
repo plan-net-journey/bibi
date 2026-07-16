@@ -302,11 +302,15 @@ def test_sync_force_merges_escalated_branch_that_is_now_clean(repo_with_origin):
     assert "JOB" in _sh(origin, "show", "trunk:pyproject.toml")
 
 
-def test_sync_ignores_non_escalated_quarantine_entries(repo_with_origin, capsys):
-    # Ein Branch mit 1-2 Fehlschlägen (noch nicht eskaliert) ist NICHT /syncs
-    # Sache — der Sweep versucht ihn automatisch weiter, sobald trunk sich
-    # bewegt (Ebene 2), kein Eingriff nötig. /sync läuft normal durch (Ebene 5:
-    # zeigt die dirty Datei nur an, committet nicht mehr).
+def test_sync_ignores_orphaned_quarantine_entry_without_real_branch(repo_with_origin, capsys):
+    # Nachtrag 2026-07-16: /sync fragt seit der /sync-Erweiterung NICHT mehr
+    # merge_quarantine.escalated() (nur eskalierte Branches), sondern
+    # mergeback.unmerged_agent_branches() (JEDER unmergte Branch, echte
+    # git-Refs) — ein Quarantäne-Eintrag ohne zugehörigen echten Branch (hier:
+    # "agent/almost" existiert als Ref gar nicht) taucht dort nie auf und wird
+    # deshalb weiterhin ignoriert, unabhängig von seiner Fehlschlag-Zahl.
+    # /sync läuft normal durch (Ebene 5: zeigt die dirty Datei nur an,
+    # committet nicht mehr).
     from bibi.daemon import merge_quarantine
     root, _origin = repo_with_origin
     merge_quarantine.record_failure(root, "agent/almost", trunk_sha="deadbeef")
@@ -315,6 +319,85 @@ def test_sync_ignores_non_escalated_quarantine_entries(repo_with_origin, capsys)
     assert rc == 0
     assert "x.txt" in _sh(root, "status", "--porcelain")
     assert "save" in capsys.readouterr().err.lower()
+
+
+def _make_pending_conflict(root: Path, slug: str = "c", failures: int = 0) -> None:
+    """Wie ``_make_escalated_conflict()``, aber mit frei wählbarer, absichtlich
+    NICHT eskalierter Fehlschlagzahl (< ``ESCALATE_AFTER=3``) — für die
+    /sync-Erweiterung (Nachtrag 2026-07-16): testet, dass `/sync` jetzt auch
+    einen Branch anfasst, der die alte Eskalationsschwelle nie erreicht."""
+    import os
+    import time
+    from bibi.daemon import mergeback, worktree as wt
+    work = root / "data" / "worktrees"
+    path = wt.prepare(repo_root=root, work_dir=work, slug=slug)
+    (path / "pyproject.toml").write_text("JOB\n", encoding="utf-8")
+    wt.commit(worktree=path, message=f"{slug}: run", slug=slug)
+    (root / "pyproject.toml").write_text("TRUNK\n", encoding="utf-8")
+    git_ops.stage_and_commit(None, "trunk diverge")
+    for i in range(failures):
+        res = mergeback.merge_back(repo_root=root, slug=slug, now=FAR_FUTURE_TS)
+        assert res.status == "conflict", f"Versuch {i + 1} sollte konfliktieren"
+        (root / f"advance{i}.txt").write_text("x\n", encoding="utf-8")
+        git_ops.stage_and_commit(None, f"trunk advance {i}")
+    stale = time.time() - 300
+    os.utime(root / "pyproject.toml", (stale, stale))
+
+
+def test_sync_resolves_not_yet_escalated_merge_branch_conflict(repo_with_origin, capsys):
+    # Kern der /sync-Erweiterung: ein Branch mit nur EINEM Fehlschlag (weit
+    # unter ESCALATE_AFTER=3, laut altem Verhalten "nicht /syncs Sache") wird
+    # jetzt trotzdem sofort angefasst — ein expliziter /sync-Aufruf ist selbst
+    # die Zustimmung, nicht erst auf zufällige trunk-Bewegungen zu warten.
+    from bibi.daemon import merge_quarantine
+    root, _origin = repo_with_origin
+    _make_pending_conflict(root, "c", failures=1)
+    assert merge_quarantine.escalated(root) == []  # ausdrücklich NICHT eskaliert
+    assert merge_quarantine.get(root, "agent/c").failures == 1
+
+    rc = main(["sync"])
+    assert rc == 1  # Konflikt offen, restlicher /sync-Ablauf nicht gelaufen
+    assert git_ops.is_merge_in_progress() is True
+    assert "agent/c" in capsys.readouterr().err
+
+
+def test_sync_resolves_branch_with_zero_prior_failures(repo_with_origin, capsys):
+    # Noch weiter unten in der Skala: ein Branch, der noch NIE versucht wurde
+    # (kein Quarantäne-Eintrag überhaupt) — auch der ist jetzt sofort /syncs
+    # Sache, nicht nur Ebene 1s (verpasster) Sofort-Versuch.
+    from bibi.daemon import merge_quarantine
+    root, _origin = repo_with_origin
+    _make_pending_conflict(root, "c", failures=0)
+    assert merge_quarantine.get(root, "agent/c") is None  # noch nie versucht
+
+    rc = main(["sync"])
+    assert rc == 1
+    assert git_ops.is_merge_in_progress() is True
+    assert "agent/c" in capsys.readouterr().err
+
+
+def test_sync_continues_normal_flow_after_quiet_live_edit_branch(repo_with_origin, tmp_path, capsys):
+    # Ein unmergter Branch, der GERADE (Idle-Guard, Ebene 4) nicht anfassbar
+    # ist, darf den Rest von /sync (Pull/Push/Dirty-Anzeige) nicht blockieren
+    # — anders als ein echter Konflikt hinterlässt "live_edit" keinen offenen
+    # Zustand, der eine Pause rechtfertigt.
+    from bibi.daemon import mergeback, worktree as wt
+    root, origin = repo_with_origin
+    work = root / "data" / "worktrees"
+    path = wt.prepare(repo_root=root, work_dir=work, slug="c")
+    (path / "pyproject.toml").write_text("JOB\n", encoding="utf-8")
+    wt.commit(worktree=path, message="c: run", slug="c")
+    (root / "pyproject.toml").write_text("TRUNK\n", encoding="utf-8")
+    git_ops.stage_and_commit(None, "trunk diverge")
+    # pyproject.toml bewusst NICHT vordatiert — bleibt "kürzlich bearbeitet",
+    # Ebene 4s Guard soll hier genau das erkennen (live_edit).
+
+    rc = main(["sync"])
+    assert rc == 0  # kein Show-Stopper — normaler Ablauf lief bis zum Ende
+    assert git_ops.is_merge_in_progress() is False  # kein echter Versuch geöffnet
+    captured = capsys.readouterr()
+    assert "agent/c" in captured.err and "live_edit" in captured.err
+    assert "sync ok" in captured.out  # normaler Ablauf ist tatsächlich bis zum Ende gelaufen
 
 
 # --- PLAN-30 Ebene 4/5: Idle-Fenster-Guard schützt /syncs eigenen Pull-Schritt ---

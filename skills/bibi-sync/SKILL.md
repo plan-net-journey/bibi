@@ -27,34 +27,44 @@ runs, its sync loop reads this on each tick; in a pure interactive setup the
 bibi-ctrl sync
 ```
 
-Nearly always does *something* — it is no longer an all-or-nothing gate that
-refuses on any dirty tree:
+An explicit `/sync` call is itself the human-in-the-loop consent for
+everything below — nothing here needs a separate confirmation:
 
-- **Changes outside the active case** (with or without one parked) — grouped
-  into sensible commit clusters and committed **without asking again**: one
-  commit per other case folder, plus one collective commit for everything
-  that belongs to no case (`vault/memo/`, `vault/attach/`, repo-root files,
-  …). Running `/sync` at all is the human-in-the-loop approval — steer the
-  grouping in conversation beforehand if you want it different, there's no
-  separate per-cluster confirmation.
+- **Every unmerged `agent/*` job branch** (PLAN-30 Ebene 3 + its 2026-07-16
+  extension) — not just branches that already failed 3 times in a row and
+  got escalated. The automatic sweep still waits for trunk to move before
+  retrying a not-yet-escalated branch (throttling, avoids hammering a
+  standing conflict); an explicit `/sync` call skips that wait and attempts
+  it right away. Resolves one branch per call, not all of them
+  automatically back-to-back — after a real conflict is opened, `/sync`
+  stops there rather than unsupervised cascading into the next one. A quiet
+  outcome (the branch is currently untouchable — e.g. it overlaps a file
+  you're actively editing right now) does **not** hold up the rest of
+  `/sync`; only an actual conflict does.
 - **Already-committed work in the active case ("ahead")** — pushed
   unconditionally, regardless of the `auto_sync` flag. An explicit `/sync`
   call is itself the push consent.
-- **Origin** — always fetched and integrated (rebase), whether or not
-  anything local changed.
-- **Uncommitted changes in the active case** — the one thing `/sync` leaves
-  alone. It lists them and points you to `/save`; nothing else does.
-- **Merge conflict** (from either the new cluster commits or pre-existing
-  ahead commits) — the rebase is left in the working tree and `sync_conflict`
-  is set. Resolve it (next section), do not abort blindly.
+- **Origin** — always fetched and integrated (rebase), protected by the same
+  idle-window guard as the job-branch merges above: if the incoming pull
+  would touch a file that's dirty or was just edited, the *entire* pull
+  attempt is skipped this time, not just that one file (a merge is all-or-
+  nothing).
+- **Dirty changes — active case or any other case** — `/sync` never commits
+  them (PLAN-30 Ebene 5; committing is `/save`'s job only). It just lists
+  which cases have unfinished work and points you to `/save`.
+- **Merge conflict** (job-branch merge above, or the origin pull) — left in
+  the working tree, marker files shown. Resolve it (next section), do not
+  abort blindly.
 
 ## Conflict resolution (A8/A11 — shared)
 
 This is the one shared resolution path; `/save`, `/close`, `/done` route their
-conflicts here (they abort cleanly and tell you to run `/sync`).
+conflicts here (they abort cleanly and tell you to run `/sync`). `sync
+continue`/`sync abort` detect on their own whether a job-branch merge or an
+origin-pull rebase is open — one command for both conflict kinds.
 
 When `bibi-ctrl sync` reports a conflict (or `bibi-ctrl status` shows
-`sync_conflict`):
+`sync_conflict`/a hanging branch count):
 
 1. List the conflicted files:
    ```bash
@@ -63,18 +73,23 @@ When `bibi-ctrl sync` reports a conflict (or `bibi-ctrl status` shows
 2. **Resolve each file** by reading it and reconciling both sides — keep both
    intents where possible; never blindly discard the remote or local side.
    Remove all `<<<<<<<`, `=======`, `>>>>>>>` markers.
-3. Continue the rebase and push:
+3. Continue and push:
    ```bash
    bibi-ctrl sync continue
    ```
-   (`continue` stages the resolved files, finishes the rebase, pushes, and clears
-   `sync_conflict`.) If it still reports conflicts, repeat from step 1.
+   (`continue` stages the resolved files, finishes the merge/rebase, pushes,
+   and clears the conflict state.) If it still reports conflicts, repeat from
+   step 1.
 
 To give up and restore the pre-sync state:
 
 ```bash
 bibi-ctrl sync abort
 ```
+
+For a job-branch merge, `abort` only cleans up the working tree — the branch
+itself stays unmerged (and, if it was escalated, stays escalated); it does
+not resolve anything.
 
 ## Refuse
 

@@ -3,11 +3,16 @@ Befund 8, committet seit PLAN-30 Ebene 5 nichts mehr — s. u.).
 
 - ``sync on|off``      — auto_sync-Flag (stehende Push-Zustimmung) umschalten
 - ``sync``            — manueller, (fast) immer wirksamer Abgleich:
-                        0. Eskalierte Job-Branches zuerst klären (PLAN-30
-                           Ebene 3) — derselbe Konflikt, den der Sweep sonst
-                           quarantänt, bekommt jetzt die neue Chance, die nur
-                           ein anwesender Mensch geben kann. Konflikt → im
-                           Tree lassen + Marker anzeigen (KI-Auflösung).
+                        0. JEDEN unmergten Job-Branch zuerst klären (PLAN-30
+                           Ebene 3 + Nachtrag 2026-07-16), nicht mehr nur
+                           bereits eskalierte — ein anwesender Mensch, der
+                           explizit `/sync` aufruft, IST die Zustimmung, auch
+                           einen noch nicht eskalierten Branch jetzt
+                           anzufassen, statt auf zufällige trunk-Bewegungen zu
+                           warten. Konflikt → im Tree lassen + Marker anzeigen
+                           (KI-Auflösung). Ruhige Zwischenzustände
+                           (live_edit/blocked) blockieren den restlichen
+                           Ablauf NICHT.
                         1. Immer integrieren (fetch + rebase), geschützt durch
                            den Idle-Fenster-Guard (PLAN-30 Ebene 4): würde der
                            Pull eine gerade bearbeitete Datei anfassen, wird
@@ -59,20 +64,34 @@ def _print_conflicts() -> None:
 
 
 def _resolve_stuck_merge_branches() -> int | None:
-    """PLAN-30 Ebene 3: eskalierte Job-Branches (Ebene-2-Quarantäne) zuerst
-    klären, bevor der übrige ``/sync``-Ablauf startet — ein anwesender Mensch
-    IST die neue Chance, auf die die Quarantäne sonst wartet (``force=True``).
+    """PLAN-30 Ebene 3 + Nachtrag 2026-07-16 (/sync-Erweiterung): JEDEN
+    unmergten ``agent/*``-Branch anfassen, nicht mehr nur eskalierte
+    (``merge_quarantine.escalated()``) — ein anwesender Mensch, der explizit
+    ``/sync`` aufruft, IST die Zustimmung, auch einen noch nicht eskalierten
+    Branch (< ``ESCALATE_AFTER`` Fehlschläge, sonst der automatischen
+    Weiterversuchung überlassen) jetzt anzufassen, nicht nur die per Ebene-2-
+    Zähler bereits hart eskalierten. Dasselbe Prinzip, mit dem `/sync` an
+    anderer Stelle bereits committetes Work unconditional pusht: ein
+    expliziter Aufruf ist selbst die Zustimmung. ``force=True`` umgeht dabei
+    ausschließlich die Quarantäne-Vorprüfung — Ebene 4s Idle-Guard bleibt
+    unumgehbar, auch hier (`_live_overlap()` wird nie mit ``force`` übersprungen).
 
-    Löst genau EINEN Branch pro ``/sync``-Aufruf auf (nicht alle automatisch
-    hintereinander) — nach einer heiklen Konflikt-Auflösung soll nicht
-    unbeaufsichtigt der nächste Versuch lostrudeln. ``None`` = nichts zu tun,
-    weiter im normalen Ablauf. ``int`` = Exitcode, ``run_sync()`` kehrt sofort
-    zurück (offener Konflikt ODER erledigt, aber noch mehr Branches hängen)."""
+    Löst genau EINEN Branch pro ``/sync``-Aufruf tatsächlich auf (nicht alle
+    automatisch hintereinander) — nach einer heiklen Konflikt-Auflösung soll
+    nicht unbeaufsichtigt der nächste Versuch lostrudeln. Ein ruhiger
+    Zwischenzustand (``live_edit``/``blocked`` — nichts kaputt, nur "gerade
+    nicht möglich") ist dagegen KEIN Show-Stopper: anders als ein echter
+    Konflikt hinterlässt er keinen offenen Zustand, der eine Pause
+    rechtfertigt — der normale ``/sync``-Ablauf (Pull/Push/Dirty-Anzeige)
+    läuft in diesem Fall im selben Aufruf weiter. ``None`` = nichts zu tun
+    ODER nur ruhig übersprungen, weiter im normalen Ablauf. ``int`` =
+    Exitcode, ``run_sync()`` kehrt sofort zurück (offener Konflikt ODER
+    erfolgreich gemergt, aber noch mehr Branches hängen)."""
     root = repo.root()
-    stuck = merge_quarantine.escalated(root)
-    if not stuck:
+    pending = mergeback.unmerged_agent_branches(repo_root=root)
+    if not pending:
         return None
-    branch = stuck[0]
+    branch = pending[0]
     slug = branch.removeprefix("agent/")
     res = mergeback.merge_back(repo_root=root, slug=slug, force=True, keep_conflict=True)
     if res.status == "conflict":
@@ -82,19 +101,21 @@ def _resolve_stuck_merge_branches() -> int | None:
         return 1
     if res.status == "merged":
         print(f"{branch}: gemergt")
-    elif res.status == "up_to_date":
+        remaining = mergeback.unmerged_agent_branches(repo_root=root)
+        if remaining:
+            print(f"{len(remaining)} weitere(r) hängende(r) Branch(es) — "
+                  f"erneut `/sync` ausführen: {', '.join(remaining)}")
+            return 0
+        return None
+    if res.status == "up_to_date":
         print(f"{branch}: bereits aktuell (kein Merge nötig)")
-    else:  # "blocked"/"error" — force umgeht nur die Quarantäne-Vorprüfung,
-        # keinen echten Fehler (z. B. Modus A, sehr unwahrscheinlich hier, da
-        # escalated() nur echte Fehlschläge listet, aber trunk könnte sich
-        # zwischen escalated() und dem Versuch minimal bewegt haben).
-        print(f"{branch}: {res.status} — {res.detail}", file=sys.stderr)
-    remaining = merge_quarantine.escalated(root)
-    if remaining:
-        print(f"{len(remaining)} weitere(r) hängende(r) Branch(es) — "
-              f"erneut `/sync` ausführen: {', '.join(remaining)}")
-        return 0
-    return None  # alles geklärt — weiter im normalen Ablauf
+        return None
+    # "live_edit"/"blocked"/"error"/"repo_busy" — ruhiger Zwischenzustand,
+    # kein Konfliktmarker, nichts offen gelassen. Kein Grund, den restlichen
+    # /sync-Ablauf (Pull/Push/Dirty-Anzeige) für diesen Aufruf zu blockieren.
+    print(f"{branch}: {res.status} — {res.detail} — gleich nochmal `/sync` "
+          f"versuchen.", file=sys.stderr)
+    return None
 
 
 def run_sync(_: argparse.Namespace) -> int:
@@ -193,9 +214,8 @@ def run_continue(_: argparse.Namespace) -> int:
         # keine Rückabhängigkeit daemon → git_ops) — gegen die jetzt aktuelle
         # unmerged-Liste prunen holt das nach, ohne den Branch-Namen hier
         # erneut ermitteln zu müssen (derselbe Mechanismus wie remerge_all()).
-        merge_quarantine.prune(root, keep_branches=set(
-            mergeback.unmerged_agent_branches(repo_root=root)))
-        remaining = merge_quarantine.escalated(root)
+        remaining = mergeback.unmerged_agent_branches(repo_root=root)
+        merge_quarantine.prune(root, keep_branches=set(remaining))
         if remaining:
             print(f"{len(remaining)} weitere(r) hängende(r) Branch(es) — "
                   f"erneut `/sync` ausführen: {', '.join(remaining)}")
