@@ -11,6 +11,8 @@ from bibi.ctrl import main
 import pytest
 pytestmark = pytest.mark.slow
 
+from conftest import FAR_FUTURE_TS
+
 
 def _sh(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True,
@@ -45,6 +47,24 @@ def _diverge(origin: Path, tmp_path: Path):
     _sh(other, "push", "-q", "origin", "trunk")
 
 
+def _commit_local_edit(root: Path, text: str = "LOCAL\n") -> None:
+    """Committet eine lokale Änderung an pyproject.toml UND datiert sie vor
+    (Review-Runde 7, Nachtrag): `/sync`s eigener Pull-Schritt läuft mit
+    `guard_live_paths=True` (Ebene 4/5, `git_ops._pull_live_overlap()`) — ohne
+    Vordatierung wertet der Guard diese gerade committete Datei als "kürzlich
+    bearbeitet" und überspringt den Pull (`live_edit`) statt in den von diesen
+    Tests eigentlich gewollten Rebase-Konflikt zu laufen. `main(["sync"])`
+    nimmt kein `now=`-Override entgegen (anders als `mergeback.merge_back()`
+    in Tests, die die Funktion direkt aufrufen) — deshalb hier `os.utime()`
+    statt `now=`, dieselbe Technik wie in `test_mergeback_route.py`."""
+    import os
+    import time
+    (root / "pyproject.toml").write_text(text, encoding="utf-8")
+    git_ops.stage_and_commit(None, "local edit")
+    stale = time.time() - 300
+    os.utime(root / "pyproject.toml", (stale, stale))
+
+
 # --- on/off ---
 
 def test_sync_on_off(repo_with_origin):
@@ -54,25 +74,26 @@ def test_sync_on_off(repo_with_origin):
     assert state.get_auto_sync() is False
 
 
-# --- manueller sync (§4.9) ---
+# --- manueller sync (§4.9) — committet seit PLAN-30 Ebene 5 NICHTS mehr,
+# egal ob im aktiven Projekt oder in fremden Cases: nur noch anzeigen,
+# committen ist ausschließlich /saves Aufgabe (löst Befund 2 / Requirement 4).
 
-def test_sync_caseless_dirty_gets_committed_and_pushed(repo_with_origin):
-    # PLAN-25 Befund 8: dirty Änderungen außerhalb jedes Case-Ordners (hier:
-    # Repo-Root, kein aktiver Case geparkt) werden automatisch geclustert,
-    # committet und gepusht — kein "geh erst zu /save"-Abbruch mehr.
+def test_sync_caseless_dirty_is_shown_not_committed(repo_with_origin, capsys):
     root, origin = repo_with_origin
+    head_before = _local_head(root)
     (root / "x.txt").write_text("x", encoding="utf-8")
     rc = main(["sync"])
     assert rc == 0
-    assert _local_head(root) == "sync: other changes"
-    assert _origin_head(origin) == "sync: other changes"
+    assert _local_head(root) == head_before  # kein neuer Commit
+    assert _origin_head(origin) == head_before
+    status = _sh(root, "status", "--porcelain")
+    assert "x.txt" in status  # weiterhin dirty
+    assert "save" in capsys.readouterr().err.lower()
 
 
-def test_sync_clusters_other_case_and_leaves_active_untouched(repo_with_origin, monkeypatch):
-    # PLAN-25 Befund 8, Punkt 1+4: ein fremder Case-Ordner wird automatisch
-    # committet+gepusht; der aktive Case bleibt unangetastet (nur `/save`
-    # zuständig).
+def test_sync_other_case_is_shown_not_committed_active_untouched(repo_with_origin, monkeypatch, capsys):
     root, origin = repo_with_origin
+    head_before = _local_head(root)
     active = root / "vault" / "case" / "20260101.active-aaa"
     other = root / "vault" / "case" / "20260202.other-bbb"
     active.mkdir(parents=True)
@@ -83,38 +104,47 @@ def test_sync_clusters_other_case_and_leaves_active_untouched(repo_with_origin, 
 
     rc = main(["sync"])
     assert rc == 0
-    assert _origin_head(origin) == "sync: 20260202.other-bbb"
-    # aktiver Case NICHT committed, bleibt dirty (git kollabiert das komplett
-    # unversionierte Verzeichnis in --porcelain zu einer Zeile, daher Präfix
-    # statt exaktem Dateipfad).
-    status = _sh(root, "status", "--porcelain")
-    assert "vault/case/20260101.active-aaa/" in status
+    assert _origin_head(origin) == head_before  # nichts committet/gepusht
+    # Bewusst mit Pfadangabe (nicht der unscoped `git status --porcelain` von
+    # oben): beide Case-Ordner sind hier das allererste, je committete Material
+    # unter vault/ — ein unscoped Aufruf würde sie git-Default-mäßig zu einer
+    # einzigen "?? vault/"-Zeile zusammenfassen (live geprüft), unabhängig
+    # davon, ob /sync die Pfade korrekt einzeln erkannt hat oder nicht. Mit
+    # Pfadangabe wertet git jeden Case-Ordner gezielt aus und listet ihn
+    # individuell, das ist die eigentlich zu prüfende Aussage.
+    assert "vault/case/20260101.active-aaa/" in _sh(
+        root, "status", "--porcelain", "--", "vault/case/20260101.active-aaa")
+    assert "vault/case/20260202.other-bbb/" in _sh(
+        root, "status", "--porcelain", "--", "vault/case/20260202.other-bbb")
+    err = capsys.readouterr().err
+    assert "20260202.other-bbb" in err  # angezeigt, nicht angefasst
 
 
-def test_sync_no_active_case_treats_every_case_as_other(repo_with_origin):
-    # PLAN-25 Befund 8, Punkt 1: "egal ob mit oder ohne aktives Projekt" — cwd
-    # bleibt am Repo-Root (kein Case geparkt), also zählt jeder Case-Ordner
-    # als "fremd" und wird automatisch committet.
+def test_sync_no_active_case_shows_every_case_not_committed(repo_with_origin, capsys):
     root, origin = repo_with_origin
+    head_before = _local_head(root)
     case = root / "vault" / "case" / "20260101.a-aaa"
     case.mkdir(parents=True)
     (case / "README.md").write_text("x", encoding="utf-8")
     rc = main(["sync"])
     assert rc == 0
-    assert _origin_head(origin) == "sync: 20260101.a-aaa"
+    assert _origin_head(origin) == head_before
+    assert "20260101.a-aaa" in capsys.readouterr().err
 
 
-def test_sync_multiple_other_cases_get_separate_commits(repo_with_origin, tmp_path):
+def test_sync_multiple_other_cases_all_shown_none_committed(repo_with_origin, tmp_path, capsys):
     root, origin = repo_with_origin
+    head_before = _local_head(root)
     for slug in ("20260101.a-aaa", "20260202.b-bbb"):
         case = root / "vault" / "case" / slug
         case.mkdir(parents=True)
         (case / "README.md").write_text("x", encoding="utf-8")
     rc = main(["sync"])
     assert rc == 0
-    log = _sh(origin, "log", "--format=%s", "-5")
-    assert "sync: 20260101.a-aaa" in log
-    assert "sync: 20260202.b-bbb" in log
+    assert _origin_head(origin) == head_before
+    err = capsys.readouterr().err
+    assert "20260101.a-aaa" in err
+    assert "20260202.b-bbb" in err
 
 
 def test_sync_clean_pulls(repo_with_origin, tmp_path):
@@ -137,8 +167,7 @@ def test_sync_pushes_local_ahead(repo_with_origin):
 def test_sync_conflict_keeps_and_flags(repo_with_origin, tmp_path, capsys):
     root, origin = repo_with_origin
     _diverge(origin, tmp_path)
-    (root / "pyproject.toml").write_text("LOCAL\n", encoding="utf-8")
-    git_ops.stage_and_commit(None, "local edit")
+    _commit_local_edit(root)
     rc = main(["sync"])
     assert rc == 1
     assert state.get_sync_conflict() is True
@@ -149,8 +178,7 @@ def test_sync_conflict_keeps_and_flags(repo_with_origin, tmp_path, capsys):
 def test_sync_continue_resolves_and_clears_flag(repo_with_origin, tmp_path):
     root, origin = repo_with_origin
     _diverge(origin, tmp_path)
-    (root / "pyproject.toml").write_text("LOCAL\n", encoding="utf-8")
-    git_ops.stage_and_commit(None, "local edit")
+    _commit_local_edit(root)
     main(["sync"])  # → Konflikt offen
     (root / "pyproject.toml").write_text("RESOLVED\n", encoding="utf-8")  # KI-Auflösung
     rc = main(["sync", "continue"])
@@ -163,8 +191,7 @@ def test_sync_continue_resolves_and_clears_flag(repo_with_origin, tmp_path):
 def test_sync_abort_clears(repo_with_origin, tmp_path):
     root, origin = repo_with_origin
     _diverge(origin, tmp_path)
-    (root / "pyproject.toml").write_text("LOCAL\n", encoding="utf-8")
-    git_ops.stage_and_commit(None, "local edit")
+    _commit_local_edit(root)
     main(["sync"])
     rc = main(["sync", "abort"])
     assert rc == 0
@@ -174,12 +201,151 @@ def test_sync_abort_clears(repo_with_origin, tmp_path):
 def test_sync_in_progress_guard(repo_with_origin, tmp_path, capsys):
     root, origin = repo_with_origin
     _diverge(origin, tmp_path)
-    (root / "pyproject.toml").write_text("LOCAL\n", encoding="utf-8")
-    git_ops.stage_and_commit(None, "local edit")
+    _commit_local_edit(root)
     main(["sync"])           # Rebase offen
     rc = main(["sync"])      # erneuter sync → Guard
     assert rc == 1
     assert "continue" in capsys.readouterr().err
+
+
+# --- PLAN-30 Ebene 3: eskalierte Job-Branch-Konflikte über /sync auflösen ---
+# (Requirement 2 — anders als oben Requirement 3/Pull-Konflikte, aber
+# dasselbe Werkzeug: sync/sync continue/sync abort.)
+
+def _make_escalated_conflict(root: Path, slug: str = "c") -> None:
+    """3 Fehlschläge gegen wechselnde trunk-Stände → hart eskaliert
+    (merge_quarantine.ESCALATE_AFTER), wie im echten Vorfall (agent/Witz).
+
+    Braucht BEIDE Techniken (Review-Runde 7, Nachtrag): now=FAR_FUTURE_TS auf
+    den drei Schleifenaufrufen selbst — UND danach nochmal os.utime() auf die
+    Datei, für den main(["sync"])-Aufruf der Aufrufer, das kein now= entgegen-
+    nimmt. now= allein reicht nicht: jeder konfliktierende merge_back()-
+    Aufruf ruft bei "conflict" intern git merge --abort auf, was den
+    Working-Tree-Inhalt der Datei auf den trunk-Stand zurückschreibt und dabei
+    ihre mtime auf "jetzt" zurücksetzt — ein einmaliges os.utime() VOR der
+    Schleife hält also nur bis zum ersten Abort, live geprüft (Versuch 2
+    scheiterte sonst wieder mit "live_edit"). os.utime() allein reicht auch
+    nicht: es müsste dann vor JEDEM der drei Aufrufe erneut gesetzt werden,
+    was dasselbe leistet wie now= aber unnötig kompliziert wäre — now= für die
+    Schleife, os.utime() als Abschluss-Zustand für alles danach."""
+    import os
+    import time
+    from bibi.daemon import mergeback, worktree as wt
+    work = root / "data" / "worktrees"
+    path = wt.prepare(repo_root=root, work_dir=work, slug=slug)
+    (path / "pyproject.toml").write_text("JOB\n", encoding="utf-8")
+    wt.commit(worktree=path, message=f"{slug}: run", slug=slug)
+    (root / "pyproject.toml").write_text("TRUNK\n", encoding="utf-8")
+    git_ops.stage_and_commit(None, "trunk diverge")
+    for i in range(3):
+        res = mergeback.merge_back(repo_root=root, slug=slug, now=FAR_FUTURE_TS)
+        assert res.status == "conflict", f"Versuch {i + 1} sollte konfliktieren"
+        (root / f"advance{i}.txt").write_text("x\n", encoding="utf-8")
+        git_ops.stage_and_commit(None, f"trunk advance {i}")
+    stale = time.time() - 300
+    os.utime(root / "pyproject.toml", (stale, stale))
+
+
+def test_sync_resolves_escalated_merge_branch_conflict(repo_with_origin, capsys):
+    from bibi.daemon import merge_quarantine
+    root, _origin = repo_with_origin
+    _make_escalated_conflict(root, "c")
+    assert merge_quarantine.escalated(root) == ["agent/c"]
+
+    rc = main(["sync"])
+    assert rc == 1  # Konflikt offen, restlicher /sync-Ablauf nicht gelaufen
+    assert git_ops.is_merge_in_progress() is True
+    assert "agent/c" in capsys.readouterr().err
+
+
+def test_sync_continue_resolves_merge_branch_and_clears_quarantine(repo_with_origin, tmp_path):
+    from bibi.daemon import merge_quarantine
+    root, origin = repo_with_origin
+    _make_escalated_conflict(root, "c")
+    main(["sync"])  # → Merge-Konflikt offen
+    (root / "pyproject.toml").write_text("RESOLVED\n", encoding="utf-8")  # KI-Auflösung
+    rc = main(["sync", "continue"])
+    assert rc == 0
+    assert git_ops.is_merge_in_progress() is False
+    assert merge_quarantine.get(root, "agent/c") is None
+    assert "RESOLVED" in _sh(origin, "show", "trunk:pyproject.toml")
+    # Requirement 3s globales Flag bleibt unberührt von diesem Requirement-2-Pfad:
+    assert state.get_sync_conflict() is False
+
+
+def test_sync_abort_merge_branch_keeps_quarantine(repo_with_origin):
+    from bibi.daemon import merge_quarantine
+    root, _origin = repo_with_origin
+    _make_escalated_conflict(root, "c")
+    main(["sync"])  # → Merge-Konflikt offen
+    rc = main(["sync", "abort"])
+    assert rc == 0
+    assert git_ops.is_merge_in_progress() is False
+    # Branch bleibt unmerged + eskaliert — abort löst nichts, nur der Tree ist wieder sauber.
+    assert merge_quarantine.get(root, "agent/c") is not None
+    assert merge_quarantine.escalated(root) == ["agent/c"]
+
+
+def test_sync_force_merges_escalated_branch_that_is_now_clean(repo_with_origin):
+    # Eskaliert (3 Fehlschläge), aber der Konflikt ist inzwischen behoben (der
+    # trunk-seitige Stand passt jetzt zur Job-Version) — /sync (force=True)
+    # merged sofort sauber, kein offener Konflikt, keine Quarantäne mehr.
+    from bibi.daemon import merge_quarantine
+    root, origin = repo_with_origin
+    _make_escalated_conflict(root, "c")
+    (root / "pyproject.toml").write_text("JOB\n", encoding="utf-8")  # passt jetzt zur Job-Version
+    git_ops.stage_and_commit(None, "trunk aligns with job")
+
+    rc = main(["sync"])
+    assert rc == 0
+    assert merge_quarantine.get(root, "agent/c") is None
+    assert "JOB" in _sh(origin, "show", "trunk:pyproject.toml")
+
+
+def test_sync_ignores_non_escalated_quarantine_entries(repo_with_origin, capsys):
+    # Ein Branch mit 1-2 Fehlschlägen (noch nicht eskaliert) ist NICHT /syncs
+    # Sache — der Sweep versucht ihn automatisch weiter, sobald trunk sich
+    # bewegt (Ebene 2), kein Eingriff nötig. /sync läuft normal durch (Ebene 5:
+    # zeigt die dirty Datei nur an, committet nicht mehr).
+    from bibi.daemon import merge_quarantine
+    root, _origin = repo_with_origin
+    merge_quarantine.record_failure(root, "agent/almost", trunk_sha="deadbeef")
+    (root / "x.txt").write_text("x", encoding="utf-8")
+    rc = main(["sync"])
+    assert rc == 0
+    assert "x.txt" in _sh(root, "status", "--porcelain")
+    assert "save" in capsys.readouterr().err.lower()
+
+
+# --- PLAN-30 Ebene 4/5: Idle-Fenster-Guard schützt /syncs eigenen Pull-Schritt ---
+
+def test_sync_pull_skips_when_target_path_is_dirty(repo_with_origin, tmp_path, capsys):
+    root, origin = repo_with_origin
+    other = _clone(origin, tmp_path / "other")
+    (other / "pyproject.toml").write_text("REMOTE\n", encoding="utf-8")
+    _sh(other, "add", "-A"); _sh(other, "commit", "-q", "-m", "remote edit")
+    _sh(other, "push", "-q", "origin", "trunk")
+
+    (root / "pyproject.toml").write_text("LOCAL dirty\n", encoding="utf-8")  # nicht committet
+    head_before = _local_head(root)
+    rc = main(["sync"])
+    assert rc == 1
+    assert _local_head(root) == head_before  # kein Pull-Versuch fand statt
+    assert (root / "pyproject.toml").read_text() == "LOCAL dirty\n"  # unangetastet
+    err = capsys.readouterr().err.lower()
+    assert "übersprungen" in err or "sync" in err
+
+
+def test_sync_pull_proceeds_when_no_overlap(repo_with_origin, tmp_path):
+    # Ein unbeteiligter dirty Pfad darf einen ansonsten sauberen Pull nicht
+    # verhindern — der Guard prüft nur echten Überlapp.
+    root, origin = repo_with_origin
+    _remote_ahead(origin, tmp_path)
+    (root / "unrelated.txt").write_text("dirty, aber nicht Teil des Pulls\n",
+                                        encoding="utf-8")
+    rc = main(["sync"])
+    assert rc == 0
+    assert (root / "remote.txt").exists()
 
 
 # --- Hooks (gated by auto_sync) ---
