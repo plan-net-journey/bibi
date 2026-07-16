@@ -44,7 +44,8 @@ def _merge_back(branch: str, *, sync_lock=None, synchronizer=None) -> None:
     """``agent/<slug>`` nach trunk mergen (PLAN-6) und — bei Zustimmung — pushen.
 
     Defensiv: jeder Fehler bleibt hier (der Lauf ist bereits terminal ``complete``,
-    der Commit über den Branch erreichbar). Konflikt → ``sync_conflict`` (auflösbar)."""
+    der Commit über den Branch erreichbar). Konflikt → Ebene-2-Quarantäne, ab
+    3 Fehlschlägen sichtbar über Ebene 3 (``/state``, Statuszeile, Git-Kachel)."""
     slug = branch.removeprefix("agent/")
     try:
         res = mergeback.merge_back(repo_root=repo.root(), slug=slug, lock=sync_lock)
@@ -58,13 +59,111 @@ def _merge_back(branch: str, *, sync_lock=None, synchronizer=None) -> None:
         if synchronizer is not None:  # D5: Merge-Commit aktiv pushen (debouncer-blind)
             synchronizer.push_now()
     elif res.status == "conflict":
-        state.set_sync_conflict(True)
+        # PLAN-30 Ebene 3, Fund aus der ursprünglichen Analyse: das globale
+        # sync_conflict-Flag hier zu setzen war der eigentliche Bug, nicht nur
+        # eine Ungenauigkeit — es wird von JEDEM erfolgreichen Pull/Push im
+        # selben Tick zurückgesetzt (synchronizer.py::_resolve_conflict()),
+        # unabhängig davon, ob DIESER Branch noch hängt (der Ur-Befund: bei
+        # stündlichen erfolgreichen Syncs kam eine Job-Branch-Konflikt-Meldung
+        # beim User praktisch nie an). Requirement 2 hat jetzt seine eigene,
+        # korrekte, per-Branch-Sichtbarkeit (merge_quarantine.py, ab 3
+        # Fehlschlägen eskaliert) — das globale Flag bleibt exklusiv für
+        # Requirement 3 (echte Pull-Konflikte auf trunk selbst).
         activity.emit(log, logging.WARNING, "worker.merge_conflict",
                       "Merge-back-Konflikt — trunk unverändert, Branch intakt (/sync)",
                       role="scheduler", slug=slug, detail=res.detail)
     elif res.status == "error":
         activity.emit(log, logging.ERROR, "worker.merge_error",
                       "Merge-back-Fehler", role="scheduler", slug=slug, detail=res.detail)
+    elif res.status == "blocked":
+        # Modus A (PLAN-30 Ebene 2): Dirty-Tree-Verweigerung, kein echter
+        # Konflikt — löst sich von selbst, sobald committet wird. Kein
+        # sync_conflict, keine Eskalation, nur DEBUG-Sichtbarkeit.
+        activity.emit(log, logging.DEBUG, "worker.merge_blocked",
+                      "Merge-back blockiert (dirty Datei, kein Konflikt)",
+                      role="scheduler", slug=slug, detail=res.detail)
+    elif res.status == "quarantined":
+        # Trunk unverändert seit letztem Fehlschlag ODER hart eskaliert
+        # (merge_quarantine.ESCALATE_AFTER) — der ursprüngliche Fehlschlag
+        # wurde bereits einmal als worker.merge_conflict/error geloggt, hier
+        # nur DEBUG, sonst reproduziert das genau das "WARNING, die niemand
+        # liest"-Problem, das Ebene 2 eigentlich beheben soll.
+        activity.emit(log, logging.DEBUG, "worker.merge_quarantined",
+                      "Merge-back übersprungen (Quarantäne)",
+                      role="scheduler", slug=slug, detail=res.detail)
+    elif res.status == "live_edit":
+        # PLAN-30 Ebene 4: der Merge hätte eine gerade bearbeitete Datei
+        # angefasst — bewusst übersprungen, kein Fehlschlag, keine
+        # Eskalation. Nächster Versuch (Sofort-Trigger des nächsten Laufs
+        # oder der Sweep) holt es automatisch nach, sobald die Datei ruht.
+        activity.emit(log, logging.DEBUG, "worker.merge_live_edit",
+                      "Merge-back übersprungen (Datei live bearbeitet)",
+                      role="scheduler", slug=slug, detail=res.detail)
+    elif res.status == "repo_busy":
+        # Review-Runde 4, Fund 1: ein anderer Merge/Rebase ist bereits offen
+        # (z. B. ein von /sync interaktiv offen gelassener Job-Branch-
+        # Konflikt) — bewusst übersprungen, kein Fehlschlag DIESES Branches,
+        # keine Eskalation. Nächster Trigger holt es nach, sobald der Mensch
+        # den offenen Vorgang via `/sync continue`/`abort` abgeschlossen hat.
+        activity.emit(log, logging.DEBUG, "worker.merge_repo_busy",
+                      "Merge-back übersprungen (anderer Merge/Rebase offen)",
+                      role="scheduler", slug=slug, detail=res.detail)
+
+
+def _auth_dependency():
+    """Optionaler Shared-Secret-Schutz für Verbund-Endpunkte (§1.3): ist
+    BIBI_CONNECT_SECRET gesetzt, müssen Remote-Worker den Header mitschicken;
+    ohne Secret gilt die Loopback-/Trust-Netz-Annahme (Single-Node/Tailscale).
+    Eigene Factory (statt Closure-Duplikat), gemeinsam genutzt von
+    ``_add_status_route()`` und ``_add_scheduler_routes()``."""
+    _secret = os.environ.get("BIBI_CONNECT_SECRET")
+
+    def _auth(x_bibi_secret: str | None = Header(default=None)):
+        if _secret and x_bibi_secret != _secret:
+            raise HTTPException(status_code=401, detail="bad or missing shared secret")
+    return _auth
+
+
+def _add_status_route(app: FastAPI, *, sync_lock=None, synchronizer=None) -> None:
+    """``/-/scheduler/status/{id}`` — bewusst **rollenunabhängig** registriert,
+    herausgelöst aus ``_add_scheduler_routes()`` (PLAN-30 Ebene 1 v2, Fund
+    2026-07-15): jeder Knoten hat laut PLAN-28 ohnehin seine eigene lokale
+    Job-DB und sein eigenes trunk-Repo — ein gepinnter Lauf auf einem reinen
+    Client (keine ``scheduler``-Rolle) braucht diese Route trotzdem für seinen
+    Merge-back-Trigger (``bibi/wrapper/__init__.py::_report_terminal()``), sonst
+    existiert sie dort schlicht nicht und der Trigger verpufft als 404."""
+    _auth = _auth_dependency()
+
+    @app.post("/-/scheduler/status/{id}", tags=["scheduler"], dependencies=[Depends(_auth)])
+    def scheduler_status(id: str, report: StatusReport):  # noqa: A002
+        # job_db.connect() ohne Pfad-Argument (anders als andere Routen hier, die
+        # worker.db_path/pinned_worker.db_path durchreichen) — bewusst: diese
+        # Route ist rollenunabhängig, kennt also keinen bestimmten Worker, dessen
+        # db_path sie nehmen könnte. Heute unkritisch, weil jeder Worker/
+        # LocalScheduler in diesem Team implizit denselben Default nutzt (Review-
+        # Runde 2, Fund 4) — bricht lautlos, falls je ein abweichender db_path
+        # eingeführt wird (kein Crash, nur "not_found" auf jeden Report).
+        conn = job_db.connect()
+        try:
+            outcome = job_db.report_status(
+                conn, id, status=str(report.status), reason=report.reason,
+                exit_code=report.exit_code, host=report.host,
+                worker=report.worker, output_ref=report.output_ref,
+                attempt=report.attempt, next_fire_at=report.next_fire_at,
+                commit_sha=report.commit_sha, branch=report.branch,
+                app_url=report.app_url,
+            )
+        finally:
+            conn.close()
+        if outcome == "not_found":
+            return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
+        if outcome == "invalid":
+            return JSONResponse(status_code=409, content={"error": "illegal transition", "id": id})
+        # Erfolgreicher Lauf mit Ergebnis-Branch → Merge-back nach trunk (PLAN-6).
+        # Nur ``complete`` + vorhandener Branch (echo/No-op liefert keinen Commit).
+        if str(report.status) == "complete" and report.branch:
+            _merge_back(report.branch, sync_lock=sync_lock, synchronizer=synchronizer)
+        return {"id": id, "status": str(report.status)}
 
 
 def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
@@ -74,17 +173,10 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
     ``/-/job``/``/-/job/{id}`` (zuerst registriert ⇒ gewinnen) und den
     Phase-2-Stub von ``/-/rescan``/``/-/schedule``. Reine JSON-API (§1.1).
 
-    ``sync_lock``/``synchronizer``: Merge-back ``agent/<slug>`` → trunk nach einem
-    erfolgreichen Lauf (PLAN-6) — scheduler-seitig (hier lebt das trunk-Repo)."""
-
-    # Optionaler Shared-Secret-Schutz für Verbund-Endpunkte (§1.3): ist
-    # BIBI_CONNECT_SECRET gesetzt, müssen Remote-Worker den Header mitschicken;
-    # ohne Secret gilt die Loopback-/Trust-Netz-Annahme (Single-Node/Tailscale).
-    _secret = os.environ.get("BIBI_CONNECT_SECRET")
-
-    def _auth(x_bibi_secret: str | None = Header(default=None)):
-        if _secret and x_bibi_secret != _secret:
-            raise HTTPException(status_code=401, detail="bad or missing shared secret")
+    ``sync_lock``/``synchronizer``: nur noch für die übrigen Routen hier relevant
+    (``/-/scheduler/status/{id}`` selbst lebt jetzt in ``_add_status_route()``,
+    rollenunabhängig — PLAN-30 Ebene 1 v2)."""
+    _auth = _auth_dependency()
 
     @app.post("/-/rescan", tags=["scheduler"])
     def rescan():
@@ -136,7 +228,8 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
             return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
         return job
 
-    # ── Scheduler-Auswahl: Reservierung + Statusmeldung (PLAN-3 §3.2) ─────────
+    # ── Scheduler-Auswahl: Reservierung (PLAN-3 §3.2; Statusmeldung s. oben,
+    # ``_add_status_route()``, rollenunabhängig) ─────────────────────────────
     @app.post("/-/scheduler/next", response_model=JobReservation, tags=["scheduler"],
               dependencies=[Depends(_auth)])
     def scheduler_next(req: NextRequest | None = None):
@@ -153,30 +246,6 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                       slug=res.get("slug"), run_id=res.get("id"), kind=res.get("kind"),
                       worker=req.worker if req else None)
         return res
-
-    @app.post("/-/scheduler/status/{id}", tags=["scheduler"], dependencies=[Depends(_auth)])
-    def scheduler_status(id: str, report: StatusReport):  # noqa: A002
-        conn = job_db.connect()
-        try:
-            outcome = job_db.report_status(
-                conn, id, status=str(report.status), reason=report.reason,
-                exit_code=report.exit_code, host=report.host,
-                worker=report.worker, output_ref=report.output_ref,
-                attempt=report.attempt, next_fire_at=report.next_fire_at,
-                commit_sha=report.commit_sha, branch=report.branch,
-                app_url=report.app_url,
-            )
-        finally:
-            conn.close()
-        if outcome == "not_found":
-            return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
-        if outcome == "invalid":
-            return JSONResponse(status_code=409, content={"error": "illegal transition", "id": id})
-        # Erfolgreicher Lauf mit Ergebnis-Branch → Merge-back nach trunk (PLAN-6).
-        # Nur ``complete`` + vorhandener Branch (echo/No-op liefert keinen Commit).
-        if str(report.status) == "complete" and report.branch:
-            _merge_back(report.branch, sync_lock=sync_lock, synchronizer=synchronizer)
-        return {"id": id, "status": str(report.status)}
 
     # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────
     @app.get("/-/journal", tags=["journal"])
@@ -485,14 +554,14 @@ def create_app(
     if pinned_worker is None:
         from bibi.daemon.scheduler_client import LocalScheduler
         pinned_worker = Worker(client=LocalScheduler(pinned_only=True))
-    # Merge-back für den **lokalen** Worker (PLAN-6): der geht nicht über die
-    # HTTP-Route /-/scheduler/status, darum den Hook direkt an den LocalScheduler
-    # hängen. Nur am Knoten mit Scheduler-Rolle (besitzt trunk-Repo + Job-DB).
-    if roles.scheduler and worker is not None:
-        from bibi.daemon.scheduler_client import LocalScheduler
-        if isinstance(getattr(worker, "client", None), LocalScheduler):
-            worker.client.on_complete = lambda branch: _merge_back(
-                branch, sync_lock=sync_lock, synchronizer=synchronizer)
+    # Merge-back nach einem lokalen Abschluss (PLAN-6) läuft nicht mehr über
+    # einen In-Memory-Callback hier (entfernt, PLAN-30 Ebene 1 v2, Fund
+    # 2026-07-15: der detachte Wrapper-Subprozess meldet Terminal-Status per
+    # Direct-SQLite und erreicht einen In-Process-Hook wie diesen nie — für
+    # weder ``worker`` noch ``pinned_worker``, auf keinem Knotentyp). Stattdessen
+    # feuert der Wrapper selbst den Trigger per HTTP gegen ``_add_status_route()``
+    # (rollenunabhängig registriert, s. u.) — das deckt beide Worker-Instanzen
+    # symmetrisch ab, ohne Sonderfall für ``roles.scheduler``.
     worker_registry = WorkerRegistry() if roles.scheduler else None
     if sweeper is None and roles.scheduler:
         from bibi.daemon.sweeper import Sweeper
@@ -985,7 +1054,13 @@ def create_app(
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    # ── Scheduler-Rolle: echte DB-Routen (PLAN-3 §3.1) ──────────────────────
+    # ── Statusmeldung: rollenunabhängig (PLAN-30 Ebene 1 v2) ────────────────
+    # Zuerst registriert ⇒ gewinnt gegen den 3.0-Contract-Stub für /-/scheduler/
+    # status/{id} — auf JEDEM Knoten, nicht nur mit roles.scheduler (s. Docstring
+    # von _add_status_route()).
+    _add_status_route(app, sync_lock=sync_lock, synchronizer=synchronizer)
+
+    # ── Scheduler-Rolle: übrige echte DB-Routen (PLAN-3 §3.1) ───────────────
     # Zuerst registriert ⇒ gewinnen gegen die 3.0-Contract-Stubs für /-/job.
     if roles.scheduler:
         _add_scheduler_routes(app, worker_registry,

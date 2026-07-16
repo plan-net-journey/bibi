@@ -17,6 +17,7 @@ import platform
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from bibi import repo
@@ -26,9 +27,15 @@ GIT_NET_TIMEOUT: float = float(os.environ.get("BIBI_GIT_NET_TIMEOUT", "12"))
 
 def _git(args: list[str], check: bool = True,
          timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    # -c core.quotepath=false (Review-Runde 5, Fund 2, live verifiziert): ohne
+    # das quotet Git jeden Pfad mit Nicht-ASCII-Zeichen in JEDER Textausgabe
+    # (z. B. "Kündigung.md" → "K\303\274ndigung.md") — dieses Vault hat
+    # bereits solche Pfade. Jeder Code hier, der Pfade aus Git-Ausgabe parst
+    # (dirty_paths(), _pull_live_overlap()), würde den Überlapp sonst
+    # schlicht nicht erkennen.
     try:
         return subprocess.run(
-            ["git", *args], cwd=repo.root(),
+            ["git", "-c", "core.quotepath=false", *args], cwd=repo.root(),
             capture_output=True, text=True, check=check, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
@@ -84,6 +91,44 @@ def is_rebase_in_progress() -> bool:
     if not git_dir.is_absolute():
         git_dir = repo.root() / git_dir
     return (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists()
+
+
+def is_merge_in_progress() -> bool:
+    """True, wenn ein (konfliktbehafteter) Merge aussteht — PLAN-30 Ebene 3:
+    ein Job-Branch-Merge-back-Konflikt, den ``/sync`` interaktiv offen gelassen
+    hat (``mergeback.merge_back(..., keep_conflict=True)``), analog
+    ``is_rebase_in_progress()`` für Pull-Konflikte."""
+    git_dir = Path(_git(["rev-parse", "--git-dir"]).stdout.strip())
+    if not git_dir.is_absolute():
+        git_dir = repo.root() / git_dir
+    return (git_dir / "MERGE_HEAD").exists()
+
+
+def is_conflict_resolution_pending() -> bool:
+    """True, wenn IRGENDEIN Merge oder Rebase gerade offen ist — unabhängig
+    davon, wer/was ihn gestartet hat.
+
+    Review-Runde 4 (PLAN-30 Ebene 3), Fund 1, live gegen echtes Git bewiesen:
+    ohne diesen Guard konnte ein automatisierter Schreibvorgang, der während
+    eines von ``/sync keep_conflict=True`` offen gelassenen Job-Branch-Merge-
+    Konflikts lief, den Konflikt auf zwei Arten lautlos zerstören —
+    (a) ``git add -A`` (unscoped) staged die noch unmerged Datei mit ihrem
+    aktuellen, Konfliktmarker-behafteten Inhalt als "aufgelöst", ein
+    nachfolgender ``git commit`` nimmt das klaglos an (live reproduziert:
+    Trunk bekommt einen Commit mit rohen ``<<<<<<<``-Markern als Datei-
+    Inhalt, keine Fehlermeldung); (b) ein Merge-Versuch für einen VÖLLIG
+    ANDEREN Branch scheitert sofort mit "Merging is not possible because you
+    have unmerged files" — OHNE diesen Guard interpretierte
+    ``mergeback._merge_locked()`` das fälschlich als Konflikt DIESES anderen
+    Branches und rief ``merge --abort`` — was live reproduziert die laufende
+    Konfliktauflösung des Menschen komplett zurückgesetzt hat (Datei-Inhalt
+    zurück auf den Vor-Konflikt-Stand, Auflösungsarbeit verloren).
+
+    Jeder automatisierte Schreibvorgang (Commit, Push, Merge-back, Pull) MUSS
+    dies vor jedem eigenen Schreibversuch prüfen und bei ``True`` überspringen
+    — nicht durch ``force`` umgehbar, das wäre in beiden obigen Szenarien
+    genau der Fehler."""
+    return is_rebase_in_progress() or is_merge_in_progress()
 
 
 def conflicted_files() -> list[str]:
@@ -154,6 +199,30 @@ def dirty_paths() -> list[str]:
             # maxsplit=10.
             paths.append(line.split(" ", 10)[-1])
     return paths
+
+
+def recently_touched_paths(root: Path, paths: list[str], *, within_s: int,
+                           now: float | None = None) -> set[str]:
+    """PLAN-30 Ebene 4 (G1): welche der gegebenen (repo-root-relativen) Pfade
+    wurden innerhalb der letzten ``within_s`` Sekunden zuletzt geschrieben?
+
+    Reine ``stat()``-Funktion, kein Git-Aufruf (wie ``cluster_dirty_paths()``
+    daneben) — ein bewusster Kompromiss: die erste echte I/O in einer sonst
+    reinen Pfad-Funktion, aber vom Geist her näher an "reiner Funktion" als an
+    einem Git-Kommando. ``now`` injizierbar für deterministische Tests
+    (``tmp_path`` + ``os.utime()``, kein echtes Timing nötig). Ein fehlender
+    Pfad zählt nicht als "kürzlich angefasst" (kein Überlapp-Risiko, wenn die
+    Datei nicht mehr existiert)."""
+    now = time.time() if now is None else now
+    touched: set[str] = set()
+    for p in paths:
+        try:
+            mtime = (root / p).stat().st_mtime
+        except OSError:
+            continue
+        if now - mtime < within_s:
+            touched.add(p)
+    return touched
 
 
 def cluster_dirty_paths(
@@ -247,18 +316,65 @@ def stage_and_commit(scope: Path | None, message: str,
     return _commit_if_staged(message, identity)
 
 
+_CONFLICT_INFO_LINE = re.compile(r"^\d+ [0-9a-fA-F]+ [123]\t(.+)$", re.DOTALL)
+
+
+def _pull_live_overlap(fetch_head: str, *, within_s: int = 120,
+                       now: float | None = None) -> set[str]:
+    """PLAN-30 Ebene 5 (nutzt Ebene 4s Guard-Prinzip): welche Pfade würde das
+    Einmischen von ``fetch_head`` anfassen, die GERADE dirty oder kürzlich
+    bearbeitet wurden? Reiner Dry-Run über ``git merge-tree --write-tree -z``,
+    dasselbe Prinzip wie ``mergeback.py::_live_overlap()``/``_merge_tree_
+    paths()``, hier für den Pull-Schritt statt den Job-Branch-Merge-back —
+    identische Semantik unabhängig davon, ob ``integrate()`` am Ende fast-
+    forwarded, rebased oder merged: das sind exakt die Pfade, deren Inhalt
+    sich im Working Tree ändern würde.
+
+    ``-z`` statt der Textform (Review-Runde 5, Fund 1+2, live verifiziert):
+    (1) bei einem echten Binärkonflikt behält der geschriebene Tree die HEAD-
+    Seite unverändert bei, ``git diff --name-only`` zeigt den Pfad dadurch
+    fälschlich als unverändert — die konfliktenden Pfade werden deshalb
+    zusätzlich aus dem Dry-Run selbst extrahiert; (2) Pfade werden nie
+    C-quoted, unabhängig von ``core.quotepath`` (das ``_git()`` ohnehin schon
+    global auf ``false`` setzt — doppelt abgesichert)."""
+    dry = _git(["merge-tree", "--write-tree", "-z", "HEAD", fetch_head], check=False)
+    fields = dry.stdout.split("\x00")
+    tree_oid = fields[0].strip() if fields else ""
+    if not tree_oid:
+        return set()
+    conflicted: set[str] = set()
+    for field in fields[1:]:
+        m = _CONFLICT_INFO_LINE.match(field)
+        if m:
+            conflicted.add(m.group(1))
+    changed_proc = _git(["diff", "--name-only", "HEAD", tree_oid], check=False)
+    changed = {p.strip() for p in changed_proc.stdout.splitlines() if p.strip()} | conflicted
+    if not changed:
+        return set()
+    dirty = set(dirty_paths()) & changed
+    return dirty | recently_touched_paths(repo.root(), sorted(changed), within_s=within_s, now=now)
+
+
 def integrate(branch: str, keep_conflict: bool = False,
-             strategy: str = "rebase") -> tuple[bool, str | None]:
+             strategy: str = "rebase", guard_live_paths: bool = False,
+             now: float | None = None) -> tuple[bool, str | None]:
     """Origin minimal integrieren: fetch + ff/rebase|merge (kein Push).
 
     Gibt (ok, kind) zurück. kind ist None bei Erfolg, sonst
-    ``"unreachable"``/``"auth"``/``"conflict"``.
+    ``"unreachable"``/``"auth"``/``"conflict"``/``"live_edit"``.
 
     ``keep_conflict=False`` (Default, für save/close/done/hook-stop): bricht
     einen Konflikt sauber ab. ``keep_conflict=True`` (für interaktives
     ``/sync``): lässt den Konflikt im Working Tree stehen, damit die geteilte
     KI-Auflösung (§1.6 A) die Marker auflösen und ``continue_rebase_and_push``
     rufen kann.
+
+    ``guard_live_paths`` (PLAN-30 Ebene 4/5, Default False — nur ``/sync``
+    aktiviert das explizit): bevor irgendetwas geschrieben wird, prüfen, ob
+    das Einmischen eine gerade dirty oder kürzlich bearbeitete Datei anfassen
+    würde — wenn ja, den GESAMTEN Pull-Versuch überspringen (``kind
+    "live_edit"``), kein Teil-Skip. ``now`` optional für deterministische
+    Tests, an den Guard durchgereicht.
 
     ``strategy``: bei echter Divergenz (weder Fast-Forward noch identisch)
     entscheidet dies, wie integriert wird:
@@ -274,7 +390,18 @@ def integrate(branch: str, keep_conflict: bool = False,
       einen Konflikt aufzulösen, ist die robustere Merge-Strategie vorzuziehen
       — ``keep_conflict`` bleibt dabei ohne Wirkung (Merge wird bei Konflikt
       immer abgebrochen, nie offen gelassen).
-    """
+
+    Verweigert VOR dem Fetch (kein unnötiger Netzwerk-Aufruf), wenn irgendwo
+    im Repo bereits ein Merge/Rebase offen ist (``kind="repo_busy"``, Review-
+    Runde 4 Fund 1) — sonst könnte z. B. ein Rebase-Versuch mitten in einem
+    von ``/sync`` offen gelassenen Job-Branch-Merge-Konflikt fehlschlagen und
+    fälschlich als eigener "conflict" klassifiziert werden, statt als das zu
+    erkennen, was es ist: ein anderer, bereits laufender Vorgang. NICHT über
+    ``force``/einen Parameter umgehbar — das wäre in genau diesem Szenario
+    der Fehler, den dieser Guard verhindern soll."""
+    if is_conflict_resolution_pending():
+        return False, "repo_busy"
+
     fetch = _git(["fetch", "origin", branch], check=False, timeout=GIT_NET_TIMEOUT)
     if fetch.returncode != 0:
         return False, _classify_failure(fetch.stderr.strip())
@@ -285,6 +412,10 @@ def integrate(branch: str, keep_conflict: bool = False,
         return True, None
     if _git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], check=False).returncode == 0:
         return True, None  # lokal voraus — Push erledigt den Rest
+
+    if guard_live_paths and _pull_live_overlap(remote, now=now):
+        return False, "live_edit"
+
     if _git(["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"], check=False).returncode == 0:
         ff = _git(["merge", "--ff-only", "FETCH_HEAD"], check=False)
         return (True, None) if ff.returncode == 0 else (False, "conflict")
@@ -310,6 +441,36 @@ def integrate(branch: str, keep_conflict: bool = False,
 
 def abort_rebase() -> None:
     _git(["rebase", "--abort"], check=False)
+
+
+def abort_merge() -> None:
+    """PLAN-30 Ebene 3, Pendant zu ``abort_rebase()`` für einen offen
+    gelassenen Job-Branch-Merge-Konflikt (``keep_conflict=True``)."""
+    _git(["merge", "--abort"], check=False)
+
+
+def continue_merge_and_push() -> tuple[bool, list[str], str | None]:
+    """Nach KI-Auflösung eines Job-Branch-Merge-Konflikts (PLAN-30 Ebene 3):
+    gelöste Dateien stagen, Merge-Commit abschließen, pushen. Analog
+    ``continue_rebase_and_push()``, aber ``git commit`` statt ``rebase
+    --continue`` — ein Merge detached HEAD nicht, der Branch bleibt während
+    des offenen Konflikts bekannt."""
+    log: list[str] = []
+    _git(["add", "-A"])
+    commit = _git(["commit", "--no-edit"], check=False)
+    if commit.returncode != 0:
+        if conflicted_files():
+            log.append("weiterhin Konflikte — auflösen, dann erneut continue")
+            return False, log, "conflict"
+        log.append(f"commit FAILED: {commit.stderr.strip()}")
+        return False, log, _classify_failure(commit.stderr.strip())
+    log.append("Konflikt aufgelöst, Merge abgeschlossen")
+    branch = current_branch()
+    pok, pmsg = push(branch)
+    log.append(f"push {'ok' if pok else 'FAIL'}")
+    if not pok and pmsg:
+        log.append(pmsg)
+    return (pok, log, None if pok else _classify_failure(pmsg))
 
 
 def continue_rebase_and_push() -> tuple[bool, list[str], str | None]:
@@ -363,7 +524,18 @@ def commit_and_push(scope: Path | None, message: str, do_push: bool,
     ``do_push`` spiegelt die Sync-Matrix: an → pushen; aus → committen +
     integrieren, aber **nicht** pushen (der Skill fragt dann nach).
     ``identity``: s. ``stage_and_commit()`` (PLAN-21 Befund 8).
-    """
+
+    Verweigert VOR jedem Schreibversuch, wenn irgendwo im Repo bereits ein
+    Merge/Rebase offen ist (``is_conflict_resolution_pending()``, Review-
+    Runde 4 Fund 1) — ``git add -A`` würde eine noch unmerged Datei sonst mit
+    ihrem Konfliktmarker-Inhalt lautlos "auflösen" und committen, live gegen
+    echtes Git bewiesen. Gilt für JEDEN Aufrufer dieser Funktion (``/save``,
+    ``/close``, ``/done``, den Stop-Hook, den Synchronizer-Hintergrund-Push)
+    — ``kind="repo_busy"`` reiht sich in den bestehenden ``(ok, log, kind)``-
+    Vertrag ein, kein Aufrufer muss dafür angepasst werden."""
+    if is_conflict_resolution_pending():
+        return False, ["Repo hat einen offenen Merge/Rebase — erst "
+                       "`bibi-ctrl sync continue` (oder `sync abort`) abschließen."], "repo_busy"
     log: list[str] = []
     committed = stage_and_commit(scope, message, identity)
     log.append(f"committed: {message}" if committed else "nothing to commit")
@@ -392,7 +564,20 @@ def remove_path_and_push(path: Path, message: str,
 
     Funktioniert für getrackte wie ungetrackte Ordner: ``--ignore-unmatch``
     bleibt still, wenn nichts im Index ist; ``rmtree`` räumt Reste weg.
-    """
+
+    Verweigert VOR dem ``git rm`` (Review-Runde 6, Fund 1 — kritisch, live
+    bewiesen), wenn irgendwo im Repo bereits ein Merge/Rebase offen ist: ohne
+    diesen Guard löscht ``git rm -rf`` auch eine noch unmerged Datei (löst
+    ihren Konflikt lautlos durchs Entfernen), der Commit direkt danach nimmt
+    das klaglos an — ``MERGE_HEAD`` verschwindet, die laufende
+    Konfliktauflösung eines Menschen ist komplett weg, BEVOR ``integrate()``
+    (das seit Review-Runde 4 selbst schon schützt) überhaupt erreicht wird.
+    Dieselbe Prüfung wie ``commit_and_push()`` — dort nicht wiederverwendbar,
+    weil ``remove_path_and_push()`` ``git rm``/``rmtree`` statt
+    ``stage_and_commit()`` nutzt, ein eigener, unabhängiger Schreibpfad."""
+    if is_conflict_resolution_pending():
+        return False, ["Repo hat einen offenen Merge/Rebase — erst "
+                       "`bibi-ctrl sync continue` (oder `sync abort`) abschließen."], "repo_busy"
     log: list[str] = []
     rel = str(path.resolve().relative_to(repo.root()))
     _git(["rm", "-rf", "--ignore-unmatch", "--", rel])

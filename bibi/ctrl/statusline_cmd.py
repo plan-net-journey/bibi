@@ -9,6 +9,11 @@ bibi-Repo-State (`.claude/.state.md` + git) zu einer Zeile:
 orthogonale Dimensionen, beide sichtbar; nur der Happy Path `clean · synced`
 kollabiert zu `clean`.
 
+Der letzte `sync:<state>`-Segment ist `!conflict` (aktiver Pull-Konflikt) >
+`!stuck(N)` (PLAN-30 Ebene 3: N Job-Branches nach 3 Fehlschlägen aus dem
+automatischen Merge-back-Retry eskaliert, `bibi/daemon/merge_quarantine.py`)
+> `on`/`off` (stehende Push-Zustimmung) — in dieser Priorität, nur einer sichtbar.
+
 Der aktive Case kommt aus dem **Display-Mirror** `path:` in `.state.md`, NICHT
 aus dem cwd: die Statusleiste läuft in einem Subprozess ohne Sicht auf das
 Bash-Tool-cwd der Session (DESIGN §3.2). Alle Reads sind netzfrei. Robustheit
@@ -101,10 +106,18 @@ def render(payload: dict[str, Any]) -> str:
                 parts.append(_color(f"proto:{proto}", color))
         if s.get("sync_conflict"):
             parts.append(_color("sync:!conflict", RED))
-        elif s.get("auto_sync") == "on":
-            parts.append(_color("sync:on", GREEN))
         else:
-            parts.append(_color("sync:off", GRAY))
+            # PLAN-30 Ebene 3: dieselbe Quarantäne-Liste aus Ebene 2 — ein
+            # aktiver Pull-Konflikt (oben) ist dringlicher und gewinnt, sonst
+            # fällt ins Auge, wenn Job-Branches auf manuelle Klärung warten.
+            from bibi.daemon import merge_quarantine
+            stuck = merge_quarantine.escalated(repo.root())
+            if stuck:
+                parts.append(_color(f"sync:!stuck({len(stuck)})", RED))
+            elif s.get("auto_sync") == "on":
+                parts.append(_color("sync:on", GREEN))
+            else:
+                parts.append(_color("sync:off", GRAY))
     except (Exception, SystemExit):
         pass
 

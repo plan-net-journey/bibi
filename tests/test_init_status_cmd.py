@@ -129,3 +129,26 @@ def test_status_shows_protocol_when_case_active(
 def test_status_no_protocol_line_when_no_case(team_repo: Path, capsys):
     main(["status"])
     assert "protocol:" not in capsys.readouterr().out
+
+
+# --- PLAN-30 Ebene 3: Eskalations-Sicht (dieselbe Quarantäne-Liste aus Ebene 2) ---
+
+def test_status_shows_escalated_merge_branches(team_repo: Path, capsys):
+    from bibi.daemon import merge_quarantine
+    for trunk_sha in ("s1", "s2", "s3"):
+        merge_quarantine.record_failure(team_repo, "agent/stuck", trunk_sha=trunk_sha)
+    main(["status"])
+    out = capsys.readouterr().out
+    assert "merge_stuck: 1 (agent/stuck)" in out
+
+
+def test_status_no_merge_stuck_line_below_threshold(team_repo: Path, capsys):
+    from bibi.daemon import merge_quarantine
+    merge_quarantine.record_failure(team_repo, "agent/almost", trunk_sha="s1")
+    main(["status"])
+    assert "merge_stuck" not in capsys.readouterr().out
+
+
+def test_status_no_merge_stuck_line_when_none(team_repo: Path, capsys):
+    main(["status"])
+    assert "merge_stuck" not in capsys.readouterr().out

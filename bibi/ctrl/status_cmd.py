@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 
-from .. import __version__, case_store, config, state
+from .. import __version__, case_store, config, repo, state
 
 
 def register(sub: argparse._SubParsersAction) -> None:
@@ -26,6 +26,16 @@ def run(args: argparse.Namespace) -> int:
     print(f"auto_sync: {s.get('auto_sync', 'off')}")
     if s.get("sync_conflict"):
         print("sync_conflict: true")
+    # PLAN-30 Ebene 3: dieselbe Quarantäne-Liste aus Ebene 2 ist die
+    # Eskalations-Sicht — kein zweiter Speicher-Mechanismus. Nur gezeigt, wenn
+    # wirklich etwas hängt (Happy Path bleibt unverändert).
+    try:
+        from bibi.daemon import merge_quarantine
+        stuck = merge_quarantine.escalated(repo.root())
+    except SystemExit:
+        stuck = []  # außerhalb eines bibi-Repos: still bleiben, wie der Rest hier
+    if stuck:
+        print(f"merge_stuck: {len(stuck)} ({', '.join(stuck)})")
     if case_path:
         folder = case_store.active_case()
         if folder:

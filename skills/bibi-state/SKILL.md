@@ -20,6 +20,9 @@ Prints the current state of the team repo and the active case:
   single source of truth. Empty if no case is active.
 - **auto_sync** — `on`/`off`, the standing push consent (§4.9).
 - **sync_conflict** — `true` if a prior pull/rebase left unresolved markers.
+- **merge_stuck** — count + branch names of `agent/*` branches that failed to
+  merge back into trunk 3+ times in a row and were pulled out of automatic
+  retry (PLAN-30 Ebene 2/3); only shown when non-empty. Resolve via `/sync`.
 - **protocol** — the active case's logging mode, only shown when set.
 
 ## When

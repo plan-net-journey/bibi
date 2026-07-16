@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from bibi import git_ops
+from conftest import FAR_FUTURE_TS
 
 import pytest
 pytestmark = pytest.mark.slow
@@ -302,3 +303,124 @@ def test_integrate_default_still_aborts(repo_with_origin, tmp_path):
     ok, kind = git_ops.integrate("trunk")  # keep_conflict=False default
     assert ok is False and kind == "conflict"
     assert git_ops.is_rebase_in_progress() is False
+
+
+# ── Review-Runde 4, Fund 1 (kritisch): ein bereits offener Job-Branch-Merge-
+# Konflikt (von /sync mit keep_conflict=True offen gelassen) darf KEINEN
+# anderen automatisierten Schreibvorgang im selben Repo durchlassen — live
+# gegen echtes Git bewiesen, dass ein Whole-Repo `git add -A` sonst die noch
+# unmerged Datei lautlos mit ihrem Konfliktmarker-Inhalt "auflöst" und
+# committet, ohne jede Fehlermeldung.
+
+
+def _open_job_branch_conflict(root: Path) -> None:
+    """Baut einen echten Job-Branch-Merge-Konflikt und lässt ihn offen
+    (keep_conflict=True, wie /sync es tut) — dieselbe Mechanik wie
+    test_mergeback.py, hier für git_ops.py-seitige Guard-Tests."""
+    from bibi.daemon import mergeback, worktree as wt
+    work = root / "data" / "worktrees"
+    path = wt.prepare(repo_root=root, work_dir=work, slug="a")
+    (path / "conflicted.md").write_text("job version\n", encoding="utf-8")
+    wt.commit(worktree=path, message="a: run", slug="a")
+    (root / "conflicted.md").write_text("trunk version\n", encoding="utf-8")
+    git_ops.stage_and_commit(None, "trunk diverge")
+    # now=FAR_FUTURE_TS (Review-Runde 7, Fund 1): ohne das würde Ebene 4s
+    # Idle-Guard die gerade committete conflicted.md als "kürzlich bearbeitet"
+    # werten und den Versuch mit "live_edit" statt "conflict" überspringen.
+    res = mergeback.merge_back(repo_root=root, slug="a", keep_conflict=True, now=FAR_FUTURE_TS)
+    assert res.status == "conflict"
+    assert git_ops.is_merge_in_progress() is True
+
+
+def test_is_conflict_resolution_pending_true_for_merge(repo_with_origin):
+    root, _ = repo_with_origin
+    _open_job_branch_conflict(root)
+    assert git_ops.is_conflict_resolution_pending() is True
+
+
+def test_is_conflict_resolution_pending_true_for_rebase(repo_with_origin, tmp_path):
+    root, origin = repo_with_origin
+    _diverge_on_pyproject(root, origin, tmp_path)
+    git_ops.integrate("trunk", keep_conflict=True)
+    assert git_ops.is_conflict_resolution_pending() is True
+
+
+def test_is_conflict_resolution_pending_false_when_clean(repo_with_origin):
+    assert git_ops.is_conflict_resolution_pending() is False
+
+
+def test_commit_and_push_refuses_during_open_merge_conflict(repo_with_origin):
+    root, origin = repo_with_origin
+    _open_job_branch_conflict(root)
+    conflicted_before = (root / "conflicted.md").read_text()
+    origin_head_before = _sh(origin, "rev-parse", "trunk").strip()
+
+    (root / "unrelated.txt").write_text("x", encoding="utf-8")
+    ok, log, kind = git_ops.commit_and_push(None, "auto commit", do_push=True)
+
+    assert ok is False
+    assert kind == "repo_busy"
+    # Der offene Konflikt ist UNANGETASTET — insbesondere nicht lautlos mit
+    # seinem Konfliktmarker-Inhalt "aufgelöst" und committet:
+    assert git_ops.is_merge_in_progress() is True
+    assert (root / "conflicted.md").read_text() == conflicted_before
+    assert "<<<<<<<" in conflicted_before  # sanity: war wirklich ein offener Konflikt
+    assert _sh(origin, "rev-parse", "trunk").strip() == origin_head_before  # nichts gepusht
+
+
+def test_integrate_refuses_during_open_merge_conflict(repo_with_origin, tmp_path):
+    root, origin = repo_with_origin
+    _open_job_branch_conflict(root)
+    _remote_ahead_on_other_file(origin, tmp_path)
+
+    ok, kind = git_ops.integrate("trunk")
+    assert ok is False
+    assert kind == "repo_busy"
+    assert git_ops.is_merge_in_progress() is True  # unverändert offen
+
+
+def _remote_ahead_on_other_file(origin: Path, tmp_path: Path) -> None:
+    other = clone(origin, tmp_path / "other2")
+    (other / "remote_only.txt").write_text("r", encoding="utf-8")
+    _sh(other, "add", "-A"); _sh(other, "commit", "-q", "-m", "remote change")
+    _sh(other, "push", "-q", "origin", "trunk")
+
+
+# ── Review-Runde 6, Fund 1 (kritisch): remove_path_and_push() (bibi-ctrl
+# delete/`/delete`) lief komplett an allen drei Review-Runde-4-Guards vorbei
+# — live bewiesen, dass `git rm -rf` eine noch unmerged Datei lautlos
+# "auflöste" (durchs Löschen), der Commit direkt danach das klaglos annahm,
+# MERGE_HEAD verschwand — die laufende Konfliktauflösung eines Menschen war
+# komplett weg, BEVOR integrate() (das selbst schon schützt) erreicht wurde.
+
+
+def test_remove_path_and_push_refuses_during_open_merge_conflict(repo_with_origin):
+    root, origin = repo_with_origin
+    _open_job_branch_conflict(root)
+    origin_head_before = _sh(origin, "rev-parse", "trunk").strip()
+
+    ok, log, kind = git_ops.remove_path_and_push(root / "vault", "delete: vault", do_push=True)
+
+    assert ok is False
+    assert kind == "repo_busy"
+    # Der offene Konflikt ist UNANGETASTET — insbesondere nicht durchs
+    # Löschen "aufgelöst" und committet:
+    assert git_ops.is_merge_in_progress() is True
+    assert (root / "conflicted.md").exists()
+    assert "<<<<<<<" in (root / "conflicted.md").read_text()
+    assert _sh(origin, "rev-parse", "trunk").strip() == origin_head_before  # nichts gepusht/committet
+
+
+def test_remove_path_and_push_works_normally_when_clean(repo_with_origin):
+    root, origin = repo_with_origin
+    folder = root / "vault" / "case" / "20260101.gone-aaa"
+    folder.mkdir(parents=True)
+    (folder / "README.md").write_text("x", encoding="utf-8")
+    git_ops.stage_and_commit(None, "add case")
+    git_ops.push("trunk")
+
+    ok, log, kind = git_ops.remove_path_and_push(folder, "delete: gone", do_push=True)
+    assert ok is True
+    assert kind is None
+    assert not folder.exists()
+    assert "case/20260101.gone-aaa" not in _sh(origin, "ls-tree", "-r", "--name-only", "trunk")

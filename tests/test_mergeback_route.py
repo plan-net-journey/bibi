@@ -6,8 +6,10 @@ unter dem gemeinsamen ``sync_lock`` — und stößt (bei Zustimmung) einen Push 
 
 from __future__ import annotations
 
+import os
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -74,7 +76,12 @@ def test_echo_job_without_branch_does_not_merge(repo_with_origin):
         assert _git(root, "rev-parse", "trunk") == head_before  # kein Merge
 
 
-def test_merge_conflict_sets_sync_conflict_but_job_complete(repo_with_origin):
+def test_merge_conflict_tracked_in_quarantine_not_global_flag(repo_with_origin):
+    # PLAN-30 Ebene 3: das globale sync_conflict-Flag ist NICHT mehr der Weg,
+    # wie ein Job-Branch-Konflikt (Requirement 2) sichtbar wird — das war der
+    # ursprüngliche Bug (Flag verschwindet beim nächsten erfolgreichen Sync,
+    # egal ob dieser Branch noch hängt). Stattdessen: merge_quarantine.py.
+    from bibi.daemon import merge_quarantine
     root, _origin = repo_with_origin
     app = create_app(roles.resolve({"scheduler"}), sync_lock=threading.Lock())
     with TestClient(app) as client:
@@ -83,6 +90,14 @@ def test_merge_conflict_sets_sync_conflict_but_job_complete(repo_with_origin):
         (root / "pyproject.toml").write_text("TRUNK\n")
         _git(root, "add", "-A")
         _git(root, "commit", "-q", "-m", "trunk diverge")
+        # Review-Runde 7, Fund 1: dieser Weg (HTTP-Route) reicht kein now= an
+        # mergeback.merge_back() durch, anders als die direkten Aufrufe in
+        # test_mergeback.py/test_git_ops.py/test_sync_cmd.py — hier stattdessen
+        # die Konflikt-Datei per os.utime() vordatieren, damit Ebene 4s Idle-
+        # Guard (IDLE_WINDOW_S=120) sie nicht als "kürzlich bearbeitet" wertet
+        # und den Versuch mit "live_edit" statt einem echten Konflikt abbricht.
+        stale = time.time() - 300
+        os.utime(root / "pyproject.toml", (stale, stale))
         trunk_after = _git(root, "rev-parse", "trunk")
         r = client.post(f"/-/scheduler/status/{jid}",
                         json={"status": "complete", "exit_code": 0,
@@ -90,19 +105,23 @@ def test_merge_conflict_sets_sync_conflict_but_job_complete(repo_with_origin):
         assert r.status_code == 200
         assert client.get(f"/-/job/{jid}").json()["status"] == "complete"
         assert _git(root, "rev-parse", "trunk") == trunk_after  # trunk unverändert
-        assert state.get_sync_conflict() is True
-        state.set_sync_conflict(False)  # Test-State aufräumen
+        assert state.get_sync_conflict() is False
+        entry = merge_quarantine.get(root, "agent/c")
+        assert entry is not None and entry.failures == 1
 
 
-def test_local_scheduler_report_merges(repo_with_origin):
-    """Der **lokale** Worker meldet via LocalScheduler (nicht HTTP-Route) — der
-    Merge-back-Hook muss auch dort feuern (Live-Lücke 2026-06-27m)."""
+def test_local_scheduler_report_has_no_merge_side_effect(repo_with_origin):
+    """``LocalScheduler.report()`` selbst löst nie einen Merge-back aus (mehr) —
+    der frühere ``on_complete``-Hook wurde entfernt (PLAN-30 Ebene 1 v2, Fund
+    2026-07-15: der reale, detachte Wrapper-Subprozess ruft ``.report()`` nie auf,
+    der Hook war seit dem Wrapper-Refactor 2026-06-28 unerreichbarer Code — ihn
+    hier weiter zu testen hätte nur eine Attrappe bestätigt). Der echte Merge-back-
+    Trigger läuft jetzt per HTTP über die Status-Route, end-to-end über den
+    echten Wrapper-Subprozess geprüft in ``test_wrapper_merge_trigger.py``."""
     from bibi.daemon import job_db
     from bibi.daemon.scheduler_client import LocalScheduler
     root, _origin = repo_with_origin
-    merged: list[str] = []
-    sched = LocalScheduler(on_complete=merged.append)
-    # einen running-Job in die DB bringen, dann via LocalScheduler complete melden.
+    sched = LocalScheduler()
     _seed(root, "loc/README.md", '---\nschedule: now\njob: "echo x"\n---\n')
     conn = job_db.connect()
     try:
@@ -111,13 +130,10 @@ def test_local_scheduler_report_merges(repo_with_origin):
         jid = res["id"]
     finally:
         conn.close()
+    head_before = _git(root, "rev-parse", "trunk")
     out = sched.report(jid, status="complete", exit_code=0, branch="agent/loc")
     assert out == "ok"
-    assert merged == ["agent/loc"]   # Hook gefeuert
-    # ohne Branch (echo) feuert er nicht:
-    merged.clear()
-    sched2 = LocalScheduler(on_complete=merged.append)
-    assert merged == []
+    assert _git(root, "rev-parse", "trunk") == head_before  # kein Merge, kein Hook mehr
 
 
 def test_merged_commit_is_pushed_when_consent(repo_with_origin, monkeypatch):

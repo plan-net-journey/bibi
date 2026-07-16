@@ -1193,7 +1193,12 @@ def _git_segment_card(git_status: dict | None) -> str:
     gestapelter Zeilen). ``git_status`` ist bereits ein Dict (``{"tree",
     "sync", "branch", "oid", "ahead", "behind"}``, aus
     ``bibi.git_status.working_tree_status()`` — rein lokal, kein Heartbeat/
-    Netzwerk nötig). ``None`` (kein Git-Repo) → leere Kachel mit „—"."""
+    Netzwerk nötig). ``None`` (kein Git-Repo) → leere Kachel mit „—".
+
+    Dritte Zeile "Konflikte" (PLAN-30 Ebene 3), nur wenn ``git_status["stuck"]``
+    > 0 — die Anzahl der Job-Branches, die nach 3 Fehlschlägen aus dem
+    automatischen Merge-back-Retry eskaliert wurden (``merge_quarantine.py``).
+    Happy Path bleibt unverändert zweizeilig (+ Branch-Sub-Zeile)."""
     if git_status is None:
         return _lines_card("Git", ["—"])
     tree, sync = git_status["tree"], git_status["sync"]
@@ -1203,6 +1208,9 @@ def _git_segment_card(git_status: dict | None) -> str:
         ("Tree", tree, _TREE_LABEL_CLASS[tree]),
         ("Sync", sync_value, _SYNC_LABEL_CLASS[sync]),
     ]
+    stuck = git_status.get("stuck", 0)
+    if stuck:
+        rows.append(("Konflikte", str(stuck), "sync-conflict"))
     branch = git_status.get("branch")
     return _kv_card("Git", rows, sub=f"Branch {branch}" if branch else "")
 

@@ -123,6 +123,7 @@ def launchd_plist_text(*, root: Path, uv: str, port: int, label: str,
         "  <dict>",
         f"    <key>PATH</key><string>{path}</string>",
         f"    <key>HOME</key><string>{Path.home()}</string>",
+        f"    <key>BIBI_DAEMON_PORT</key><string>{port}</string>",
     ]
     if role:
         env.append(f"    <key>BIBI_ROLE</key><string>{role}</string>")

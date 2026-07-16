@@ -22,6 +22,7 @@ Aufruf als eigener Prozess: ``python -m bibi.wrapper``. Env (vom Worker gesetzt)
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -36,6 +37,16 @@ from pathlib import Path
 
 from bibi.schedule.models import DEFAULT_CLAUDE_MODEL
 from bibi.wrapper import exec_backend, output
+
+# Kein eigenes Logging-Setup (der Wrapper ruft nie activity.setup_logging() —
+# das ist Sache des Daemons). stdout/stderr des detachten Subprozesses erben
+# unverändert die des spawnenden Daemons (kein stdout=/stderr= bei dessen
+# subprocess.Popen(), s. worker.py::_run_wrapper()) — landen also in denselben
+# Log-Dateien. Pythons Root-Logger-Fallback ("handler of last resort") reicht
+# hier bewusst: WARNING+ ohne jede Konfiguration sichtbar (PLAN-30 Ebene 1 v2,
+# Fund Review-Runde 2, 2026-07-15 — vorher schluckte ein fehlgeschlagener
+# Merge-back-Trigger jeden Fehler spurlos).
+log = logging.getLogger("bibi.wrapper")
 
 
 # ── PLAN-11.3: stdout-Signalprotokoll ────────────────────────────────────────
@@ -294,13 +305,71 @@ def _commit_worktree(env: dict[str, str]) -> tuple[str | None, str | None]:
         return None, None
 
 
+def _post_status(url_base: str, job_id: str, *, status: str, reason: str | None,
+                 exit_code: int | None, output_ref: str | None, commit_sha: str | None,
+                 branch: str | None, worker: str | None, host_name: str | None,
+                 attempt: int | None, next_fire_at: float | None) -> None:
+    """HTTP-POST gegen ``/-/scheduler/status/{id}`` — best-effort, Fehler geschluckt
+    (Daemon kann kurz down/busy sein; der SQLite-Report bleibt in diesem Fall die
+    einzige Wahrheit, der Sweep holt den Merge-back später nach, PLAN-30 Ebene 2).
+
+    PLAN-30 Ebene 1 v2 (Fund Review-Runde 2, 2026-07-15): schickt den
+    ``X-Bibi-Secret``-Header, falls ``BIBI_CONNECT_SECRET`` gesetzt ist — genau
+    wie ``RemoteScheduler._post()`` (``bibi/daemon/scheduler_client.py``). Ohne
+    das lehnt ``_auth_dependency()`` (``bibi/daemon/app.py``) diesen Request mit
+    401 ab, sobald ein Secret konfiguriert ist — der Wrapper schluckt das unten
+    lautlos und fällt komplett (unbemerkt) auf den Sweep zurück, exakt der
+    Zustand, den dieser ganze Fix beheben soll."""
+    from bibi.daemon.scheduler_client import SECRET_HEADER
+    url = f"{url_base.rstrip('/')}/-/scheduler/status/{job_id}"
+    body: dict = {"status": status}
+    if reason is not None:
+        body["reason"] = reason
+    if exit_code is not None:
+        body["exit_code"] = exit_code
+    if output_ref is not None:
+        body["output_ref"] = output_ref
+    if commit_sha is not None:
+        body["commit_sha"] = commit_sha
+    if branch is not None:
+        body["branch"] = branch
+    if worker:
+        body["worker"] = worker
+    if host_name:
+        body["host"] = host_name
+    if attempt is not None:
+        body["attempt"] = attempt
+    if next_fire_at is not None:
+        body["next_fire_at"] = next_fire_at
+    payload = json.dumps(body).encode()
+    headers = {"Content-Type": "application/json"}
+    secret = os.environ.get("BIBI_CONNECT_SECRET")
+    if secret:
+        headers[SECRET_HEADER] = secret
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5.0):  # noqa: S310
+            pass
+    except (urllib.error.URLError, OSError) as exc:
+        log.warning("bibi.wrapper.status_post_failed job_id=%s url=%s error=%s",
+                   job_id, url, exc)
+
+
 def _report_terminal(env: dict[str, str], *, status: str, reason: str | None = None,
                      exit_code: int | None = None, output_ref: str | None = None,
                      commit_sha: str | None = None, branch: str | None = None,
                      attempt: int | None = None, next_fire_at: float | None = None) -> None:
     """Terminal-Status an Scheduler melden (best-effort, PLAN-9 §8 E2).
 
-    Bevorzugt direkten SQLite-Zugriff (BIBI_SCHEDULER_DB_PATH), sonst HTTP."""
+    Bevorzugt direkten SQLite-Zugriff (BIBI_SCHEDULER_DB_PATH) für den eigentlichen
+    Statusübergang — Zuverlässigkeit, kein Warten auf den Daemon, unverändert seit
+    PLAN-9 §8 E2. Zusätzlich (PLAN-30 Ebene 1 v2, Fund 2026-07-15): bei einem
+    erfolgreichen ``complete``-Report mit Ergebnis-Branch wird **zusätzlich** derselbe
+    HTTP-POST abgesetzt, den der Fallback unten sowieso schon kann — er triggert
+    serverseitig den bereits vorhandenen Merge-back in der Status-Route
+    (``bibi/daemon/app.py::_add_status_route()``). Ohne diesen Zusatz-Trigger bleibt
+    ``LocalScheduler.report()`` (und damit jeder In-Memory-Hook dort) für den
+    Wrapper-Subprozess unerreichbar — der ruft nie direkt darüber."""
     job_id = env.get("BIBI_JOB_ID")
     if not job_id:
         return
@@ -324,40 +393,22 @@ def _report_terminal(env: dict[str, str], *, status: str, reason: str | None = N
                 conn.close()
         except Exception:
             pass
+        # Merge-back-Trigger: nur bei "complete" + Branch nötig (kein Merge ohne
+        # Ergebnis-Branch) — best-effort, unabhängig vom SQLite-Ergebnis oben.
+        url_base = env.get("BIBI_SCHEDULER_URL")
+        if url_base and status == "complete" and branch:
+            _post_status(url_base, job_id, status=status, reason=reason,
+                        exit_code=exit_code, output_ref=output_ref,
+                        commit_sha=commit_sha, branch=branch, worker=worker,
+                        host_name=host_name, attempt=attempt, next_fire_at=next_fire_at)
         return
 
     url_base = env.get("BIBI_SCHEDULER_URL")
     if not url_base:
         return
-    url = f"{url_base.rstrip('/')}/-/scheduler/status/{job_id}"
-    body: dict = {"status": status}
-    if reason is not None:
-        body["reason"] = reason
-    if exit_code is not None:
-        body["exit_code"] = exit_code
-    if output_ref is not None:
-        body["output_ref"] = output_ref
-    if commit_sha is not None:
-        body["commit_sha"] = commit_sha
-    if branch is not None:
-        body["branch"] = branch
-    if worker:
-        body["worker"] = worker
-    if host_name:
-        body["host"] = host_name
-    if attempt is not None:
-        body["attempt"] = attempt
-    if next_fire_at is not None:
-        body["next_fire_at"] = next_fire_at
-    payload = json.dumps(body).encode()
-    req = urllib.request.Request(url, data=payload,
-                                  headers={"Content-Type": "application/json"},
-                                  method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=5.0):  # noqa: S310
-            pass
-    except (urllib.error.URLError, OSError):
-        pass
+    _post_status(url_base, job_id, status=status, reason=reason, exit_code=exit_code,
+                output_ref=output_ref, commit_sha=commit_sha, branch=branch,
+                worker=worker, host_name=host_name, attempt=attempt, next_fire_at=next_fire_at)
 
 
 def _finish(env: dict[str, str], exit_code: int, outcome: str) -> None:

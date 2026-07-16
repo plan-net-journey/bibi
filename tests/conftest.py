@@ -29,6 +29,21 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip)
 
 
+# PLAN-30 Ebene 4 (Review-Runde 7, Fund 1/2): mergeback.merge_back()s
+# Idle-Fenster-Guard (git_ops.recently_touched_paths(), IDLE_WINDOW_S=120)
+# vergleicht die mtime der Konflikt-Datei gegen "jetzt" — eine Datei, die ein
+# Test gerade erst geschrieben/committet hat, liegt IMMER innerhalb dieses
+# Fensters. Ohne ein now=-Override weit in der Zukunft landet ein Test, der
+# einen "echten Konflikt" (Modus B) aufbauen will, stattdessen im Idle-Guard
+# ("live_edit") — nicht im eigentlich zu prüfenden Konfliktpfad. Jeder Test,
+# der mergeback.merge_back() unmittelbar nach dem Schreiben der Konflikt-
+# Datei aufruft UND nicht selbst gezielt den Idle-Guard prüft, muss
+# ``now=FAR_FUTURE_TS`` übergeben (oder die HTTP-Route-Variante: die
+# betroffene Datei per ``os.utime()`` vor dem Aufruf zurückdatieren, dort
+# gibt es keinen now=-Parameter).
+FAR_FUTURE_TS = 9_999_999_999.0
+
+
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True,
                           capture_output=True, text=True).stdout

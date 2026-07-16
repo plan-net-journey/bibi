@@ -469,10 +469,15 @@ def _run_wrapper(
         env["BIBI_ATTEMPTS"] = str(attempts)
         if backoff_type:
             env["BIBI_BACKOFF"] = backoff_type
-        # Reporting-Ziel: explizit gesetzt > lokale DB > HTTP-Daemon.
+        # Reporting-Ziel für den eigentlichen Statusübergang: explizit gesetzt >
+        # lokale DB > HTTP-Daemon (PLAN-9 §8 E2 — Zuverlässigkeit, unverändert).
+        # BIBI_SCHEDULER_URL wird zusätzlich IMMER gesetzt, auch wenn eine lokale
+        # DB verfügbar ist (bisher gegenseitig ausschließende elif-Kette) — der
+        # Wrapper braucht sie für den zusätzlichen Merge-back-Trigger nach einem
+        # SQLite-Report (PLAN-30 Ebene 1 v2, s. wrapper/__init__.py::_finish()).
         if scheduler_db_path:
             env["BIBI_SCHEDULER_DB_PATH"] = scheduler_db_path
-        elif scheduler_url:
+        if scheduler_url:
             env["BIBI_SCHEDULER_URL"] = scheduler_url
         elif not env.get("BIBI_SCHEDULER_URL"):
             env["BIBI_SCHEDULER_URL"] = "http://127.0.0.1:8769"
@@ -598,10 +603,13 @@ def execute_reservation(
     try:
         kind = reservation["kind"]
         silence_timeout = reservation.get("silence_timeout")
-        # PLAN-10 Stufe 10.0: SQLite-Direct wenn verfügbar; sonst HTTP.
+        # PLAN-10 Stufe 10.0: SQLite-Direct wenn verfügbar für den eigentlichen
+        # Statusübergang; die lokale Daemon-URL wird IMMER mitgegeben (PLAN-30
+        # Ebene 1 v2) — der Wrapper nutzt sie zusätzlich für den Merge-back-
+        # Trigger, unabhängig davon, ob SQLite-Direct verfügbar ist.
         _daemon_port = int(os.environ.get("BIBI_DAEMON_PORT", "8769"))
         _sched_db_path: str | None = _resolved_db or None
-        _sched_url: str | None = None if _sched_db_path else f"http://127.0.0.1:{_daemon_port}"
+        _sched_url: str | None = f"http://127.0.0.1:{_daemon_port}"
         _, _, out_path, outcome, proc_pid = _run_wrapper(
             job_id=jid, slug=reservation["slug"], kind=kind,
             payload=reservation["payload"], model=reservation.get("model"),

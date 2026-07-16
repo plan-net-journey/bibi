@@ -125,6 +125,19 @@ def run(args: argparse.Namespace) -> int:
     # Controller ruft die /-/-API über HTTP am **tatsächlichen** Bind-Port auf
     # (nicht config.daemon_port() — sonst zeigt --port ins Leere/auf einen Fremd-Daemon).
     port = args.port or config.daemon_port()
+    # PLAN-30 Ebene 1 v2 (Fund Review-Runde 2, 2026-07-15): den tatsächlichen
+    # Bind-Port hier im Prozess-Environment verankern, BEVOR irgendein Worker/
+    # Wrapper-Subprozess gespawnt wird — der Wrapper braucht ihn für seinen
+    # Merge-back-Trigger (worker.py::execute_reservation()) und liest bewusst
+    # nur BIBI_DAEMON_PORT (nicht config.daemon_port()s Fallback-Kette, die für
+    # genau diesen Zweck laut Kommentar oben nicht zuverlässig ist — z. B. bei
+    # einem --connect-Client, dessen BIBI_SCHEDULER_URL auf einen ANDEREN Knoten
+    # zeigt). Ohne dies bliebe BIBI_DAEMON_PORT leer, sobald --port ohne die Env-
+    # Variable selbst gesetzt wurde (z. B. das aktuelle launchd-Plist auf macOS,
+    # das --port in ProgramArguments einbettet, aber BIBI_DAEMON_PORT nicht in
+    # EnvironmentVariables spiegelt) — der Wrapper-Trigger würde dann lautlos
+    # gegen den falschen (Default-)Port laufen.
+    os.environ["BIBI_DAEMON_PORT"] = str(port)
     app = create_app(r, synchronizer=synchronizer, worker=worker, heartbeat=heartbeat,
                      controller_base_url=f"http://{args.host}:{port}",
                      sync_lock=sync_lock)

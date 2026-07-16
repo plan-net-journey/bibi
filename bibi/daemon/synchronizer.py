@@ -262,12 +262,28 @@ class Synchronizer:
         # Bisher stumm: ein liegengebliebener agent/*-Branch (Konflikt/Fehler)
         # verschwand ohne jede Spur im Log (verschleierte den dirty-trunk-Fund
         # 2026-07-05 lange) — jetzt sichtbar, damit ein hängender Mergeback
-        # nicht erst durch manuelle Git-Archäologie auffällt.
-        stuck = {b: s for b, s in results.items() if s not in ("merged", "up_to_date")}
+        # nicht erst durch manuelle Git-Archäologie auffällt. PLAN-30 Ebene 2:
+        # nur ein Fehlschlag, der DIESEN Tick tatsächlich neu versucht wurde
+        # (conflict/error), ist WARNING-würdig — "blocked" (Modus A, löst sich
+        # von selbst), "quarantined" (bewusst übersprungen, s. mergeback.py)
+        # und "live_edit" (Ebene 4: Datei gerade bearbeitet, ebenfalls kein
+        # Fehlschlag) sind bereits bekannt/erwartet; sie hier trotzdem als
+        # WARNING zu wiederholen wäre exakt das "WARNING, die niemand liest"-
+        # Problem, das dieser ganze PLAN beheben soll (agent/Witz-83837197:
+        # 1440+ identische Zeilen, alle 60s, nie beobachtet). "repo_busy"
+        # (Review-Runde 4, Fund 1) ebenso: ein anderer, bereits offener
+        # Merge/Rebase ist kein Fehlschlag DIESES Branches.
+        stuck = {b: s for b, s in results.items() if s in ("conflict", "error")}
         if stuck:
             activity.emit(log, logging.WARNING, "merge.sweep.stuck", role="synchronizer",
                           stuck=len(stuck),
                           branches=",".join(f"{b}:{s}" for b, s in stuck.items()))
+        quiet = {b: s for b, s in results.items()
+                if s in ("blocked", "quarantined", "live_edit", "repo_busy")}
+        if quiet:
+            activity.emit(log, logging.DEBUG, "merge.sweep.quiet", role="synchronizer",
+                          quiet=len(quiet),
+                          branches=",".join(f"{b}:{s}" for b, s in quiet.items()))
 
     def _pull_due(self, now: float) -> bool:
         return self._last_pull_at is None or (now - self._last_pull_at) >= self.pull_interval_s

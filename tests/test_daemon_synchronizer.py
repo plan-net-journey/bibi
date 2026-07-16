@@ -318,6 +318,16 @@ def test_tick_merge_sweep_logs_stuck_conflict(tmp_path, caplog):
     (root / "f.txt").write_text("from trunk\n")
     g("add", "-A")
     g("commit", "-q", "-m", "trunk edit")
+    # Review-Runde 7 (Nachtrag): _merge_sweep() ruft mergeback.remerge_all() ohne
+    # now=-Durchreichung auf — tick(0.0)s eigenes now steuert nur Push/Pull-Timing,
+    # nicht den Idle-Guard im Merge-back selbst. Ohne Vordatierung würde Ebene 4s
+    # Guard f.txt als "kürzlich bearbeitet" werten und den Sweep mit "live_edit"
+    # statt einem echten Konflikt abschließen — os.utime() statt now=, weil hier
+    # (wie bei der HTTP-Route) kein now=-Parameter bis zum Guard durchgereicht wird.
+    import os
+    import time
+    stale = time.time() - 300
+    os.utime(root / "f.txt", (stale, stale))
 
     s = Synchronizer(repo_root=root)  # kein push/pull, nur Sweep
     with caplog.at_level(logging.WARNING, logger="bibi.daemon.synchronizer"):

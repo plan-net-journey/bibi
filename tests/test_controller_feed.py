@@ -86,6 +86,34 @@ def test_git_segment_card_without_oid_falls_back_to_plain_sync():
     assert 'class="v sync-synced"' in html
 
 
+# --- Dritte Zeile "Konflikte" (PLAN-30 Ebene 3) — nur sichtbar bei stuck > 0 ---
+
+
+def test_git_segment_card_no_konflikte_row_when_stuck_absent():
+    html = render._git_segment_card({"tree": "clean", "sync": "synced", "branch": "trunk"})
+    assert "Konflikte" not in html
+
+
+def test_git_segment_card_no_konflikte_row_when_stuck_zero():
+    html = render._git_segment_card(
+        {"tree": "clean", "sync": "synced", "branch": "trunk", "stuck": 0})
+    assert "Konflikte" not in html
+
+
+def test_git_segment_card_shows_konflikte_row_when_stuck():
+    html = render._git_segment_card(
+        {"tree": "clean", "sync": "synced", "branch": "trunk", "stuck": 2})
+    assert '<div class="k">Konflikte</div>' in html
+    assert '<div class="v sync-conflict">2</div>' in html
+
+
+def test_git_segment_card_none_ignores_stuck():
+    # kein Git-Repo -> weiterhin die "—"-Kachel, unabhängig von stuck.
+    html = render._git_segment_card(None)
+    assert ">—<" in html
+    assert "Konflikte" not in html
+
+
 # --- Host-Kachel (PLAN-19 Befund 4: Hostname statt "verbunden", Link) -----------
 
 
@@ -545,6 +573,21 @@ def test_feed_status_fragment_route(app_with):
         assert r.status_code == 200
         assert 'id="feedstatus"' in r.text
         assert 'class="statuscards"' in r.text
+
+
+def test_feed_status_fragment_route_shows_escalated_merge_branches(app_with, team_repo: Path):
+    # PLAN-30 Ebene 3, End-to-End: eskalierte Quarantäne-Einträge (Ebene 2)
+    # erreichen tatsächlich die Git-Kachel der echten Route, nicht nur den
+    # isolierten _git_segment_card()-Aufruf oben.
+    from bibi.daemon import merge_quarantine
+    for trunk_sha in ("s1", "s2", "s3"):
+        merge_quarantine.record_failure(team_repo, "agent/stuck", trunk_sha=trunk_sha)
+    app = app_with(_FakeClient())
+    with TestClient(app) as c:
+        r = c.get("/-/ui/feed/status")
+        assert r.status_code == 200
+        assert '<div class="k">Konflikte</div>' in r.text
+        assert '<div class="v sync-conflict">1</div>' in r.text
 
 
 def test_root_route_status_cards_use_configured_poll_interval(

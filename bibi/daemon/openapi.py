@@ -197,9 +197,14 @@ def add_contract_routes(app: FastAPI) -> None:
     def scheduler_next(req: NextRequest | None = None):  # noqa: ARG001
         return _todo("POST /-/scheduler/next")
 
-    @app.post("/-/scheduler/status/{id}", tags=["scheduler"])
-    def scheduler_status(id: str, report: StatusReport):  # noqa: A002, ARG001
-        return _todo("POST /-/scheduler/status/{id}")
+    # POST /-/scheduler/status/{id}: bewusst KEIN Stub hier (mehr) — anders als
+    # jede andere Route in dieser Funktion ist sie seit PLAN-30 Ebene 1 v2
+    # (2026-07-15) rollenunabhängig immer real (``app.py::_add_status_route()``,
+    # registriert vor dieser Funktion → gewinnt ohnehin), aus demselben Grund,
+    # aus dem ``/-/run``/``/-/run/journal`` nie Teil dieses gefrorenen v3.0-
+    # Vertrags waren: ein gepinnter Lauf braucht sie auf jedem Knotentyp, nicht
+    # nur mit ``roles.scheduler``. Ein Stub-Duplikat hier hätte nur eine
+    # doppelte OpenAPI-Operation-ID erzeugt, ohne je greifbar zu sein.
 
     # ── Job: Scheduler-Sicht (DB-Rows, §4.4) ─────────────────────────────────
     @app.get("/-/job", response_model=list[JobView], tags=["job"])

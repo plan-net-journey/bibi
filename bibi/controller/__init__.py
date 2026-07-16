@@ -162,8 +162,16 @@ def add_controller_routes(
             return None
         if s is None:
             return None
+        # PLAN-30 Ebene 3: dieselbe Quarantäne-Liste aus Ebene 2 — Anzahl
+        # eskalierter Job-Branches für die dritte Git-Kachel-Zeile.
+        stuck = 0
+        try:
+            from bibi.daemon import merge_quarantine
+            stuck = len(merge_quarantine.escalated(repo_mod.root()))
+        except Exception:  # noqa: BLE001 — defensiv (§2.7), Kachel bleibt sonst leer
+            pass
         return {"tree": s.tree, "sync": s.sync, "branch": s.branch,
-                "oid": s.oid, "ahead": s.ahead, "behind": s.behind}
+                "oid": s.oid, "ahead": s.ahead, "behind": s.behind, "stuck": stuck}
 
     @app.get("/-/", include_in_schema=False)
     def root(request: Request, days: int | None = None, weeks: int | None = None):

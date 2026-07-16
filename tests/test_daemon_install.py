@@ -62,6 +62,12 @@ def test_launchd_plist_text():
     assert "<string>bibi-ctrl</string><string>daemon</string><string>run</string>" in t
     assert "<string>9001</string>" in t
     assert "<key>BIBI_ROLE</key><string>synchronizer</string>" in t
+    # PLAN-30 Ebene 1 v2 (Fund Review-Runde 2, 2026-07-15): anders als der
+    # systemd-Pfad (Environment=BIBI_DAEMON_PORT=…) fehlte das hier bisher
+    # komplett — ein Wrapper-Subprozess auf macOS hätte seinen Merge-back-
+    # Trigger sonst blind gegen den Default-Port statt den echten Bind-Port
+    # geschickt, sobald --port vom Default abweicht.
+    assert "<key>BIBI_DAEMON_PORT</key><string>9001</string>" in t
     assert "<key>RunAtLoad</key><true/>" in t
 
 

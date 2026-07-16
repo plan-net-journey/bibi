@@ -79,6 +79,38 @@ def test_sync_conflict_overrides_on(repo_with_origin):
     assert "sync:on" not in out
 
 
+# --- PLAN-30 Ebene 3: sync:!stuck(N) aus derselben Quarantäne-Liste (Ebene 2) ---
+
+def test_sync_stuck_shown_when_branches_escalated(repo_with_origin):
+    from bibi.daemon import merge_quarantine
+    root, _ = repo_with_origin
+    for trunk_sha in ("s1", "s2", "s3"):
+        merge_quarantine.record_failure(root, "agent/stuck", trunk_sha=trunk_sha)
+    out = _render()
+    assert "sync:!stuck(1)" in out
+    assert "sync:off" not in out
+
+
+def test_sync_conflict_overrides_stuck(repo_with_origin):
+    from bibi.daemon import merge_quarantine
+    root, _ = repo_with_origin
+    for trunk_sha in ("s1", "s2", "s3"):
+        merge_quarantine.record_failure(root, "agent/stuck", trunk_sha=trunk_sha)
+    state.set_sync_conflict(True)
+    out = _render()
+    assert "sync:!conflict" in out
+    assert "sync:!stuck" not in out
+
+
+def test_sync_stuck_not_shown_below_threshold(repo_with_origin):
+    from bibi.daemon import merge_quarantine
+    root, _ = repo_with_origin
+    merge_quarantine.record_failure(root, "agent/almost", trunk_sha="s1")
+    out = _render()
+    assert "sync:!stuck" not in out
+    assert "sync:off" in out
+
+
 # --- proto-Segment: nur bei aktivem Case (über den Mirror), Werte off/on/dbg ---
 
 def test_proto_on_when_case_active(repo_with_origin):

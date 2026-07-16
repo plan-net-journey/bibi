@@ -27,10 +27,13 @@ SECRET_HEADER = "X-Bibi-Secret"
 class LocalScheduler:
     """In-Process-Scheduler — direkte ``job_db``-Aufrufe (Single-Node).
 
-    ``on_complete(branch)`` (optional): Hook, der nach einem erfolgreichen terminalen
-    ``complete``-Report mit Ergebnis-Branch feuert — der lokale Worker geht **nicht**
-    über die HTTP-Route ``/-/scheduler/status``, darum hängt der Merge-back hier
-    (PLAN-6; sonst mergt nur der Remote-Pfad). Wird in ``create_app`` verdrahtet.
+    Merge-back nach einem erfolgreichen ``complete``-Report mit Ergebnis-Branch
+    läuft NICHT über diese Klasse (früher: ein ``on_complete``-Hook hier, entfernt
+    PLAN-30 Ebene 1 v2, Fund 2026-07-15 — der detachte Wrapper-Subprozess meldet
+    Terminal-Status per Direct-SQLite und ruft ``.report()`` hier nie auf, der Hook
+    war seit dem Wrapper-Refactor 2026-06-28 unerreichbarer Code). Der Wrapper
+    triggert den Merge-back stattdessen selbst per zusätzlichem HTTP-Call gegen
+    ``/-/scheduler/status/{id}`` (``bibi/wrapper/__init__.py::_report_terminal()``).
 
     ``pinned_only`` (PLAN-28): treibt einen zweiten, rollenunabhängigen ``Worker``
     (in ``create_app`` immer gestartet), der ausschließlich ``jobs.pinned_host ==
@@ -38,10 +41,8 @@ class LocalScheduler:
     ``/run``-Läufe) — nie die geteilte Team-Queue anfasst (s. ``reserve_next()``s
     ``pinned_only``-Filter)."""
 
-    def __init__(self, db_path: Path | None = None, *, on_complete=None,
-                 pinned_only: bool = False) -> None:
+    def __init__(self, db_path: Path | None = None, *, pinned_only: bool = False) -> None:
         self.db_path = db_path
-        self.on_complete = on_complete
         self.pinned_only = pinned_only
 
     def next(self, worker: str | None = None, host: str | None = None) -> dict | None:
@@ -55,13 +56,9 @@ class LocalScheduler:
     def report(self, job_id: str, **fields) -> str:
         conn = job_db.connect(self.db_path)
         try:
-            res = job_db.report_status(conn, job_id, **fields)
+            return job_db.report_status(conn, job_id, **fields)
         finally:
             conn.close()
-        if (res == "ok" and self.on_complete is not None
-                and fields.get("status") == "complete" and fields.get("branch")):
-            self.on_complete(fields["branch"])
-        return res
 
     def register(self, worker: str, host: str, git_status: str | None = None) -> None:
         pass  # Single-Node: keine Anmeldung nötig
