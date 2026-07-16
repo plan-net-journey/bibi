@@ -327,6 +327,17 @@ def test_smoke_container_job_persists_data_home_across_runs(tmp_path: Path):
     # unter ~/.local/share/bibi/... schreibt (die Vault-Konvention für
     # externe, worktree-übergreifende Job-Daten), muss das im NÄCHSTEN --rm-
     # Container-Lauf wiederfinden — vorher ging es mit jedem --rm verloren.
+    #
+    # BIBI_JOB_IMAGE bewusst NICHT bash:5 (anders als der Nachbar-Smoke-Test
+    # oben, der nur /workspace anfasst): der Schreibzugriff unter /root
+    # funktioniert nur, weil build_exec() den Container als beliebige
+    # Host-UID mit GID 0 laufen lässt (PLAN-24 Befund 5) UND das Image dafür
+    # /root gruppenschreibbar gemacht hat (bibi/docker/bibi-base/Dockerfile,
+    # `chmod -R g+rwX /root`) — im unveränderten bash:5 bleibt /root
+    # `drwx------ root:root`, jeder Schreibversuch scheitert live reproduziert
+    # mit "Permission denied", unabhängig vom Mount selbst. bibi-base:dev ist
+    # DEFAULT_IMAGE (der Fall, den echte Jobs ohne BIBI_JOB_IMAGE-Override
+    # nutzen) und bereits lokal vorhanden.
     wt = tmp_path / "wt"
     wt.mkdir()
     data_home = tmp_path / "data-home"
@@ -334,7 +345,7 @@ def test_smoke_container_job_persists_data_home_across_runs(tmp_path: Path):
         **os.environ,
         "BIBI_EXEC_MODE": "container",
         "BIBI_JOB_TYPE": "job",
-        "BIBI_JOB_IMAGE": "bash:5",
+        "BIBI_JOB_IMAGE": "bibi-base:dev",
         "BIBI_WORKTREE": str(wt),
         "BIBI_DATA_HOME": str(data_home),
     }
