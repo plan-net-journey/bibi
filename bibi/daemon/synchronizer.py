@@ -111,8 +111,19 @@ def _default_pull() -> tuple[bool, str | None]:
     # einfacher 3-way-Merge der Endstände konfliktfrei wäre — per
     # ``git merge-tree`` in der Praxis verifiziert (PLAN: Sync-Divergenz
     # 2026-07-05). Der interaktive ``/sync``-Pfad bleibt bei Rebase (Default).
+    #
+    # guard_live_paths=True (PLAN-30 Nachtrag 2026-07-16): dieser Loop hatte
+    # Ebene 4s Idle-Guard nie bekommen — nur der interaktive /sync-Pfad war
+    # geschützt. Live beobachtet: ein echter Konflikt hier wurde alle 3
+    # Minuten unbegrenzt neu versucht (kein Backoff, anders als Ebene 2 für
+    # Job-Branches), dieselbe Fehlerklasse wie der Ursprungsvorfall, nur auf
+    # der Pull- statt der Job-Branch-Seite. Ein Konflikt selbst bricht zwar
+    # sauber ab (kein Datenverlust), aber jeder Versuch rührt den geteilten
+    # Checkout an — genau das Risiko, das Ebene 4 verhindern soll, wenn eine
+    # betroffene Datei gerade dirty oder kürzlich bearbeitet ist.
     from bibi import git_ops
-    return git_ops.integrate(git_ops.current_branch(), strategy="merge")
+    return git_ops.integrate(git_ops.current_branch(), strategy="merge",
+                             guard_live_paths=True)
 
 
 # ── Synchronizer ────────────────────────────────────────────────────────────

@@ -174,6 +174,59 @@ def test_real_push_reaches_origin(repo_with_origin):
     assert subj.startswith("auto:")                     # transiente Auto-Commit-Message
 
 
+# ── Nachtrag 2026-07-16: _default_pull() bekommt Ebene 4s Idle-Guard ───────
+# (live entdeckt: der unbeaufsichtigte Hintergrund-Pull hatte den Guard nie
+# bekommen, nur der interaktive /sync-Pfad — derselbe echte Konflikt wurde
+# alle 3 Minuten unbegrenzt neu versucht, dieselbe Fehlerklasse wie der
+# Ursprungsvorfall.)
+
+def _sh(cwd, *args):
+    import subprocess
+    return subprocess.run(["git", *args], cwd=cwd, check=True,
+                          capture_output=True, text=True).stdout
+
+
+def _clone(origin, dest):
+    _sh(dest.parent, "clone", "-q", str(origin), dest.name)
+    _sh(dest, "config", "user.name", "O"); _sh(dest, "config", "user.email", "o@e.x")
+    return dest
+
+
+def test_default_pull_skips_when_target_path_recently_touched(repo_with_origin, tmp_path):
+    root, origin = repo_with_origin
+    other = _clone(origin, tmp_path / "other")
+    (other / "pyproject.toml").write_text("REMOTE\n", encoding="utf-8")
+    _sh(other, "add", "-A"); _sh(other, "commit", "-q", "-m", "remote edit")
+    _sh(other, "push", "-q", "origin", "trunk")
+
+    (root / "pyproject.toml").write_text("LOCAL dirty\n", encoding="utf-8")  # nicht committet
+    head_before = _sh(root, "rev-parse", "HEAD").strip()
+
+    s = Synchronizer(pull=True, repo_root=root)
+    did = s.tick(0.0)
+    assert did["pulled"] is True  # ein Pull-VERSUCH fand statt (guard != "kein Pull")
+    assert _sh(root, "rev-parse", "HEAD").strip() == head_before  # aber nichts integriert
+    assert (root / "pyproject.toml").read_text() == "LOCAL dirty\n"  # unangetastet
+
+
+def test_default_pull_proceeds_when_no_overlap(repo_with_origin, tmp_path):
+    # Ein unbeteiligter dirty Pfad darf einen ansonsten sauberen Pull nicht
+    # verhindern — der Guard prüft nur echten Überlapp (dasselbe Prinzip wie
+    # /syncs eigener Pull-Guard, hier für den automatischen Loop).
+    root, origin = repo_with_origin
+    other = _clone(origin, tmp_path / "other")
+    (other / "remote.txt").write_text("r\n", encoding="utf-8")
+    _sh(other, "add", "-A"); _sh(other, "commit", "-q", "-m", "remote edit")
+    _sh(other, "push", "-q", "origin", "trunk")
+
+    (root / "unrelated.txt").write_text("dirty, aber nicht Teil des Pulls\n", encoding="utf-8")
+
+    s = Synchronizer(pull=True, repo_root=root)
+    did = s.tick(0.0)
+    assert did["pulled"] is True
+    assert (root / "remote.txt").exists()
+
+
 def test_push_gated_by_consent(team_repo):
     calls = {"push": 0}
     consent = {"on": False}
