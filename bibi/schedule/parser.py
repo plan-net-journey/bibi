@@ -32,6 +32,7 @@ from bibi.schedule.models import (
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_SILENCE_TIMEOUT,
     DEFAULT_SILENCE_TIMEOUT_APP,
+    DEFAULT_SILENCE_TIMEOUT_JOB,
     Kind,
     ScheduleSpec,
     is_claude_payload,
@@ -183,9 +184,21 @@ def parse_text(
     attempts, e = _coerce_int(fm, "attempts", 1); errors += [e] if e else []
     # User-Feedback 2026-07-04: silence_timeout/hitl_timeout zusammengelegt —
     # claude:-Payloads (Batch, run_job, kein HITL) bekommen den kurzen Default,
-    # alles andere (long-lived, HITL-fähig über run_app) den langen.
-    _default_silence = (DEFAULT_SILENCE_TIMEOUT if is_claude_payload(payload)
-                        else DEFAULT_SILENCE_TIMEOUT_APP)
+    # echte Apps (long-lived, HITL-fähig über run_app) den langen. PLAN-31
+    # Befund 4 (2026-07-17): "echte App" heißt jetzt tatsächlich `app_port`/
+    # `app_prefix` gesetzt — vorher bekam JEDER Nicht-claude:-Job denselben
+    # 48h-Default wie eine App, ein hängender einfacher Job blieb dadurch bis
+    # zu 48h unbemerkt statt zeitnah als Zombie aufzufallen. Presence-Check
+    # auf `fm` direkt, nicht auf die weiter unten erst noch gecoerceten
+    # `app_port`/`app_prefix`-Variablen — die stehen an dieser Stelle im Code
+    # noch nicht zur Verfügung.
+    _is_app = "app_port" in fm or "app_prefix" in fm
+    if is_claude_payload(payload):
+        _default_silence = DEFAULT_SILENCE_TIMEOUT
+    elif _is_app:
+        _default_silence = DEFAULT_SILENCE_TIMEOUT_APP
+    else:
+        _default_silence = DEFAULT_SILENCE_TIMEOUT_JOB
     silence_timeout, e = _coerce_int(fm, "silence_timeout", _default_silence)
     errors += [e] if e else []
     wall_time = defer_time = defer_max = app_port = None

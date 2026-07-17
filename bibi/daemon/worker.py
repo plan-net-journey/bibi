@@ -36,7 +36,7 @@ from bibi.schedule import backoff, discovery
 from bibi.schedule.models import CLAUDE_PAYLOAD_RE as _CLAUDE_RE
 from bibi.schedule.models import (
     DEFAULT_SILENCE_TIMEOUT,
-    DEFAULT_SILENCE_TIMEOUT_APP,
+    DEFAULT_SILENCE_TIMEOUT_JOB,
     Status,
     is_claude_payload,
 )
@@ -541,6 +541,17 @@ def _retry_fields(reservation: dict) -> dict:
     return {"status": "failed", "attempt": attempt, "next_fire_at": nf}
 
 
+def _report_pid_once(sched_db_path: str, jid: str, proc_pid: int) -> None:
+    """Ein einzelner Versuch, die Wrapper-PID zu melden — frischer `connect()`
+    je Aufruf (PLAN-31 Baustein B), damit ein Retry nach einem Lock-Fehler
+    nicht auf einer möglicherweise beschädigten Connection aufsetzt."""
+    conn = job_db.connect(Path(sched_db_path))
+    try:
+        job_db.report_pid(conn, jid, proc_pid, job_db.proc_started_at(proc_pid))
+    finally:
+        conn.close()
+
+
 def _report_level(status: str) -> int:
     """Log-Level für ein terminales Outcome: Fehlschläge fallen nicht im INFO-Strom unter."""
     if status == "error":
@@ -632,13 +643,11 @@ def execute_reservation(
             scheduler_url=_sched_url,
         )
         if proc_pid is not None and _sched_db_path:
-            _pid_conn = job_db.connect(Path(_sched_db_path))
-            try:
-                job_db.report_pid(
-                    _pid_conn, jid, proc_pid, job_db.proc_started_at(proc_pid),
-                )
-            finally:
-                _pid_conn.close()
+            # PLAN-31 Baustein B: der Wrapper läuft bereits, ein kurzer Lock
+            # (z. B. durch einen gleichzeitigen anderen Report) soll den Job
+            # nicht als Setup-Fehler markieren — bis zu zwei Retries statt
+            # sofort in den except-Block unten zu fallen.
+            job_db.call_with_lock_retry(lambda: _report_pid_once(_sched_db_path, jid, proc_pid))
     except Exception as exc:
         # Setup-Fehler vor Wrapper-Start: Job nicht in `running` hängen lassen.
         activity.emit(log, logging.ERROR, "worker.setup_error",
@@ -885,8 +894,11 @@ def run_pinned(
         # sich ableiten ließe — denselben Default wie parser.py anwenden
         # (§ nächster Zweig), statt stillschweigend auf den SQL-Spalten-
         # Default (3600s, nur für claude-Payloads richtig) zurückzufallen.
+        # PLAN-31 Befund 4: `cmd` (Ad-hoc, kein Schedule-MD) kennt kein
+        # `app_port`/`app_prefix` — nur claude: vs. einfacher Job kommen hier
+        # überhaupt vor, der App-Fall ist strukturell ausgeschlossen.
         eff_silence_timeout = (DEFAULT_SILENCE_TIMEOUT if is_claude_payload(payload)
-                               else DEFAULT_SILENCE_TIMEOUT_APP)
+                               else DEFAULT_SILENCE_TIMEOUT_JOB)
         eff_wall_time = None
     else:
         if not slug:

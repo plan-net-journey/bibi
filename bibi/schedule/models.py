@@ -79,11 +79,16 @@ DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
 # Default-Silence-Timeout in Sekunden — kind-abhängig (User-Feedback 2026-07-04:
 # silence_timeout/hitl_timeout zusammengelegt, "Silence bei Jobs = Aktivität bei
 # Apps"). claude:-Payloads (Batch, kein HITL) bekommen den kurzen Default (1h);
-# alles andere (long-lived, HITL-fähig über run_app) den langen (48h) — ein
-# Mensch darf so lange auf eine Antwort warten, ohne dass silence_timeout
-# vorzeitig zuschlägt.
+# echte Apps (`app_port`/`app_prefix` gesetzt, long-lived, HITL-fähig über
+# run_app) den langen (48h) — ein Mensch darf so lange auf eine Antwort warten,
+# ohne dass silence_timeout vorzeitig zuschlägt. Einfache Jobs ohne App-Marker
+# (PLAN-31 Befund 4, 2026-07-17: `DEFAULT_SILENCE_TIMEOUT_APP` galt vorher
+# fälschlich für JEDEN Nicht-claude:-Job, nicht nur für Apps — ein hängender
+# einfacher Job blieb dadurch bis zu 48h unbemerkt, statt zeitnah als Zombie
+# aufzufallen) bekommen einen deutlich kürzeren Default (2h).
 DEFAULT_SILENCE_TIMEOUT = 3600
 DEFAULT_SILENCE_TIMEOUT_APP = 48 * 3600
+DEFAULT_SILENCE_TIMEOUT_JOB = 2 * 3600
 
 
 @dataclass(frozen=True)

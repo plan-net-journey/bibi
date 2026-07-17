@@ -380,19 +380,32 @@ def _report_terminal(env: dict[str, str], *, status: str, reason: str | None = N
     if db_path_str:
         try:
             from bibi.daemon import job_db as _jdb
-            conn = _jdb.connect(Path(db_path_str))
-            try:
-                _jdb.report_status(
-                    conn, job_id, status=status, reason=reason, exit_code=exit_code,
-                    output_ref=output_ref, commit_sha=commit_sha, branch=branch,
-                    worker=worker, host=host_name,
-                    attempt=attempt, next_fire_at=next_fire_at,
-                )
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception:
-            pass
+
+            def _write_status() -> None:
+                conn = _jdb.connect(Path(db_path_str))
+                try:
+                    _jdb.report_status(
+                        conn, job_id, status=status, reason=reason, exit_code=exit_code,
+                        output_ref=output_ref, commit_sha=commit_sha, branch=branch,
+                        worker=worker, host=host_name,
+                        attempt=attempt, next_fire_at=next_fire_at,
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            # PLAN-31 Baustein B/C: ein kurzer Lock (Befund 1) soll den
+            # Completion-Report überleben, bevor überhaupt aufgegeben wird.
+            _jdb.call_with_lock_retry(_write_status)
+        except Exception as exc:
+            # PLAN-31 Baustein C: vorher komplett stumm ("except Exception:
+            # pass") — ein verlorener Completion-Report ließ den Job für
+            # immer auf seinem letzten bekannten Status hängen, ohne jede
+            # Spur (Live-Vorfall `Runner`, 2026-07-17). Retry oben fängt
+            # kurze Locks ab; schlägt es trotzdem fehl, soll das wenigstens
+            # im Log sichtbar sein statt spurlos zu verschwinden.
+            log.warning("bibi.wrapper.report_status_failed job_id=%s status=%s error=%s",
+                       job_id, status, exc)
         # Merge-back-Trigger: nur bei "complete" + Branch nötig (kein Merge ohne
         # Ergebnis-Branch) — best-effort, unabhängig vom SQLite-Ergebnis oben.
         url_base = env.get("BIBI_SCHEDULER_URL")

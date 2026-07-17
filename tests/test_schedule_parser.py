@@ -140,10 +140,26 @@ def test_silence_timeout_default_1h_for_claude_payload():
     assert r.spec.silence_timeout == 3600
 
 
-def test_silence_timeout_default_48h_for_plain_job_payload():
-    # Plain-job-Payloads (long-lived, HITL-fähig über run_app) bekommen den
-    # langen Default — ein Mensch darf bis zu 48h für seine Eingabe brauchen.
+def test_silence_timeout_default_2h_for_plain_job_payload():
+    # PLAN-31 Befund 4 (2026-07-17): ein einfacher Job ohne App-Marker
+    # bekommt den kurzen Job-Default — vorher fiel er fälschlich auf denselben
+    # 48h-Default wie eine echte App zurück, ein hängender Job blieb dadurch
+    # bis zu 48h unbemerkt statt zeitnah als Zombie aufzufallen.
     r = _parse('---\nschedule: now\njob: "echo hi"\n---\n')
+    assert r.spec.silence_timeout == 2 * 3600
+
+
+def test_silence_timeout_default_48h_for_app_payload():
+    # Echte Apps (`app_port` gesetzt, long-lived, HITL-fähig über run_app)
+    # bekommen weiterhin den langen Default — ein Mensch darf bis zu 48h für
+    # seine Eingabe brauchen.
+    r = _parse('---\nschedule: now\njob: "echo hi"\napp_port: 9100\n---\n')
+    assert r.spec.silence_timeout == 48 * 3600
+
+
+def test_silence_timeout_default_48h_for_app_prefix_payload():
+    # app_prefix allein (ohne app_port) muss denselben App-Default auslösen.
+    r = _parse('---\nschedule: now\njob: "echo hi"\napp_prefix: "/hitl/"\n---\n')
     assert r.spec.silence_timeout == 48 * 3600
 
 

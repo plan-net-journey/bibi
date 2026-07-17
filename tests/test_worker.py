@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -333,6 +334,83 @@ def test_execute_reservation_setup_failure_does_not_hang_running(gitrepo: Path, 
     from bibi.wrapper import output as _output
     phases = _output.lines(gitrepo / row["output_ref"], "phase")
     assert any("worktree prepare kaputt" in p for p in phases)
+
+
+def test_execute_reservation_retries_pid_report_after_lock_error(gitrepo: Path, monkeypatch):
+    # PLAN-31 Baustein B: ein kurzer Lock beim PID-Report direkt nach dem
+    # Wrapper-Start darf den Job nicht als Setup-Fehler markieren.
+    import bibi.daemon.worker as W
+    jid = _seed(gitrepo, "lockpid/README.md", '---\nschedule: now\njob: "echo hi"\n---\n')
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    res = job_db.reserve_next(conn)
+    conn.close()
+
+    out_path = gitrepo / "data" / "job" / "dummy" / "output.jsonl"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(W, "_run_wrapper",
+                        lambda **_kw: (0, None, out_path, "detached", 999999))
+
+    real_connect = job_db.connect
+    calls = {"n": 0}
+
+    def flaky_connect(path):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_connect(path)
+    monkeypatch.setattr(W.job_db, "connect", flaky_connect)
+
+    from bibi.daemon.scheduler_client import LocalScheduler
+    out = execute_reservation(
+        res, repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
+        client=LocalScheduler(gitrepo / "data" / "jobs.sqlite"), worker_name="t",
+    )
+    assert out["outcome"] == "detached"  # kein setup_error trotz erstem Lock
+    assert calls["n"] == 2  # ein Fehlschlag, ein erfolgreicher Retry
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    assert conn.execute("SELECT pid FROM jobs WHERE id=?", (jid,)).fetchone()["pid"] == 999999
+    conn.close()
+
+
+# ── PLAN-31 Baustein C — _report_terminal() überlebt/loggt einen Lock ───────
+
+
+def test_report_terminal_survives_single_lock_error(tmp_path: Path, monkeypatch, caplog):
+    from bibi import wrapper
+    db_path = tmp_path / "jobs.sqlite"
+    real_connect = job_db.connect
+    calls = {"n": 0}
+
+    def flaky_connect(path):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_connect(path)
+    monkeypatch.setattr(job_db, "connect", flaky_connect)
+
+    env = {"BIBI_JOB_ID": "abc123", "BIBI_SCHEDULER_DB_PATH": str(db_path)}
+    with caplog.at_level("WARNING", logger="bibi.wrapper"):
+        wrapper._report_terminal(env, status="complete", exit_code=0)
+    assert calls["n"] == 2  # ein Fehlschlag, ein erfolgreicher Retry
+    assert "report_status_failed" not in caplog.text
+
+
+def test_report_terminal_logs_warning_when_lock_never_clears(tmp_path: Path, monkeypatch, caplog):
+    # Vorher: "except Exception: pass" — der Completion-Report verschwand
+    # spurlos (Live-Vorfall `Runner`, 2026-07-17). Jetzt: mindestens eine
+    # Log-Zeile, statt gar nichts.
+    from bibi import wrapper
+    db_path = tmp_path / "jobs.sqlite"
+
+    def always_locked(path):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(job_db, "connect", always_locked)
+
+    env = {"BIBI_JOB_ID": "abc123", "BIBI_SCHEDULER_DB_PATH": str(db_path)}
+    with caplog.at_level("WARNING", logger="bibi.wrapper"):
+        wrapper._report_terminal(env, status="complete", exit_code=0)  # darf NICHT werfen
+    assert "report_status_failed" in caplog.text
+    assert "abc123" in caplog.text
 
 
 def test_execute_reservation_passes_schedule_image_override(gitrepo: Path, monkeypatch):

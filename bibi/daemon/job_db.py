@@ -204,11 +204,34 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(_SCHEMA_SQL)  # frische DB: volles aktuelles Schema
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         return
+    if version >= SCHEMA_VERSION:
+        return  # bereits aktuell — kein Schreibzugriff nötig (PLAN-31 Baustein A)
     while version < SCHEMA_VERSION:  # bestehende DB: schrittweise migrieren
         for migrate in _MIGRATIONS.get(version, []):
             migrate(conn)
         version += 1
     conn.execute(f"PRAGMA user_version = {version}")
+
+
+def call_with_lock_retry(fn, *, delays: tuple[float, ...] = (0.2, 0.5)):
+    """Ruft ``fn()`` auf; bei ``sqlite3.OperationalError`` mit "locked" in der
+    Meldung bis zu ``len(delays)`` weitere Versuche mit den angegebenen
+    Backoff-Pausen (Sekunden). Jede andere Exception wird sofort durchgereicht.
+
+    PLAN-31 Baustein B/C: sowohl der Setup-Report (``worker.py``s
+    ``report_pid()``) als auch der Completion-Report (``wrapper/__init__.py``s
+    ``_report_terminal()``) sollen einen kurzen, durch Baustein A stark
+    reduzierten Rest-Lock überleben, statt den Job sofort als Fehler zu
+    markieren bzw. den Statusübergang stillschweigend zu verlieren."""
+    attempts = (0.0, *delays)
+    for i, delay in enumerate(attempts):
+        if delay:
+            time.sleep(delay)
+        try:
+            return fn()
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) or i == len(attempts) - 1:
+                raise
 
 
 # ── next_fire_at-Berechnung (§5.2) ──────────────────────────────────────────

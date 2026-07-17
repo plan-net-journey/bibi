@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -40,6 +42,77 @@ def test_connect_idempotent(tmp_path: Path):
     job_db.connect(p).close()
     c2 = job_db.connect(p)  # zweiter Connect darf nicht crashen
     assert c2.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
+
+
+# ── PLAN-31 Baustein A — kein Schreibzugriff bei bereits aktuellem Schema ────
+
+
+def test_ensure_schema_no_write_when_already_current():
+    calls: list[str] = []
+
+    class _FakeConn:
+        def execute(self, sql, *a, **kw):
+            calls.append(sql)
+            m = MagicMock()
+            m.fetchone.return_value = (job_db.SCHEMA_VERSION,)
+            return m
+
+    job_db._ensure_schema(_FakeConn())
+    write_calls = [c for c in calls if c.strip().upper().startswith("PRAGMA USER_VERSION =")]
+    assert write_calls == []
+
+
+def test_ensure_schema_still_writes_when_migration_runs():
+    calls: list[str] = []
+
+    class _FakeConn:
+        def execute(self, sql, *a, **kw):
+            calls.append(sql)
+            m = MagicMock()
+            m.fetchone.return_value = (job_db.SCHEMA_VERSION - 1,)
+            return m
+
+    job_db._MIGRATIONS.setdefault(job_db.SCHEMA_VERSION - 1, [])
+    job_db._ensure_schema(_FakeConn())
+    write_calls = [c for c in calls if c.strip().upper().startswith("PRAGMA USER_VERSION =")]
+    assert write_calls, "eine echte Migration muss weiterhin PRAGMA user_version schreiben"
+
+
+# ── PLAN-31 Baustein B/C — call_with_lock_retry() ────────────────────────────
+
+
+def test_call_with_lock_retry_succeeds_after_two_lock_errors():
+    attempts = {"n": 0}
+
+    def _flaky():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return "ok"
+
+    result = job_db.call_with_lock_retry(_flaky, delays=(0.0, 0.0))
+    assert result == "ok"
+    assert attempts["n"] == 3
+
+
+def test_call_with_lock_retry_gives_up_after_exhausting_delays():
+    def _always_locked():
+        raise sqlite3.OperationalError("database is locked")
+
+    with pytest.raises(sqlite3.OperationalError):
+        job_db.call_with_lock_retry(_always_locked, delays=(0.0, 0.0))
+
+
+def test_call_with_lock_retry_reraises_other_errors_immediately():
+    attempts = {"n": 0}
+
+    def _other_error():
+        attempts["n"] += 1
+        raise sqlite3.OperationalError("no such table: jobs")
+
+    with pytest.raises(sqlite3.OperationalError):
+        job_db.call_with_lock_retry(_other_error, delays=(0.0, 0.0))
+    assert attempts["n"] == 1, "kein Retry für Nicht-Lock-Fehler"
 
 
 # ── compute_next_fire (§5.2) ─────────────────────────────────────────────────
