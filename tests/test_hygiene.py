@@ -245,6 +245,37 @@ def test_html_placeholder_tag_multiple_on_one_line():
     assert len(findings) == 2
 
 
+def test_html_placeholder_tag_ignores_bare_email_autolink():
+    # Live-Fund im echten Vault (2026-07-18): <m.rau@host.de> ist gültiges
+    # CommonMark (Autolink ohne mailto:-Prefix), kein kaputtes Platzhalter-Tag.
+    findings = hygiene.check_html_placeholder_tags(
+        "x.md", "Kontakt: <m.rau@house-of-communication.com>\n")
+    assert findings == []
+
+
+def test_html_placeholder_tag_ignores_bare_email_autolink_single_label_domain():
+    findings = hygiene.check_html_placeholder_tags("x.md", "<bibi@local>\n")
+    assert findings == []
+
+
+def test_html_placeholder_tag_ignores_self_closing_tag():
+    # <path .../> ist mechanisch bereits geschlossen — kein "nie geschlossen".
+    findings = hygiene.check_html_placeholder_tags("x.md", '<path d="M12 2v2"/>\n')
+    assert findings == []
+
+
+def test_html_placeholder_tag_ignores_void_element():
+    findings = hygiene.check_html_placeholder_tags("x.md", "Zeile eins<br>Zeile zwei\n")
+    assert findings == []
+
+
+def test_html_placeholder_tag_still_flags_closing_tag_of_real_element():
+    # </svg> bleibt ein Fund — ob ein passendes öffnendes Tag existiert,
+    # prüft dieser Check bewusst nicht (out of scope, siehe Docstring).
+    findings = hygiene.check_html_placeholder_tags("x.md", "</svg>\n")
+    assert findings and findings[0].kind == "html-placeholder-tag"
+
+
 # ── PLAN-15: markdown-hardwrap ────────────────────────────────────────────────
 
 

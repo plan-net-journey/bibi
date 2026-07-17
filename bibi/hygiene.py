@@ -110,8 +110,16 @@ def check_invalid_schedules(errors) -> list[Finding]:
 
 _TAG_RE = re.compile(r"<([a-zA-Z/][^<>\n]{0,40})>")
 _AUTOLINK_SCHEME_RE = re.compile(r"^(https?://|mailto:)")
+_AUTOLINK_EMAIL_RE = re.compile(
+    r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?"
+    r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*$")
 _INLINE_CODE_RE = re.compile(r"``.+?``|`[^`\n]+`")
 _NUMBERED_LIST_RE = re.compile(r"^\d+[.)]\s")
+_VOID_ELEMENTS = {
+    "br", "hr", "img", "input", "meta", "link",
+    "area", "base", "col", "embed", "param", "source", "track", "wbr",
+}
 
 
 def check_html_placeholder_tags(path: str, text: str) -> list[Finding]:
@@ -122,10 +130,15 @@ def check_html_placeholder_tags(path: str, text: str) -> list[Finding]:
     Inline-HTML-Erkennung behandelt ``<cutoff>`` genauso als offenes,
     nie geschlossenes Tag wie ein ``<script>``-Fragment; ein Platzhalterwort
     ist für den Renderer nicht weniger riskant als "echtes" HTML. Auto-Links
-    (``<https://…>``, ``<mailto:…>``) sind gültiges Markdown, kein Fund.
-    Bereits per Backtick escapte Stellen (die empfohlene Lösung) werden vor
-    der Prüfung entfernt, damit ein korrigierter Platzhalter nicht erneut
-    anschlägt."""
+    (``<https://…>``, ``<mailto:…>``, bloße ``<name@host>``-Adressen) sind
+    gültiges Markdown, kein Fund. Ebenso kein Fund: self-closing Tags
+    (``<path .../>``) und HTML5-Void-Elemente ohne Slash (``<br>``, ``<img
+    …>``, …) — die sind mechanisch bereits vollständig, kein "geöffnet und
+    nie geschlossen". Ein per Slash geschlossenes Tag (``</svg>``) bleibt
+    dagegen ein Fund: ob irgendwo im Dokument ein passendes öffnendes Tag
+    existiert, prüft dieser Check nicht (out of scope). Bereits per Backtick
+    escapte Stellen (die empfohlene Lösung) werden vor der Prüfung entfernt,
+    damit ein korrigierter Platzhalter nicht erneut anschlägt."""
     out: list[Finding] = []
     in_fence = False
     for i, line in enumerate(text.splitlines(), start=1):
@@ -138,7 +151,12 @@ def check_html_placeholder_tags(path: str, text: str) -> list[Finding]:
         scrubbed = _INLINE_CODE_RE.sub("", line)
         for m in _TAG_RE.finditer(scrubbed):
             inner = m.group(1)
-            if _AUTOLINK_SCHEME_RE.match(inner):
+            if _AUTOLINK_SCHEME_RE.match(inner) or _AUTOLINK_EMAIL_RE.match(inner):
+                continue
+            if inner.rstrip().endswith("/"):
+                continue
+            tag_name = inner.split()[0].lstrip("/").lower() if inner.split() else ""
+            if not inner.startswith("/") and tag_name in _VOID_ELEMENTS:
                 continue
             out.append(Finding(
                 "html-placeholder-tag", f"{path}:{i}",
