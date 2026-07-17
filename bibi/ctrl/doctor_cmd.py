@@ -1,9 +1,11 @@
-"""``bibi-ctrl doctor`` — Repo-/Vault-Hygiene-Check (PLAN-5 §5.2).
+"""``bibi-ctrl doctor`` — Repo-/Vault-Hygiene-Check (PLAN-5 §5.2; PLAN-13 §13.3).
 
 Meldet (a) fehlendes git-lfs, (b) große, nicht-LFS-getrackte Dateien (würden die
 History aufblähen, §3.5), (c) committete Sammeldaten unter ``vault/.../data/``,
-(d) fehlende ``vault/CONVENTIONS.md`` (Repo-Invariant jedes bibi-team-Repos).
-Exit 1 bei Befunden (pre-commit/CI-tauglich), sonst 0. Reine Prüflogik: ``hygiene``.
+(d) fehlende ``vault/CONVENTIONS.md`` (Repo-Invariant jedes bibi-team-Repos),
+(e) verwaiste Job-Worktrees (``data/worktrees/<slug>/`` ohne ``jobs``-Zeile),
+(f) Schedule-MDs, die der Parser nicht lesen konnte. Exit 1 bei Befunden
+(pre-commit/CI-tauglich), sonst 0. Reine Prüflogik: ``hygiene``.
 """
 
 from __future__ import annotations
@@ -12,6 +14,8 @@ import argparse
 import subprocess
 
 from bibi import hygiene, repo
+from bibi.daemon import job_db
+from bibi.schedule import discovery
 
 
 def _tracked_files(root) -> list[str]:
@@ -34,6 +38,24 @@ def _lfs_flags(root, paths: list[str]) -> dict[str, bool]:
     return flags
 
 
+def _worktree_slugs(root) -> list[str]:
+    d = root / "data" / "worktrees"
+    if not d.is_dir():
+        return []
+    return [p.name for p in d.iterdir() if p.is_dir()]
+
+
+def _known_slugs(root) -> set[str]:
+    db_path = job_db.db_path()
+    if not db_path.exists():
+        return set()
+    conn = job_db.connect(db_path)
+    try:
+        return {r["slug"] for r in conn.execute("SELECT DISTINCT slug FROM jobs")}
+    finally:
+        conn.close()
+
+
 def run(args: argparse.Namespace) -> int:
     root = repo.root()
     paths = _tracked_files(root)
@@ -46,11 +68,15 @@ def run(args: argparse.Namespace) -> int:
             size = 0
         files.append((p, size, lfs.get(p, False)))
 
+    discovered = discovery.discover(repo.case_dir())
+
     findings = (
         hygiene.git_lfs_finding(hygiene.git_lfs_installed())
         + hygiene.conventions_finding(hygiene.CONVENTIONS_PATH in paths)
         + hygiene.check_large_unmanaged(files)
         + hygiene.check_data_committed(paths)
+        + hygiene.check_orphan_worktrees(_worktree_slugs(root), _known_slugs(root))
+        + hygiene.check_invalid_schedules(discovered.errors)
     )
     if not findings:
         print("doctor: keine Hygiene-Probleme ✓")

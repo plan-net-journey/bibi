@@ -46,6 +46,47 @@ def test_conventions_finding():
     assert f[0].path == "vault/CONVENTIONS.md"
 
 
+# ── PLAN-13 Stufe 13.3: job-doctor-Checks ─────────────────────────────────────
+
+
+def test_orphan_worktrees_flags_unknown_slug_only():
+    findings = hygiene.check_orphan_worktrees(
+        worktree_slugs=["Runner", "gone-job"],
+        known_slugs={"Runner", "Witz"},
+    )
+    assert [f.path for f in findings] == ["data/worktrees/gone-job"]
+    assert findings[0].kind == "orphan-worktree"
+
+
+def test_orphan_worktrees_deactivated_but_known_slug_is_not_orphan():
+    # Ein pausierter/deaktivierter Slug hat noch eine jobs-Zeile — kein Befund.
+    findings = hygiene.check_orphan_worktrees(
+        worktree_slugs=["paused-job"],
+        known_slugs={"paused-job"},
+    )
+    assert findings == []
+
+
+def test_orphan_worktrees_empty_input_no_findings():
+    assert hygiene.check_orphan_worktrees([], set()) == []
+
+
+def test_invalid_schedules_reports_parser_errors():
+    from bibi.schedule.parser import ParseResult
+    errors = [
+        ParseResult(schedule_ref="vault/case/x/Broken.md", error="Frontmatter braucht `job:`"),
+    ]
+    findings = hygiene.check_invalid_schedules(errors)
+    assert len(findings) == 1
+    assert findings[0].kind == "invalid-schedule"
+    assert findings[0].path == "vault/case/x/Broken.md"
+    assert findings[0].detail == "Frontmatter braucht `job:`"
+
+
+def test_invalid_schedules_empty_input_no_findings():
+    assert hygiene.check_invalid_schedules([]) == []
+
+
 # ── doctor-CLI gegen ein echtes Mini-Repo ─────────────────────────────────────
 
 def _git(cwd: Path, *args: str) -> None:
@@ -113,3 +154,40 @@ def test_doctor_flags_committed_data(gitrepo: Path, capsys, monkeypatch):
     rc = doctor_cmd.run(_args())
     out = capsys.readouterr().out
     assert rc == 1 and "data-committed" in out
+
+
+def test_doctor_flags_orphan_worktree(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "data" / "worktrees" / "gone-job").mkdir(parents=True)
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "orphan-worktree" in out and "data/worktrees/gone-job" in out
+
+
+def test_doctor_ignores_worktree_with_known_slug(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "data" / "worktrees" / "Runner").mkdir(parents=True)
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    (d / "Runner.md").write_text('---\nschedule: "*/5 * * * *"\njob: "echo hi"\n---\n',
+                                 encoding="utf-8")
+    from bibi.daemon import job_db as jdb
+    conn = jdb.connect(gitrepo / "data" / "jobs.sqlite")
+    jdb.rescan(conn, vault_root=gitrepo / "vault" / "case")
+    conn.close()
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "orphan-worktree" not in out
+
+
+def test_doctor_flags_invalid_schedule(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    (d / "Broken.md").write_text("---\nschedule: \"*/5 * * * *\"\n---\n", encoding="utf-8")  # kein job:
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "invalid-schedule" in out and "Broken.md" in out
