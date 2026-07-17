@@ -49,9 +49,9 @@ def resolve_when(when: str, *, now: _dt.datetime | None = None) -> _dt.datetime:
     return _to_naive_local(_date_parser.parse(s))  # ISO / natürlichsprachlich
 
 
-def _rescan(port: int) -> bool:
-    """Best-effort POST ``/-/rescan`` an den lokalen Daemon. True bei Erfolg."""
-    url = f"http://127.0.0.1:{port}/-/rescan"
+def _rescan(base_url: str) -> bool:
+    """Best-effort POST ``/-/rescan`` an den Scheduler. True bei Erfolg."""
+    url = f"{base_url}/-/rescan"
     try:
         req = urllib.request.Request(url, method="POST")
         with urllib.request.urlopen(req, timeout=3):  # noqa: S310 (localhost)
@@ -84,8 +84,12 @@ def run(args: argparse.Namespace) -> int:
           f"One-shot via `/at`, geplant für {iso}.\n")
     path.write_text(md, encoding="utf-8")
 
-    port = args.port or config.daemon_port()
-    rescanned = _rescan(port)
+    # PLAN-13 Stufe 13.0: explizites --port bleibt lokal (Test-Instanz),
+    # ohne --port die volle BIBI_SCHEDULER_URL statt blind 127.0.0.1 — sonst
+    # läuft der Rescan-Trigger auf einem Client-Knoten mit entferntem
+    # Scheduler ins Leere.
+    base_url = f"http://127.0.0.1:{args.port}" if args.port else config.scheduler_base_url()
+    rescanned = _rescan(base_url)
 
     rel = path.relative_to(repo.root()).as_posix()
     eta = dt - _dt.datetime.now()
@@ -94,7 +98,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"  at:   {iso}  (in {eta_s // 60}m {eta_s % 60}s)")
     print(f"  typ:  {typ_display}")
     print(f"  pfad: {rel}")
-    print(f"  rescan: {'ok' if rescanned else f'Daemon nicht erreichbar (Port {port}) — beim nächsten Rescan/Start erfasst'}")
+    print(f"  rescan: {'ok' if rescanned else f'Daemon nicht erreichbar ({base_url}) — beim nächsten Rescan/Start erfasst'}")
     print(f"beobachten: bibi-ctrl job list", file=sys.stderr)
     return 0
 

@@ -67,6 +67,40 @@ def daemon_port() -> int:
     return DAEMON_PORT_DEFAULT
 
 
+def scheduler_base_url() -> str:
+    """Basis-URL des Schedulers — anders als :func:`daemon_port` (nur der Port)
+    liefert diese Funktion Host **und** Port.
+
+    ``BIBI_DAEMON_PORT`` (env, lokal-explizit) > ``BIBI_SCHEDULER_URL`` (env
+    oder ``~/.config/bibi/env``, volle URL inkl. Host) > ``http://localhost:8769``.
+
+    PLAN-13 Stufe 13.0 (2026-07-17): ``bibi-ctrl job``/``at`` sprachen bisher
+    immer ``127.0.0.1:{daemon_port()}`` an — auch auf einem reinen Client-
+    Knoten, dessen ``BIBI_SCHEDULER_URL`` korrekt auf einen entfernten Host
+    zeigt. Läuft dort zufällig ein eigener lokaler Daemon auf demselben Port
+    (z. B. Client-Rolle auf Port 8780), landet der Befehl nicht bei
+    "Connection refused", sondern beim eigenen, falschen (Nicht-Scheduler-)
+    Daemon — Root Cause einer Session, die lange raten musste, wo der
+    Scheduler tatsächlich läuft, obwohl die Antwort in der eigenen Config
+    stand. ``BIBI_DAEMON_PORT`` bleibt Vorrang, weil es explizit "sprich mit
+    MEINEM eigenen Daemon" bedeutet (von ``bibi-ctrl daemon`` selbst gesetzt,
+    s. ``daemon_cmd.py``) — ein reiner Lokalitäts-Override, kein Federations-
+    Ziel."""
+    raw = os.environ.get("BIBI_DAEMON_PORT", "").strip()
+    if raw:
+        try:
+            return f"http://127.0.0.1:{int(raw)}"
+        except ValueError:
+            pass
+
+    scheduler_url = (os.environ.get("BIBI_SCHEDULER_URL", "").strip()
+                      or read_env().get("BIBI_SCHEDULER_URL", "").strip())
+    if scheduler_url:
+        return scheduler_url.rstrip("/")
+
+    return f"http://localhost:{DAEMON_PORT_DEFAULT}"
+
+
 def public_host() -> str:
     """Von außen erreichbarer Hostname dieses Knotens für App-Adressen (§
     PLAN-22 Befund 6 — löst die zuvor an drei Stellen hartkodierte

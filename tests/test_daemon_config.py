@@ -62,6 +62,51 @@ def test_daemon_port_invalid_falls_back_to_scheduler_url(
     assert config.daemon_port() == 8780
 
 
+# ── config.scheduler_base_url (PLAN-13 Stufe 13.0) ───────────────────────────
+
+
+def test_scheduler_base_url_default(cfg_home: Path):
+    assert config.scheduler_base_url() == "http://localhost:8769"
+
+
+def test_scheduler_base_url_uses_full_remote_scheduler_url(
+    cfg_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Der eigentliche Bug-Fix: Host UND Port aus BIBI_SCHEDULER_URL, nicht
+    # nur der Port gegen 127.0.0.1.
+    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://sarasate.tail9f9173.ts.net:8780")
+    assert config.scheduler_base_url() == "http://sarasate.tail9f9173.ts.net:8780"
+
+
+def test_scheduler_base_url_from_config_file(cfg_home: Path):
+    config.write_env({"BIBI_SCHEDULER_URL": "http://sarasate.tail9f9173.ts.net:8780"})
+    assert config.scheduler_base_url() == "http://sarasate.tail9f9173.ts.net:8780"
+
+
+def test_scheduler_base_url_strips_trailing_slash(cfg_home: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://sarasate.tail9f9173.ts.net:8780/")
+    assert config.scheduler_base_url() == "http://sarasate.tail9f9173.ts.net:8780"
+
+
+def test_scheduler_base_url_daemon_port_env_wins_as_local_override(
+    cfg_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # BIBI_DAEMON_PORT bedeutet explizit "mein eigener Daemon" — bleibt lokal,
+    # auch wenn BIBI_SCHEDULER_URL auf einen entfernten Host zeigt.
+    monkeypatch.setenv("BIBI_DAEMON_PORT", "9000")
+    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://sarasate.tail9f9173.ts.net:8780")
+    assert config.scheduler_base_url() == "http://127.0.0.1:9000"
+
+
+def test_scheduler_base_url_on_scheduler_host_itself_stays_local(
+    cfg_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Auf dem Scheduler-Host selbst zeigt BIBI_SCHEDULER_URL bewusst auf sich
+    # selbst (localhost) — muss unverändert korrekt bleiben.
+    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://localhost:8780")
+    assert config.scheduler_base_url() == "http://localhost:8780"
+
+
 # ── config.public_host (PLAN-22 Befund 6) ────────────────────────────────────
 
 

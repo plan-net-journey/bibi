@@ -17,8 +17,15 @@ from bibi import config
 
 
 def _base(args: argparse.Namespace) -> str:
-    port = getattr(args, "port", 0) or config.daemon_port()
-    return f"http://127.0.0.1:{port}"
+    # PLAN-13 Stufe 13.0: explizites --port bleibt ein reiner Lokalitäts-
+    # Override (z. B. eine zweite lokale Test-Instanz) — ohne --port die
+    # volle BIBI_SCHEDULER_URL (Host + Port) statt blind 127.0.0.1, sonst
+    # laufen Client-Knoten mit korrekt konfiguriertem, aber entferntem
+    # Scheduler ins Leere (gegen ihren eigenen, falschen lokalen Daemon).
+    port = getattr(args, "port", 0)
+    if port:
+        return f"http://127.0.0.1:{port}"
+    return config.scheduler_base_url()
 
 
 def _req(url: str, method: str = "GET") -> tuple[int, object]:

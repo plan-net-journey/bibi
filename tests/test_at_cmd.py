@@ -67,3 +67,16 @@ def test_at_rescan_best_effort_no_daemon(team_repo: Path, capsys):
     out = capsys.readouterr().out
     assert "Daemon nicht erreichbar" in out
     assert list((team_repo / "vault" / "case").glob("*.md"))  # MD existiert
+
+
+def test_at_rescan_uses_scheduler_base_url_without_port(team_repo: Path, capsys, monkeypatch):
+    # PLAN-13 Stufe 13.0: ohne --port zielt der Rescan-Trigger auf die volle
+    # BIBI_SCHEDULER_URL, nicht mehr blind auf 127.0.0.1 — hier absichtlich
+    # ein unerreichbarer Fake-Host, um die tatsächlich verwendete URL in der
+    # best-effort-Fehlermeldung zu sehen.
+    monkeypatch.setattr(at_cmd.config, "scheduler_base_url",
+                        lambda: "http://sarasate.tail9f9173.ts.net:59998")
+    rc = main(["at", "+5min", "x"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "sarasate.tail9f9173.ts.net:59998" in out
