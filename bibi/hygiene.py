@@ -11,6 +11,7 @@ rein (keine Subprozesse/IO) — ``bibi-ctrl doctor`` sammelt die Fakten und ruft
 
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass
 
@@ -21,6 +22,7 @@ LARGE_THRESHOLD = 512 * 1024  # 512 KiB — darüber gehört Binäres in LFS (§
 class Finding:
     kind: str    # "lfs-missing" | "large-unmanaged" | "data-committed" | "conventions-missing"
                  # | "orphan-worktree" | "invalid-schedule" (PLAN-13 Stufe 13.3)
+                 # | "html-placeholder-tag" | "markdown-hardwrap" (PLAN-15)
     path: str    # betroffener Pfad ("" = global)
     detail: str
 
@@ -102,3 +104,110 @@ def check_invalid_schedules(errors) -> list[Finding]:
     (``bibi.schedule.discovery.DiscoveryResult.errors``, bereits vorhandene
     Logik — hier nur gesammelt/gemeldet, nicht neu geparst)."""
     return [Finding("invalid-schedule", e.schedule_ref, e.error) for e in errors]
+
+
+# ── PLAN-15: Markdown-Hygiene (kaputte Platzhalter-Tags, Hartumbruch) ────────
+
+_TAG_RE = re.compile(r"<([a-zA-Z/][^<>\n]{0,40})>")
+_AUTOLINK_SCHEME_RE = re.compile(r"^(https?://|mailto:)")
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+_NUMBERED_LIST_RE = re.compile(r"^\d+[.)]\s")
+
+
+def check_html_placeholder_tags(path: str, text: str) -> list[Finding]:
+    """Bloße ``<Platzhalter>``-artige Winkelklammer-Tags außerhalb Code-Fences/
+    Backticks (CONVENTIONS.md § Markdown style, User-Fund 2026-07-18).
+
+    Nicht auf "sieht nach echtem HTML aus" beschränkt — Obsidians permissive
+    Inline-HTML-Erkennung behandelt ``<cutoff>`` genauso als offenes,
+    nie geschlossenes Tag wie ein ``<script>``-Fragment; ein Platzhalterwort
+    ist für den Renderer nicht weniger riskant als "echtes" HTML. Auto-Links
+    (``<https://…>``, ``<mailto:…>``) sind gültiges Markdown, kein Fund.
+    Bereits per Backtick escapte Stellen (die empfohlene Lösung) werden vor
+    der Prüfung entfernt, damit ein korrigierter Platzhalter nicht erneut
+    anschlägt."""
+    out: list[Finding] = []
+    in_fence = False
+    for i, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence or line.startswith("    ") or line.startswith("\t"):
+            continue
+        scrubbed = _INLINE_CODE_RE.sub("", line)
+        for m in _TAG_RE.finditer(scrubbed):
+            inner = m.group(1)
+            if _AUTOLINK_SCHEME_RE.match(inner):
+                continue
+            out.append(Finding(
+                "html-placeholder-tag", f"{path}:{i}",
+                f"<{inner}> — Obsidian interpretiert das als offenes, nie "
+                f"geschlossenes HTML-Tag; in Backticks setzen (`<{inner}>`) "
+                "oder in einen Code-Block"))
+    return out
+
+
+def _is_structured_line(line: str, stripped: str) -> bool:
+    return bool(
+        stripped
+        and (stripped[0] in "-*+>|"
+             or _NUMBERED_LIST_RE.match(stripped)
+             or stripped.startswith("#")
+             or line.startswith("    ")
+             or line.startswith("\t"))
+    )
+
+
+def check_markdown_hardwrap(path: str, text: str) -> list[Finding]:
+    """Über mehrere physische Zeilen hart umgebrochene Absätze (CONVENTIONS.md
+    § Markdown style: eine physische Zeile pro Absatz, kein 80-Spalten-Umbruch).
+
+    Ein Fund pro zusammenhängendem Absatz (nicht pro Fortsetzungszeile) —
+    lesbarer in der ``doctor``-Ausgabe, ein 5-zeiliger Absatz erzeugt eine
+    Meldung, keine vier. Ausnahmen (legitim mehrzeilig): Listen, Tabellen,
+    Blockquotes, eingerückter/eingezäunter Code, Überschriften, Frontmatter."""
+    out: list[Finding] = []
+    lines = text.splitlines()
+    in_fence = False
+    in_frontmatter = False
+    run_start: int | None = None
+    run_len = 0
+
+    def flush() -> None:
+        nonlocal run_start, run_len
+        if run_start is not None and run_len >= 2:
+            end = run_start + run_len - 1
+            out.append(Finding(
+                "markdown-hardwrap", f"{path}:{run_start}-{end}",
+                f"Absatz über {run_len} Zeilen hart umgebrochen — "
+                "CONVENTIONS.md verlangt eine physische Zeile pro Absatz"))
+        run_start = None
+        run_len = 0
+
+    for i, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if i == 1 and stripped == "---":
+            in_frontmatter = True
+            flush()
+            continue
+        if in_frontmatter:
+            if stripped == "---":
+                in_frontmatter = False
+            flush()
+            continue
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            flush()
+            continue
+        if in_fence or not stripped:
+            flush()
+            continue
+        if _is_structured_line(line, stripped):
+            flush()
+            continue
+        if run_start is None:
+            run_start = i
+        run_len += 1
+    flush()
+    return out

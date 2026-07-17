@@ -191,3 +191,120 @@ def test_doctor_flags_invalid_schedule(gitrepo: Path, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert rc == 1
     assert "invalid-schedule" in out and "Broken.md" in out
+
+
+# ── PLAN-15: html-placeholder-tag ─────────────────────────────────────────────
+
+
+def test_html_placeholder_tag_flags_bare_placeholder():
+    findings = hygiene.check_html_placeholder_tags("x.md", "Text mit <cutoff> drin.\n")
+    assert len(findings) == 1
+    assert findings[0].kind == "html-placeholder-tag"
+    assert findings[0].path == "x.md:1"
+
+
+def test_html_placeholder_tag_flags_script_looking_fragment_too():
+    # Kein "sieht nach echtem HTML aus"-Sonderfall — beides gleich riskant.
+    findings = hygiene.check_html_placeholder_tags("x.md", "<script>alert(1)\n")
+    assert findings and findings[0].kind == "html-placeholder-tag"
+
+
+def test_html_placeholder_tag_ignores_autolinks():
+    findings = hygiene.check_html_placeholder_tags(
+        "x.md", "Siehe <https://example.com> und <mailto:a@b.de>.\n")
+    assert findings == []
+
+
+def test_html_placeholder_tag_ignores_fenced_code():
+    text = "vorher\n```\n<cutoff>\n```\nnachher\n"
+    assert hygiene.check_html_placeholder_tags("x.md", text) == []
+
+
+def test_html_placeholder_tag_ignores_backtick_escaped():
+    # Die empfohlene Lösung selbst darf nicht erneut anschlagen.
+    findings = hygiene.check_html_placeholder_tags("x.md", "Text mit `<cutoff>` drin.\n")
+    assert findings == []
+
+
+def test_html_placeholder_tag_ignores_indented_code():
+    assert hygiene.check_html_placeholder_tags("x.md", "    <cutoff>\n") == []
+
+
+def test_html_placeholder_tag_multiple_on_one_line():
+    findings = hygiene.check_html_placeholder_tags("x.md", "<from> bis <to>\n")
+    assert len(findings) == 2
+
+
+# ── PLAN-15: markdown-hardwrap ────────────────────────────────────────────────
+
+
+def test_hardwrap_flags_two_consecutive_prose_lines_as_one_finding():
+    text = "Erste Zeile eines Absatzes\nzweite Zeile desselben Absatzes\n"
+    findings = hygiene.check_markdown_hardwrap("x.md", text)
+    assert len(findings) == 1
+    assert findings[0].kind == "markdown-hardwrap"
+    assert findings[0].path == "x.md:1-2"
+
+
+def test_hardwrap_five_line_paragraph_is_one_finding_not_four():
+    text = "\n".join(f"Zeile {i} desselben Absatzes" for i in range(1, 6)) + "\n"
+    findings = hygiene.check_markdown_hardwrap("x.md", text)
+    assert len(findings) == 1
+    assert findings[0].path == "x.md:1-5"
+    assert "5 Zeilen" in findings[0].detail
+
+
+def test_hardwrap_single_line_paragraph_is_ok():
+    text = "Ein Absatz, beliebig lang, aber eine einzige physische Zeile.\n\nZweiter Absatz.\n"
+    assert hygiene.check_markdown_hardwrap("x.md", text) == []
+
+
+def test_hardwrap_ignores_lists_tables_blockquotes():
+    text = (
+        "- Listenpunkt eins\n- Listenpunkt zwei\n\n"
+        "| a | b |\n| - | - |\n\n"
+        "> Zitatzeile eins\n> Zitatzeile zwei\n"
+    )
+    assert hygiene.check_markdown_hardwrap("x.md", text) == []
+
+
+def test_hardwrap_ignores_fenced_code_and_frontmatter():
+    text = "---\nkey: val\nnoch eine\n---\n\n```\ncode zeile eins\ncode zeile zwei\n```\n"
+    assert hygiene.check_markdown_hardwrap("x.md", text) == []
+
+
+def test_hardwrap_two_separate_paragraphs_are_two_findings():
+    text = (
+        "Absatz eins Zeile eins\nAbsatz eins Zeile zwei\n\n"
+        "Absatz zwei Zeile eins\nAbsatz zwei Zeile zwei\n"
+    )
+    findings = hygiene.check_markdown_hardwrap("x.md", text)
+    assert [f.path for f in findings] == ["x.md:1-2", "x.md:4-5"]
+
+
+# ── PLAN-15: doctor-CLI liest jetzt Datei-Inhalte unter vault/ ───────────────
+
+
+def test_doctor_flags_placeholder_tag_in_vault_md(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "vault" / "note.md").write_text("Bitte <cutoff> ersetzen.\n", encoding="utf-8")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "html-placeholder-tag" in out and "note.md:1" in out
+
+
+def test_doctor_flags_hardwrapped_paragraph_in_vault_md(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "vault" / "note.md").write_text(
+        "Erste Zeile eines Absatzes\nzweite Zeile desselben Absatzes\n", encoding="utf-8")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "markdown-hardwrap" in out and "note.md:1-2" in out
+
+
+def test_doctor_ignores_backtick_escaped_placeholder_in_vault_md(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "vault" / "note.md").write_text("Bitte `<cutoff>` ersetzen.\n", encoding="utf-8")
+    assert doctor_cmd.run(_args()) == 0

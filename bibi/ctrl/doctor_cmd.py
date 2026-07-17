@@ -1,11 +1,14 @@
-"""``bibi-ctrl doctor`` — Repo-/Vault-Hygiene-Check (PLAN-5 §5.2; PLAN-13 §13.3).
+"""``bibi-ctrl doctor`` — Repo-/Vault-Hygiene-Check (PLAN-5 §5.2; PLAN-13 §13.3;
+PLAN-15).
 
 Meldet (a) fehlendes git-lfs, (b) große, nicht-LFS-getrackte Dateien (würden die
 History aufblähen, §3.5), (c) committete Sammeldaten unter ``vault/.../data/``,
 (d) fehlende ``vault/CONVENTIONS.md`` (Repo-Invariant jedes bibi-team-Repos),
 (e) verwaiste Job-Worktrees (``data/worktrees/<slug>/`` ohne ``jobs``-Zeile),
-(f) Schedule-MDs, die der Parser nicht lesen konnte. Exit 1 bei Befunden
-(pre-commit/CI-tauglich), sonst 0. Reine Prüflogik: ``hygiene``.
+(f) Schedule-MDs, die der Parser nicht lesen konnte, (g) bloße
+``<Platzhalter>``-Tags außerhalb Code/Backticks (Obsidian rendert sie falsch),
+(h) hart umgebrochene Absätze (CONVENTIONS.md § Markdown style). Exit 1 bei
+Befunden (pre-commit/CI-tauglich), sonst 0. Reine Prüflogik: ``hygiene``.
 """
 
 from __future__ import annotations
@@ -56,6 +59,23 @@ def _known_slugs(root) -> set[str]:
         conn.close()
 
 
+def _markdown_style_findings(vault_root) -> list[hygiene.Finding]:
+    """PLAN-15: jede ``.md`` unter ``vault/`` einlesen (ganzer Vault, nicht nur
+    ``case/`` — die CONVENTIONS.md-Regel gilt fürs gesamte Vault), beide neuen
+    Checks aufrufen. Eine kaputte/nicht lesbare Datei darf den Scan nicht
+    kippen (defensiv, analog ``discovery.discover()``)."""
+    out: list[hygiene.Finding] = []
+    for p in discovery.walk(vault_root):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        rel = p.relative_to(vault_root).as_posix()
+        out += hygiene.check_html_placeholder_tags(rel, text)
+        out += hygiene.check_markdown_hardwrap(rel, text)
+    return out
+
+
 def run(args: argparse.Namespace) -> int:
     root = repo.root()
     paths = _tracked_files(root)
@@ -77,6 +97,7 @@ def run(args: argparse.Namespace) -> int:
         + hygiene.check_data_committed(paths)
         + hygiene.check_orphan_worktrees(_worktree_slugs(root), _known_slugs(root))
         + hygiene.check_invalid_schedules(discovered.errors)
+        + _markdown_style_findings(repo.vault())
     )
     if not findings:
         print("doctor: keine Hygiene-Probleme ✓")
