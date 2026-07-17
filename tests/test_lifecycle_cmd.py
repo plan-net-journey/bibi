@@ -34,6 +34,23 @@ def _activate(root: Path, topic: str) -> Path:
     return folder
 
 
+def _open_unrelated_merge_conflict(root: Path) -> None:
+    """Konflikt auf `pyproject.toml`, offen gelassen (kein abort) — unabhängig
+    vom Case, den ein Test danach schließen/löschen will (Review-Runde 7,
+    Fund 4: `is_conflict_resolution_pending()` prüft repo-weit, nicht nur den
+    aktiven Case)."""
+    _sh(root, "checkout", "-q", "-b", "conflict-side")
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "t"\nversion = "0.1.0"\n', encoding="utf-8")
+    _sh(root, "commit", "-q", "-am", "side change")
+    _sh(root, "checkout", "-q", "trunk")
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "t"\nversion = "0.2.0"\n', encoding="utf-8")
+    _sh(root, "commit", "-q", "-am", "trunk change")
+    subprocess.run(["git", "merge", "conflict-side"], cwd=root,
+                   capture_output=True, text=True)  # Konflikt erwartet, kein check=True
+
+
 # --- close ---
 
 def test_close_requires_active_case(repo_with_origin, capsys):
@@ -52,6 +69,17 @@ def test_close_pauses_clears_path_unparks(repo_with_origin, capsys):
     assert "path" not in state.read()                 # Mirror geleert
     assert _local_head(root) == f"close: {folder.name}"
     assert f"cd: {root.resolve()}" in capsys.readouterr().out  # un-park
+
+
+def test_close_repo_busy_does_not_unpark(repo_with_origin, capsys):
+    root, origin = repo_with_origin
+    folder = _activate(root, "Alpha")
+    _open_unrelated_merge_conflict(root)
+    rc = main(["close", "--push"])
+    assert rc == 1
+    assert state.read().get("path") == f"case/{folder.name}"  # Mirror unangetastet
+    assert "cd:" not in capsys.readouterr().out                # kein Un-Park-Signal
+    assert (root / ".git" / "MERGE_HEAD").exists()              # Konflikt unangetastet
 
 
 def test_close_push_gating(repo_with_origin):
@@ -97,6 +125,18 @@ def test_delete_tracked_folder_and_unparks(repo_with_origin, capsys):
     assert _origin_head(origin) == f"delete: {folder.name}"
     assert "path" not in state.read()
     assert f"cd: {root.resolve()}" in capsys.readouterr().out
+
+
+def test_delete_repo_busy_does_not_unpark(repo_with_origin, capsys):
+    root, origin = repo_with_origin
+    folder = _activate(root, "Alpha")
+    _open_unrelated_merge_conflict(root)
+    rc = main(["delete", "--push"])
+    assert rc == 1
+    assert folder.exists()                                      # nichts gelöscht
+    assert state.read().get("path") == f"case/{folder.name}"    # Mirror unangetastet
+    assert "cd:" not in capsys.readouterr().out                  # kein Un-Park-Signal
+    assert (root / ".git" / "MERGE_HEAD").exists()                # Konflikt unangetastet
 
 
 def test_delete_untracked_case_is_ok(repo_with_origin):
