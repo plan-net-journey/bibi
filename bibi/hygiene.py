@@ -110,7 +110,7 @@ def check_invalid_schedules(errors) -> list[Finding]:
 
 _TAG_RE = re.compile(r"<([a-zA-Z/][^<>\n]{0,40})>")
 _AUTOLINK_SCHEME_RE = re.compile(r"^(https?://|mailto:)")
-_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+_INLINE_CODE_RE = re.compile(r"``.+?``|`[^`\n]+`")
 _NUMBERED_LIST_RE = re.compile(r"^\d+[.)]\s")
 
 

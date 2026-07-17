@@ -226,6 +226,16 @@ def test_html_placeholder_tag_ignores_backtick_escaped():
     assert findings == []
 
 
+def test_html_placeholder_tag_ignores_double_backtick_escaped():
+    # Bug live gefunden (2026-07-18): doppelte Backticks (die Markdown-Syntax,
+    # um einen wörtlichen Backtick IM Code-Span zu zeigen, z. B. in
+    # CONVENTIONS.md selbst) wurden vom einfachen Backtick-Scrubbing nicht
+    # erkannt — `` `<cutoff>` `` schlug fälschlich als Fund durch.
+    findings = hygiene.check_html_placeholder_tags(
+        "x.md", "Schreib es als `` `<cutoff>` `` statt roh.\n")
+    assert findings == []
+
+
 def test_html_placeholder_tag_ignores_indented_code():
     assert hygiene.check_html_placeholder_tags("x.md", "    <cutoff>\n") == []
 
