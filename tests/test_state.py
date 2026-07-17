@@ -71,3 +71,9 @@ def test_sync_conflict_roundtrip(team_repo: Path):
 def test_state_file_lands_in_dot_claude(team_repo: Path):
     state.set_auto_sync(True)
     assert (team_repo / ".claude" / ".state.md").exists()
+
+
+def test_soul_roundtrip(team_repo: Path):
+    assert state.get_soul() is None
+    state.set_soul("Data")
+    assert state.get_soul() == "Data"

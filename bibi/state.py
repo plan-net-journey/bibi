@@ -92,3 +92,11 @@ def get_maintenance() -> bool:
 
 def set_maintenance(value: bool) -> None:
     patch(maintenance=value)
+
+
+def get_soul() -> str | None:
+    return read().get("soul") or None
+
+
+def set_soul(value: str) -> None:
+    patch(soul=value)

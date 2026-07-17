@@ -21,6 +21,7 @@ from . import (
     protocol_cmd,
     run_cmd,
     save_cmd,
+    soul_cmd,
     status_cmd,
     statusline_cmd,
     sync_cmd,
@@ -48,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     doctor_cmd.register(sub)
     mergeback_cmd.register(sub)
     job_cmd.register_rescan(sub)
+    soul_cmd.register(sub)
 
     args = parser.parse_args(argv)
     if not getattr(args, "cmd", None):
