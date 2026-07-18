@@ -23,6 +23,7 @@ class Finding:
     kind: str    # "lfs-missing" | "large-unmanaged" | "data-committed" | "conventions-missing"
                  # | "orphan-worktree" | "invalid-schedule" (PLAN-13 Stufe 13.3)
                  # | "html-placeholder-tag" | "markdown-hardwrap" (PLAN-15)
+                 # | "claude-auth-missing"
     path: str    # betroffener Pfad ("" = global)
     detail: str
 
@@ -104,6 +105,22 @@ def check_invalid_schedules(errors) -> list[Finding]:
     (``bibi.schedule.discovery.DiscoveryResult.errors``, bereits vorhandene
     Logik — hier nur gesammelt/gemeldet, nicht neu geparst)."""
     return [Finding("invalid-schedule", e.schedule_ref, e.error) for e in errors]
+
+
+def check_missing_claude_auth(*, has_claude_jobs: bool, token_present: bool) -> list[Finding]:
+    """``claude:``-Jobs brauchen ``CLAUDE_CODE_OAUTH_TOKEN`` oder
+    ``ANTHROPIC_API_KEY`` in der Umgebung des Daemon-Prozesses
+    (``bibi/wrapper/exec_backend.py::_CONTAINER_ENV``,
+    ``bibi/daemon/worker.py``) — ohne beides schlägt jeder ``claude:``-Job
+    beim Spawn fehl. Nur ein Fund, wenn das Vault tatsächlich ``claude:``-Jobs
+    enthält — kein False Positive für reine Host-/App-Setups ohne
+    Claude-Nutzung."""
+    if has_claude_jobs and not token_present:
+        return [Finding(
+            "claude-auth-missing", "",
+            "vault/ enthält claude:-Jobs, aber weder CLAUDE_CODE_OAUTH_TOKEN "
+            "noch ANTHROPIC_API_KEY ist in der Umgebung gesetzt")]
+    return []
 
 
 # ── PLAN-15: Markdown-Hygiene (kaputte Platzhalter-Tags, Hartumbruch) ────────

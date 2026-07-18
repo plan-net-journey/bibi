@@ -349,3 +349,63 @@ def test_doctor_ignores_backtick_escaped_placeholder_in_vault_md(gitrepo: Path, 
     monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
     (gitrepo / "vault" / "note.md").write_text("Bitte `<cutoff>` ersetzen.\n", encoding="utf-8")
     assert doctor_cmd.run(_args()) == 0
+
+
+# ── Claude-Auth-Token-Check ────────────────────────────────────────────────────
+
+
+def test_missing_claude_auth_flags_when_claude_jobs_and_no_token():
+    findings = hygiene.check_missing_claude_auth(has_claude_jobs=True, token_present=False)
+    assert len(findings) == 1
+    assert findings[0].kind == "claude-auth-missing"
+
+
+def test_missing_claude_auth_no_finding_when_token_present():
+    assert hygiene.check_missing_claude_auth(has_claude_jobs=True, token_present=True) == []
+
+
+def test_missing_claude_auth_no_finding_when_no_claude_jobs():
+    assert hygiene.check_missing_claude_auth(has_claude_jobs=False, token_present=False) == []
+
+
+def test_doctor_flags_missing_claude_auth(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    (d / "Digest.md").write_text(
+        '---\nschedule: "0 8 * * *"\njob: "claude: Fasse den Tag zusammen"\n---\n',
+        encoding="utf-8")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "claude-auth-missing" in out
+
+
+def test_doctor_ignores_claude_auth_when_token_present(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-test-token")
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    (d / "Digest.md").write_text(
+        '---\nschedule: "0 8 * * *"\njob: "claude: Fasse den Tag zusammen"\n---\n',
+        encoding="utf-8")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "claude-auth-missing" not in out
+
+
+def test_doctor_ignores_claude_auth_when_no_claude_jobs(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    (d / "Runner.md").write_text(
+        '---\nschedule: "*/5 * * * *"\njob: "echo hi"\n---\n', encoding="utf-8")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "claude-auth-missing" not in out

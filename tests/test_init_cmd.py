@@ -1,0 +1,34 @@
+"""``bibi-ctrl init`` — Claude-Auth-Token-Hinweis (Next-steps-Punkt aus dem
+Bibi4-Case: weder ``doctor`` noch ``init`` prüften das bisher ab)."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from bibi.ctrl import init_cmd
+
+
+def _args(force: bool = False) -> argparse.Namespace:
+    return argparse.Namespace(force=force)
+
+
+def test_init_hints_when_claude_auth_missing(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setenv("BIBI_CONFIG_PATH", str(tmp_path / "env"))
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr("builtins.input", lambda *_: "")  # alle Prompts: Default übernehmen
+    rc = init_cmd.run(_args())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in out and "ANTHROPIC_API_KEY" in out
+
+
+def test_init_no_hint_when_claude_auth_present(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setenv("BIBI_CONFIG_PATH", str(tmp_path / "env"))
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-test-token")
+    monkeypatch.setattr("builtins.input", lambda *_: "")
+    rc = init_cmd.run(_args())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in out

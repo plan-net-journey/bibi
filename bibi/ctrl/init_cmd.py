@@ -8,6 +8,7 @@ und vor dem Überschreiben wird bestätigt. Reines Python, keine externen Deps.
 from __future__ import annotations
 
 import argparse
+import os
 
 from .. import config
 
@@ -56,4 +57,12 @@ def run(args: argparse.Namespace) -> int:
 
     written = config.write_env(values, path)
     print(f"→ geschrieben: {written}")
+
+    if not (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")):
+        print(
+            "Hinweis: CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY ist in dieser Umgebung nicht "
+            "gesetzt — claude:-Jobs schlagen ohne einen der beiden beim Spawn fehl. init "
+            "schreibt dieses Credential bewusst nicht in die env-Datei (kein Secret-Handling "
+            "hier) — selbst exportieren oder in der Shell-Profildatei setzen."
+        )
     return 0

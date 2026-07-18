@@ -7,18 +7,21 @@ History aufblähen, §3.5), (c) committete Sammeldaten unter ``vault/.../data/``
 (e) verwaiste Job-Worktrees (``data/worktrees/<slug>/`` ohne ``jobs``-Zeile),
 (f) Schedule-MDs, die der Parser nicht lesen konnte, (g) bloße
 ``<Platzhalter>``-Tags außerhalb Code/Backticks (Obsidian rendert sie falsch),
-(h) hart umgebrochene Absätze (CONVENTIONS.md § Markdown style). Exit 1 bei
-Befunden (pre-commit/CI-tauglich), sonst 0. Reine Prüflogik: ``hygiene``.
+(h) hart umgebrochene Absätze (CONVENTIONS.md § Markdown style), (i) fehlender
+Claude-Auth-Token trotz vorhandener ``claude:``-Jobs. Exit 1 bei Befunden
+(pre-commit/CI-tauglich), sonst 0. Reine Prüflogik: ``hygiene``.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 
 from bibi import hygiene, repo
 from bibi.daemon import job_db
 from bibi.schedule import discovery
+from bibi.schedule.models import is_claude_payload
 
 
 def _tracked_files(root) -> list[str]:
@@ -89,6 +92,12 @@ def run(args: argparse.Namespace) -> int:
         files.append((p, size, lfs.get(p, False)))
 
     discovered = discovery.discover(repo.case_dir())
+    has_claude_jobs = any(
+        is_claude_payload(r.spec.payload) for r in discovered.found.values()
+    )
+    token_present = bool(
+        os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
+    )
 
     findings = (
         hygiene.git_lfs_finding(hygiene.git_lfs_installed())
@@ -98,6 +107,8 @@ def run(args: argparse.Namespace) -> int:
         + hygiene.check_orphan_worktrees(_worktree_slugs(root), _known_slugs(root))
         + hygiene.check_invalid_schedules(discovered.errors)
         + _markdown_style_findings(repo.vault())
+        + hygiene.check_missing_claude_auth(
+            has_claude_jobs=has_claude_jobs, token_present=token_present)
     )
     if not findings:
         print("doctor: keine Hygiene-Probleme ✓")
