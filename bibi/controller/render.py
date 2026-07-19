@@ -74,6 +74,15 @@ td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
    Client zeigen dieselbe Toggle-Menge, nicht verfügbare Funktionen (z.B.
    MAINT auf dem Client) bleiben an Ort und Stelle, statt zu verschwinden. */
 .toggle:disabled { opacity: .35; cursor: default; text-decoration: none; }
+/* Time-Toggle (Bibi4-Iteration, User-Fund: "Time: abs./rel./both" für die
+   last/since- und next-Spalten) — alle drei Varianten stehen serverseitig
+   immer im Markup, data-timeformat auf <html> blendet per CSS genau eine
+   ein, kein Re-Render pro Klick nötig. Default (per _TIME_JS) ist "both". */
+:root[data-timeformat="abs"] .tt-relonly,
+:root[data-timeformat="abs"] .tt-relboth,
+:root[data-timeformat="both"] .tt-relonly,
+:root[data-timeformat="rel"] .tt-abs,
+:root[data-timeformat="rel"] .tt-relboth { display: none; }
 a.slug { font-weight: 600; text-decoration: none; }
 a.slug:hover { text-decoration: underline; }
 .sched a { text-decoration: none; }
@@ -354,6 +363,35 @@ def _abs_datetime(ts: float | None, now: float) -> str:
     return dt.strftime("%d.%m. %H:%M")
 
 
+def _time_abs_full(ts: float | None) -> str:
+    """Volles absolutes Format für den Time-Toggle (Bibi4-Iteration, User-
+    Beispiel ``2026-07-18 23:18``) — mit Jahr, anders als das knappere
+    ``_abs_datetime()`` (nur TT.MM., für die kompakte Journal-Spalte gedacht,
+    wo das Jahr praktisch nie mehrdeutig ist)."""
+    if ts is None:
+        return "—"
+    import datetime
+    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
+def _time_toggle_cell(ts: float | None, now: float, *, rel_fn=_ago) -> str:
+    """Rendert alle drei Time-Toggle-Varianten (abs/rel/beides) auf einmal vor
+    — CSS blendet über ``data-timeformat`` auf ``<html>`` genau eine Variante
+    ein (Bibi4-Iteration, User-Fund: Toggle "Time: abs./rel./both" für die
+    last/since- und next-Spalten). Kein Re-Render bei einem Toggle-Klick
+    nötig, kein eigener Client-Tick für die relative Anzeige — die betroffenen
+    Tabellen pollen ohnehin schon (2s Schedules/Jobs), das reicht für die
+    Aktualität. ``rel_fn`` ist ``_ago`` (Vergangenheit, "last/since") oder
+    ``_until`` (Zukunft, "next", trägt schon den "asap"-Sonderfall)."""
+    if ts is None:
+        return "—"
+    abs_s = _e(_time_abs_full(ts))
+    rel_s = _e(rel_fn(ts, now))
+    return (f'<span class="tt-abs">{abs_s}</span>'
+           f'<span class="tt-relonly">{rel_s}</span>'
+           f'<span class="tt-relboth"> ({rel_s})</span>')
+
+
 def _e(v) -> str:
     return html.escape("" if v is None else str(v))
 
@@ -391,8 +429,8 @@ def _sched_row(s: dict, now: float) -> str:
     slug = _e(s.get("slug"))
     st = _e(s.get("last_status"))
     kind = _e(_effective_sched_type(s))
-    nxt = _until(s.get("next_fire_at"), now)
-    ago = _ago(s.get("last_run_at"), now)
+    nxt = _time_toggle_cell(s.get("next_fire_at"), now, rel_fn=_until)
+    ago = _time_toggle_cell(s.get("last_run_at"), now, rel_fn=_ago)
     run_id = s.get("last_run_id")
     # Status/letzter-seit -> Lauf-Details (die konkrete Ausführung); Schedule/
     # nächster -> Job-Details (der Schedule selbst) — User-Feedback 2026-07-01.
@@ -847,6 +885,44 @@ _THEME_JS = """
 """
 
 
+def _time_toggle() -> str:
+    """Time-Toggle (Bibi4-Iteration, User-Fund: "Time: abs./rel./both" für
+    die last/since- und next-Spalten) — 3-State-Zyklus abs → rel → both → abs,
+    analog zum ☾/☀-Symbolwechsel von ``_theme_toggle()``. Startsymbol/-titel
+    per ``_TIME_JS`` gesetzt (Default "both"), damit hier kein serverseitiger
+    State nötig ist. Die drei Icons sind bewusst plain-Unicode (Geometric
+    Shapes, wie ☾/☀ kein Emoji-Rendering) statt Uhr-Symbolen aus dem Emoji-
+    Bereich, die auf den meisten Systemen farbig statt monochrom rendern."""
+    return '<button id="time" class="toggle" onclick="bibiToggleTime()">◒</button>'
+
+
+#: Time-Toggle: schaltet data-timeformat auf <html> zwischen "abs"/"rel"/"both"
+#: um (s. _CSS für die .tt-abs/.tt-relonly/.tt-relboth-Sichtbarkeitsregeln),
+#: persistiert in localStorage — analog zu _THEME_JS. Icons: ◐ (abs) / ◑ (rel)
+#: / ◒ (both, Default).
+_TIME_JS = """
+(function(){
+  const KEY = 'bibiTimeFormat';
+  const ORDER = ['abs', 'rel', 'both'];
+  const ICON = {abs: '◐', rel: '◑', both: '◒'};
+  const TITLE = {abs: 'Zeit: absolut', rel: 'Zeit: relativ', both: 'Zeit: absolut + relativ'};
+  const root = document.documentElement;
+  function apply(mode){
+    root.setAttribute('data-timeformat', mode);
+    const b = document.getElementById('time');
+    if (b) { b.textContent = ICON[mode]; b.title = TITLE[mode]; }
+  }
+  window.bibiToggleTime = function(){
+    const cur = root.getAttribute('data-timeformat') || 'both';
+    const next = ORDER[(ORDER.indexOf(cur) + 1) % ORDER.length];
+    localStorage.setItem(KEY, next);
+    apply(next);
+  };
+  apply(localStorage.getItem(KEY) || 'both');
+})();
+"""
+
+
 def _header(active: str, status: dict | None = None) -> str:
     """Gemeinsame obere Navigationsleiste: links Titel + reine Tab-Leiste,
     rechts alle Toggles (FOLLOW/RESCAN/MAINT/Datum-Uhrzeit/THEME) — Bibi4-
@@ -859,7 +935,7 @@ def _header(active: str, status: dict | None = None) -> str:
     (``/-/status``), keine neue Datenquelle nötig."""
     roles = (status or {}).get("roles")
     left = f'<h1>bibi</h1>{_screen_nav(active, roles)}'
-    right = (f'{_follow_toggle()}{_ops_handles(status)}'
+    right = (f'{_follow_toggle()}{_ops_handles(status)}{_time_toggle()}'
             f'{_live_clock()}{_theme_toggle()}')
     return (f'<header><div class="nav-left">{left}</div>'
             f'<div class="nav-right">{right}</div></header>')
@@ -903,6 +979,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f"{schedules_fragment(schedules, now, typ=typ, status=status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -1049,6 +1126,7 @@ def log_page(daemon_status: dict | None = None, *, git_status: dict | None = Non
         f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s)}"
         f"{_log_panel()}"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -1336,6 +1414,7 @@ def daemon_page(daemon_status: dict | None = None, now: float | None = None) -> 
         f"{_status_cards(status, now)}"
         f"{_log_panel()}"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -1398,15 +1477,15 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
         st = "awaiting" if live.get("status") == "awaiting" else "running"
         status_cell = (f'<a class="rowlink" href="/-/ui/jobs/detail/{s}">'
                        f'<span class="st {st}">{st}</span></a>')
-        started_cell = _abs_time(live.get("started_at"))
+        started_cell = _time_toggle_cell(live.get("started_at"), now, rel_fn=_ago)
         ended_cell = "—"
         started_at = live.get("started_at")
         runtime_cell = f"{round(now - started_at)} s" if started_at is not None else "—"
     elif jid is not None:
         status_cell = (f'<a class="rowlink" href="/-/ui/run/{jid}">'
                        f'<span class="st {_e(lr["status"])}">{_e(lr["status"])}</span></a>')
-        started_cell = _abs_time(lr.get("started_at"))
-        ended_cell = _abs_time(lr.get("finished_at"))
+        started_cell = _time_toggle_cell(lr.get("started_at"), now, rel_fn=_ago)
+        ended_cell = _time_toggle_cell(lr.get("finished_at"), now, rel_fn=_ago)
         runtime_cell = _duration_cell(lr)
     else:
         status_cell = '<span class="side-empty">noch nie lokal gelaufen</span>'
@@ -1510,6 +1589,7 @@ def jobs_page(
         f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s)}"
         f"{jobs_fragment(rows, local_runs, runs, now=now, public_host=public_host)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -1715,6 +1795,7 @@ def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_LIVE_AUTOREFRESH_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -1959,6 +2040,7 @@ def feed_page(
         f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s)}"
         f"{feed_fragment(feed_data, days=days, weeks=weeks, now=now)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -2642,6 +2724,7 @@ def schedule_detail_page(
         f"<script>{_LIVE_JS}</script>"
         f"<script>{_JOURNAL_AUTOREFRESH_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -2827,6 +2910,7 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         f'<div class="outscroll">{out}</div>'
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -2906,6 +2990,7 @@ def schedule_attrs_page(slug: str, data: dict, now: float | None = None) -> str:
         f'<h1><span class="st {st}">{name}</span> · Attribute</h1>'
         f"{config_html}"
         f"{runtime_html}"
+        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -2943,6 +3028,7 @@ def jobs_detail_attrs_page(slug: str, local: dict | None) -> str:
         f'</div>'
         f'<h1>{name} · Attribute</h1>'
         f"{config_html}"
+        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
