@@ -491,12 +491,14 @@ def schedule_list(schedules: list[dict], now: float | None = None) -> str:
 
 def schedules_fragment(schedules: list[dict], now: float | None = None,
                        *, typ: str | None = None, status: str | None = None) -> str:
-    """Self-pollender Wrapper um die (bereits gefilterte) Schedule-Liste. Der
-    Self-Poll trägt den aktiven Filter in der URL, damit er ihn über den 2s-Tick
-    bewahrt. Ziel = ``/-/ui/schedules/list`` (das Fragment; die Seite liegt auf
-    ``/-/ui/schedules``). Aktive Liste und Archive/Journal sitzen in je einem
-    eigenen ``.panel-card`` (PLAN-25 Befund 6: 3 Rahmen statt 2 — Chart /
-    Schedules / Archive), nur der äußere Poll-Container trägt id/hx-Attribute."""
+    """Self-pollender Wrapper um die (bereits gefilterte) aktive Schedule-
+    Liste. Der Self-Poll trägt den aktiven Filter in der URL, damit er ihn
+    über den 2s-Tick bewahrt. Ziel = ``/-/ui/schedules/list`` (das Fragment;
+    die Seite liegt auf ``/-/ui/schedules``). Archive/Journal sitzen seit der
+    Bibi4-Iteration nicht mehr hier, sondern auf einem eigenen Screen
+    (``archive_fragment()``/``archive_page()``, User-Fund: "Archive wird
+    verschoben auf einen eigenen Screen") — löst PLAN-25 Befund 6 (3 Rahmen
+    Chart/Schedules/Archive auf einer Seite) ab."""
     now = time.time() if now is None else now
     qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status))
                   if v and v != "alle")
@@ -504,9 +506,46 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
     attrs = (f'id="schedules" hx-get="{url}" '
             f'hx-trigger="{_POLL}" hx-swap="outerHTML"')
     active_html = f'<div class="panel-card">{_schedule_active_block(schedules, now)}</div>'
-    archive_body = _schedule_archive_block(schedules, now)
-    archive_html = f'<div class="panel-card">{archive_body}</div>' if archive_body else ""
-    return f"<div {attrs}>{active_html}{archive_html}</div>"
+    return f"<div {attrs}>{active_html}</div>"
+
+
+def archive_fragment(schedules: list[dict], now: float | None = None) -> str:
+    """Self-pollender Archive-Screen-Kern (Host) — Bibi4-Iteration, User-Fund:
+    "Archive wird verschoben auf einen eigenen Screen". Zeigt dieselben
+    Archive-/Journal-Gruppen wie zuvor der untere Teil von ``/-/ui/schedules``
+    (``_schedule_archive_block()``), jetzt eigenständig unter ``/-/ui/archive``.
+    Ziel = ``/-/ui/archive/list``."""
+    now = time.time() if now is None else now
+    body = _schedule_archive_block(schedules, now)
+    if not body:
+        body = '<p class="out-empty">— kein Archiv —</p>'
+    attrs = f'id="archive" hx-get="/-/ui/archive/list" hx-trigger="{_POLL}" hx-swap="outerHTML"'
+    return f'<div {attrs}><div class="panel-card">{body}</div></div>'
+
+
+def archive_page(schedules: list[dict], now: float | None = None,
+                 *, daemon_status: dict | None = None) -> str:
+    """Archive-Screen (Host, Bibi4-Iteration) — eigene Seite für Archive/
+    Journal, abgetrennt von der aktiven Schedule-Liste auf ``/-/ui/schedules``.
+    Dieselben Nav/Ops-Bausteine wie jede andere Seite (``_header()``)."""
+    now = time.time() if now is None else now
+    daemon_status = daemon_status or {}
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>bibi · Archive</title>"
+        f"<script>{_FOLLOW_JS}</script>"
+        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
+        f"<style>{_CSS}</style></head><body>"
+        f"{_header('Archive', daemon_status)}"
+        f"{archive_fragment(schedules, now)}"
+        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
 
 
 # ── Lauf-Historie-Chart (PLAN-21 Befund 11, v2 — User-Redesign 2026-07-08) ───
@@ -800,11 +839,18 @@ def _screen_nav(active: str, roles: list[str] | None = None) -> str:
     wäre die Seite ohnehin nur ein 404). Der Client-Jobs-Tab nur mit
     ``connect``-Rolle (User-Entscheidung trotz Rückfrage: bewusst NICHT
     zusätzlich für reine Scheduler-Knoten wie sarasate — auch wenn der Screen
-    dort technisch funktionieren würde)."""
+    dort technisch funktionieren würde).
+
+    Archive-Tab (Bibi4-Iteration, User-Fund: Archive/Journal auf einen eigenen
+    Screen auslagern statt unterer Teil von Schedules) bisher nur für den Host
+    (``scheduler``-Rolle, ``archive_page()``/``/-/ui/archive``) — der Client-
+    Gegenpart (lokale Läufe) ist eine eigene, noch offene Iteration, s.
+    ``archive_page()``-Docstring."""
     roles = roles or []
     tabs = [("Feed", "/-/")]
     if "scheduler" in roles:
         tabs.append(("Jobs", "/-/ui/schedules"))
+        tabs.append(("Archive", "/-/ui/archive"))
     if "connect" in roles:
         tabs.append(("Jobs", "/-/ui/jobs"))
     tabs += [("Live Log", "/-/ui/logs"), ("API Docs", "/-/docs")]

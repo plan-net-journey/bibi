@@ -201,18 +201,48 @@ def test_schedules_fragment_active_only_has_single_panel_card():
     assert frag.count('class="panel-card"') == 1
 
 
-def test_schedules_fragment_archive_gets_own_panel_card():
-    # PLAN-25 Befund 6, User-Fund: 3 Rahmen statt 2 (Chart/Schedules/Archive)
-    # — Archive (und Journal) gehören in einen eigenen zweiten Rahmen, getrennt
-    # von der aktiven Liste.
+def test_schedules_fragment_never_shows_archive_anymore():
+    # Bibi4-Iteration, User-Fund: "Archive wird verschoben auf einen eigenen
+    # Screen" — schedules_fragment() zeigt nur noch die aktive Liste, auch
+    # wenn Archive/Journal-Einträge vorliegen (die leben jetzt exklusiv auf
+    # archive_fragment()/-page(), s. u.). Löst PLAN-25 Befund 6 (3 Rahmen
+    # Chart/Schedules/Archive auf einer Seite) ab.
     items = [_sched("a", active=True), _sched("b", active=False),
              _sched("c", active=None)]
     frag = render.schedules_fragment(items, now=1000.0)
-    assert frag.count('class="panel-card"') == 2
-    first_card = frag.split('class="panel-card"')[1]
-    assert "Schedules (" in first_card and "Archive" not in first_card
-    second_card = frag.split('class="panel-card"')[2]
-    assert "Archive" in second_card and "Journal" in second_card
+    assert frag.count('class="panel-card"') == 1
+    assert "Archive" not in frag and "Journal" not in frag
+
+
+def test_archive_fragment_shows_archive_and_journal_in_one_panel_card():
+    items = [_sched("a", active=True), _sched("b", active=False),
+             _sched("c", active=None)]
+    frag = render.archive_fragment(items, now=1000.0)
+    assert frag.count('class="panel-card"') == 1
+    assert "Archive" in frag and "Journal" in frag
+    assert "Schedules (" not in frag  # aktive Liste steht nicht mehr hier
+
+
+def test_archive_fragment_empty_shows_placeholder():
+    frag = render.archive_fragment([], now=1000.0)
+    assert "kein Archiv" in frag
+
+
+def test_archive_fragment_self_polls_under_follow():
+    frag = render.archive_fragment([_sched("a", active=False)], now=1.0)
+    assert 'id="archive"' in frag
+    assert 'hx-get="/-/ui/archive/list"' in frag
+    assert "every 2s [window.bibiFollow]" in frag
+
+
+def test_archive_page_has_header_and_archive_fragment():
+    html = render.archive_page(
+        [_sched("a", active=False)], now=1000.0,
+        daemon_status={"roles": ["scheduler"]})
+    assert html.lower().startswith("<!doctype html>")
+    assert 'href="/-/ui/archive"' not in html  # aktiver Tab, kein Link auf sich selbst
+    assert '<span class="tab-active">Archive</span>' in html
+    assert 'id="archive"' in html
 
 
 def test_schedules_fragment_polls_list_with_filter():
@@ -398,6 +428,26 @@ def test_ui_schedules_screen_route_has_rescan_and_reflects_maintenance(team_repo
         assert r.status_code == 200
         assert 'id="rescan"' in r.text
         assert 'id="maint" class="toggle warn"' in r.text
+
+
+def test_ui_archive_screen_route(team_repo: Path):
+    # Bibi4-Iteration, User-Fund: eigener Screen fuer Archive/Journal.
+    client = FakeClient([_sched("done", active=False), _sched("hist", active=None)])
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/archive")
+        assert r.status_code == 200
+        assert "done" in r.text and "hist" in r.text
+        assert "Schedules (" not in r.text  # aktive Liste lebt nur auf /-/ui/schedules
+
+
+def test_ui_archive_list_fragment_route(team_repo: Path):
+    client = FakeClient([_sched("done", active=False)])
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/archive/list")
+        assert r.status_code == 200
+        assert 'id="archive"' in r.text and "done" in r.text
 
 
 def test_ui_schedules_list_filters_problem(team_repo: Path):

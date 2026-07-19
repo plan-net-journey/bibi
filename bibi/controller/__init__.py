@@ -271,6 +271,19 @@ def add_controller_routes(
         _set_filter_cookies(resp, eff_typ, eff_status)
         return resp
 
+    @app.get("/-/ui/archive", include_in_schema=False)
+    def archive_screen():
+        # Archive-Screen (Host, Bibi4-Iteration) — eigener Screen für Archive/
+        # Journal, seit dieser Iteration nicht mehr Teil von /-/ui/schedules
+        # (User-Fund: "Archive wird verschoben auf einen eigenen Screen").
+        return HTMLResponse(render.archive_page(_schedules(), daemon_status=_status()))
+
+    @app.get("/-/ui/archive/list", include_in_schema=False)
+    def archive_list_fragment():
+        # Self-Poll-Ziel, kein Filter (die CR-Spec kennt hier keine Type/Status-
+        # Filterleiste, anders als /-/ui/schedules).
+        return HTMLResponse(render.archive_fragment(_schedules()))
+
     @app.get("/-/ui/schedules/timeseries", include_in_schema=False)
     def schedules_timeseries_fragment(request: Request, res: int | None = None):
         # Self-Poll-Ziel des Stat-Grid/Charts — eigene Route, eigene
