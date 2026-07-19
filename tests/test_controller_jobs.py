@@ -77,11 +77,19 @@ def test_jobs_table_shows_git_status_chip():
     assert 'class="chip new"' in html and ">neu<" in html
 
 
-def test_jobs_table_git_status_modified_and_clean():
-    html = render._jobs_table(
-        [_row("a", git_status="modified"), _row("b", git_status="clean")], {}, now=100.0)
+def test_jobs_table_git_status_modified_chip_at_slug():
+    # Bibi4-Iteration, User-Fund: keine eigene GIT-Spalte mehr, Chip sitzt
+    # direkt am Slug.
+    html = render._jobs_table([_row("a", git_status="modified")], {}, now=100.0)
     assert 'class="chip modified"' in html and ">geändert<" in html
-    assert 'class="chip clean"' in html and ">unverändert<" in html
+
+
+def test_jobs_table_git_status_clean_shows_no_chip():
+    # Bibi4-Iteration, User-Fund: "es genügt new/modified/clean, wobei wir
+    # clean als Chip gar nicht anzeigen. Damit machen wir den Screen für den
+    # Normalzustand ruhiger."
+    html = render._jobs_table([_row("a", git_status="clean")], {}, now=100.0)
+    assert "chip" not in html
 
 
 def test_jobs_table_shows_git_status_conflict_chip():
@@ -131,28 +139,40 @@ def test_jobs_table_live_row_shows_running():
     assert 'href="/-/ui/run/42"' not in html  # alter Status tritt zurück
 
 
-def test_jobs_table_shows_started_finished_and_runtime_for_last_run():
-    # PLAN-28 User-Feedback: "letzter Start / letztes Ende / letzte Laufzeit".
+def test_human_duration_thresholds():
+    # Bibi4-Iteration, User-Fund: "Laufzeit soll human-readable sein ... je
+    # nach Dauer ein angepasstes Delta" — zwei Einheiten je Stufe.
+    assert render._human_duration(None) == "—"
+    assert render._human_duration(45) == "45s"
+    assert render._human_duration(192) == "3m 12s"
+    assert render._human_duration(5400) == "1h 30m"
+    assert render._human_duration(90000) == "1d 1h"
+
+
+def test_jobs_table_shows_last_and_runtime_for_last_run():
+    # Bibi4-Iteration, User-Fund: Slug/Type/Status/last-since/Runtime — EINE
+    # last/since-Spalte statt getrennt Start/Ende (analog zu _sched_row()s
+    # last_run_at: abgeschlossen -> Ende des letzten Laufs).
     lr = {"id": 42, "status": "complete", "started_at": 100.0,
          "finished_at": 112.0, "exec_runtime": 12.0}
     html = render._jobs_table([_row("a")], {"a": lr}, now=200.0)
-    assert render._abs_time(100.0) in html
     assert render._abs_time(112.0) in html
-    assert "12 s" in html
+    assert "12s" in html
 
 
-def test_jobs_table_no_local_run_yet_shows_dash_for_started_finished_runtime():
+def test_jobs_table_no_local_run_yet_shows_dash_for_last_and_runtime():
     html = render._jobs_table([_row("a")], {}, now=100.0)
-    assert "<td>—</td><td>—</td><td>—</td>" in html
+    assert "<td>—</td><td>—</td></tr>" in html
 
 
 def test_jobs_table_live_row_shows_started_and_ongoing_runtime():
     # "aktuelle Laufzeit" — für einen laufenden Job die bisherige Dauer
-    # (now - started_at), kein "letztes Ende" (noch offen).
+    # (now - started_at); last/since zeigt den Start des laufenden Versuchs
+    # (kein "letztes Ende", noch offen).
     html = render._jobs_table(
         [_row("a", live={"id": "jid1", "started_at": 100.0})], {}, now=130.0)
     assert render._abs_time(100.0) in html
-    assert "30 s" in html
+    assert "30s" in html
 
 
 def test_jobs_table_live_row_shows_awaiting_when_signaled():
@@ -211,7 +231,7 @@ def test_client_archive_table_renders_slug_type_status_runtime_next():
     assert 'href="/-/ui/run/7">mein-testjob<' in html
     assert '<td class="kind">claude</td>' in html
     assert 'class="st complete" href="/-/ui/run/7">complete<' in html
-    assert "3 s" in html
+    assert "3s" in html
     assert "<td>—</td>" in html  # next: beim Client immer "—", nicht ausgeblendet
 
 

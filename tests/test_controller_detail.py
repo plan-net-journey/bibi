@@ -229,7 +229,7 @@ def test_run_rows_show_duration_column():
     html = render.schedule_detail_page(
         {"slug": "x", "kind": "job", "trigger": "now"}, runs, slug="x")
     assert "Dauer" in html
-    assert "61 s" in html
+    assert "1m 1s" in html
 
 
 def test_run_rows_duration_dash_when_missing():

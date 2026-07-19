@@ -269,7 +269,8 @@ def add_controller_routes(
             items, typ=eff_typ, status=eff_status, daemon_status=_status(),
             landings=_landings(), git_status=_feed_git_status(), host_url=_scheduler_url(),
             status_poll_interval_s=config.status_poll_interval(),
-            job_status_poll_interval_s=config.job_status_poll_interval(), bucket_minutes=eff_res))
+            job_status_poll_interval_s=config.job_status_poll_interval(), bucket_minutes=eff_res,
+            public_host=config.public_host()))
         _set_filter_cookies(resp, eff_typ, eff_status)
         _set_resolution_cookie(resp, eff_res)
         return resp
@@ -279,9 +280,11 @@ def add_controller_routes(
         # Filter-fähiges Fragment — Self-Poll-Ziel + Ziel der Filter-Dropdowns
         # (der tatsächliche Request beim Ändern eines Filters, s.
         # _set_filter_cookies oben).
+        from bibi import config
         eff_typ, eff_status = _effective_filter(request, typ, status)
         items = render.filter_schedules(_schedules(), typ=eff_typ, status=eff_status)
-        resp = HTMLResponse(render.schedules_fragment(items, typ=eff_typ, status=eff_status))
+        resp = HTMLResponse(render.schedules_fragment(
+            items, typ=eff_typ, status=eff_status, public_host=config.public_host()))
         _set_filter_cookies(resp, eff_typ, eff_status)
         return resp
 
@@ -296,13 +299,15 @@ def add_controller_routes(
         return HTMLResponse(render.archive_page(
             _schedules(), daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
-            job_status_poll_interval_s=config.job_status_poll_interval()))
+            job_status_poll_interval_s=config.job_status_poll_interval(),
+            public_host=config.public_host()))
 
     @app.get("/-/ui/archive/list", include_in_schema=False)
     def archive_list_fragment():
         # Self-Poll-Ziel, kein Filter (die CR-Spec kennt hier keine Type/Status-
         # Filterleiste, anders als /-/ui/schedules).
-        return HTMLResponse(render.archive_fragment(_schedules()))
+        from bibi import config
+        return HTMLResponse(render.archive_fragment(_schedules(), public_host=config.public_host()))
 
     @app.get("/-/ui/schedules/timeseries", include_in_schema=False)
     def schedules_timeseries_fragment(request: Request, res: int | None = None):

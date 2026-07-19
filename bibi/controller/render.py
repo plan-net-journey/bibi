@@ -335,6 +335,28 @@ def _ago(ts: float | None, now: float) -> str:
     return f"{d // 86400} d ago"
 
 
+def _human_duration(seconds: float | None) -> str:
+    """Dauer (kein Zeitpunkt) als angepasstes Delta — Bibi4-Iteration, User-
+    Fund: "die Spalte Laufzeit soll human-readable sein und nicht nur die
+    Sekunden zeigen, sondern je nach Dauer ein angepasstes Delta". Analog zu
+    ``_ago()``/``_until()``, aber ohne "vor"/"in"-Präfix (reine Dauer, keine
+    Distanz zu ``now``) und mit zwei Einheiten je Stufe (z.B. "3m 12s") statt
+    einer, damit eine 90-Minuten-Laufzeit nicht auf "1h" abgerundet wird."""
+    if seconds is None:
+        return "—"
+    d = max(0, int(seconds))
+    if d < 60:
+        return f"{d}s"
+    if d < 3600:
+        m, s = divmod(d, 60)
+        return f"{m}m {s}s"
+    if d < 86400:
+        h, rem = divmod(d, 3600)
+        return f"{h}h {rem // 60}m"
+    days, rem = divmod(d, 86400)
+    return f"{days}d {rem // 3600}h"
+
+
 def _until(ts: float | None, now: float) -> str:
     """Zukunfts-Distanz („in …") für „nächster Lauf". ``None`` (kein Trigger
     gesetzt) → „—"; ein gesetzter, aber bereits fälliger/überfälliger
@@ -438,10 +460,19 @@ def _group_schedules(schedules: list[dict]) -> tuple[list[dict], list[dict], lis
     return active, archive, journaled
 
 
-def _sched_row(s: dict, now: float) -> str:
+def _sched_row(s: dict, now: float, *, public_host: str = "localhost") -> str:
     slug = _e(s.get("slug"))
     st = _e(s.get("last_status"))
-    kind = _e(_effective_sched_type(s))
+    # Bibi4-Iteration, User-Fund: "Type (beim Host wird app noch nicht
+    # angezeigt, soll es aber, auch mit Port!)" — dieselbe Zellen-Ableitung
+    # wie die Client-Jobs-Tabelle (_jobs_type_cell()), nicht mehr
+    # _effective_sched_type()/models.effective_kind(). Bewusst NUR die
+    # Anzeige betroffen: filter_schedules()/_effective_sched_type() bleiben
+    # unverändert (PLAN-25 Befund 7 galt fürs Filtern, User-Entscheidung
+    # "Jobs mit Port und Prefix sollen einfach als Jobs erscheinen" — dieser
+    # Fund hier reversiert nur die Anzeige, nicht die Filter-Semantik, die
+    # wurde nicht neu angefragt).
+    kind = _jobs_type_cell(s, public_host)
     nxt = _time_toggle_cell(s.get("next_fire_at"), now, rel_fn=_until)
     ago = _time_toggle_cell(s.get("last_run_at"), now, rel_fn=_ago)
     run_id = s.get("last_run_id")
@@ -463,47 +494,53 @@ def _sched_row(s: dict, now: float) -> str:
     )
 
 
-def _sched_table(items: list[dict], now: float) -> str:
-    rows = "".join(_sched_row(s, now) for s in items)
+def _sched_table(items: list[dict], now: float, *, public_host: str = "localhost") -> str:
+    rows = "".join(_sched_row(s, now, public_host=public_host) for s in items)
     return ('<table class="sched"><thead><tr><th>Schedule</th><th>Type</th><th>Status</th>'
             f'<th>last / since</th><th>next</th></tr></thead><tbody>{rows}'
             "</tbody></table>")
 
 
-def _schedule_active_block(schedules: list[dict], now: float) -> str:
+def _schedule_active_block(schedules: list[dict], now: float,
+                           *, public_host: str = "localhost") -> str:
     head = f'<h2>Schedules ({len(schedules)})</h2>'
     if not schedules:
         return head + '<p class="out-empty">— no schedules —</p>'
     active, _archive, _journaled = _group_schedules(schedules)
-    body = (_sched_table(active, now) if active
+    body = (_sched_table(active, now, public_host=public_host) if active
             else '<p class="out-empty">— no active schedules —</p>')
     return head + body
 
 
-def _schedule_archive_block(schedules: list[dict], now: float) -> str:
+def _schedule_archive_block(schedules: list[dict], now: float,
+                            *, public_host: str = "localhost") -> str:
     if not schedules:
         return ""
     _active, archive, journaled = _group_schedules(schedules)
     body = ""
     if archive:
-        body += f'<h3>Archive ({len(archive)})</h3>' + _sched_table(archive, now)
+        body += f'<h3>Archive ({len(archive)})</h3>' + _sched_table(archive, now, public_host=public_host)
     if journaled:
-        body += f'<h3>Journal — history only ({len(journaled)})</h3>' + _sched_table(journaled, now)
+        body += (f'<h3>Journal — history only ({len(journaled)})</h3>'
+                + _sched_table(journaled, now, public_host=public_host))
     return body
 
 
-def schedule_list(schedules: list[dict], now: float | None = None) -> str:
+def schedule_list(schedules: list[dict], now: float | None = None,
+                  *, public_host: str = "localhost") -> str:
     """Die volle Liste, gruppiert nach Registrierungs-Zustand (PLAN-14 Stufe
     14.6, erweitert PLAN-23 Befund 2): Aktiv (MD entdeckt) / Archive (MD
     entfernt ODER abgeschlossener oneshot) / Journal (nur Journal-Historie).
     Flach + immer sichtbar, kein Klapp mehr — überlebt so den 2s-Poll ohne
     Expand-Verlust."""
     now = time.time() if now is None else now
-    return _schedule_active_block(schedules, now) + _schedule_archive_block(schedules, now)
+    return (_schedule_active_block(schedules, now, public_host=public_host)
+           + _schedule_archive_block(schedules, now, public_host=public_host))
 
 
 def schedules_fragment(schedules: list[dict], now: float | None = None,
-                       *, typ: str | None = None, status: str | None = None) -> str:
+                       *, typ: str | None = None, status: str | None = None,
+                       public_host: str = "localhost") -> str:
     """Self-pollender Wrapper um die (bereits gefilterte) aktive Schedule-
     Liste. Der Self-Poll trägt den aktiven Filter in der URL, damit er ihn
     über den 2s-Tick bewahrt. Ziel = ``/-/ui/schedules/list`` (das Fragment;
@@ -518,18 +555,20 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
     url = "/-/ui/schedules/list" + (f"?{qs}" if qs else "")
     attrs = (f'id="schedules" hx-get="{url}" '
             f'hx-trigger="{_POLL}" hx-swap="outerHTML"')
-    active_html = f'<div class="panel-card">{_schedule_active_block(schedules, now)}</div>'
+    active_html = (f'<div class="panel-card">'
+                  f'{_schedule_active_block(schedules, now, public_host=public_host)}</div>')
     return f"<div {attrs}>{active_html}</div>"
 
 
-def archive_fragment(schedules: list[dict], now: float | None = None) -> str:
+def archive_fragment(schedules: list[dict], now: float | None = None,
+                     *, public_host: str = "localhost") -> str:
     """Self-pollender Archive-Screen-Kern (Host) — Bibi4-Iteration, User-Fund:
     "Archive wird verschoben auf einen eigenen Screen". Zeigt dieselben
     Archive-/Journal-Gruppen wie zuvor der untere Teil von ``/-/ui/schedules``
     (``_schedule_archive_block()``), jetzt eigenständig unter ``/-/ui/archive``.
     Ziel = ``/-/ui/archive/list``."""
     now = time.time() if now is None else now
-    body = _schedule_archive_block(schedules, now)
+    body = _schedule_archive_block(schedules, now, public_host=public_host)
     if not body:
         body = '<p class="out-empty">— kein Archiv —</p>'
     attrs = f'id="archive" hx-get="/-/ui/archive/list" hx-trigger="{_POLL}" hx-swap="outerHTML"'
@@ -539,7 +578,7 @@ def archive_fragment(schedules: list[dict], now: float | None = None) -> str:
 def archive_page(schedules: list[dict], now: float | None = None,
                  *, daemon_status: dict | None = None, git_status: dict | None = None,
                  host_url: str | None = None, status_poll_interval_s: int = 30,
-                 job_status_poll_interval_s: int = 2) -> str:
+                 job_status_poll_interval_s: int = 2, public_host: str = "localhost") -> str:
     """Archive-Screen (Host, Bibi4-Iteration) — eigene Seite für Archive/
     Journal, abgetrennt von der aktiven Schedule-Liste auf ``/-/ui/schedules``.
     Dieselben Nav/Ops-Bausteine wie jede andere Seite (``_header()``).
@@ -561,7 +600,7 @@ def archive_page(schedules: list[dict], now: float | None = None,
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Archive', daemon_status)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
-        f"{archive_fragment(schedules, now)}"
+        f"{archive_fragment(schedules, now, public_host=public_host)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
@@ -1028,7 +1067,8 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
                    landings: list[dict] | None = None,
                    git_status: dict | None = None, host_url: str | None = None,
                    status_poll_interval_s: int = 30, job_status_poll_interval_s: int = 2,
-                   bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES) -> str:
+                   bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES,
+                   public_host: str = "localhost") -> str:
     """Der Schedules-Screen: Nav + Ops-Handles (RESCAN/MAINT, User-Feedback
     2026-07-03) + Status-Kacheln (Host/Mode/Git/Job-Status, User-Fund: "diesen
     Header möchte ich auch im /-/ui/schedules haben" — dieselbe
@@ -1057,7 +1097,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
         f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now, bucket_minutes=bucket_minutes)}"
         f"{_filter_bar(typ, status)}"
-        f"{schedules_fragment(schedules, now, typ=typ, status=status)}"
+        f"{schedules_fragment(schedules, now, typ=typ, status=status, public_host=public_host)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
@@ -1572,16 +1612,29 @@ def _jobs_type_cell(row: dict, public_host: str) -> str:
 
 def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
               *, public_host: str = "localhost") -> str:
-    """Eine Zeile: Slug, Git-Status, letzter Start/Ende/Laufzeit, Status
-    (PLAN-21 Befund 10 — löst die vorherige Lokal/Remote/Abgleich-Zeile ab,
-    kein Remote-Bezug mehr; PLAN-28 User-Feedback: kein Start-CTA mehr hier
-    — Start gibt es nur noch auf der Detailseite, diese Übersicht dient
-    reinem Review). Slug verlinkt auf die lokale Job-Detailseite; Status
-    verlinkt auf den konkreten letzten Lauf (/-/ui/run/{jid}), sofern schon
-    mal gelaufen. ``row["live"]`` (PLAN-21 Befund 10, 2. Nachtrag): läuft der
-    Job gerade, geht der Status-Link auf die Detailseite (dort lebt der
-    Live-Output), Start/Ende/Laufzeit zeigen den laufenden Versuch (Ende
-    "—", Laufzeit bis ``now``) statt des letzten ABGESCHLOSSENEN Laufs."""
+    """Eine Zeile: Slug(+Git-Chip)/Type/Status/last-since/Runtime (Bibi4-
+    Iteration, User-Fund: "Slug/Type/Status/last-since/Runtime" — löst die
+    vorherige 7-Spalten-Form (eigene Git-Spalte, getrennte Start/Ende-Spalten)
+    ab, analog zur Host-Schedules-Tabelle. Slug verlinkt auf die lokale Job-
+    Detailseite; Status verlinkt auf den konkreten letzten Lauf
+    (/-/ui/run/{jid}), sofern schon mal gelaufen. ``row["live"]`` (PLAN-21
+    Befund 10, 2. Nachtrag): läuft der Job gerade, geht der Status-Link auf
+    die Detailseite (dort lebt der Live-Output), last/Runtime zeigen den
+    laufenden Versuch (Laufzeit bis ``now``) statt des letzten
+    ABGESCHLOSSENEN Laufs.
+
+    last/since ist EINE Spalte (nicht mehr getrennt Start/Ende), analog zu
+    ``_sched_row()``s ``last_run_at``: laufend → Start des aktuellen Versuchs,
+    sonst → Ende des letzten abgeschlossenen Laufs — dieselbe „ein Zeitpunkt,
+    zwei Bedeutungen je nach Status"-Logik, die die Host-Tabelle längst hat.
+
+    Git-Status (Bibi4-Iteration, User-Fund: "sind sie lokal modifiziert,
+    konfliktär, fehlen?", präzisiert: "es genügt new/modified/clean, wobei
+    clean als Chip gar nicht angezeigt wird" + "plus konfliktär") sitzt jetzt
+    als Chip direkt am Slug statt in einer eigenen Spalte — "clean" (der
+    Normalzustand, laut User bewusst der leise Default) zeigt gar keinen
+    Chip, "fehlen" bleibt bewusst außen vor (frühere Entscheidung, s.
+    ``local_files_status()``-Docstring, git_status.py)."""
     slug = row["slug"]
     s = _e(slug)
     live = row.get("live")
@@ -1589,6 +1642,11 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
     jid = lr.get("id") if lr else None
 
     slug_cell = f'<a class="slug" href="/-/ui/jobs/detail/{s}">{s}</a>'
+    git_status = row.get("git_status", "clean")
+    if git_status != "clean":
+        cls, label = _GIT_STATUS_LABEL.get(git_status, ("chip", _e(str(git_status))))
+        slug_cell += f' <span class="{cls}">{label}</span>'
+
     if live:
         # PLAN-27 Befund 4, User-Fund: "der Status awaiting wird in /ui/jobs
         # nicht angezeigt" — live["status"] kommt jetzt aus local_runs_live()
@@ -1596,28 +1654,22 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
         st = "awaiting" if live.get("status") == "awaiting" else "running"
         status_cell = (f'<a class="rowlink" href="/-/ui/jobs/detail/{s}">'
                        f'<span class="st {st}">{st}</span></a>')
-        started_cell = _time_toggle_cell(live.get("started_at"), now, rel_fn=_ago)
-        ended_cell = "—"
         started_at = live.get("started_at")
-        runtime_cell = f"{round(now - started_at)} s" if started_at is not None else "—"
+        last_cell = _time_toggle_cell(started_at, now, rel_fn=_ago)
+        runtime_cell = _human_duration(now - started_at) if started_at is not None else "—"
     elif jid is not None:
         status_cell = (f'<a class="rowlink" href="/-/ui/run/{jid}">'
                        f'<span class="st {_e(lr["status"])}">{_e(lr["status"])}</span></a>')
-        started_cell = _time_toggle_cell(lr.get("started_at"), now, rel_fn=_ago)
-        ended_cell = _time_toggle_cell(lr.get("finished_at"), now, rel_fn=_ago)
+        last_cell = _time_toggle_cell(lr.get("finished_at"), now, rel_fn=_ago)
         runtime_cell = _duration_cell(lr)
     else:
         status_cell = '<span class="side-empty">noch nie lokal gelaufen</span>'
-        started_cell = ended_cell = runtime_cell = "—"
+        last_cell = runtime_cell = "—"
 
-    cls, label = _GIT_STATUS_LABEL.get(row.get("git_status", "clean"),
-                                       ("chip", _e(str(row.get("git_status", "—")))))
-    git_cell = f'<span class="{cls}">{label}</span>'
     type_cell = _jobs_type_cell(row, public_host)
 
-    return (f"<tr><td>{slug_cell}</td><td>{git_cell}</td><td>{type_cell}</td>"
-            f"<td>{started_cell}</td><td>{ended_cell}</td><td>{runtime_cell}</td>"
-            f"<td>{status_cell}</td></tr>")
+    return (f"<tr><td>{slug_cell}</td><td>{type_cell}</td><td>{status_cell}</td>"
+            f"<td>{last_cell}</td><td>{runtime_cell}</td></tr>")
 
 
 def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
@@ -1626,8 +1678,8 @@ def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
         return '<p class="out-empty">— keine Job-MDs im Repository gefunden —</p>'
     body = "".join(_jobs_row(r, local_runs, now, public_host=public_host) for r in rows)
     return (
-        '<table><thead><tr><th>Slug</th><th>Git</th><th>Type</th><th>Letzter Start</th>'
-        '<th>Letztes Ende</th><th>Laufzeit</th><th>Status</th></tr></thead>'
+        '<table><thead><tr><th>Slug</th><th>Type</th><th>Status</th>'
+        '<th>last / since</th><th>Runtime</th></tr></thead>'
         f"<tbody>{body}</tbody></table>"
     )
 
@@ -2575,8 +2627,7 @@ def _commit_cell(run: dict) -> str:
 
 
 def _duration_cell(r: dict) -> str:
-    rt = r.get("exec_runtime")
-    return f"{round(rt)} s" if rt is not None else "—"
+    return _human_duration(r.get("exec_runtime"))
 
 
 #: Läufe pro Infinite-Scroll-Nachladung (User-Entscheidung, Job Lifecycle-Diskussion).
