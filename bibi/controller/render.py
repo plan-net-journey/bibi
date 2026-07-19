@@ -70,6 +70,10 @@ td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
 .toggle.on { color: #5fb37a; }
 .toggle.warn { color: #d6a23e; }
 .toggle.bad { color: #e06c5a; }
+/* Disabled-aber-sichtbar (Bibi4-Iteration, User-Fund "eine App") — Host/
+   Client zeigen dieselbe Toggle-Menge, nicht verfügbare Funktionen (z.B.
+   MAINT auf dem Client) bleiben an Ort und Stelle, statt zu verschwinden. */
+.toggle:disabled { opacity: .35; cursor: default; text-decoration: none; }
 a.slug { font-weight: 600; text-decoration: none; }
 a.slug:hover { text-decoration: underline; }
 .sched a { text-decoration: none; }
@@ -840,19 +844,19 @@ _THEME_JS = """
 
 
 def _header(active: str, status: dict | None = None) -> str:
-    """Gemeinsame obere Navigationsleiste: links Titel + Tab-Leiste + FOLLOW +
-    Ops-Handles (RESCAN/MAINT), rechts Datum/Uhrzeit + THEME (PLAN-21 Befund 1,
-    User-Fund: "links ausgerichtet: bibi/Feed/…/Follow/Maintenance, rechts
-    ausgerichtet: Datum/Uhrzeit/Theme" — löst die bisherige einzeilige
-    Linksbündig-Reihe ab). ``git_status`` fällt hier weg (PLAN-21 Befund 2,
-    Sync-Dopplung: der Sync-Zustand steht jetzt nur noch in der Git-Karte,
-    RESCAN zeigt wieder die generische Beschriftung). Rollen für
-    ``_screen_nav()`` (PLAN-20 Befund 6) kommen aus ``status["roles"]`` — schon
-    vorhanden (``/-/status``), keine neue Datenquelle nötig."""
+    """Gemeinsame obere Navigationsleiste: links Titel + reine Tab-Leiste,
+    rechts alle Toggles (FOLLOW/RESCAN/MAINT/Datum-Uhrzeit/THEME) — Bibi4-
+    Iteration, User-Fund: "Tabs links, Toggles rechts" (löst die PLAN-21-
+    Aufteilung ab, in der FOLLOW/RESCAN/MAINT noch links neben den Tabs
+    standen). ``git_status`` fällt hier weg (PLAN-21 Befund 2, Sync-Dopplung:
+    der Sync-Zustand steht jetzt nur noch in der Git-Karte, RESCAN zeigt
+    wieder die generische Beschriftung). Rollen für ``_screen_nav()``
+    (PLAN-20 Befund 6) kommen aus ``status["roles"]`` — schon vorhanden
+    (``/-/status``), keine neue Datenquelle nötig."""
     roles = (status or {}).get("roles")
-    left = (f'<h1>bibi</h1>{_screen_nav(active, roles)} '
-            f'{_follow_toggle()}{_ops_handles(status)}')
-    right = f'{_live_clock()}{_theme_toggle()}'
+    left = f'<h1>bibi</h1>{_screen_nav(active, roles)}'
+    right = (f'{_follow_toggle()}{_ops_handles(status)}'
+            f'{_live_clock()}{_theme_toggle()}')
     return (f'<header><div class="nav-left">{left}</div>'
             f'<div class="nav-right">{right}</div></header>')
 
@@ -1967,14 +1971,24 @@ def _ops_handles(status: dict | None = None) -> str:
     "Wartungsmodus aktiv"-Banner mehr (PLAN-21 Befund 3: reine Redundanz zum
     längst aussagekräftigen MAINT-Toggle, keine Zusatzinfo).
 
-    MAINT nur mit ``scheduler``-Rolle (PLAN-25 Befund 1) — der Client kennt
-    gar keinen eigenen Maintenance-Mode, ein Klick hätte dort nie etwas
-    pausiert. RESCAN bleibt unbedingt, das ist auf jedem Knoten sinnvoll."""
+    MAINT funktional weiterhin nur mit ``scheduler``-Rolle (PLAN-25 Befund 1)
+    — der Client kennt gar keinen eigenen Maintenance-Mode, ein Klick hätte
+    dort nie etwas pausiert. Seit der Bibi4-Iteration (User-Fund "eine App":
+    Host und Client sollen dieselbe Toggle-Menge zeigen, nicht verfügbare
+    Funktionen disabled statt ausgeblendet) bleibt der Button ohne
+    ``scheduler``-Rolle sichtbar, aber ``disabled`` — rein visuelle
+    Vereinheitlichung, keine neue Funktionalität (User-Entscheidung: kein
+    read-only Host-Maintenance-Status auf dem Client). RESCAN bleibt
+    unbedingt aktiv, das ist auf jedem Knoten sinnvoll."""
     roles = (status or {}).get("roles") or []
     maint = bool((status or {}).get("maintenance"))
-    mcls = "toggle warn" if maint else "toggle"
-    mlabel = "MAINT: ON" if maint else "MAINT: OFF"
-    maint_btn = f'<button id="maint" class="{mcls}">{mlabel}</button>' if "scheduler" in roles else ""
+    if "scheduler" in roles:
+        mcls = "toggle warn" if maint else "toggle"
+        mlabel = "MAINT: ON" if maint else "MAINT: OFF"
+        maint_btn = f'<button id="maint" class="{mcls}">{mlabel}</button>'
+    else:
+        maint_btn = ('<button id="maint" class="toggle" disabled '
+                    'title="Nur auf dem Host verfügbar">MAINT</button>')
     return (
         '<nav class="handles">'
         '<button id="rescan" class="toggle">RESCAN</button>'

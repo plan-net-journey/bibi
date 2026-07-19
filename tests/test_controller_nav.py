@@ -65,41 +65,44 @@ def test_ops_handles_has_no_maintenance_banner():
     assert 'id="maint"' in html and "MAINT: ON" in html  # Toggle bleibt die einzige Anzeige
 
 
-# --- MAINT nur für scheduler-Rolle sichtbar (PLAN-25 Befund 1) -----------------
+# --- MAINT: disabled statt ausgeblendet ohne scheduler-Rolle (Bibi4-Iteration,
+# --- User-Fund "eine App", revidiert PLAN-25 Befund 1) -------------------------
 
 
-def test_ops_handles_hides_maint_without_scheduler_role():
-    # User-Fund: der Client kennt gar keinen Maintenance-Mode — kontinuierliche
-    # Anzeige würde nur unnötigen Traffic auf den Host verursachen. MAINT bleibt
-    # dem Scheduler vorbehalten, RESCAN bleibt für jeden Knoten sinnvoll.
+def test_ops_handles_disables_maint_without_scheduler_role():
+    # User-Fund: der Client kennt gar keinen Maintenance-Mode, MAINT bleibt
+    # funktional dem Scheduler vorbehalten — aber "eine App" heißt: sichtbar
+    # bleiben, nur disabled, statt ganz zu verschwinden. RESCAN bleibt aktiv.
     html = render._ops_handles({"maintenance": True, "roles": ["controller", "connect"]})
-    assert 'id="maint"' not in html
-    assert 'id="rescan"' in html
+    assert 'id="maint"' in html and "disabled" in html
+    assert 'id="rescan"' in html and "RESCAN" in html.split("maint")[0]
 
 
 def test_ops_handles_shows_maint_with_scheduler_role():
     html = render._ops_handles({"maintenance": False, "roles": ["scheduler"]})
     assert 'id="maint"' in html
+    assert "disabled" not in html
 
 
-def test_ops_handles_hides_maint_when_roles_missing():
+def test_ops_handles_disables_maint_when_roles_missing():
     # Kein status/keine roles (ältere Aufrufer, Tests ohne explizite Rolle) —
-    # sicherer Default ist "kein Scheduler", nicht "zeig's trotzdem".
-    assert 'id="maint"' not in render._ops_handles({})
-    assert 'id="maint"' not in render._ops_handles(None)
-    assert 'id="maint"' not in render._ops_handles()
+    # sicherer Default ist "kein Scheduler" (disabled), nicht "zeig's aktiv".
+    for html in (render._ops_handles({}), render._ops_handles(None), render._ops_handles()):
+        assert 'id="maint"' in html and "disabled" in html
 
 
-# --- Links/Rechts-Gruppen (PLAN-21 Befund 1) -----------------------------------
+# --- Links/Rechts-Gruppen (Bibi4-Iteration: Tabs links, Toggles rechts,
+# --- revidiert PLAN-21 Befund 1) ------------------------------------------
 
 
 def test_header_splits_left_and_right_nav_groups():
     html = render._header("Schedules", {"maintenance": False})
     left = html.split('<div class="nav-left">')[1].split("</div>")[0]
     right = html.split('<div class="nav-right">')[1].split("</div>")[0]
-    assert "bibi" in left and 'id="follow"' in left and 'id="rescan"' in left
-    assert 'id="liveclock"' in right and 'id="theme"' in right
-    assert 'id="follow"' not in right and 'id="theme"' not in left
+    assert "bibi" in left
+    assert 'id="follow"' not in left and 'id="rescan"' not in left and 'id="theme"' not in left
+    assert ('id="follow"' in right and 'id="rescan"' in right
+           and 'id="liveclock"' in right and 'id="theme"' in right)
 
 
 def test_theme_toggle_uses_symbol_not_text_label():
