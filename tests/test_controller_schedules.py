@@ -397,7 +397,7 @@ def test_ui_schedules_screen_route_has_rescan_and_reflects_maintenance(team_repo
         r = c.get("/-/ui/schedules")
         assert r.status_code == 200
         assert 'id="rescan"' in r.text
-        assert "MAINT: ON" in r.text
+        assert 'id="maint" class="toggle warn"' in r.text
 
 
 def test_ui_schedules_list_filters_problem(team_repo: Path):

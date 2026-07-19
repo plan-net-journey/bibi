@@ -26,7 +26,7 @@ def test_header_includes_ops_handles():
     # RESCAN/MAINT sitzen jetzt direkt im Header, nicht mehr als separater Aufruf.
     html = render._header("Schedules", {"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint"' in html and "MAINT: ON" in html
+    assert 'id="maint" class="toggle warn"' in html
 
 
 # --- RESCAN generisch, keine Sync-Dopplung mehr (PLAN-21 Befund 2, revidiert
@@ -35,13 +35,13 @@ def test_header_includes_ops_handles():
 
 def test_ops_handles_rescan_is_always_generic():
     html = render._ops_handles({})
-    assert 'id="rescan" class="toggle">RESCAN<' in html
+    assert 'id="rescan" class="toggle" title="Rescan auslösen">⟳<' in html
 
 
-def test_ops_handles_js_restores_idle_label():
+def test_ops_handles_js_restores_idle_icon():
     js = render._OPS_HANDLES_JS
-    assert "const idleLabel = rescan.textContent" in js
-    assert "rescan.textContent = idleLabel" in js
+    assert "const idleIcon = rescan.textContent" in js
+    assert "rescan.textContent = idleIcon" in js
 
 
 def test_feed_header_rescan_ignores_git_status():
@@ -51,7 +51,7 @@ def test_feed_header_rescan_ignores_git_status():
     feed_data = {"entities": [], "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
     html = render.feed_page(
         feed_data, git_status={"tree": "clean", "sync": "ahead", "branch": "trunk"}, now=100.0)
-    assert 'id="rescan" class="toggle">RESCAN<' in html
+    assert 'id="rescan" class="toggle" title="Rescan auslösen">⟳<' in html
     assert "SYNC: ahead" not in html.split('<div class="statuscards">')[0]  # nicht in der Nav
 
 
@@ -62,7 +62,7 @@ def test_ops_handles_has_no_maintenance_banner():
     html = render._ops_handles({"maintenance": True, "roles": ["scheduler"]})
     assert "Wartungsmodus aktiv" not in html
     assert "maintbanner" not in html
-    assert 'id="maint"' in html and "MAINT: ON" in html  # Toggle bleibt die einzige Anzeige
+    assert 'id="maint" class="toggle warn"' in html  # Toggle bleibt die einzige Anzeige
 
 
 # --- MAINT: disabled statt ausgeblendet ohne scheduler-Rolle (Bibi4-Iteration,
@@ -75,7 +75,7 @@ def test_ops_handles_disables_maint_without_scheduler_role():
     # bleiben, nur disabled, statt ganz zu verschwinden. RESCAN bleibt aktiv.
     html = render._ops_handles({"maintenance": True, "roles": ["controller", "connect"]})
     assert 'id="maint"' in html and "disabled" in html
-    assert 'id="rescan"' in html and "RESCAN" in html.split("maint")[0]
+    assert 'id="rescan"' in html and html.index('id="rescan"') < html.index('id="maint"')
 
 
 def test_ops_handles_shows_maint_with_scheduler_role():
@@ -207,14 +207,14 @@ def test_schedule_detail_page_has_rescan_and_maint():
         {"slug": "a", "kind": "job"}, [], None, slug="a",
         daemon_status={"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint"' in html and "MAINT: ON" in html
+    assert 'id="maint" class="toggle warn"' in html
     assert render._OPS_HANDLES_JS in html
 
 
 def test_schedules_page_has_rescan_and_maint():
     html = render.schedules_page([], daemon_status={"maintenance": False, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint"' in html and "MAINT: OFF" in html
+    assert 'id="maint" class="toggle"' in html and "⚙" in html
     assert render._OPS_HANDLES_JS in html
 
 
@@ -235,7 +235,7 @@ def test_execution_detail_page_has_rescan_and_maint():
     html = render.execution_detail_page(
         entry, [], "job", daemon_status={"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint"' in html and "MAINT: ON" in html
+    assert 'id="maint" class="toggle warn"' in html
 
 
 def test_log_page_has_rescan_maint_and_follow():
@@ -244,6 +244,6 @@ def test_log_page_has_rescan_maint_and_follow():
     # (_FOLLOW_JS fehlte).
     html = render.log_page(daemon_status={"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint"' in html and "MAINT: ON" in html
+    assert 'id="maint" class="toggle warn"' in html
     assert 'id="follow"' in html and "bibiToggleFollow" in html
     assert render._FOLLOW_JS in html

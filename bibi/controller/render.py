@@ -803,10 +803,14 @@ _CLOCK_JS = """
 
 def _follow_toggle() -> str:
     """FOLLOW-Button (pausiert Live-Updates, ``window.bibiFollow``) — Teil der
-    linken Nav-Gruppe (PLAN-21 Befund 1: klickbar wie bisher, optisch wie ein
-    Tab neben Feed/Schedules/…). Als Text-Link gestylt, kein Button-Look mehr
-    (PLAN-19 Befund 7)."""
-    return '<button id="follow" class="toggle on" onclick="bibiToggleFollow()">FOLLOW: ON</button>'
+    rechten Nav-Gruppe (Bibi4-Iteration: Toggles rechts, revidiert PLAN-21
+    Befund 1). Als Text-Link gestylt, kein Button-Look (PLAN-19 Befund 7).
+    Icon statt Text (Bibi4-Iteration, User-Fund: "Toggles über Icons") — ⏵
+    (an, folgt live) / ⏸ (aus, pausiert), analog zum ☾/☀-Symbolwechsel von
+    ``_theme_toggle()``. ``title`` trägt die textuelle Erklärung fürs Hover,
+    da der Button sonst kein sichtbares Label mehr hat."""
+    return ('<button id="follow" class="toggle on" onclick="bibiToggleFollow()" '
+           'title="Follow: an (live folgen)">⏵</button>')
 
 
 def _theme_toggle() -> str:
@@ -908,11 +912,14 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
 #: Vor htmx-Init gesetzt (im <head>), damit die Trigger den Startzustand sehen.
 _FOLLOW_JS = """
 window.bibiFollow = (localStorage.getItem('bibiFollow') ?? '1') === '1';
+function bibiFollowIcon(on){ return on ? '⏵' : '⏸'; }
+function bibiFollowTitle(on){ return on ? 'Follow: an (live folgen)' : 'Follow: aus (pausiert)'; }
 function bibiToggleFollow(){
   window.bibiFollow = !window.bibiFollow;
   localStorage.setItem('bibiFollow', window.bibiFollow ? '1' : '0');
   const b = document.getElementById('follow');
-  b.textContent = 'FOLLOW: ' + (window.bibiFollow ? 'ON' : 'OFF');
+  b.textContent = bibiFollowIcon(window.bibiFollow);
+  b.title = bibiFollowTitle(window.bibiFollow);
   b.className = 'toggle ' + (window.bibiFollow ? 'on' : '');
   // Wieder-Einschalten muss sofort ans Ende springen — sonst bleibt die Box
   // bis zum nächsten Append "stick=false" (atBottom() prüft die aktuelle
@@ -926,7 +933,9 @@ function bibiToggleFollow(){
 }
 document.addEventListener('DOMContentLoaded', () => {
   const b = document.getElementById('follow');
-  if (b && !window.bibiFollow){ b.textContent = 'FOLLOW: OFF'; b.className = 'toggle'; }
+  if (b && !window.bibiFollow){
+    b.textContent = bibiFollowIcon(false); b.title = bibiFollowTitle(false); b.className = 'toggle';
+  }
 });
 """
 
@@ -1979,19 +1988,24 @@ def _ops_handles(status: dict | None = None) -> str:
     ``scheduler``-Rolle sichtbar, aber ``disabled`` — rein visuelle
     Vereinheitlichung, keine neue Funktionalität (User-Entscheidung: kein
     read-only Host-Maintenance-Status auf dem Client). RESCAN bleibt
-    unbedingt aktiv, das ist auf jedem Knoten sinnvoll."""
+    unbedingt aktiv, das ist auf jedem Knoten sinnvoll.
+
+    Icons statt Text (Bibi4-Iteration, User-Fund: "Toggles über Icons") — ⟳
+    für RESCAN (reine Aktion, kein eigener Zustand), ⚙/⚠ für MAINT aus/an
+    (analog FOLLOW/THEME: Glyph trägt den Zustand, ``title`` das Hover-Label)."""
     roles = (status or {}).get("roles") or []
     maint = bool((status or {}).get("maintenance"))
     if "scheduler" in roles:
         mcls = "toggle warn" if maint else "toggle"
-        mlabel = "MAINT: ON" if maint else "MAINT: OFF"
-        maint_btn = f'<button id="maint" class="{mcls}">{mlabel}</button>'
+        micon = "⚠" if maint else "⚙"
+        mtitle = "Wartungsmodus: an" if maint else "Wartungsmodus: aus"
+        maint_btn = f'<button id="maint" class="{mcls}" title="{mtitle}">{micon}</button>'
     else:
         maint_btn = ('<button id="maint" class="toggle" disabled '
-                    'title="Nur auf dem Host verfügbar">MAINT</button>')
+                    'title="Wartungsmodus: nur auf dem Host verfügbar">⚙</button>')
     return (
         '<nav class="handles">'
-        '<button id="rescan" class="toggle">RESCAN</button>'
+        '<button id="rescan" class="toggle" title="Rescan auslösen">⟳</button>'
         f"{maint_btn}"
         "</nav>"
     )
@@ -2005,18 +2019,19 @@ _OPS_HANDLES_JS = """
 (function(){
   const rescan = document.getElementById('rescan');
   if (rescan) {
-    const idleLabel = rescan.textContent;   // "RESCAN"
+    const idleIcon = rescan.textContent;   // "⟳"
     rescan.addEventListener('click', async () => {
-      rescan.disabled = true; rescan.textContent = 'RESCAN…';
+      rescan.disabled = true;
       try { await fetch('/-/rescan', {method:'POST'}); } catch(_){}
-      rescan.textContent = idleLabel + ' ✓';
-      setTimeout(() => { rescan.textContent = idleLabel; rescan.disabled = false; }, 1200);
+      rescan.textContent = '✓';
+      setTimeout(() => { rescan.textContent = idleIcon; rescan.disabled = false; }, 1200);
     });
   }
   const maint = document.getElementById('maint');
   function setMaint(on){
     maint.classList.toggle('warn', on);
-    maint.textContent = on ? 'MAINT: ON' : 'MAINT: OFF';
+    maint.textContent = on ? '⚠' : '⚙';
+    maint.title = on ? 'Wartungsmodus: an' : 'Wartungsmodus: aus';
   }
   if (maint) maint.addEventListener('click', async () => {
     const on = maint.classList.contains('warn');

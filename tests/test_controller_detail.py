@@ -340,7 +340,7 @@ def test_schedule_detail_route_has_rescan_and_reflects_maintenance(app_with):
         r = c.get("/-/ui/schedule/boom")
         assert r.status_code == 200
         assert 'id="rescan"' in r.text
-        assert "MAINT: ON" in r.text
+        assert 'id="maint" class="toggle warn"' in r.text
 
 
 def test_schedule_detail_route_shows_output_for_terminal_job(app_with):
