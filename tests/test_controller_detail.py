@@ -81,7 +81,8 @@ def test_schedule_detail_page_renders_runs():
     assert "boom" in html
     assert "error" in html
     assert "abc1234" in html and "abc1234deadbeef" not in html.split("title=")[0]
-    assert 'href="/-/"' in html  # zurück-Link zur Home (Schedules, Feed entfernt)
+    assert 'href="/-/ui/schedule/boom/attrs">Attribute' in html
+    assert "← zurück" not in html  # Bibi4-Iteration, User-Fund: redundant zum Jobs-Tab
 
 
 def test_schedule_detail_page_no_runs():

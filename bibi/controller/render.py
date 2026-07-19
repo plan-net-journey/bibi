@@ -33,8 +33,11 @@ _CSS = """
 :root[data-theme="dark"] { color-scheme: dark; }
 body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem;
        max-width: 64rem; margin-inline: auto; }
+/* Rahmen um die ganze Nav-Leiste, von "bibi" links bis Theme-Toggle rechts
+   (Bibi4-Iteration, User-Fund) — derselbe Stil wie .panel-card/.card. */
 header { display: flex; align-items: baseline; justify-content: space-between;
-         gap: .75rem; flex-wrap: wrap; }
+         gap: .75rem; flex-wrap: wrap; border: 1px solid #8883; border-radius: .4rem;
+         padding: .5rem .9rem; margin-bottom: .6rem; }
 .nav-left, .nav-right { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; }
 header .handles { margin: 0; }
 h1 { font-size: 1.4rem; margin: 0; }
@@ -733,8 +736,8 @@ def _filter_bar(typ: str | None, status: str | None) -> str:
 
 
 def _screen_nav(active: str, roles: list[str] | None = None) -> str:
-    """Screen-Tabs (Feed · [Schedules] · [Jobs] · Live-Log · API-Docs); der
-    aktive ohne Link. **Home ist jetzt Feed** (PLAN-18 Stufe 18.3, löst die
+    """Screen-Tabs (Feed · [Jobs] · Live-Log · API-Docs); der aktive ohne
+    Link. **Home ist jetzt Feed** (PLAN-18 Stufe 18.3, löst die
     2026-07-04-Entscheidung „Home = Schedules" bewusst ab) — Schedules bleibt
     unter seiner eigenen Route erreichbar, ist nur nicht mehr ``/-/`` selbst.
     Jobs (PLAN-17 Stufe 17.2) zeigt den Lokal/Remote-Abgleich + Start-Button für
@@ -742,17 +745,24 @@ def _screen_nav(active: str, roles: list[str] | None = None) -> str:
     Kacheln) lebt jetzt im Feed-Header, ``daemon_page()``/``_status_cards()``
     bleiben als Bausteine bestehen, nur die eigene Seite/der Tab fallen weg.
 
-    Schedules/Jobs sind rollenabhängig ausgeblendet (PLAN-20 Befund 6):
-    Schedules nur mit ``scheduler``-Rolle (die zugrundeliegenden ``/-/schedule``-
-    Routen existieren serverseitig nur dann, s. ``app.py::_add_scheduler_routes``
-    — ohne Rolle wäre die Seite ohnehin nur ein 404). Jobs nur mit ``connect``-
-    Rolle (User-Entscheidung trotz Rückfrage: bewusst NICHT zusätzlich für
-    reine Scheduler-Knoten wie sarasate — auch wenn der Screen dort technisch
-    funktionieren würde)."""
+    Host (``/-/ui/schedules``) und Client (``/-/ui/jobs``) heißen im Tab jetzt
+    beide "Jobs" (Bibi4-Iteration, User-Fund: "eine App", Host/Client sollen
+    dieselbe Screen-Menge zeigen) — Routen/interne Namen bleiben unverändert,
+    nur das Label vereinheitlicht sich. Kein Kollisionsrisiko: ``scheduler``
+    und ``connect`` schließen sich gegenseitig aus (``roles.py``), es kann also
+    nie beide gleichzeitig geben.
+
+    Rollenabhängig ausgeblendet (PLAN-20 Befund 6): der Host-Jobs-Tab nur mit
+    ``scheduler``-Rolle (die zugrundeliegenden ``/-/schedule``-Routen existieren
+    serverseitig nur dann, s. ``app.py::_add_scheduler_routes`` — ohne Rolle
+    wäre die Seite ohnehin nur ein 404). Der Client-Jobs-Tab nur mit
+    ``connect``-Rolle (User-Entscheidung trotz Rückfrage: bewusst NICHT
+    zusätzlich für reine Scheduler-Knoten wie sarasate — auch wenn der Screen
+    dort technisch funktionieren würde)."""
     roles = roles or []
     tabs = [("Feed", "/-/")]
     if "scheduler" in roles:
-        tabs.append(("Schedules", "/-/ui/schedules"))
+        tabs.append(("Jobs", "/-/ui/schedules"))
     if "connect" in roles:
         tabs.append(("Jobs", "/-/ui/jobs"))
     tabs += [("Live Log", "/-/ui/logs"), ("API Docs", "/-/docs")]
@@ -878,7 +888,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f'<script src="{_CHARTJS}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Schedules', daemon_status)}"
+        f"{_header('Jobs', daemon_status)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s)}"
         f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now, bucket_minutes=bucket_minutes)}"
         f"{_filter_bar(typ, status)}"
@@ -2282,10 +2292,14 @@ def journal_fragment(runs: list[dict], slug: str, now: float, *, oob: bool = Fal
                      base: str = _JOURNAL_BASE) -> str:
     """Eigenständige, nicht selbst-pollende Region (``#journal``) — wächst nur
     durch nutzergetriggertes Infinite-Scroll-Nachladen (kein 2s-Poll, der die
-    nachgeladenen Zeilen sonst wieder plattmachen würde)."""
+    nachgeladenen Zeilen sonst wieder plattmachen würde). ``.panel-card``-Rahmen
+    (Bibi4-Iteration, User-Fund) sitzt auf diesem äußeren Div, nicht auf der
+    Tabelle selbst — wächst automatisch mit, weil hier normale Dokumentfluss-
+    Höhe gilt (kein fixer/scrollender Innenbereich, das Nachladen hängt neue
+    Zeilen einfach ans bestehende ``<tbody>``)."""
     oob_attr = ' hx-swap-oob="true"' if oob else ""
     return (
-        f'<div id="journal"{oob_attr}>'
+        f'<div id="journal"{oob_attr} class="panel-card">'
         "<h2>Journal</h2>"
         f"{_journal_table_html(runs, slug, now, base=base)}"
         "</div>"
@@ -2561,7 +2575,9 @@ def schedule_detail_page(
 ) -> str:
     """Schedule-zentrierte Detail-Sicht (§3 Ebene 3) als volle Seite. Ops-Handles
     (RESCAN/MAINT) seit User-Feedback 2026-07-03 auch hier — außerhalb von
-    ``#live``/``#journal``, damit sie nicht bei jedem 2s-Poll neu gerendert werden."""
+    ``#live``/``#journal``, damit sie nicht bei jedem 2s-Poll neu gerendert werden.
+    Kein "← zurück"-Link mehr (Bibi4-Iteration, User-Fund) — die Nav-Leiste
+    trägt schon einen Jobs-Tab dorthin zurück, der Link war redundant."""
     name = _e((schedule or {}).get("slug") or slug)
     return (
         "<!DOCTYPE html>\n"
@@ -2573,7 +2589,6 @@ def schedule_detail_page(
         f"<style>{_CSS}</style></head><body>"
         f"{_header('', daemon_status)}"
         f'<div style="display:flex;gap:.75rem;align-items:baseline">'
-        f'<a class="back" href="/-/">← zurück</a>'
         f'<a class="back" href="/-/ui/schedule/{_e(name)}/attrs">Attribute →</a>'
         f'</div>'
         f"{schedule_detail_inner(schedule, runs, job, slug, now, live_output=live_output, public_host=public_host)}"

@@ -134,10 +134,12 @@ def test_toggles_styled_as_text_links_not_boxed_buttons():
 def test_screen_nav_feed_tab_is_home():
     # PLAN-18 Stufe 18.3: Feed ist zurück und jetzt der Home-Screen (/-/),
     # Schedules zieht auf seine eigene Route um. Schedules nur mit
-    # scheduler-Rolle sichtbar (PLAN-20 Befund 6).
+    # scheduler-Rolle sichtbar (PLAN-20 Befund 6). Tab-Label seit der
+    # Bibi4-Iteration "Jobs" (User-Fund "eine App") statt "Schedules" —
+    # die Route bleibt unverändert.
     html = render._screen_nav("Live-Log", roles=["scheduler"])
     assert 'href="/-/">Feed' in html
-    assert 'href="/-/ui/schedules">Schedules' in html
+    assert 'href="/-/ui/schedules">Jobs' in html
 
 
 def test_screen_nav_hides_schedules_without_scheduler_role():
