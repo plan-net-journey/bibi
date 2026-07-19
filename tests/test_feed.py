@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 
 from bibi.feed import (
-    CommitInfo, agent_commit_shas, aggregate_feed, classify_path, collect_commits,
-    heatmap_buckets, remote_commit_base_url,
+    CommitInfo, activity_series_by_prefix, agent_commit_shas, aggregate_feed,
+    classify_path, collect_commits, heatmap_buckets, remote_commit_base_url,
 )
 
 pytestmark = pytest.mark.slow
@@ -261,6 +261,76 @@ def test_heatmap_shape_default_five_weeks():
     assert len(grid) == 5
     assert all(len(week) == 7 for week in grid)
     assert all(len(day) == 8 for week in grid for day in week)
+
+
+# --- activity_series_by_prefix (Bibi4-Iteration, Jobs-Sparkline) --------------
+# User-Fund: "eine Sparkline, die die durch den Agenten verursachten git
+# Änderungen repräsentiert" — Tages-Buckets je Job-Präfix, nur agent_shas
+# zählen, dieselbe collect_commits()-Liste bedient alle Jobs auf einmal.
+
+
+def _cp(dt: datetime.datetime, *, sha: str, paths: tuple[str, ...]) -> CommitInfo:
+    return CommitInfo(sha=sha, author="a", epoch=dt.timestamp(), paths=paths)
+
+
+def test_activity_series_counts_only_agent_commits():
+    commits = [
+        _cp(datetime.datetime(2026, 7, 8, 10, 0), sha="agent1",
+           paths=("vault/case/foo/job.md",)),
+        _cp(datetime.datetime(2026, 7, 8, 11, 0), sha="human1",
+           paths=("vault/case/foo/job.md",)),
+    ]
+    series = activity_series_by_prefix(
+        commits, {"agent1"}, {"foo": "vault/case/foo/"}, since_days=30, now=_NOW)
+    assert sum(series["foo"]) == 1
+
+
+def test_activity_series_matches_by_path_prefix_not_exact_file():
+    # Andere Dateien im selben Case-Ordner (nicht nur job.md) zählen mit.
+    commits = [_cp(datetime.datetime(2026, 7, 8, 10, 0), sha="agent1",
+                  paths=("vault/case/foo/notes.md",))]
+    series = activity_series_by_prefix(
+        commits, {"agent1"}, {"foo": "vault/case/foo/"}, since_days=30, now=_NOW)
+    assert sum(series["foo"]) == 1
+
+
+def test_activity_series_separates_jobs_by_prefix():
+    commits = [
+        _cp(datetime.datetime(2026, 7, 8, 10, 0), sha="agent1",
+           paths=("vault/case/foo/job.md",)),
+        _cp(datetime.datetime(2026, 7, 8, 10, 0), sha="agent2",
+           paths=("vault/case/bar/job.md",)),
+    ]
+    series = activity_series_by_prefix(
+        commits, {"agent1", "agent2"},
+        {"foo": "vault/case/foo/", "bar": "vault/case/bar/"}, since_days=30, now=_NOW)
+    assert sum(series["foo"]) == 1
+    assert sum(series["bar"]) == 1
+
+
+def test_activity_series_today_is_last_bucket():
+    commits = [_cp(datetime.datetime(2026, 7, 8, 10, 0), sha="agent1",
+                  paths=("vault/case/foo/job.md",))]
+    series = activity_series_by_prefix(
+        commits, {"agent1"}, {"foo": "vault/case/foo/"}, since_days=30, now=_NOW)
+    assert series["foo"][-1] == 1
+    assert sum(series["foo"][:-1]) == 0
+
+
+def test_activity_series_drops_commits_outside_window():
+    commits = [_cp(datetime.datetime(2026, 5, 1, 0, 0), sha="agent1",
+                  paths=("vault/case/foo/job.md",))]
+    series = activity_series_by_prefix(
+        commits, {"agent1"}, {"foo": "vault/case/foo/"}, since_days=30, now=_NOW)
+    assert sum(series["foo"]) == 0
+
+
+def test_activity_series_shape_matches_since_days_and_prefixes():
+    series = activity_series_by_prefix(
+        [], set(), {"foo": "vault/case/foo/", "bar": "vault/case/bar/"},
+        since_days=30, now=_NOW)
+    assert set(series) == {"foo", "bar"}
+    assert len(series["foo"]) == 30 and len(series["bar"]) == 30
 
 
 # --- GET /-/feed (rollenunabhängig, PLAN-18) ------------------------------------

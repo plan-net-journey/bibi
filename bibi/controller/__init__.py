@@ -391,6 +391,33 @@ def add_controller_routes(
         rows, _local_runs = _jobs_data()
         return rows
 
+    _SPARKLINE_SINCE_DAYS = 30
+
+    def _job_sparkline_series(rows: list[dict]) -> dict[str, list[int]]:
+        """Sparkline-Zähl-Buckets je Job (Bibi4-Iteration, User-Fund: "eine
+        Sparkline, die die durch den Agenten verursachten git Änderungen
+        repräsentiert"). Ein einziges ``git log``-Paar (Änderungen +
+        Merge-Erkennung, analog ``feed.aggregate_feed()``) für ALLE Jobs auf
+        einmal, kein Aufruf je Zeile — Präfix ist der Case-Ordner des Jobs
+        (``repo_path``s Verzeichnis), nicht nur die job.md-Datei selbst, damit
+        z. B. begleitende Notizen im selben Case-Ordner mitzählen. Nur vom
+        initialen Seitenaufbau aufgerufen (``jobs_screen()``), bewusst nicht
+        vom 2s-Self-Poll (s. ``render._sparkline_cell()``-Docstring)."""
+        from pathlib import Path
+        from bibi import feed as feed_mod
+        from bibi import repo as repo_mod
+        prefixes = {
+            row["slug"]: str(Path(row["repo_path"]).parent) + "/"
+            for row in rows if row.get("repo_path")
+        }
+        if not prefixes:
+            return {}
+        root = repo_mod.root()
+        commits = feed_mod.collect_commits(root, since_days=_SPARKLINE_SINCE_DAYS)
+        agent_shas = feed_mod.agent_commit_shas(root, since_days=_SPARKLINE_SINCE_DAYS)
+        return feed_mod.activity_series_by_prefix(
+            commits, agent_shas, prefixes, since_days=_SPARKLINE_SINCE_DAYS)
+
     def _jobs_archive_runs() -> list:
         # Flache Journal-Liste über alle lokalen Jobs (Bibi4-Iteration,
         # Archive-Screen Client) — dieselbe Quelle, die vorher nur für
@@ -409,7 +436,7 @@ def add_controller_routes(
             rows, local_runs, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
             job_status_poll_interval_s=config.job_status_poll_interval(),
-            public_host=config.public_host()))
+            public_host=config.public_host(), sparklines=_job_sparkline_series(rows)))
 
     @app.get("/-/ui/jobs/board", include_in_schema=False)
     def jobs_board():

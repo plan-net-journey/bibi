@@ -189,6 +189,33 @@ def aggregate_feed(
     return group_entities(commits, agent_shas, case_dir_name=case_dir_name)
 
 
+def activity_series_by_prefix(
+    commits: list[CommitInfo], agent_shas: set[str], prefixes: dict[str, str],
+    *, since_days: int, now: float | None = None,
+) -> dict[str, list[int]]:
+    """Tages-Buckets (älteste zuerst, heute zuletzt) agent-verursachter Commits
+    je Pfad-Präfix — Baustein für die Jobs-Sparkline (Bibi4-Iteration, User-
+    Fund: "eine Sparkline, die die durch den Agenten verursachten git
+    Änderungen repräsentiert"). Reine Aggregation schon gesammelter Commits
+    (kein eigener Git-Aufruf) — analog zu ``heatmap_buckets()``/
+    ``group_entities()``: dieselbe ``collect_commits()``-Liste bedient alle
+    Jobs auf einmal, kein Aufruf je Zeile."""
+    now = time.time() if now is None else now
+    today = datetime.datetime.fromtimestamp(now).date()
+    series = {key: [0] * since_days for key in prefixes}
+    for c in commits:
+        if c.sha not in agent_shas:
+            continue
+        days_ago = (today - datetime.datetime.fromtimestamp(c.epoch).date()).days
+        if not (0 <= days_ago < since_days):
+            continue
+        bucket = since_days - 1 - days_ago
+        for key, prefix in prefixes.items():
+            if any(p.startswith(prefix) for p in c.paths):
+                series[key][bucket] += 1
+    return series
+
+
 def remote_commit_base_url(root: Path) -> str | None:
     """Gitea-Basis-URL für Commit-Links, aus dem konfigurierten ``origin``-
     Remote abgeleitet (PLAN-17 Befund 3: ``.git``-Suffix strippen, Aufrufer

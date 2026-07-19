@@ -162,7 +162,7 @@ def test_jobs_table_shows_last_and_runtime_for_last_run():
 
 def test_jobs_table_no_local_run_yet_shows_dash_for_last_and_runtime():
     html = render._jobs_table([_row("a")], {}, now=100.0)
-    assert "<td>—</td><td>—</td></tr>" in html
+    assert '<td>—</td><td>—</td><td><span id="spark-a" hx-preserve="true"></span></td></tr>' in html
 
 
 def test_jobs_table_live_row_shows_started_and_ongoing_runtime():
@@ -217,6 +217,46 @@ def test_jobs_fragment_has_single_panel_card_no_local_runs():
     assert html.count('class="panel-card"') == 1
     assert "<h2>Jobs</h2>" in html
     assert "Jobs im Repository" not in html
+
+
+# --- Sparkline (Bibi4-Iteration, User-Fund: "eine Sparkline, die die durch
+# --- den Agenten verursachten git Änderungen repräsentiert") ------------------
+
+
+def test_sparkline_svg_empty_without_activity():
+    assert render._sparkline_svg([]) == ""
+    assert render._sparkline_svg([0, 0, 0]) == ""
+
+
+def test_sparkline_svg_renders_polyline_with_activity():
+    svg = render._sparkline_svg([0, 1, 0, 2])
+    assert svg.startswith('<svg class="sparkline"')
+    assert "<polyline" in svg
+
+
+def test_sparkline_cell_renders_svg_when_series_given():
+    html = render._jobs_table(
+        [_row("a")], {}, now=100.0, sparklines={"a": [0, 1, 2]})
+    assert 'id="spark-a" hx-preserve="true"><svg' in html
+
+
+def test_sparkline_cell_empty_placeholder_when_no_series():
+    # jobs_board() (2s-Self-Poll) übergibt bewusst kein sparklines-Dict — die
+    # Zelle bleibt leer, hx-preserve behält das vom Seitenaufbau vorhandene
+    # Sparkline-Element (kein teurer Git-Aufruf im Sekundentakt).
+    html = render._jobs_table([_row("a")], {}, now=100.0)
+    assert '<span id="spark-a" hx-preserve="true"></span>' in html
+
+
+def test_jobs_fragment_omits_sparklines_by_default():
+    html = render.jobs_fragment([_row("a")], {}, now=100.0)
+    assert '<span id="spark-a" hx-preserve="true"></span>' in html
+
+
+def test_jobs_page_includes_sparklines_when_given():
+    html = render.jobs_page(
+        [_row("a")], {}, now=100.0, sparklines={"a": [0, 5]})
+    assert 'id="spark-a" hx-preserve="true"><svg' in html
     assert "Lokale Läufe" not in html
 
 

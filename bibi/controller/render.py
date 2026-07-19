@@ -213,6 +213,7 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .chip.modified { background: #d6a23e2e; color: #d6a23e; }
 .chip.new { background: #5a9fe02e; color: #5a9fe0; }
 .chip.conflict { background: #e06c5a2e; color: #e06c5a; }
+.sparkline { display: block; vertical-align: middle; }
 .startbtn { font: inherit; font-size: .78rem; background: #5a9fe033; border: 1px solid #5a9fe066;
         border-radius: .35rem; padding: .2rem .55rem; cursor: pointer; color: inherit; font-weight: 600;
         white-space: nowrap; }
@@ -1648,6 +1649,46 @@ _GIT_STATUS_LABEL = {
     "clean": ("chip clean", "unverändert"),
 }
 
+_SPARK_W, _SPARK_H = 72, 20
+
+
+def _sparkline_svg(counts: list[int]) -> str:
+    """Kleines Inline-SVG für die Jobs-Sparkline (Bibi4-Iteration, User-Fund:
+    "eine Sparkline, die die durch den Agenten verursachten git Änderungen
+    repräsentiert"). Reine Darstellung — die Zähl-Buckets kommen von
+    ``feed.activity_series_by_prefix()``. Leerer String, wenn nirgends
+    Aktivität war (kein Bild statt einer flachen Nulllinie)."""
+    if not counts or not any(counts):
+        return ""
+    peak = max(counts)
+    n = len(counts)
+    step = _SPARK_W / max(n - 1, 1)
+    points = " ".join(
+        f"{i * step:.1f},{_SPARK_H - 1 - (c / peak) * (_SPARK_H - 2):.1f}"
+        for i, c in enumerate(counts)
+    )
+    return (f'<svg class="sparkline" viewBox="0 0 {_SPARK_W} {_SPARK_H}" '
+           f'width="{_SPARK_W}" height="{_SPARK_H}" preserveAspectRatio="none">'
+           f'<polyline points="{points}" fill="none" stroke="#5fb37a" '
+           f'stroke-width="1.5"/></svg>')
+
+
+def _sparkline_cell(slug: str, series_by_slug: dict[str, list[int]] | None) -> str:
+    """``hx-preserve``-Zelle (Bibi4-Iteration) — dieselbe Technik wie
+    ``.liveterm``-Boxen (render.py, ``_LIVE_JS``-Kommentar: "hx-preserve hält
+    die Box ... über den 2s-Poll am Leben"): die zugrunde liegende Aggregation
+    (``feed.collect_commits()`` + ``agent_commit_shas()`` über 30 Tage) ist
+    Git-Subprozess-lastig, dieselbe Kostenklasse wie die Git-Karte — zu teuer
+    für den 2s-Tabellen-Poll. ``series_by_slug`` kommt deshalb nur vom
+    initialen Seitenaufbau (``jobs_page()``); der 2s-Self-Poll
+    (``jobs_board()``) übergibt ``None`` und rendert eine leere Zelle mit
+    derselben ``id`` — htmx behält dank ``hx-preserve`` das schon vorhandene
+    Sparkline-Element, statt es durch die leere Variante zu ersetzen.
+    Aktualisiert sich dadurch bei Seitenaufruf/Reload, nicht bei jedem
+    Tabellen-Tick."""
+    svg = _sparkline_svg((series_by_slug or {}).get(slug, []))
+    return f'<span id="spark-{_e(slug)}" hx-preserve="true">{svg}</span>'
+
 
 def _jobs_type_cell(row: dict, public_host: str) -> str:
     """Type-Zelle nur für die Jobs-Tabelle (PLAN-29 Befund 2, User-Fund:
@@ -1668,7 +1709,7 @@ def _jobs_type_cell(row: dict, public_host: str) -> str:
 
 
 def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
-              *, public_host: str = "localhost") -> str:
+              *, public_host: str = "localhost", sparklines: dict[str, list[int]] | None = None) -> str:
     """Eine Zeile: Slug(+Git-Chip)/Type/Status/last-since/Runtime (Bibi4-
     Iteration, User-Fund: "Slug/Type/Status/last-since/Runtime" — löst die
     vorherige 7-Spalten-Form (eigene Git-Spalte, getrennte Start/Ende-Spalten)
@@ -1724,19 +1765,21 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
         last_cell = runtime_cell = "—"
 
     type_cell = _jobs_type_cell(row, public_host)
+    spark_cell = _sparkline_cell(slug, sparklines)
 
     return (f"<tr><td>{slug_cell}</td><td>{type_cell}</td><td>{status_cell}</td>"
-            f"<td>{last_cell}</td><td>{runtime_cell}</td></tr>")
+            f"<td>{last_cell}</td><td>{runtime_cell}</td><td>{spark_cell}</td></tr>")
 
 
 def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
-                *, public_host: str = "localhost") -> str:
+                *, public_host: str = "localhost", sparklines: dict[str, list[int]] | None = None) -> str:
     if not rows:
         return '<p class="out-empty">— keine Job-MDs im Repository gefunden —</p>'
-    body = "".join(_jobs_row(r, local_runs, now, public_host=public_host) for r in rows)
+    body = "".join(_jobs_row(r, local_runs, now, public_host=public_host, sparklines=sparklines)
+                  for r in rows)
     return (
         '<table><thead><tr><th>Slug</th><th>Type</th><th>Status</th>'
-        '<th>last / since</th><th>Runtime</th></tr></thead>'
+        '<th>last / since</th><th>Runtime</th><th>Activity</th></tr></thead>'
         f"<tbody>{body}</tbody></table>"
     )
 
@@ -1744,6 +1787,7 @@ def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
 def jobs_fragment(
     rows: list[dict], local_runs: dict[str, dict],
     *, now: float | None = None, public_host: str = "localhost",
+    sparklines: dict[str, list[int]] | None = None,
 ) -> str:
     """Der austauschbare Jobs-Kern (``#jobsboard``): lokale Job-MDs + Git-
     Status + letzter Start/Ende/Laufzeit je Zeile (PLAN-21 Befund 10 — löst
@@ -1759,12 +1803,17 @@ def jobs_fragment(
     ``jobs_archive_page()``, User-Fund: "der untere Abschnitt lokale Läufe
     wandert in den eigenen Screen Archive") — löst PLAN-29 Befund 1 (2
     Panel-Cards hier) auf 1 Panel-Card ab, analog zu ``schedules_fragment()``
-    beim Host."""
+    beim Host.
+
+    ``sparklines`` (Bibi4-Iteration, User-Fund: "eine Sparkline ... git
+    Änderungen") kommt nur vom initialen Seitenaufbau (``jobs_page()``) — der
+    2s-Self-Poll hier übergibt bewusst ``None``, s. ``_sparkline_cell()``-
+    Docstring (hx-preserve, zu teuer für den Sekundentakt)."""
     now = time.time() if now is None else now
     return (
         f'<div id="jobsboard" hx-get="/-/ui/jobs/board" hx-trigger="{_POLL}" hx-swap="outerHTML">'
         '<div class="panel-card"><h2>Jobs</h2>'
-        f"{_jobs_table(rows, local_runs, now, public_host=public_host)}</div>"
+        f"{_jobs_table(rows, local_runs, now, public_host=public_host, sparklines=sparklines)}</div>"
         "</div>"
     )
 
@@ -1860,6 +1909,7 @@ def jobs_page(
     host_url: str | None = None, status_poll_interval_s: int = 30,
     job_status_poll_interval_s: int = 2,
     now: float | None = None, public_host: str = "localhost",
+    sparklines: dict[str, list[int]] | None = None,
 ) -> str:
     """Jobs-Screen (PLAN-17 Stufe 17.2, umgebaut PLAN-21 Befund 10): lokale
     Repository-Realität + Git-Status + letzter Start/Ende/Laufzeit je Zeile.
@@ -1884,7 +1934,7 @@ def jobs_page(
         f"{_header('Jobs', status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s, client_rows=rows)}"
-        f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host)}"
+        f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
