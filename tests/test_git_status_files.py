@@ -81,6 +81,24 @@ def test_empty_paths_returns_empty_dict(team_repo: Path):
     assert local_files_status(team_repo, []) == {}
 
 
+def test_unmerged_conflict_reported_as_own_status_not_modified(team_repo: Path):
+    # Bibi4-Iteration, User-Fund: "sind sie lokal modifiziert, konfliktär,
+    # fehlen?" — ein Merge-Konflikt (Porcelain-v2 "u "-Zeile) landete zuvor
+    # ununterscheidbar im selben "modified"-Topf wie eine gewöhnliche Änderung.
+    path = team_repo / "vault/case/a.md"
+    path.write_text("base\n", encoding="utf-8")
+    _commit_all(team_repo)
+    _sh(team_repo, "checkout", "-q", "-b", "other")
+    path.write_text("from other branch\n", encoding="utf-8")
+    _commit_all(team_repo, "other change")
+    _sh(team_repo, "checkout", "-q", "trunk")
+    path.write_text("from trunk\n", encoding="utf-8")
+    _commit_all(team_repo, "trunk change")
+    subprocess.run(["git", "merge", "-q", "other"], cwd=team_repo, capture_output=True, text=True)
+    result = local_files_status(team_repo, ["vault/case/a.md"])
+    assert result == {"vault/case/a.md": "conflict"}
+
+
 def test_outside_git_repo_all_clean_no_crash(tmp_path: Path):
     # Kein Git-Repo (git-Aufruf schlägt fehl, returncode != 0) — defensiv:
     # kein Crash, alle angefragten Pfade "clean" statt eines Fehlers.

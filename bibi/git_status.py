@@ -66,11 +66,16 @@ def working_tree_status(root: Path | None = None) -> WorkingTreeStatus | None:
 
 def local_files_status(root: Path | None, paths: list[str]) -> dict[str, str]:
     """Git-Status je Pfad — "new" (neu/untracked) | "modified" (getrackt,
-    geändert) | "clean" (getrackt, unverändert) — für die lokal entdeckten
-    Job-MDs (PLAN-21 Befund 10, User-Fund: "die Jobs im Repository plus ihr
-    git Status (neu, geändert, etc.) anzeigen"; gelöschte MDs will der User
-    **nicht** als eigenen Status sehen — sie verschwinden von selbst, da
-    ``discovery.discover()`` (Dateisystem-Scan) sie ohnehin nicht mehr findet).
+    geändert) | "conflict" (Merge-Konflikt) | "clean" (getrackt, unverändert)
+    — für die lokal entdeckten Job-MDs (PLAN-21 Befund 10, User-Fund: "die
+    Jobs im Repository plus ihr git Status (neu, geändert, etc.) anzeigen";
+    gelöschte MDs will der User **nicht** als eigenen Status sehen — sie
+    verschwinden von selbst, da ``discovery.discover()`` (Dateisystem-Scan)
+    sie ohnehin nicht mehr findet). "conflict" (Bibi4-Iteration, User-Fund:
+    "sind sie lokal modifiziert, konfliktär, fehlen?") war zuvor nicht von
+    "modified" unterschieden — Porcelain v2 markiert Merge-Konflikte bereits
+    eindeutig mit einer eigenen ``u ``-Zeile (unmerged), nur bisher in
+    denselben Topf wie ``1 `` (ordinary changed) geworfen.
 
     Ein einziger ``git status``-Aufruf für alle Pfade statt einem je Datei.
     ``paths`` sind repo-root-relative Pfade (POSIX-Separator, wie
@@ -88,6 +93,8 @@ def local_files_status(root: Path | None, paths: list[str]) -> dict[str, str]:
         for line in proc.stdout.splitlines():
             if line.startswith("? "):
                 dirty[line[2:]] = "new"
-            elif line.startswith("1 ") or line.startswith("u "):
+            elif line.startswith("u "):
+                dirty[line.split(" ")[-1]] = "conflict"
+            elif line.startswith("1 "):
                 dirty[line.split(" ")[-1]] = "modified"
     return {p: dirty.get(p, "clean") for p in paths}

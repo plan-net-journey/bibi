@@ -84,6 +84,13 @@ def test_jobs_table_git_status_modified_and_clean():
     assert 'class="chip clean"' in html and ">unverändert<" in html
 
 
+def test_jobs_table_shows_git_status_conflict_chip():
+    # Bibi4-Iteration, User-Fund: "sind sie lokal modifiziert, konfliktär,
+    # fehlen?" — eigener Zustand, nicht mehr im "modified"-Topf.
+    html = render._jobs_table([_row("a", git_status="conflict")], {}, now=100.0)
+    assert 'class="chip conflict"' in html and ">konfliktär<" in html
+
+
 def test_jobs_table_shows_last_local_run_status_and_links_to_run_detail():
     html = render._jobs_table([_row("a")], {"a": {"id": 42, "status": "complete"}}, now=100.0)
     assert 'class="st complete"' in html

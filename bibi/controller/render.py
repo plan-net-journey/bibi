@@ -212,6 +212,7 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .chip.clean { background: #5fb37a2e; color: #5fb37a; }
 .chip.modified { background: #d6a23e2e; color: #d6a23e; }
 .chip.new { background: #5a9fe02e; color: #5a9fe0; }
+.chip.conflict { background: #e06c5a2e; color: #e06c5a; }
 .startbtn { font: inherit; font-size: .78rem; background: #5a9fe033; border: 1px solid #5a9fe066;
         border-radius: .35rem; padding: .2rem .55rem; cursor: pointer; color: inherit; font-weight: 600;
         white-space: nowrap; }
@@ -1543,6 +1544,10 @@ def daemon_page(daemon_status: dict | None = None, now: float | None = None) -> 
 _GIT_STATUS_LABEL = {
     "new": ("chip new", "neu"),
     "modified": ("chip modified", "geändert"),
+    # Bibi4-Iteration, User-Fund: "sind sie lokal modifiziert, konfliktär,
+    # fehlen?" — konfliktär war zuvor nicht von modified unterschieden
+    # (local_files_status(), git_status.py).
+    "conflict": ("chip conflict", "konfliktär"),
     "clean": ("chip clean", "unverändert"),
 }
 
