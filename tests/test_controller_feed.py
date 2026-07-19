@@ -302,13 +302,13 @@ def test_feed_status_fragment_self_polls_with_default_interval():
     html = render.feed_status_fragment({}, None, None, now=100.0)
     assert 'id="feedstatus"' in html
     assert 'hx-get="/-/ui/feed/status"' in html
-    assert 'hx-trigger="every 30s [window.bibiFollow]"' in html
+    assert 'hx-trigger="every 30s [window.bibiFollow], bibiMaintChanged from:body"' in html
     assert 'hx-swap="outerHTML"' in html
 
 
 def test_feed_status_fragment_uses_explicit_poll_interval():
     html = render.feed_status_fragment({}, None, None, now=100.0, poll_interval_s=60)
-    assert 'hx-trigger="every 60s [window.bibiFollow]"' in html
+    assert 'hx-trigger="every 60s [window.bibiFollow], bibiMaintChanged from:body"' in html
 
 
 # --- Job-Status-Kachel: eigener, schnellerer Poll (Bibi4-Iteration, User-Fund:
@@ -343,7 +343,8 @@ def test_feed_status_fragment_nests_job_status_fragment_with_its_own_poll():
     html = render.feed_status_fragment(
         {"job_stats": {"counts_by_kind": {}, "complete_since_uptime": 5, "next_due_at": None}},
         None, None, now=100.0, job_status_poll_interval_s=1)
-    assert 'id="feedstatus"' in html and 'hx-trigger="every 30s [window.bibiFollow]"' in html
+    assert 'id="feedstatus"' in html
+    assert 'hx-trigger="every 30s [window.bibiFollow], bibiMaintChanged from:body"' in html
     assert 'id="jobstatuscard"' in html and 'hx-trigger="every 1s [window.bibiFollow]"' in html
     assert html.count('<div class="card">') == 4
 
@@ -711,4 +712,4 @@ def test_root_route_status_cards_use_configured_poll_interval(
     app = app_with(_FakeClient())
     with TestClient(app) as c:
         r = c.get("/-/", headers={"Accept": "text/html"})
-        assert 'hx-trigger="every 45s [window.bibiFollow]"' in r.text
+        assert 'hx-trigger="every 45s [window.bibiFollow], bibiMaintChanged from:body"' in r.text

@@ -44,6 +44,19 @@ def test_ops_handles_js_restores_idle_icon():
     assert "rescan.textContent = idleIcon" in js
 
 
+def test_maint_toggle_dispatches_event_for_mode_card_refresh():
+    # Bibi4-Iteration, User-Fund: "ein Klick auf Maintenance muss ein Update
+    # der Mode Card nach sich ziehen" — die Mode-Kachel hängt sonst bis zu 30s
+    # im separat gepollten #feedstatus-Bundle fest.
+    js = render._OPS_HANDLES_JS
+    assert "document.body.dispatchEvent(new Event('bibiMaintChanged'))" in js
+
+
+def test_feedstatus_fragment_also_refreshes_on_maint_changed_event():
+    html = render.feed_status_fragment({}, None, None, now=100.0)
+    assert "bibiMaintChanged from:body" in html
+
+
 def test_feed_header_rescan_ignores_git_status():
     # Regressionstest für PLAN-21 Befund 2: git_status darf die RESCAN-
     # Beschriftung nicht mehr beeinflussen, egal wie der Sync-Zustand steht —

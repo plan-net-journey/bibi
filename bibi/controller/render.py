@@ -1499,8 +1499,14 @@ def feed_status_fragment(
              _git_segment_card(git_status)]
     job_card = job_status_fragment(status.get("job_stats"), now,
                                    poll_interval_s=job_status_poll_interval_s)
+    # "bibiMaintChanged from:body" (Bibi4-Iteration, User-Fund: "ein Klick auf
+    # Maintenance muss ein Update der Mode Card nach sich ziehen") — der MAINT-
+    # Toggle (_OPS_HANDLES_JS) lebt im gemeinsamen Header, unabhängig davon, ob
+    # diese Kachel auf der aktuellen Seite überhaupt existiert (z. B. Job-
+    # Detail hat keine); ohne Treffer im DOM ist das Event einfach ein No-op.
     attrs = (f'id="feedstatus" hx-get="/-/ui/feed/status" '
-            f'hx-trigger="every {poll_interval_s}s [window.bibiFollow]" hx-swap="outerHTML"')
+            f'hx-trigger="every {poll_interval_s}s [window.bibiFollow], '
+            f'bibiMaintChanged from:body" hx-swap="outerHTML"')
     return f'<div {attrs}><div class="statuscards">{"".join(cards)}{job_card}</div></div>'
 
 
@@ -2300,6 +2306,10 @@ _OPS_HANDLES_JS = """
     maint.classList.toggle('warn', on);
     maint.textContent = on ? '⚠' : '⚙';
     maint.title = on ? 'Wartungsmodus: an' : 'Wartungsmodus: aus';
+    // Bibi4-Iteration, User-Fund: "ein Klick auf Maintenance muss ein Update
+    // der Mode Card nach sich ziehen" — die Mode-Kachel hängt sonst im
+    // separat gepollten #feedstatus-Bundle (bis zu 30s Verzögerung).
+    document.body.dispatchEvent(new Event('bibiMaintChanged'));
   }
   if (maint) maint.addEventListener('click', async () => {
     const on = maint.classList.contains('warn');
