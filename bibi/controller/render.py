@@ -639,10 +639,21 @@ def _landings_chart_html(labels: list[float], counts: dict[str, list[int]],
     (User-Fund 2026-07-08): die Zustands-Chips im Chart-Kopf
     (``_current_state_chips``) tragen dieselben Farben und übernehmen die
     Legenden-Funktion — pro Balkensegment zeigt Chart.js' Standard-Tooltip
-    beim Hover trotzdem den Status-Namen."""
+    beim Hover trotzdem den Status-Namen.
+
+    X-Achsen-Labels tragen das Datum (``TT.MM HH:MM``) statt nur ``HH:MM``,
+    sobald das Fenster mehr als einen Tag umfasst (Bibi4-Iteration, User-Fund:
+    "bei ein oder mehreren Tagen muss in der X-Achse das Datum ... angezeigt
+    werden" — reine Uhrzeit war über mehrere Tage sonst mehrdeutig, z. B. bei
+    den groben Auflösungen 8h/1w oder 24h/1m). Bei ≤1 Tag bleibt die knappe
+    ``HH:MM``-Form (unaufdringlich, keine Mehrdeutigkeit innerhalb eines
+    Tages) — Spannweite kommt direkt aus den Labels selbst, kein zusätzlicher
+    Parameter nötig."""
     if not labels:
         return '<div class="chart-wrap"><p class="out-empty">— noch keine Daten —</p></div>'
-    tick_labels = [datetime.datetime.fromtimestamp(t).strftime("%H:%M") for t in labels]
+    spans_multiple_days = len(labels) > 1 and (labels[-1] - labels[0]) > 86400
+    fmt = "%d.%m %H:%M" if spans_multiple_days else "%H:%M"
+    tick_labels = [datetime.datetime.fromtimestamp(t).strftime(fmt) for t in labels]
     datasets = [
         {"label": status, "data": counts[status], "backgroundColor": _LANDING_COLOR[status]}
         for status in _LANDING_ORDER

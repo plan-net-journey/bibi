@@ -323,6 +323,26 @@ def test_landings_chart_html_empty_shows_placeholder():
     assert "keine Daten" in render._landings_chart_html([], {})
 
 
+def test_landings_chart_html_single_day_uses_bare_time():
+    # Bibi4-Iteration, User-Fund: Datum nur bei mehr als einem Tag Spannweite —
+    # innerhalb eines Tages ist HH:MM schon eindeutig, kein Datum nötig.
+    labels, counts = render._landings_buckets(
+        [_landing("complete", 100_000.0 - 60)], now=100_000.0, bucket_minutes=15)
+    html = render._landings_chart_html(labels, counts)
+    assert "labels" in html
+    assert "." not in html.split('"labels": [')[1].split("]")[0]  # kein TT.MM.-Punkt
+
+
+def test_landings_chart_html_multi_day_includes_date():
+    # 480min-Bucket/168h-Fenster (Preset "8h/1w") spannt 7 Tage — HH:MM allein
+    # wäre über mehrere Tage mehrdeutig (User-Fund, s. Docstring).
+    labels, counts = render._landings_buckets(
+        [_landing("complete", 100_000.0 - 60)], now=1_000_000.0, bucket_minutes=480)
+    html = render._landings_chart_html(labels, counts)
+    labels_json = html.split('"labels": [')[1].split("]")[0]
+    assert "." in labels_json  # TT.MM HH:MM-Form enthält einen Punkt
+
+
 def test_current_state_chips_only_shows_nonzero_statuses():
     # User-Fund 2026-07-08 (2. Runde): kein Stat-Grid mehr — nur Chips für
     # tatsächlich nicht-null Zustände, der Rest wird gar nicht erst gerendert.
