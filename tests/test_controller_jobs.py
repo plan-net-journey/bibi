@@ -160,58 +160,75 @@ def test_jobs_table_live_row_shows_awaiting_when_signaled():
     assert 'class="st running">running<' not in html
 
 
-def test_run_history_renders_rows():
-    runs = [{"id": 7, "slug": "mein-testjob", "status": "complete", "exit_code": 0,
-            "exec_runtime": 3.2, "finished_at": 100.0}]
-    html = render._run_history(runs, now=200.0)
-    assert "mein-testjob" in html and "exit 0" in html and "3 s" in html
-    assert 'href="/-/ui/run/7"' in html
-
-
-def test_run_history_empty_shows_placeholder():
-    assert "noch keine lokalen Läufe" in render._run_history([], now=100.0)
-
-
 def test_jobs_fragment_has_no_remote_or_hostlink_text():
     # PLAN-21 Befund 10: kein Remote-Bezug mehr im Fragment, egal was aufrufe-
     # seitig übergeben würde — die Funktion nimmt gar keinen scheduler_url/
     # Remote-Parameter mehr entgegen.
-    html = render.jobs_fragment([_row("a")], {}, [], now=100.0)
+    html = render.jobs_fragment([_row("a")], {}, now=100.0)
     assert "Remote" not in html
     assert "hostlink" not in html
 
 
 def test_jobs_fragment_self_polls():
-    html = render.jobs_fragment([], {}, [], now=100.0)
+    html = render.jobs_fragment([], {}, now=100.0)
     assert 'id="jobsboard"' in html and 'hx-get="/-/ui/jobs/board"' in html
 
 
 def test_jobs_fragment_has_no_explanatory_note():
     # PLAN-27 Befund 3, User-Fund: erklärender Text ("Lokal per
     # discovery.discover() entdeckte Job-MDs ...") soll raus.
-    html = render.jobs_fragment([], {}, [], now=100.0)
+    html = render.jobs_fragment([], {}, now=100.0)
     assert "discovery.discover()" not in html
     assert "bildet nur ab, was gerade im Repository liegt" not in html
 
 
-def test_jobs_fragment_wraps_sections_in_own_panel_cards():
-    # PLAN-29 Befund 1, User-Fund: "wieder um 'Jobs im Repository' (besser:
-    # 'Jobs') und um 'Lokale Läufe' den Rahmen zeichnen" — analog zu PLAN-25
-    # Befund 5/6 (Feed, Schedules), die dasselbe .panel-card-Muster schon
-    # nutzen. Umbenennung "Jobs im Repository" -> "Jobs" ist Teil desselben
-    # Befunds.
-    runs = [{"id": 7, "slug": "mein-testjob", "status": "complete", "exit_code": 0,
-            "exec_runtime": 3.2, "finished_at": 100.0}]
-    html = render.jobs_fragment([_row("mein-testjob")], {}, runs, now=200.0)
-    assert html.count('class="panel-card"') == 2
+def test_jobs_fragment_has_single_panel_card_no_local_runs():
+    # Bibi4-Iteration, User-Fund: "der untere Abschnitt lokale Läufe wandert
+    # in den eigenen Screen Archive" — löst PLAN-29 Befund 1 (2 Panel-Cards
+    # hier) auf 1 Panel-Card ab, analog zu schedules_fragment() beim Host.
+    html = render.jobs_fragment([_row("mein-testjob")], {}, now=200.0)
+    assert html.count('class="panel-card"') == 1
     assert "<h2>Jobs</h2>" in html
     assert "Jobs im Repository" not in html
-    assert html.index('class="panel-card"') < html.index("Jobs</h2>")
-    assert html.index("Jobs</h2>") < html.index("Lokale Läufe")
+    assert "Lokale Läufe" not in html
+
+
+# ── Archive-Screen (Client, Bibi4-Iteration) ─────────────────────────────────
+
+
+def test_client_archive_table_renders_slug_type_status_runtime_next():
+    runs = [{"id": 7, "slug": "mein-testjob", "status": "complete",
+            "payload": "claude: tu was", "exec_runtime": 3.2, "finished_at": 100.0}]
+    html = render._client_archive_table(runs, now=200.0)
+    assert '<th>Schedule</th><th>Type</th><th>Status</th><th>runtime</th><th>next</th>' in html
+    assert 'href="/-/ui/run/7">mein-testjob<' in html
+    assert '<td class="kind">claude</td>' in html
+    assert 'class="st complete" href="/-/ui/run/7">complete<' in html
+    assert "3 s" in html
+    assert "<td>—</td>" in html  # next: beim Client immer "—", nicht ausgeblendet
+
+
+def test_client_archive_table_empty_shows_placeholder():
+    assert "keine lokalen Läufe" in render._client_archive_table([], now=100.0)
+
+
+def test_jobs_archive_fragment_self_polls_under_follow():
+    frag = render.jobs_archive_fragment([{"id": 1, "slug": "a", "status": "complete"}], now=1.0)
+    assert 'id="archive"' in frag
+    assert 'hx-get="/-/ui/jobs/archive/list"' in frag
+    assert "every 2s [window.bibiFollow]" in frag
+    assert "Archive (1)" in frag
+
+
+def test_jobs_archive_page_has_active_archive_tab():
+    html = render.jobs_archive_page([], now=1000.0, daemon_status={"roles": ["connect"]})
+    assert html.lower().startswith("<!doctype html>")
+    assert '<span class="tab-active">Archive</span>' in html
+    assert 'id="archive"' in html
 
 
 def test_jobs_page_has_header_and_nav():
-    html = render.jobs_page([], {}, [], now=100.0)
+    html = render.jobs_page([], {}, now=100.0)
     assert 'href="/-/"' in html and 'href="/-/ui/logs"' in html
     assert "<title>bibi · Jobs</title>" in html
 
@@ -221,7 +238,7 @@ def test_jobs_page_has_status_cards_header():
     # angezeigt werden" — derselbe feed_status_fragment()-Header wie
     # /-/ und /-/ui/schedules (PLAN-27 Befund 2 hatte das nur fürs Live-Log
     # erledigt, /-/ui/jobs blieb dabei außen vor).
-    html = render.jobs_page([], {}, [], now=100.0)
+    html = render.jobs_page([], {}, now=100.0)
     assert 'id="feedstatus"' in html
 
 
@@ -622,15 +639,36 @@ def test_jobs_route_never_calls_remote_schedules_even_with_scheduler_role(
         assert client.schedules_called is False
 
 
-def test_jobs_route_shows_local_run_history(team_repo: Path, app_with):
+def test_jobs_route_no_longer_shows_local_run_history(team_repo: Path, app_with):
+    # Bibi4-Iteration, User-Fund: "Lokale Läufe" wanderte auf den eigenen
+    # Archive-Screen (s. test_jobs_archive_route_shows_local_run_history unten).
     client = _FakeClient(run_journal=[{"id": 5, "slug": "mein-testjob", "status": "complete",
                                        "exit_code": 0, "exec_runtime": 3.2,
                                        "finished_at": 100.0, "domain": "local"}])
     app, _ = app_with(client)
     with TestClient(app) as c:
         r = c.get("/-/ui/jobs")
-        assert "Lokale Läufe" in r.text and "mein-testjob" in r.text
+        assert "Lokale Läufe" not in r.text
+
+
+def test_jobs_archive_route_shows_local_run_history(team_repo: Path, app_with):
+    client = _FakeClient(run_journal=[{"id": 5, "slug": "mein-testjob", "status": "complete",
+                                       "exit_code": 0, "exec_runtime": 3.2,
+                                       "finished_at": 100.0, "domain": "local"}])
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/archive")
+        assert "mein-testjob" in r.text
         assert 'href="/-/ui/run/5"' in r.text
+
+
+def test_jobs_archive_list_fragment_route(team_repo: Path, app_with):
+    client = _FakeClient(run_journal=[{"id": 5, "slug": "mein-testjob", "status": "complete"}])
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/archive/list")
+        assert r.status_code == 200
+        assert 'id="archive"' in r.text and "mein-testjob" in r.text
 
 
 def test_jobs_route_per_job_status_finds_pinned_run_by_bucket_slug(team_repo: Path, app_with):

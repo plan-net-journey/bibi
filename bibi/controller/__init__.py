@@ -305,13 +305,17 @@ def add_controller_routes(
             daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval()))
 
-    def _jobs_data() -> tuple[list, dict, list]:
+    def _jobs_data() -> tuple[list, dict]:
         """PLAN-21 Befund 10, User-Entscheidung: der Jobs-Screen dient
         ausschließlich dem Review der lokalen Repository-Realität, kein
         Remote-Abgleich mehr (weder Netzaufruf noch Vergleichsspalte).
         ``rows`` = lokal entdeckte Job-MDs + echter Git-Status je Datei
         (``local_files_status()``) — gelöschte MDs tauchen von selbst nicht
-        mehr auf, da ``discovery.discover()`` sie nicht mehr findet."""
+        mehr auf, da ``discovery.discover()`` sie nicht mehr findet.
+
+        Gibt seit der Bibi4-Iteration nur noch ``(rows, local_runs)`` zurück —
+        die dritte Rückgabe (flache Journal-Liste für "Lokale Läufe") lebt
+        jetzt auf ``_jobs_archive_runs()`` (eigener Screen, s. dort)."""
         from bibi import repo
         from bibi.git_status import local_files_status
         local = _local_schedules()
@@ -329,34 +333,40 @@ def add_controller_routes(
              "live": live_by_slug.get(slug)}
             for slug, s in sorted(local.items())
         ]
-        try:
-            run_journal = client.run_journal(limit=200)
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            run_journal = []
-        # Sortiert nach finished_at DESC (job_db.list_journal) — der erste
-        # Treffer je Slug ist damit schon der jeweils letzte Lauf.
+        # local_runs (Pro-Job-Status-Lookup in _jobs_row(), render.py) braucht
+        # weiterhin die volle Journal-Liste, unabhängig vom Archive-Screen.
         #
         # User-Fund 2026-07-13: run_pinned() vergibt pro Aufruf einen
         # eindeutigen jobs.slug (f"{bucket_slug}-{token}"), der unverändert
         # nach journal.slug übernommen wird (job_db.py::_write_journal()).
-        # Der Pro-Job-Lookup unten (_jobs_row(), render.py) sucht aber gegen
-        # den STABILEN Bucket-Slug aus der lokalen MD-Discovery — ohne
-        # Rückrechnung fand er einen gepinnten Lauf deshalb nie, selbst wenn
-        # er gerade komplett gelaufen war ("noch nie lokal gelaufen" trotz
-        # sichtbarem Eintrag in der Liste unten). Dieselbe Rückrechnung nutzt
-        # bereits worker.local_runs_live() für den *live*-Fall.
+        # Der Pro-Job-Lookup sucht aber gegen den STABILEN Bucket-Slug aus der
+        # lokalen MD-Discovery — ohne Rückrechnung fand er einen gepinnten
+        # Lauf deshalb nie, selbst wenn er gerade komplett gelaufen war
+        # ("noch nie lokal gelaufen" trotz sichtbarem Journal-Eintrag).
+        # Dieselbe Rückrechnung nutzt bereits worker.local_runs_live() für
+        # den *live*-Fall.
         local_runs: dict[str, dict] = {}
-        for run in run_journal:
+        for run in _jobs_archive_runs():
             bucket = run["slug"].rsplit("-", 1)[0] if run.get("pinned_host") else run["slug"]
             local_runs.setdefault(bucket, run)
-        return rows, local_runs, run_journal[:20]
+        return rows, local_runs
+
+    def _jobs_archive_runs() -> list:
+        # Flache Journal-Liste über alle lokalen Jobs (Bibi4-Iteration,
+        # Archive-Screen Client) — dieselbe Quelle, die vorher nur für
+        # "Lokale Läufe" (auf 20 gedeckelt) diente, jetzt ungedeckelt (bis zum
+        # 200er-Server-Limit) für den eigenen Screen.
+        try:
+            return client.run_journal(limit=200)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return []
 
     @app.get("/-/ui/jobs", include_in_schema=False)
     def jobs_screen():
         from bibi import config
-        rows, local_runs, runs = _jobs_data()
+        rows, local_runs = _jobs_data()
         return HTMLResponse(render.jobs_page(
-            rows, local_runs, runs, daemon_status=_status(), git_status=_feed_git_status(),
+            rows, local_runs, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
             public_host=config.public_host()))
 
@@ -364,9 +374,21 @@ def add_controller_routes(
     def jobs_board():
         # Self-Poll-Ziel von #jobsboard (wie #live/#journal bei Schedules).
         from bibi import config
-        rows, local_runs, runs = _jobs_data()
+        rows, local_runs = _jobs_data()
         return HTMLResponse(render.jobs_fragment(
-            rows, local_runs, runs, public_host=config.public_host()))
+            rows, local_runs, public_host=config.public_host()))
+
+    @app.get("/-/ui/jobs/archive", include_in_schema=False)
+    def jobs_archive_screen():
+        # Archive-Screen (Client, Bibi4-Iteration) — eigener Screen für die
+        # lokale Lauf-Historie, seit dieser Iteration nicht mehr Teil von
+        # /-/ui/jobs (User-Fund: "der untere Abschnitt lokale Läufe wandert
+        # in den eigenen Screen Archive").
+        return HTMLResponse(render.jobs_archive_page(_jobs_archive_runs(), daemon_status=_status()))
+
+    @app.get("/-/ui/jobs/archive/list", include_in_schema=False)
+    def jobs_archive_list_fragment():
+        return HTMLResponse(render.jobs_archive_fragment(_jobs_archive_runs()))
 
     def _job_detail_data(slug: str):
         # Gegenstück zu _detail_data() (Host), aber lokal gespeist (PLAN-21

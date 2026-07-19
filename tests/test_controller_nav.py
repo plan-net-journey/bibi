@@ -191,15 +191,26 @@ def test_screen_nav_hides_schedules_and_jobs_without_any_role():
 
 def test_screen_nav_shows_archive_tab_with_scheduler_role():
     # Bibi4-Iteration, User-Fund: Archive/Journal auf einen eigenen Screen
-    # verschoben — Tab nur mit scheduler-Rolle (Client-Gegenpart ist eine
-    # eigene, noch offene Iteration).
+    # verschoben — Host-Archive-Tab nur mit scheduler-Rolle.
     html = render._screen_nav("Live-Log", roles=["scheduler"])
     assert 'href="/-/ui/archive">Archive' in html
 
 
-def test_screen_nav_hides_archive_without_scheduler_role():
+def test_screen_nav_hides_host_archive_without_scheduler_role():
     html = render._screen_nav("Live-Log", roles=["connect"])
     assert 'href="/-/ui/archive"' not in html
+
+
+def test_screen_nav_shows_archive_tab_with_connect_role():
+    # Bibi4-Iteration, User-Fund: lokale Läufe auf einen eigenen Screen
+    # verschoben — Client-Archive-Tab nur mit connect-Rolle.
+    html = render._screen_nav("Live-Log", roles=["connect"])
+    assert 'href="/-/ui/jobs/archive">Archive' in html
+
+
+def test_screen_nav_hides_client_archive_without_connect_role():
+    html = render._screen_nav("Live-Log", roles=["scheduler"])
+    assert 'href="/-/ui/jobs/archive"' not in html
 
 
 def test_screen_nav_active_tab_has_active_class():

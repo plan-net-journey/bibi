@@ -841,11 +841,12 @@ def _screen_nav(active: str, roles: list[str] | None = None) -> str:
     zusätzlich für reine Scheduler-Knoten wie sarasate — auch wenn der Screen
     dort technisch funktionieren würde).
 
-    Archive-Tab (Bibi4-Iteration, User-Fund: Archive/Journal auf einen eigenen
-    Screen auslagern statt unterer Teil von Schedules) bisher nur für den Host
-    (``scheduler``-Rolle, ``archive_page()``/``/-/ui/archive``) — der Client-
-    Gegenpart (lokale Läufe) ist eine eigene, noch offene Iteration, s.
-    ``archive_page()``-Docstring."""
+    Archive-Tab (Bibi4-Iteration, User-Fund: Archive/Journal bzw. lokale Läufe
+    auf einen eigenen Screen auslagern) für Host (``scheduler``-Rolle,
+    ``archive_page()``/``/-/ui/archive``) UND Client (``connect``-Rolle,
+    ``jobs_archive_page()``/``/-/ui/jobs/archive``) — dieselbe Beschriftung,
+    unterschiedliche Routen/Inhalte, exakt wie beim Jobs-Tab. Kein
+    Kollisionsrisiko aus demselben Grund (``scheduler``⊥``connect``)."""
     roles = roles or []
     tabs = [("Feed", "/-/")]
     if "scheduler" in roles:
@@ -853,6 +854,7 @@ def _screen_nav(active: str, roles: list[str] | None = None) -> str:
         tabs.append(("Archive", "/-/ui/archive"))
     if "connect" in roles:
         tabs.append(("Jobs", "/-/ui/jobs"))
+        tabs.append(("Archive", "/-/ui/jobs/archive"))
     tabs += [("Live Log", "/-/ui/logs"), ("API Docs", "/-/docs")]
     def _tab(t: str, h: str) -> str:
         if t == active:
@@ -1559,67 +1561,130 @@ def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
     )
 
 
-def _run_hist_row(r: dict, now: float) -> str:
-    t = _abs_time(r.get("finished_at"))
-    status = r.get("status", "")
-    exit_code = r.get("exit_code")
-    exit_txt = f" · exit {exit_code}" if exit_code is not None else ""
-    dur = _duration_cell(r)
-    dur_txt = f" · {dur}" if dur != "—" else ""
-    body = (f'<span class="t">{_e(t)}</span>'
-           f'<span class="st {_e(status)}">{_e(status)}</span>'
-           f'<span>{_e(r.get("slug"))}{exit_txt}{dur_txt}</span>')
-    jid = r.get("id")
-    # PLAN-21 Befund 10: jeder lokale Lauf verlinkt jetzt auf seine eigene
-    # Detail-Seite (/-/ui/run/{jid}, rollenunabhängig dank Fallback-Route).
-    if jid is not None:
-        return f'<a class="row rowlink" href="/-/ui/run/{jid}">{body}</a>'
-    return f'<div class="row">{body}</div>'
-
-
-def _run_history(runs: list[dict], now: float) -> str:
-    if not runs:
-        return '<p class="out-empty">— noch keine lokalen Läufe —</p>'
-    return '<div class="runhist">' + "".join(_run_hist_row(r, now) for r in runs) + "</div>"
-
-
 def jobs_fragment(
-    rows: list[dict], local_runs: dict[str, dict], runs: list[dict],
+    rows: list[dict], local_runs: dict[str, dict],
     *, now: float | None = None, public_host: str = "localhost",
 ) -> str:
     """Der austauschbare Jobs-Kern (``#jobsboard``): lokale Job-MDs + Git-
-    Status + letzter Start/Ende/Laufzeit je Zeile + lokale Lauf-Historie
-    (PLAN-21 Befund 10 — löst die vorherige Lokal/Remote-Abgleich-Tabelle ab,
-    kein Netzaufruf/Remote-Bezug mehr, dient ausschließlich dem Review der
-    lokalen Repository-Realität; PLAN-28 User-Feedback: kein Start-CTA mehr
-    hier, Start gibt es nur noch auf der Job-Detailseite). Self-pollt wie die
-    anderen Screens (PLAN-17 Stufe 17.2), damit ein anderswo (Detailseite,
-    CLI) gestarteter Lauf ohne Warten sichtbar wird."""
+    Status + letzter Start/Ende/Laufzeit je Zeile (PLAN-21 Befund 10 — löst
+    die vorherige Lokal/Remote-Abgleich-Tabelle ab, kein Netzaufruf/Remote-
+    Bezug mehr, dient ausschließlich dem Review der lokalen Repository-
+    Realität; PLAN-28 User-Feedback: kein Start-CTA mehr hier, Start gibt es
+    nur noch auf der Job-Detailseite). Self-pollt wie die anderen Screens
+    (PLAN-17 Stufe 17.2), damit ein anderswo (Detailseite, CLI) gestarteter
+    Lauf ohne Warten sichtbar wird.
+
+    "Lokale Läufe" (die frühere zweite Sektion hier) lebt seit der Bibi4-
+    Iteration auf einem eigenen Screen (``jobs_archive_fragment()``/
+    ``jobs_archive_page()``, User-Fund: "der untere Abschnitt lokale Läufe
+    wandert in den eigenen Screen Archive") — löst PLAN-29 Befund 1 (2
+    Panel-Cards hier) auf 1 Panel-Card ab, analog zu ``schedules_fragment()``
+    beim Host."""
     now = time.time() if now is None else now
     return (
         f'<div id="jobsboard" hx-get="/-/ui/jobs/board" hx-trigger="{_POLL}" hx-swap="outerHTML">'
         '<div class="panel-card"><h2>Jobs</h2>'
         f"{_jobs_table(rows, local_runs, now, public_host=public_host)}</div>"
-        '<div class="panel-card"><h2>Lokale Läufe</h2>'
-        f"{_run_history(runs, now)}</div>"
         "</div>"
     )
 
 
+def _client_archive_row(r: dict, now: float) -> str:
+    """Eine Archive-Zeile (Client) — Slug/Type/Status/Runtime/next, dieselbe
+    Spaltenstruktur wie ``_sched_row()`` (Host), aus einem Journal-Run-Dict
+    statt einem Schedule-Dict. "Type" nutzt ``models.effective_kind()`` statt
+    ``display_kind()`` — die journal-Tabelle trägt kein ``app_port`` (nur
+    ``payload``, s. schema.sql), genau wie beim Host-Archiv/Journal
+    (``_sched_row()`` selbst nutzt ebenfalls nur ``_effective_sched_type()``).
+    "next" ist beim Client immer "—" (User-Fund: einmalige /run-Läufe kennen
+    keinen künftigen Termin) — bewusst sichtbar mit "—" statt ausgeblendet
+    (Bibi4-Iteration, User-Fund "eine App": nicht verfügbare Spalten disabled/
+    leer statt zu verschwinden, dieselbe Haltung wie beim MAINT-Toggle)."""
+    slug = _e(r.get("slug"))
+    kind = _e(models.effective_kind(r.get("payload")))
+    status = _e(r.get("status"))
+    runtime = _duration_cell(r)
+    jid = r.get("id")
+    slug_cell = (f'<a class="slug" href="/-/ui/run/{jid}">{slug}</a>'
+                if jid is not None else slug)
+    status_cell = (f'<a class="st {status}" href="/-/ui/run/{jid}">{status}</a>'
+                  if jid is not None else f'<span class="st {status}">{status}</span>')
+    return (
+        "<tr>"
+        f"<td>{slug_cell}</td>"
+        f'<td class="kind">{kind}</td>'
+        f"<td>{status_cell}</td>"
+        f"<td>{runtime}</td>"
+        "<td>—</td>"
+        "</tr>"
+    )
+
+
+def _client_archive_table(runs: list[dict], now: float) -> str:
+    if not runs:
+        return '<p class="out-empty">— keine lokalen Läufe —</p>'
+    rows = "".join(_client_archive_row(r, now) for r in runs)
+    return ('<table class="sched"><thead><tr><th>Schedule</th><th>Type</th><th>Status</th>'
+            f'<th>runtime</th><th>next</th></tr></thead><tbody>{rows}</tbody></table>')
+
+
+def jobs_archive_fragment(runs: list[dict], now: float | None = None) -> str:
+    """Self-pollender Archive-Screen-Kern (Client) — Bibi4-Iteration, User-Fund:
+    "der untere Abschnitt lokale Läufe wandert in den eigenen Screen Archive".
+    ``runs`` ist dieselbe flache Journal-Liste wie zuvor für "Lokale Läufe"
+    (``client.run_journal()``), jetzt ohne die frühere 20er-Deckelung und in
+    Tabellenform (Slug/Type/Status/Runtime/next) statt der alten Zeilen-
+    Ansicht — dieselbe Spaltensprache wie das Host-Archiv. Ziel =
+    ``/-/ui/jobs/archive/list``."""
+    now = time.time() if now is None else now
+    body = f'<h2>Archive ({len(runs)})</h2>' + _client_archive_table(runs, now)
+    attrs = (f'id="archive" hx-get="/-/ui/jobs/archive/list" '
+            f'hx-trigger="{_POLL}" hx-swap="outerHTML"')
+    return f'<div {attrs}><div class="panel-card">{body}</div></div>'
+
+
+def jobs_archive_page(runs: list[dict], now: float | None = None,
+                      *, daemon_status: dict | None = None) -> str:
+    """Archive-Screen (Client, Bibi4-Iteration) — eigene Seite für die lokale
+    Lauf-Historie, abgetrennt von der Jobs-Liste auf ``/-/ui/jobs``. Dieselben
+    Nav/Ops-Bausteine wie jede andere Seite (``_header()``), analog zu
+    ``archive_page()`` (Host)."""
+    now = time.time() if now is None else now
+    daemon_status = daemon_status or {}
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>bibi · Archive</title>"
+        f"<script>{_FOLLOW_JS}</script>"
+        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
+        f"<style>{_CSS}</style></head><body>"
+        f"{_header('Archive', daemon_status)}"
+        f"{jobs_archive_fragment(runs, now)}"
+        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
+
+
 def jobs_page(
-    rows: list[dict], local_runs: dict[str, dict], runs: list[dict],
+    rows: list[dict], local_runs: dict[str, dict],
     *, daemon_status: dict | None = None, git_status: dict | None = None,
     host_url: str | None = None, status_poll_interval_s: int = 30,
     now: float | None = None, public_host: str = "localhost",
 ) -> str:
     """Jobs-Screen (PLAN-17 Stufe 17.2, umgebaut PLAN-21 Befund 10): lokale
-    Repository-Realität + Git-Status + letzter Start/Ende/Laufzeit je Zeile +
-    lokale Lauf-Historie. Rein lokal — funktioniert auch auf einem reinen
-    Client (kein Scheduler/Worker im Ruhezustand), ohne je den Scheduler zu
-    kontaktieren. Status-Kacheln (Host/Mode/Git/Job-Status) seit demselben
-    ``feed_status_fragment()`` wie ``/-/``/``/-/ui/schedules``/Live-Log
-    (PLAN-28 User-Feedback: "Der Header soll auch auf der Client Job Seite
-    angezeigt werden" — PLAN-27 Befund 2 hatte das nur fürs Live-Log erledigt)."""
+    Repository-Realität + Git-Status + letzter Start/Ende/Laufzeit je Zeile.
+    Rein lokal — funktioniert auch auf einem reinen Client (kein Scheduler/
+    Worker im Ruhezustand), ohne je den Scheduler zu kontaktieren. Status-
+    Kacheln (Host/Mode/Git/Job-Status) seit demselben ``feed_status_fragment()``
+    wie ``/-/``/``/-/ui/schedules``/Live-Log (PLAN-28 User-Feedback: "Der
+    Header soll auch auf der Client Job Seite angezeigt werden" — PLAN-27
+    Befund 2 hatte das nur fürs Live-Log erledigt). Lokale Lauf-Historie lebt
+    seit der Bibi4-Iteration auf ``jobs_archive_page()``, s. dortiger
+    Docstring."""
     now = time.time() if now is None else now
     status = daemon_status or {}
     return (
@@ -1633,7 +1698,7 @@ def jobs_page(
         f"{_header('Jobs', status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s)}"
-        f"{jobs_fragment(rows, local_runs, runs, now=now, public_host=public_host)}"
+        f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
