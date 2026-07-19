@@ -476,6 +476,36 @@ def test_feed_row_marks_agent_only_entity():
     assert "is-agent" in html and 'data-agent="1"' in html
 
 
+def test_feed_row_agent_entity_marks_who_column_automated():
+    # Bibi4-Iteration, User-Fund: "warum erscheint hier mein Name" — all_agent
+    # steckte bisher nur in data-agent (fürs Filtern), nicht sichtbar in der
+    # Autor-Spalte selbst. Der rohe Git-Autor bleibt "m.rau" (ambiente
+    # Identität, s. _feed_row()-Docstring) — deshalb hier ein Zusatz statt
+    # eines anderen Namens.
+    e = {"kind": "vault", "name": "x.md", "last_changed": 90.0,
+        "authors": ["m.rau"], "all_agent": True}
+    html = render._feed_row(e, now=100.0)
+    assert '<span class="who">m.rau · automatisiert</span>' in html
+
+
+def test_feed_row_non_agent_entity_who_column_unchanged():
+    e = {"kind": "vault", "name": "x.md", "last_changed": 90.0,
+        "authors": ["m.rau"], "all_agent": False}
+    html = render._feed_row(e, now=100.0)
+    assert '<span class="who">m.rau</span>' in html
+    assert "automatisiert" not in html
+
+
+def test_feed_row_agent_entity_without_authors_shows_bare_dash():
+    # Verteidigend: all_agent=True bei leerer Autorenliste (sollte praktisch
+    # nie vorkommen, s. feed.py::group_entities()) darf kein "— · automatisiert"
+    # ergeben.
+    e = {"kind": "vault", "name": "x.md", "last_changed": 90.0,
+        "authors": [], "all_agent": True}
+    html = render._feed_row(e, now=100.0)
+    assert '<span class="who">—</span>' in html
+
+
 def test_feed_list_empty_placeholder():
     assert "keine Änderungen" in render._feed_list([], now=100.0)
 

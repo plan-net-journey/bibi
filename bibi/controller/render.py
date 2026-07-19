@@ -2046,13 +2046,21 @@ def _feed_row(e: dict, now: float, *, commit_base_url: str | None = None) -> str
     # verfügbar, dieselbe Funktion wie die Journal-Liste andernorts nutzt).
     t = _abs_datetime(e.get("last_changed"), now)
     authors = ", ".join(e.get("authors") or []) or "—"
+    # Bibi4-Iteration, User-Fund: "warum erscheint hier mein Name" — all_agent
+    # (Merge-Herkunft, feed.py::group_entities()) wurde bisher nur fürs
+    # "Wer"-Filtern genutzt (_FEED_FILTER_JS), nicht in der Autor-Spalte selbst
+    # sichtbar gemacht. Der rohe Git-Autor bleibt "m.rau" auch für automatisierte
+    # Läufe (git_ops.stage_and_commit() committet /save & Co. immer unter der
+    # ambienten Identität) — ohne diesen Zusatz sah eine als "nur Agents"
+    # gefilterte Zeile trotzdem aus wie ein manueller m.rau-Commit.
+    who = f"{authors} · automatisiert" if is_agent and authors != "—" else authors
     commit = _feed_commit_cell(e.get("last_commit_sha"), commit_base_url)
     return (f'<div class="{cls}" data-kind="{_e(kind)}" data-agent="{"1" if is_agent else "0"}">'
            f'<span class="t">{_e(t)}</span>'
            f'<span class="lvl {_e(kind)}">{_e(kind)}</span>'
            f'<span class="msg">{_e(name)}</span>'
            f"{commit}"
-           f'<span class="who">{_e(authors)}</span>'
+           f'<span class="who">{_e(who)}</span>'
            "</div>")
 
 
