@@ -1222,7 +1222,8 @@ def _log_panel() -> str:
 
 def log_page(daemon_status: dict | None = None, *, git_status: dict | None = None,
              host_url: str | None = None, now: float | None = None,
-             status_poll_interval_s: int = 30, job_status_poll_interval_s: int = 2) -> str:
+             status_poll_interval_s: int = 30, job_status_poll_interval_s: int = 2,
+             client_rows: list[dict] | None = None) -> str:
     """Live-Log-Panel (§5.4 Slice C): EventSource gegen ``/-/log/stream``, mit
     Level- + Text-Filter (Rolle/Event/slug/msg). Reines FE; der Daemon liefert
     die Events als SSE. Ops-Handles + funktionierendes FOLLOW seit User-Feedback
@@ -1244,7 +1245,7 @@ def log_page(daemon_status: dict | None = None, *, git_status: dict | None = Non
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Live Log', status)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
+        f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s, client_rows=client_rows)}"
         f"{_log_panel()}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
@@ -1512,9 +1513,49 @@ def job_status_fragment(job_stats: dict | None, now: float, *, poll_interval_s: 
     return f'<div {attrs}>{_job_status_card(job_stats, now)}</div>'
 
 
+def _client_job_status_card(rows: list[dict]) -> str:
+    """4. Stat-Karte für den Client (Bibi4-Iteration, User-Brainstorm: "was
+    zeigen wir an Stelle der Host Job Status Card beim Client?") — Gegenstück
+    zu ``_job_status_card()``, aber mit Repo-Struktur- statt Live-Scheduling-
+    Daten: ``job_stats``/``counts_by_kind`` existiert nur für die
+    ``scheduler``-Rolle (job_db-gestützt); der Client hat stattdessen die
+    ohnehin schon geladene Discovery-Liste (dieselbe wie ``_jobs_table()``),
+    keine neue Datenquelle nötig. Gleiche äußere Form wie die Host-Karte
+    (``.jobstatus-grid`` + Subline, kein Titel) für optische Konsistenz —
+    Grid = Typ-Zahlen Job/Claude/App, Subline = Git-Gesundheit (modified/
+    konfliktär-Zählung; "clean" bewusst nicht gezählt, s. ``_jobs_row()``-
+    Docstring: der stille Normalzustand). Eine Empfehlung aus dem Brainstorm,
+    keine Matrix wie beim Host — wäre für die angestrebte Kompaktheit
+    vermutlich zu groß geworden."""
+    counts = {"job": 0, "claude": 0, "app": 0}
+    git_counts = {"new": 0, "modified": 0, "conflict": 0}
+    for row in rows:
+        kind = models.display_kind(row.get("payload"), row.get("app_port"))
+        counts[kind] = counts.get(kind, 0) + 1
+        gs = row.get("git_status", "clean")
+        if gs in git_counts:
+            git_counts[gs] += 1
+    header = '<div class="jsg-h"></div>' + "".join(
+        f'<div class="jsg-h">{label}</div>' for _, label in _JOB_STATUS_KINDS)
+    row_html = '<div class="jsg-k"></div>' + "".join(
+        f'<div class="jsg-v">{counts[kind]}</div>' for kind, _ in _JOB_STATUS_KINDS)
+    parts = []
+    if git_counts["new"]:
+        parts.append(f'{git_counts["new"]} new')
+    if git_counts["modified"]:
+        parts.append(f'{git_counts["modified"]} modified')
+    if git_counts["conflict"]:
+        parts.append(f'{git_counts["conflict"]} conflict')
+    sub = " · ".join(parts) if parts else "all clean"
+    return (f'<div class="card">'
+           f'<div class="jobstatus-grid">{header}{row_html}</div>'
+           f'<div class="sub">{_e(sub)}</div></div>')
+
+
 def feed_status_fragment(
     status: dict, git_status: dict | None, host_url: str | None, now: float,
     *, poll_interval_s: int = 30, job_status_poll_interval_s: int = 2,
+    client_rows: list[dict] | None = None,
 ) -> str:
     """Die Feed-Header-Kacheln (PLAN-19 Befund 4: Host-Connection, Mode,
     Git — löst die bisherigen 6 Kacheln von PLAN-18 Stufe 18.3 ab, u. a. fällt
@@ -1529,6 +1570,17 @@ def feed_status_fragment(
     Baustein eingehängt (``.statuscards`` bleibt das Grid, der Job-Status-
     Poll-Container ist einfach ein weiteres Grid-Kind).
 
+    ``client_rows`` (Bibi4-Iteration, User-Brainstorm): Gegenstück für
+    Knoten ohne ``scheduler``-Rolle — dieselbe Discovery-Liste wie
+    ``_jobs_table()``, hier nur als Zähl-Grundlage für
+    ``_client_job_status_card()``. Anders als der Host-Job-Status (eigener
+    2s-Poll, DB-Query) bleibt das Teil dieses 30s-Bundles: die zugrunde
+    liegende Discovery+Git-Status-Abfrage ist dieselbe Kostenklasse wie die
+    Git-Karte selbst, ändert sich zudem selten (Repo-Struktur, nicht Live-
+    Scheduling) — kein eigener schneller Poll nötig. Wenn weder ``job_stats``
+    noch ``client_rows`` vorhanden sind (z. B. Job-/Run-Detailseiten), bleibt
+    die 4. Kachel schlicht weg, wie bisher.
+
     Self-pollend seit PLAN-25 Befund 4 (User-Fund: "Header kontinuierlich
     aktualisieren") — vorher nur beim initialen Seitenaufbau gerendert.
     Bewusst **kein** festes 2s-Intervall wie ``#schedules`` für Host/Mode/Git:
@@ -1538,8 +1590,13 @@ def feed_status_fragment(
     ``BIBI_STATUS_POLL_INTERVAL``), damit diese Funktion config-frei bleibt."""
     cards = [_host_card(status, host_url, now), _mode_card(status, now),
              _git_segment_card(git_status)]
-    job_card = job_status_fragment(status.get("job_stats"), now,
-                                   poll_interval_s=job_status_poll_interval_s)
+    if status.get("job_stats") is not None:
+        job_card = job_status_fragment(status.get("job_stats"), now,
+                                       poll_interval_s=job_status_poll_interval_s)
+    elif client_rows is not None:
+        job_card = _client_job_status_card(client_rows)
+    else:
+        job_card = ""
     # "bibiMaintChanged from:body" (Bibi4-Iteration, User-Fund: "ein Klick auf
     # Maintenance muss ein Update der Mode Card nach sich ziehen") — der MAINT-
     # Toggle (_OPS_HANDLES_JS) lebt im gemeinsamen Header, unabhängig davon, ob
@@ -1769,7 +1826,8 @@ def jobs_archive_fragment(runs: list[dict], now: float | None = None) -> str:
 def jobs_archive_page(runs: list[dict], now: float | None = None,
                       *, daemon_status: dict | None = None, git_status: dict | None = None,
                       host_url: str | None = None, status_poll_interval_s: int = 30,
-                      job_status_poll_interval_s: int = 2) -> str:
+                      job_status_poll_interval_s: int = 2,
+                      client_rows: list[dict] | None = None) -> str:
     """Archive-Screen (Client, Bibi4-Iteration) — eigene Seite für die lokale
     Lauf-Historie, abgetrennt von der Jobs-Liste auf ``/-/ui/jobs``. Dieselben
     Nav/Ops-Bausteine wie jede andere Seite (``_header()``), analog zu
@@ -1786,7 +1844,7 @@ def jobs_archive_page(runs: list[dict], now: float | None = None,
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Archive', daemon_status)}"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s, client_rows=client_rows)}"
         f"{jobs_archive_fragment(runs, now)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
@@ -1825,7 +1883,7 @@ def jobs_page(
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Jobs', status)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
+        f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s, client_rows=rows)}"
         f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
@@ -2270,6 +2328,7 @@ def feed_page(
     days: int | None = None, weeks: int | None = None,
     daemon_status: dict | None = None, now: float | None = None,
     status_poll_interval_s: int = 30, job_status_poll_interval_s: int = 2,
+    client_rows: list[dict] | None = None,
 ) -> str:
     """Feed-Screen — jetzt Home (``/-/``): fixierte Status-Kacheln (Host/Mode/
     Git, PLAN-19 Befund 4) + Heatmap + aggregierte Änderungsliste. Kein
@@ -2286,7 +2345,7 @@ def feed_page(
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Feed', status)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
+        f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s, client_rows=client_rows)}"
         f"{feed_fragment(feed_data, days=days, weeks=weeks, now=now)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"

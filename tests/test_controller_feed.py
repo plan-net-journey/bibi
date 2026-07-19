@@ -273,12 +273,57 @@ def test_feed_status_fragment_includes_job_status_card_when_present():
     assert '<div class="jobstatus-grid">' in html
 
 
-def test_feed_status_fragment_omits_job_status_card_without_job_stats():
-    # Client-Knoten haben kein job_stats (nur scheduler-Rolle hat es) — keine
-    # leere 4. Kachel; Client-Darstellung laut User bewusst "später".
+def test_feed_status_fragment_omits_job_status_card_without_job_stats_or_client_rows():
+    # Weder job_stats (job_db, scheduler-Rolle) noch client_rows (Discovery-
+    # Liste, Bibi4-Iteration) vorhanden — z. B. Job-/Run-Detailseiten — keine
+    # leere 4. Kachel.
     html = render.feed_status_fragment({}, None, None, now=100.0)
     assert html.count('<div class="card">') == 3
-    assert "Job Status" not in html
+    assert '<div class="jobstatus-grid">' not in html
+
+
+def test_feed_status_fragment_shows_client_card_when_client_rows_given():
+    # Bibi4-Iteration, User-Brainstorm: 4. Kachel für Knoten ohne job_stats,
+    # gefüttert aus derselben Discovery-Liste wie die Jobs-Tabelle.
+    rows = [{"payload": "echo x", "app_port": None, "git_status": "modified"}]
+    html = render.feed_status_fragment({}, None, None, now=100.0, client_rows=rows)
+    assert html.count('<div class="card">') == 4
+    assert '<div class="jobstatus-grid">' in html
+    assert "1 modified" in html
+
+
+def test_client_job_status_card_counts_kinds_and_git_health():
+    rows = [
+        {"payload": "echo a", "app_port": None, "git_status": "clean"},
+        {"payload": "echo b", "app_port": None, "git_status": "modified"},
+        {"payload": "claude: x", "app_port": None, "git_status": "new"},
+        {"payload": "echo c", "app_port": 9100, "git_status": "conflict"},
+    ]
+    html = render._client_job_status_card(rows)
+    assert '<div class="jsg-v">2</div><div class="jsg-v">1</div><div class="jsg-v">1</div>' in html
+    assert "1 new · 1 modified · 1 conflict" in html
+
+
+def test_client_job_status_card_all_clean_shows_reassuring_subline():
+    rows = [{"payload": "echo a", "app_port": None, "git_status": "clean"}]
+    html = render._client_job_status_card(rows)
+    assert '<div class="sub">all clean</div>' in html
+
+
+def test_client_job_status_card_no_title_matches_host_shape():
+    html = render._client_job_status_card([])
+    assert html.startswith('<div class="card"><div class="jobstatus-grid">')
+    assert '<div class="label">' not in html
+
+
+def test_feed_status_fragment_prefers_host_card_when_both_present():
+    # job_stats (scheduler) gewinnt, falls aus irgendeinem Grund beides
+    # übergeben würde — die Host-Karte ist die maßgebliche für diese Rolle.
+    status = {"job_stats": {"counts_by_kind": {}, "complete_since_uptime": 0,
+                            "next_due_at": None}}
+    html = render.feed_status_fragment(
+        status, None, None, now=100.0, client_rows=[{"payload": "x", "app_port": None}])
+    assert "next — · 0 complete" in html
 
 
 # --- Feed-Kachel-Grid: jetzt 3 statt 6 (PLAN-19 Befund 4) -----------------------

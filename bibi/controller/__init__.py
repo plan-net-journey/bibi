@@ -188,7 +188,8 @@ def add_controller_routes(
                 host_url=_scheduler_url(), days=eff_days, weeks=eff_weeks,
                 daemon_status=_status(),
                 status_poll_interval_s=config.status_poll_interval(),
-                job_status_poll_interval_s=config.job_status_poll_interval()))
+                job_status_poll_interval_s=config.job_status_poll_interval(),
+                client_rows=_client_rows_for_status()))
         return JSONResponse(service_descriptor(roles))
 
     @app.get("/-/ui/feed/board", include_in_schema=False)
@@ -206,7 +207,8 @@ def add_controller_routes(
         return HTMLResponse(render.feed_status_fragment(
             _status(), _feed_git_status(), _scheduler_url(), time.time(),
             poll_interval_s=config.status_poll_interval(),
-            job_status_poll_interval_s=config.job_status_poll_interval()))
+            job_status_poll_interval_s=config.job_status_poll_interval(),
+            client_rows=_client_rows_for_status()))
 
     @app.get("/-/ui/feed/jobstatus", include_in_schema=False)
     def feed_jobstatus():
@@ -329,7 +331,8 @@ def add_controller_routes(
         return HTMLResponse(render.log_page(
             daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
-            job_status_poll_interval_s=config.job_status_poll_interval()))
+            job_status_poll_interval_s=config.job_status_poll_interval(),
+            client_rows=_client_rows_for_status()))
 
     def _jobs_data() -> tuple[list, dict]:
         """PLAN-21 Befund 10, User-Entscheidung: der Jobs-Screen dient
@@ -377,6 +380,17 @@ def add_controller_routes(
             local_runs.setdefault(bucket, run)
         return rows, local_runs
 
+    def _client_rows_for_status() -> list | None:
+        # Bibi4-Iteration, User-Brainstorm ("was zeigen wir an Stelle der Host
+        # Job Status Card beim Client?") — die 4. Stat-Karte braucht die
+        # Discovery-Liste nur auf Knoten ohne scheduler-Rolle (die zeigen dort
+        # bereits die Host-Variante über job_stats/_job_status_card()); sonst
+        # unnötige Arbeit (Git-Status-Subprozess pro Job) auf jedem 30s-Poll.
+        if roles.scheduler:
+            return None
+        rows, _local_runs = _jobs_data()
+        return rows
+
     def _jobs_archive_runs() -> list:
         # Flache Journal-Liste über alle lokalen Jobs (Bibi4-Iteration,
         # Archive-Screen Client) — dieselbe Quelle, die vorher nur für
@@ -416,7 +430,8 @@ def add_controller_routes(
         return HTMLResponse(render.jobs_archive_page(
             _jobs_archive_runs(), daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
-            job_status_poll_interval_s=config.job_status_poll_interval()))
+            job_status_poll_interval_s=config.job_status_poll_interval(),
+            client_rows=_client_rows_for_status()))
 
     @app.get("/-/ui/jobs/archive/list", include_in_schema=False)
     def jobs_archive_list_fragment():
