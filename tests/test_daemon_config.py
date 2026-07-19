@@ -182,6 +182,38 @@ def test_status_poll_interval_invalid_falls_back_to_default(
     assert config.status_poll_interval() == 30
 
 
+# ── config.job_status_poll_interval (Bibi4-Iteration) ───────────────────────
+
+
+def test_job_status_poll_interval_default_2(cfg_home: Path):
+    assert config.job_status_poll_interval() == 2
+
+
+def test_job_status_poll_interval_from_env(cfg_home: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("BIBI_JOB_STATUS_POLL_INTERVAL", "1")
+    assert config.job_status_poll_interval() == 1
+
+
+def test_job_status_poll_interval_from_config_file(cfg_home: Path):
+    config.write_env({"BIBI_JOB_STATUS_POLL_INTERVAL": "3"})
+    assert config.job_status_poll_interval() == 3
+
+
+def test_job_status_poll_interval_env_takes_precedence_over_config_file(
+    cfg_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config.write_env({"BIBI_JOB_STATUS_POLL_INTERVAL": "3"})
+    monkeypatch.setenv("BIBI_JOB_STATUS_POLL_INTERVAL", "1")
+    assert config.job_status_poll_interval() == 1
+
+
+def test_job_status_poll_interval_invalid_falls_back_to_default(
+    cfg_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("BIBI_JOB_STATUS_POLL_INTERVAL", "not-a-number")
+    assert config.job_status_poll_interval() == 2
+
+
 def test_maintenance_toggle(team_repo):
     assert state.get_maintenance() is False
     state.set_maintenance(True)

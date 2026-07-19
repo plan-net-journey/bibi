@@ -187,7 +187,8 @@ def add_controller_routes(
                 _feed_data(eff_days, eff_weeks), git_status=_feed_git_status(),
                 host_url=_scheduler_url(), days=eff_days, weeks=eff_weeks,
                 daemon_status=_status(),
-                status_poll_interval_s=config.status_poll_interval()))
+                status_poll_interval_s=config.status_poll_interval(),
+                job_status_poll_interval_s=config.job_status_poll_interval()))
         return JSONResponse(service_descriptor(roles))
 
     @app.get("/-/ui/feed/board", include_in_schema=False)
@@ -204,7 +205,19 @@ def add_controller_routes(
         from bibi import config
         return HTMLResponse(render.feed_status_fragment(
             _status(), _feed_git_status(), _scheduler_url(), time.time(),
-            poll_interval_s=config.status_poll_interval()))
+            poll_interval_s=config.status_poll_interval(),
+            job_status_poll_interval_s=config.job_status_poll_interval()))
+
+    @app.get("/-/ui/feed/jobstatus", include_in_schema=False)
+    def feed_jobstatus():
+        # Self-Poll-Ziel von #jobstatuscard (Bibi4-Iteration) — eigener,
+        # schnellerer Takt als #feedstatus: _status() liefert job_stats aus
+        # einer reinen job_db-SQLite-Abfrage, ohne den git-status-Subprozess
+        # der anderen drei Karten (der bleibt bei _feed_git_status()/#feedstatus).
+        from bibi import config
+        return HTMLResponse(render.job_status_fragment(
+            _status().get("job_stats"), time.time(),
+            poll_interval_s=config.job_status_poll_interval()))
 
     _FILTER_COOKIE_MAX_AGE = 60 * 60 * 24 * 180  # 180 Tage — UI-Präferenz, kein Session-Cookie
 
@@ -255,7 +268,8 @@ def add_controller_routes(
         resp = HTMLResponse(render.schedules_page(
             items, typ=eff_typ, status=eff_status, daemon_status=_status(),
             landings=_landings(), git_status=_feed_git_status(), host_url=_scheduler_url(),
-            status_poll_interval_s=config.status_poll_interval(), bucket_minutes=eff_res))
+            status_poll_interval_s=config.status_poll_interval(),
+            job_status_poll_interval_s=config.job_status_poll_interval(), bucket_minutes=eff_res))
         _set_filter_cookies(resp, eff_typ, eff_status)
         _set_resolution_cookie(resp, eff_res)
         return resp
@@ -303,7 +317,8 @@ def add_controller_routes(
         from bibi import config
         return HTMLResponse(render.log_page(
             daemon_status=_status(), git_status=_feed_git_status(),
-            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval()))
+            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
+            job_status_poll_interval_s=config.job_status_poll_interval()))
 
     def _jobs_data() -> tuple[list, dict]:
         """PLAN-21 Befund 10, User-Entscheidung: der Jobs-Screen dient
@@ -368,6 +383,7 @@ def add_controller_routes(
         return HTMLResponse(render.jobs_page(
             rows, local_runs, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
+            job_status_poll_interval_s=config.job_status_poll_interval(),
             public_host=config.public_host()))
 
     @app.get("/-/ui/jobs/board", include_in_schema=False)

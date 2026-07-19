@@ -53,6 +53,7 @@ def test_write_then_read_roundtrip(cfg_home: Path):
         "BIBI_WORKER_NAME": "sarasate-client",
         "BIBI_PUBLIC_HOST": "sarasate.tail9f9173.ts.net",
         "BIBI_STATUS_POLL_INTERVAL": "30",
+        "BIBI_JOB_STATUS_POLL_INTERVAL": "2",
     }
     config.write_env(values)
     assert config.read_env() == values

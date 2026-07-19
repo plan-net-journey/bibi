@@ -301,6 +301,43 @@ def test_feed_status_fragment_uses_explicit_poll_interval():
     assert 'hx-trigger="every 60s [window.bibiFollow]"' in html
 
 
+# --- Job-Status-Kachel: eigener, schnellerer Poll (Bibi4-Iteration, User-Fund:
+# --- "da es sich um eine sqlite db Abfrage handelt, sollte eine 1-2 Sekunden
+# --- Abfrage aber möglich sein") -------------------------------------------
+
+
+def test_job_status_fragment_self_polls_with_default_interval():
+    html = render.job_status_fragment(
+        {"counts_by_kind": {}, "complete_since_uptime": 0, "next_due_at": None}, now=100.0)
+    assert 'id="jobstatuscard"' in html
+    assert 'hx-get="/-/ui/feed/jobstatus"' in html
+    assert 'hx-trigger="every 2s [window.bibiFollow]"' in html
+    assert "Job Status" in html
+
+
+def test_job_status_fragment_uses_explicit_poll_interval():
+    html = render.job_status_fragment(
+        {"counts_by_kind": {}, "complete_since_uptime": 0, "next_due_at": None},
+        now=100.0, poll_interval_s=1)
+    assert 'hx-trigger="every 1s [window.bibiFollow]"' in html
+
+
+def test_job_status_fragment_empty_without_job_stats():
+    assert render.job_status_fragment(None, now=100.0) == ""
+
+
+def test_feed_status_fragment_nests_job_status_fragment_with_its_own_poll():
+    # Job Status pollt jetzt schneller als der Rest (Host/Mode/Git bleiben am
+    # 30s-Bundle, s. Docstring) — beide Poll-Container stehen verschachtelt
+    # im selben .statuscards-Grid.
+    html = render.feed_status_fragment(
+        {"job_stats": {"counts_by_kind": {}, "complete_since_uptime": 5, "next_due_at": None}},
+        None, None, now=100.0, job_status_poll_interval_s=1)
+    assert 'id="feedstatus"' in html and 'hx-trigger="every 30s [window.bibiFollow]"' in html
+    assert 'id="jobstatuscard"' in html and 'hx-trigger="every 1s [window.bibiFollow]"' in html
+    assert html.count('<div class="card">') == 4
+
+
 def test_status_cards_unchanged_after_refactor():
     # Regressionsschutz für die _status_card_list()-Extraktion: _status_cards()
     # muss weiterhin genau 4 Kacheln liefern, keine Git-Kachel.
@@ -578,6 +615,16 @@ def test_feed_status_fragment_route(app_with):
         assert r.status_code == 200
         assert 'id="feedstatus"' in r.text
         assert 'class="statuscards"' in r.text
+
+
+def test_feed_jobstatus_fragment_route(app_with):
+    # Bibi4-Iteration: Self-Poll-Ziel von #jobstatuscard, eigene Route/eigener
+    # (schnellerer) Takt getrennt von #feedstatus.
+    app = app_with(_FakeClient())
+    with TestClient(app) as c:
+        r = c.get("/-/ui/feed/jobstatus")
+        assert r.status_code == 200
+        assert r.text == ""  # kein job_stats auf diesem Fake-Client (kein scheduler)
 
 
 def test_feed_status_fragment_route_shows_escalated_merge_branches(app_with, team_repo: Path):
