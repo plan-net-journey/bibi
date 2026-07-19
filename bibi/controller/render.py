@@ -64,8 +64,8 @@ td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
 /* Toggles (FOLLOW/THEME/RESCAN/MAINT) wie Nav-Text-Links, keine Buttons mehr
    (PLAN-19 Befund 7, User-Fund: "nicht Buttons und Text Links gemischt") —
    überschreibt das globale button{...} gezielt nur für diese Klasse. */
-.toggle { font: inherit; font-size: .85rem; text-decoration: none; color: #888;
-          background: none; border: none; padding: 0; cursor: pointer; }
+.toggle { font: inherit; font-size: 1.3rem; line-height: 1; text-decoration: none;
+          color: #888; background: none; border: none; padding: 0; cursor: pointer; }
 .toggle:hover { text-decoration: underline; }
 .toggle.on { color: #5fb37a; }
 .toggle.warn { color: #d6a23e; }
@@ -135,6 +135,13 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .logbox .ln.warning { color: #d6a23e; }
 .logbox .ln.error   { color: #e06c5a; }
 .logbox .ln.debug   { color: #888; }
+/* a.slug hat sonst keine eigene Farbe (Jobs-/Schedule-Tabelle: soll dem Theme
+   folgen) — im .logbox hier aber erbt sie sonst Chromes color-scheme-abhängige
+   Standard-Linkfarbe (Light: dunkles #0000EE), obwohl der Hintergrund immer
+   dunkel bleibt (Bibi4-Iteration, User-Fund: "im Light Mode ist die
+   Schriftfarbe lila schwer zu lesen" — live gemessen, Root Cause). Fest statt
+   theme-abhängig, analog zu .ln.warning/.error oben. */
+.logbox a.slug { color: #9e9eff; }
 .feed { height: 45vh; overflow-y: auto; background: #0008; border: 1px solid #8883;
         border-radius: .4rem; padding: .6rem .8rem; font-family: ui-monospace, monospace;
         font-size: .85rem; line-height: 1.7; }
@@ -290,15 +297,20 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
         border-bottom: 1px solid #8881; }
 .frow.is-agent { opacity: .55; }
 .frow .t { color: #888; font-family: ui-monospace, monospace; font-size: .78rem;
-           flex: 0 0 8.5rem; }
+           flex: 0 0 11rem; overflow-wrap: anywhere; }
 .lvl { font-family: ui-monospace, monospace; font-size: .68rem; font-weight: 700;
        padding: .05rem .4rem; border-radius: .25rem; flex: 0 0 auto;
        text-transform: uppercase; letter-spacing: .02em; }
 .lvl.case { background: #5fb37a33; color: #5fb37a; }
 .lvl.vault { background: #5a9fe033; color: #5a9fe0; }
 .lvl.system { background: #d6a23e33; color: #d6a23e; }
-.frow .msg { flex: 1; }
-.frow .who { color: #888; font-size: .78rem; flex: 0 0 auto; }
+/* Bibi4-Iteration, User-Fund: langer Slug (Bindestrich-Umbruch mitten im Wort)
+   und die kommagetrennte Autorenliste liefen über den Rand — Flex-Items haben
+   ohne min-width:0 eine implizite Mindestbreite gleich ihrem Inhalt, egal wie
+   die Zeile eigentlich schrumpfen könnte. */
+.frow .msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.frow .who { color: #888; font-size: .78rem; flex: 0 1 auto; min-width: 0;
+             overflow-wrap: anywhere; }
 .frow a.commit { text-decoration: none; }
 .frow a.commit:hover { text-decoration: underline; color: #5a9fe0; }
 .loadmore { display: flex; gap: .5rem; margin: .8rem 0; }
@@ -524,10 +536,18 @@ def archive_fragment(schedules: list[dict], now: float | None = None) -> str:
 
 
 def archive_page(schedules: list[dict], now: float | None = None,
-                 *, daemon_status: dict | None = None) -> str:
+                 *, daemon_status: dict | None = None, git_status: dict | None = None,
+                 host_url: str | None = None, status_poll_interval_s: int = 30,
+                 job_status_poll_interval_s: int = 2) -> str:
     """Archive-Screen (Host, Bibi4-Iteration) — eigene Seite für Archive/
     Journal, abgetrennt von der aktiven Schedule-Liste auf ``/-/ui/schedules``.
-    Dieselben Nav/Ops-Bausteine wie jede andere Seite (``_header()``)."""
+    Dieselben Nav/Ops-Bausteine wie jede andere Seite (``_header()``).
+
+    Die Status-Kacheln (Host/Mode/Git/Job-Status, ``feed_status_fragment()``)
+    fehlten hier bisher komplett — die Archive-Extraktion (Bibi4-Iteration)
+    hat sie schlicht nicht mitgenommen, obwohl Feed/Jobs/Live-Log sie alle
+    haben (User-Fund: "Header ist in Feed, Jobs, Archive (!), Live-Log
+    sichtbar" — das "(!)" war berechtigt, echter Bug, kein Bildausschnitt)."""
     now = time.time() if now is None else now
     daemon_status = daemon_status or {}
     return (
@@ -539,6 +559,7 @@ def archive_page(schedules: list[dict], now: float | None = None,
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Archive', daemon_status)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
         f"{archive_fragment(schedules, now)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
@@ -1403,7 +1424,14 @@ def _job_status_card(job_stats: dict, now: float) -> str:
     Anzeige-Thema dieser Iteration) — genau wie ``complete`` selbst NICHT aus
     ``counts`` kommt (Live-Zählung aktiver Jobs, sinkt sobald abgeschlossene
     Jobs archiviert werden). Sub-Zeile kombiniert ``next_due_at``
-    (``_until()``-formatiert) und den Complete-Zähler in einer Zeile."""
+    (``_until()``-formatiert) und den Complete-Zähler in einer Zeile.
+
+    Kein eigener Titel mehr (Bibi4-Iteration, User-Fund: "entferne die
+    Überschrift Job Status und beginne ganz oben mit JOB CLAUDE APP") — die
+    Kopfzeile der Matrix trägt die Beschriftung jetzt selbst, spart eine Zeile
+    Höhe gegenüber Mode/Git. Sub-Zeile komplett Englisch (User-Entscheidung:
+    "wir werden früher oder später die Sprache eh auf Englisch
+    vereinheitlichen") — Zeilen-/Spaltenlabels waren es schon."""
     by_kind = job_stats.get("counts_by_kind") or {}
 
     def cell(kind: str, statuses: tuple[str, ...]) -> int:
@@ -1417,8 +1445,8 @@ def _job_status_card(job_stats: dict, now: float) -> str:
             f'<div class="jsg-v">{cell(kind, statuses)}</div>' for kind, _ in _JOB_STATUS_KINDS)
         for row_label, statuses in _JOB_STATUS_ROWS)
     complete = job_stats.get("complete_since_uptime", 0)
-    sub = f"Nächster Job {_until(job_stats.get('next_due_at'), now)} · {complete} abgeschlossen"
-    return (f'<div class="card"><div class="label">Job Status</div>'
+    sub = f"next {_until(job_stats.get('next_due_at'), now)} · {complete} complete"
+    return (f'<div class="card">'
            f'<div class="jobstatus-grid">{header}{rows}</div>'
            f'<div class="sub">{_e(sub)}</div></div>')
 
@@ -1676,11 +1704,14 @@ def jobs_archive_fragment(runs: list[dict], now: float | None = None) -> str:
 
 
 def jobs_archive_page(runs: list[dict], now: float | None = None,
-                      *, daemon_status: dict | None = None) -> str:
+                      *, daemon_status: dict | None = None, git_status: dict | None = None,
+                      host_url: str | None = None, status_poll_interval_s: int = 30,
+                      job_status_poll_interval_s: int = 2) -> str:
     """Archive-Screen (Client, Bibi4-Iteration) — eigene Seite für die lokale
     Lauf-Historie, abgetrennt von der Jobs-Liste auf ``/-/ui/jobs``. Dieselben
     Nav/Ops-Bausteine wie jede andere Seite (``_header()``), analog zu
-    ``archive_page()`` (Host)."""
+    ``archive_page()`` (Host) — inklusive der Status-Kacheln, die hier
+    ebenfalls fehlten (s. ``archive_page()``-Docstring)."""
     now = time.time() if now is None else now
     daemon_status = daemon_status or {}
     return (
@@ -1692,6 +1723,7 @@ def jobs_archive_page(runs: list[dict], now: float | None = None,
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Archive', daemon_status)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
         f"{jobs_archive_fragment(runs, now)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
@@ -2044,7 +2076,9 @@ def _feed_row(e: dict, now: float, *, commit_base_url: str | None = None) -> str
     cls = "frow is-agent" if is_agent else "frow"
     # PLAN-19 Befund 6, User-Fund: absolute Zeit statt "vor 4 h" (schon
     # verfügbar, dieselbe Funktion wie die Journal-Liste andernorts nutzt).
-    t = _abs_datetime(e.get("last_changed"), now)
+    # Bibi4-Iteration, User-Fund: der Time-Toggle (abs/rel/beides) schaltete
+    # überall außer im Feed — hier bisher fest absolut, unabhängig vom Toggle.
+    t = _time_toggle_cell(e.get("last_changed"), now, rel_fn=_ago)
     authors = ", ".join(e.get("authors") or []) or "—"
     # Bibi4-Iteration, User-Fund: "warum erscheint hier mein Name" — all_agent
     # (Merge-Herkunft, feed.py::group_entities()) wurde bisher nur fürs
@@ -2056,7 +2090,7 @@ def _feed_row(e: dict, now: float, *, commit_base_url: str | None = None) -> str
     who = f"{authors} · automatisiert" if is_agent and authors != "—" else authors
     commit = _feed_commit_cell(e.get("last_commit_sha"), commit_base_url)
     return (f'<div class="{cls}" data-kind="{_e(kind)}" data-agent="{"1" if is_agent else "0"}">'
-           f'<span class="t">{_e(t)}</span>'
+           f'<span class="t">{t}</span>'
            f'<span class="lvl {_e(kind)}">{_e(kind)}</span>'
            f'<span class="msg">{_e(name)}</span>'
            f"{commit}"

@@ -290,7 +290,13 @@ def add_controller_routes(
         # Archive-Screen (Host, Bibi4-Iteration) — eigener Screen für Archive/
         # Journal, seit dieser Iteration nicht mehr Teil von /-/ui/schedules
         # (User-Fund: "Archive wird verschoben auf einen eigenen Screen").
-        return HTMLResponse(render.archive_page(_schedules(), daemon_status=_status()))
+        # Status-Kacheln wie jeder andere Screen (User-Fund: "Header ist in
+        # Feed, Jobs, Archive (!), Live-Log sichtbar" — fehlten hier bisher).
+        from bibi import config
+        return HTMLResponse(render.archive_page(
+            _schedules(), daemon_status=_status(), git_status=_feed_git_status(),
+            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
+            job_status_poll_interval_s=config.job_status_poll_interval()))
 
     @app.get("/-/ui/archive/list", include_in_schema=False)
     def archive_list_fragment():
@@ -399,8 +405,13 @@ def add_controller_routes(
         # Archive-Screen (Client, Bibi4-Iteration) — eigener Screen für die
         # lokale Lauf-Historie, seit dieser Iteration nicht mehr Teil von
         # /-/ui/jobs (User-Fund: "der untere Abschnitt lokale Läufe wandert
-        # in den eigenen Screen Archive").
-        return HTMLResponse(render.jobs_archive_page(_jobs_archive_runs(), daemon_status=_status()))
+        # in den eigenen Screen Archive"). Status-Kacheln analog zum Host-
+        # Archive-Screen (fehlten hier bisher ebenfalls).
+        from bibi import config
+        return HTMLResponse(render.jobs_archive_page(
+            _jobs_archive_runs(), daemon_status=_status(), git_status=_feed_git_status(),
+            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
+            job_status_poll_interval_s=config.job_status_poll_interval()))
 
     @app.get("/-/ui/jobs/archive/list", include_in_schema=False)
     def jobs_archive_list_fragment():

@@ -227,6 +227,13 @@ def test_jobs_archive_page_has_active_archive_tab():
     assert 'id="archive"' in html
 
 
+def test_jobs_archive_page_includes_status_cards():
+    # Analog zum Host-Archive-Screen (test_controller_schedules.py) — fehlten
+    # hier ebenfalls.
+    html = render.jobs_archive_page([], now=1000.0, daemon_status={"roles": ["connect"]})
+    assert 'id="feedstatus"' in html
+
+
 def test_jobs_page_has_header_and_nav():
     html = render.jobs_page([], {}, now=100.0)
     assert 'href="/-/"' in html and 'href="/-/ui/logs"' in html

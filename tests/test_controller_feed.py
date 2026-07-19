@@ -232,19 +232,29 @@ def test_job_status_card_complete_uses_cumulative_counter_not_live_count():
     # archiviert werden).
     job_stats = {"counts_by_kind": {}, "complete_since_uptime": 47, "next_due_at": None}
     html = render._job_status_card(job_stats, now=100.0)
-    assert "47 abgeschlossen" in html
+    assert "47 complete" in html
 
 
 def test_job_status_card_shows_next_due_sub_line():
     html = render._job_status_card(
         {"counts_by_kind": {}, "complete_since_uptime": 0, "next_due_at": 400.0}, now=100.0)
-    assert '<div class="sub">Nächster Job in 5 min · 0 abgeschlossen</div>' in html
+    assert '<div class="sub">next in 5 min · 0 complete</div>' in html
 
 
 def test_job_status_card_next_due_none_shows_dash():
     html = render._job_status_card(
         {"counts_by_kind": {}, "complete_since_uptime": 0, "next_due_at": None}, now=100.0)
-    assert '<div class="sub">Nächster Job — · 0 abgeschlossen</div>' in html
+    assert '<div class="sub">next — · 0 complete</div>' in html
+
+
+def test_job_status_card_has_no_title_row():
+    # Bibi4-Iteration, User-Fund: "entferne die Überschrift Job Status und
+    # beginne ganz oben mit JOB CLAUDE APP" — die Matrix-Kopfzeile trägt die
+    # Beschriftung jetzt selbst, kein eigenes <div class="label"> mehr.
+    html = render._job_status_card(
+        {"counts_by_kind": {}, "complete_since_uptime": 0, "next_due_at": None}, now=100.0)
+    assert '<div class="label">' not in html
+    assert html.startswith('<div class="card"><div class="jobstatus-grid">')
 
 
 def test_job_status_card_uses_jobstatus_grid_css():
@@ -260,7 +270,7 @@ def test_feed_status_fragment_includes_job_status_card_when_present():
                        "next_due_at": None}},
         None, None, now=100.0)
     assert html.count('<div class="card">') == 4
-    assert "Job Status" in html
+    assert '<div class="jobstatus-grid">' in html
 
 
 def test_feed_status_fragment_omits_job_status_card_without_job_stats():
@@ -312,7 +322,7 @@ def test_job_status_fragment_self_polls_with_default_interval():
     assert 'id="jobstatuscard"' in html
     assert 'hx-get="/-/ui/feed/jobstatus"' in html
     assert 'hx-trigger="every 2s [window.bibiFollow]"' in html
-    assert "Job Status" in html
+    assert '<div class="jobstatus-grid">' in html
 
 
 def test_job_status_fragment_uses_explicit_poll_interval():
@@ -449,6 +459,27 @@ def test_feed_row_shows_absolute_time_not_relative():
     html = render._feed_row(e, now=now)
     assert "10:00" in html
     assert "vor " not in html
+
+
+def test_feed_row_uses_time_toggle_cell():
+    # Bibi4-Iteration, User-Fund: "der Timer funktioniert gut bei Job und
+    # Archive. Er muss aber die Zeiten ebenfalls im Feed umschalten!" — bisher
+    # fest absolut über _abs_datetime(), unabhängig vom Time-Toggle.
+    e = {"kind": "vault", "name": "x.md", "last_changed": 90.0,
+        "authors": ["Alice"], "all_agent": False}
+    html = render._feed_row(e, now=100.0)
+    assert '<span class="t"><span class="tt-abs">' in html
+    assert 'class="tt-relonly"' in html and 'class="tt-relboth"' in html
+
+
+def test_frow_children_allow_wrapping():
+    # Bibi4-Iteration, User-Fund: "der Umbruch im Feed funktioniert noch
+    # nicht fehlerfrei" — lange Slugs und die kommagetrennte Autorenliste
+    # liefen über den Rand, weil Flex-Items ohne min-width:0 nicht unter ihre
+    # Content-Breite schrumpfen, egal was overflow-wrap sagt.
+    css = render._CSS
+    assert ".frow .msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }" in css
+    assert "overflow-wrap: anywhere;" in css.split(".frow .who {")[1].split("}")[0]
 
 
 def test_feed_row_links_commit_hash_when_base_url_given():

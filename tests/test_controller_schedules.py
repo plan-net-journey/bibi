@@ -245,6 +245,16 @@ def test_archive_page_has_header_and_archive_fragment():
     assert 'id="archive"' in html
 
 
+def test_archive_page_includes_status_cards():
+    # Bibi4-Iteration, User-Fund: "Header ist in Feed, Jobs, Archive (!),
+    # Live-Log sichtbar" — die Archive-Extraktion hatte die Status-Kacheln
+    # (Host/Mode/Git/Job-Status) schlicht nicht mitgenommen.
+    html = render.archive_page(
+        [_sched("a", active=False)], now=1000.0,
+        daemon_status={"roles": ["scheduler"]})
+    assert 'id="feedstatus"' in html
+
+
 def test_schedules_fragment_polls_list_with_filter():
     frag = render.schedules_fragment([_sched("a")], now=1.0, typ="job", status="problem")
     assert 'hx-get="/-/ui/schedules/list?typ=job&status=problem"' in frag

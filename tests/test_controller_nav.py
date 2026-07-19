@@ -164,6 +164,22 @@ def test_toggles_styled_as_text_links_not_boxed_buttons():
     assert ".toggle {" in render._CSS
 
 
+def test_toggle_icons_use_larger_uniform_font_size():
+    # Bibi4-Iteration, User-Fund: "können wir große Icons - alle in gleicher
+    # großer Größe - verwenden?" — FOLLOW/RESCAN/MAINT/Time/Theme teilen sich
+    # alle dieselbe .toggle-Klasse, eine einzige Zahl reicht für alle.
+    assert "font-size: 1.3rem" in render._CSS
+
+
+def test_logbox_slug_link_has_fixed_theme_independent_color():
+    # Bibi4-Iteration, User-Fund: "im Light Mode ist die Schriftfarbe lila
+    # schwer zu lesen" — a.slug erbte bisher Chromes color-scheme-abhängige
+    # Standard-Linkfarbe, obwohl .logbox immer dunkel bleibt. Scoped auf
+    # .logbox, damit die Jobs-/Schedule-Tabellen-Slug-Links (a.slug außerhalb
+    # der Log-Box) weiterhin dem Theme folgen.
+    assert ".logbox a.slug { color:" in render._CSS
+
+
 def test_screen_nav_feed_tab_is_home():
     # PLAN-18 Stufe 18.3: Feed ist zurück und jetzt der Home-Screen (/-/),
     # Schedules zieht auf seine eigene Route um. Schedules nur mit
