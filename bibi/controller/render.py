@@ -170,13 +170,17 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .card .kvgrid .v { font-size: 1.05rem; font-weight: 600; }
 .card .kvgrid .v.ok { color: #5fb37a; }
 .card .kvgrid .v.bad { color: #e06c5a; }
-/* Wie .kvgrid, aber 2 Label/Wert-Paare je Zeile (PLAN-26 Befund 3, User-Fund:
-   "Job Status in 2 x 5 Zeilen") — Job-Status-Kachel, sonst identischer Stil. */
-.card .kvgrid2 { display: grid; grid-template-columns: auto 1fr auto 1fr; row-gap: .2rem;
-                 column-gap: .6em; margin-top: .15rem; }
-.card .kvgrid2 .k { font-size: .72rem; font-weight: 400; color: #888;
-                    text-transform: uppercase; letter-spacing: .03em; align-self: center; }
-.card .kvgrid2 .v { font-size: 1.05rem; font-weight: 600; }
+/* Job-Status-Matrix (Bibi4-Iteration, User-Fund: "Apps enden nicht" — eigene
+   Spalte je Kind statt der bisherigen 2x2-Aggregation ohne Kind-Aufschlüsselung,
+   löst .kvgrid2 ab). 4 Spalten: Label + job/claude/app, row-major befüllt
+   (Header-Zeile, dann Waiting/Running/Stopped). */
+.card .jobstatus-grid { display: grid; grid-template-columns: auto repeat(3, minmax(2.2rem, auto));
+                        row-gap: .2rem; column-gap: .6em; margin-top: .15rem; }
+.card .jobstatus-grid .jsg-h { font-size: .68rem; font-weight: 400; color: #888;
+                               text-transform: uppercase; letter-spacing: .03em; text-align: right; }
+.card .jobstatus-grid .jsg-k { font-size: .72rem; font-weight: 400; color: #888;
+                               text-transform: uppercase; letter-spacing: .03em; align-self: center; }
+.card .jobstatus-grid .jsg-v { font-size: 1.0rem; font-weight: 600; text-align: right; }
 .side-empty { color: #888; font-size: .82rem; }
 .chip { font-family: ui-monospace, monospace; font-size: .7rem; font-weight: 700;
         padding: .1rem .45rem; border-radius: .3rem; display: inline-block; white-space: nowrap; }
@@ -1218,6 +1222,10 @@ def _git_segment_card(git_status: dict | None) -> str:
 _JOB_STATUS_WAITING = ("pending", "deferred", "failed")
 _JOB_STATUS_RUNNING = ("running", "awaiting")
 _JOB_STATUS_STOPPED = ("inactive", "zombie", "error", "killed")
+_JOB_STATUS_ROWS = (("Waiting", _JOB_STATUS_WAITING), ("Running", _JOB_STATUS_RUNNING),
+                    ("Stopped", _JOB_STATUS_STOPPED))
+#: Spaltenreihenfolge der Matrix — dieselben drei Werte wie ``models.display_kind()``.
+_JOB_STATUS_KINDS = (("job", "Job"), ("claude", "Claude"), ("app", "App"))
 
 
 def _job_status_card(job_stats: dict, now: float) -> str:
@@ -1225,30 +1233,33 @@ def _job_status_card(job_stats: dict, now: float) -> str:
     nur gerendert wenn ``job_stats`` vorhanden ist (``scheduler``-Rolle, wie
     ``job_stats`` selbst — Client-Darstellung laut User bewusst "später").
 
-    2 Zeilen (User-Fund direkt nach dem ersten Deploy: das ursprüngliche 2×5-
-    Layout war zu hoch, hier auf dieselbe Höhe wie Host/Mode/Git verdichtet):
-    Waiting (pending+deferred+failed) / Stopped (inactive+zombie+error+killed)
-    in Zeile 1, Running (running+awaiting) / Complete in Zeile 2. ``complete``
-    kommt NICHT aus ``counts`` (Live-Zählung aktiver Jobs — sinkt, sobald
-    abgeschlossene Jobs archiviert werden), sondern aus dem kumulativen
-    ``complete_since_uptime`` (``job_db.complete_count()``, analog
-    ``running_since_uptime``). Sub-Zeile (kleinere Schrift, wie Mode-Karten
-    "Uptime …"/Git-Karten "Branch …"): kleinster ``next_fire_at`` über alle
-    aktiven Jobs (``job_db.next_due_at()``), über ``_until()`` formatiert."""
-    counts = job_stats.get("counts") or {}
-    waiting = sum(counts.get(s, 0) for s in _JOB_STATUS_WAITING)
-    running = sum(counts.get(s, 0) for s in _JOB_STATUS_RUNNING)
-    stopped = sum(counts.get(s, 0) for s in _JOB_STATUS_STOPPED)
+    Matrix statt der bisherigen 2x2-Aggregation (Bibi4-Iteration, User-Fund:
+    "Apps enden nicht" — fachlich eigene Kategorie, siehe ``models.display_kind()``):
+    3 Zeilen Waiting/Running/Stopped x 3 Spalten job/claude/app, aus
+    ``job_stats["counts_by_kind"]`` (``job_db.status_counts_by_kind()``).
+    ``complete`` bleibt bewusst EIN aggregierter Wert ohne Kind-Aufschlüsselung
+    (kumulativ seit Prozessstart, ``complete_since_uptime`` — eine
+    kind-aufgeschlüsselte Historie bräuchte einen eigenen DB-Zähler, kein
+    Anzeige-Thema dieser Iteration) — genau wie ``complete`` selbst NICHT aus
+    ``counts`` kommt (Live-Zählung aktiver Jobs, sinkt sobald abgeschlossene
+    Jobs archiviert werden). Sub-Zeile kombiniert ``next_due_at``
+    (``_until()``-formatiert) und den Complete-Zähler in einer Zeile."""
+    by_kind = job_stats.get("counts_by_kind") or {}
+
+    def cell(kind: str, statuses: tuple[str, ...]) -> int:
+        counts = by_kind.get(kind) or {}
+        return sum(counts.get(s, 0) for s in statuses)
+
+    header = '<div class="jsg-h"></div>' + "".join(
+        f'<div class="jsg-h">{label}</div>' for _, label in _JOB_STATUS_KINDS)
+    rows = "".join(
+        f'<div class="jsg-k">{row_label}</div>' + "".join(
+            f'<div class="jsg-v">{cell(kind, statuses)}</div>' for kind, _ in _JOB_STATUS_KINDS)
+        for row_label, statuses in _JOB_STATUS_ROWS)
     complete = job_stats.get("complete_since_uptime", 0)
-    cells = (
-        f'<div class="k">Waiting</div><div class="v">{waiting}</div>'
-        f'<div class="k">Stopped</div><div class="v">{stopped}</div>'
-        f'<div class="k">Running</div><div class="v">{running}</div>'
-        f'<div class="k">Complete</div><div class="v">{complete}</div>'
-    )
-    sub = f"Nächster Job {_until(job_stats.get('next_due_at'), now)}"
+    sub = f"Nächster Job {_until(job_stats.get('next_due_at'), now)} · {complete} abgeschlossen"
     return (f'<div class="card"><div class="label">Job Status</div>'
-           f'<div class="kvgrid2">{cells}</div>'
+           f'<div class="jobstatus-grid">{header}{rows}</div>'
            f'<div class="sub">{_e(sub)}</div></div>')
 
 
@@ -1331,12 +1342,11 @@ def _jobs_type_cell(row: dict, public_host: str) -> str:
     erkennbar sein — rührt an der PLAN-25-Vereinfachung nicht. Der Link steht
     unbedingt (kein Live-Check), auch wenn die App gerade nicht läuft."""
     app_port = row.get("app_port")
-    if app_port:
+    kind = models.display_kind(row.get("payload"), app_port)
+    if kind == "app":
         href = _e(f"http://{public_host}:{app_port}/")
         return f'<a href="{href}" target="_blank" rel="noopener">app :{app_port}</a>'
-    if models.is_claude_payload(row.get("payload")):
-        return "claude"
-    return "job"
+    return kind
 
 
 def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,

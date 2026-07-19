@@ -672,9 +672,11 @@ def create_app(
                 # Prozessstart. Letztere ist ein simpler In-Memory-Zähler
                 # (job_db.dispatch_count(), inkrementiert in reserve_next()),
                 # kein DB-State — löst sich mit dem Daemon-Neustart auf, genau
-                # wie ``started_at`` selbst.
+                # wie ``started_at`` selbst. ``counts_by_kind`` zusätzlich für
+                # die Job-Status-Matrix (Bibi4-Iteration, job/claude/app).
                 out["job_stats"] = {
                     "counts": job_db.status_counts(conn),
+                    "counts_by_kind": job_db.status_counts_by_kind(conn),
                     "running_since_uptime": job_db.dispatch_count(),
                     "complete_since_uptime": job_db.count_completed_since(conn, started_at),
                     "next_due_at": job_db.next_due_at(conn),

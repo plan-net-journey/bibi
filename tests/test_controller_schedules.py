@@ -185,13 +185,13 @@ def test_schedules_page_includes_feed_status_header():
     # /-/ui/schedules zeigen.
     html = render.schedules_page(
         [_sched("daily")], now=300.0,
-        daemon_status={"job_stats": {"counts": {"running": 1}, "complete_since_uptime": 3,
-                                     "next_due_at": None}},
+        daemon_status={"job_stats": {"counts_by_kind": {"job": {"running": 1}},
+                                     "complete_since_uptime": 3, "next_due_at": None}},
         git_status={"tree": "clean", "sync": "synced", "branch": "trunk"},
         host_url="http://sarasate.tail9f9173.ts.net:8780")
     assert 'id="feedstatus"' in html
     assert html.count('<div class="card">') == 4  # Host/Mode/Git/Job Status
-    assert '<div class="k">Running</div><div class="v">1</div>' in html
+    assert '<div class="jsg-k">Running</div><div class="jsg-v">1</div><div class="jsg-v">0</div><div class="jsg-v">0</div>' in html
 
 
 def test_schedules_fragment_active_only_has_single_panel_card():

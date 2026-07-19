@@ -13,6 +13,7 @@ from bibi.schedule.models import (
     Reason,
     ScheduleSpec,
     Status,
+    display_kind,
     effective_kind,
     is_claude_payload,
 )
@@ -117,3 +118,23 @@ def test_effective_kind_default_job():
     # app_port seit PLAN-25 gar nicht mehr (Parameter komplett entfernt).
     assert effective_kind("echo hi") == "job"
     assert effective_kind(None) == "job"
+
+
+# ── Bibi4-Iteration — display_kind(): job/claude/app für Anzeige-Stellen ─────
+
+
+def test_display_kind_app_port_wins_over_claude_payload():
+    # User-Fund: "Apps enden nicht" — fachlich eigene Kategorie, auch wenn der
+    # Payload gleichzeitig ein claude:-Prefix trägt.
+    assert display_kind("claude: tu was", 9100) == "app"
+
+
+def test_display_kind_falls_back_to_effective_kind_without_app_port():
+    assert display_kind("claude: tu was", None) == "claude"
+    assert display_kind("echo hi", None) == "job"
+    assert display_kind(None, None) == "job"
+
+
+def test_display_kind_zero_app_port_is_not_app():
+    # app_port=0 wäre kein gültiger Port — falsy, fällt auf effective_kind() zurück.
+    assert display_kind("echo hi", 0) == "job"

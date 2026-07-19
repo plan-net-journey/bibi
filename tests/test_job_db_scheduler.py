@@ -427,6 +427,39 @@ def test_status_counts_empty_db(conn):
     assert job_db.status_counts(conn) == {}
 
 
+# ── status_counts_by_kind (Bibi4-Iteration, Job-Status-Matrix) ──────────────
+
+
+def test_status_counts_by_kind_splits_job_claude_app(conn):
+    _insert(conn, "a", 0, time.time())  # payload "echo hi" -> job
+    b = _insert(conn, "b", 0, time.time())
+    conn.execute("UPDATE jobs SET payload=? WHERE id=?", ("claude: tu was", b))
+    c = _insert(conn, "c", 0, time.time())
+    conn.execute("UPDATE jobs SET app_port=? WHERE id=?", (9100, c))
+    assert job_db.status_counts_by_kind(conn) == {
+        "job": {"pending": 1}, "claude": {"pending": 1}, "app": {"pending": 1},
+    }
+
+
+def test_status_counts_by_kind_app_port_wins_over_claude_payload(conn):
+    a = _insert(conn, "a", 0, time.time())
+    conn.execute("UPDATE jobs SET payload=?, app_port=? WHERE id=?",
+                ("claude: tu was", 9100, a))
+    assert job_db.status_counts_by_kind(conn) == {
+        "job": {}, "claude": {}, "app": {"pending": 1},
+    }
+
+
+def test_status_counts_by_kind_excludes_inactive_jobs(conn):
+    jid = _insert(conn, "a", 0, time.time())
+    conn.execute("UPDATE jobs SET active=0 WHERE id=?", (jid,))
+    assert job_db.status_counts_by_kind(conn) == {"job": {}, "claude": {}, "app": {}}
+
+
+def test_status_counts_by_kind_empty_db(conn):
+    assert job_db.status_counts_by_kind(conn) == {"job": {}, "claude": {}, "app": {}}
+
+
 # ── next_due_at (PLAN-26 Befund 3, Job-Status-Kachel: "nächster Job") ───────
 
 

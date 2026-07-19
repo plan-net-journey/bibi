@@ -23,7 +23,7 @@ from dateutil import parser as _date_parser
 
 from bibi import repo
 from bibi.schedule import discovery, dispatcher, lifecycle
-from bibi.schedule.models import Kind, Status
+from bibi.schedule.models import Kind, Status, display_kind
 from bibi.schedule.parser import ParseResult
 
 SCHEMA_VERSION = 16
@@ -410,6 +410,23 @@ def status_counts(conn: sqlite3.Connection) -> dict[str, int]:
         "SELECT status, COUNT(*) AS n FROM jobs WHERE active=1 GROUP BY status"
     ).fetchall()
     return {r["status"]: r["n"] for r in rows}
+
+
+def status_counts_by_kind(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
+    """Wie ``status_counts()``, zusätzlich nach ``models.display_kind()``
+    aufgeschlüsselt — Grundlage der Job-Status-Matrix (Bibi4-Iteration,
+    User-Fund: "Apps enden nicht"). Klassifikation in Python statt SQL, damit
+    ``display_kind()`` die einzige Quelle für job/claude/app bleibt. Immer
+    alle drei Kind-Schlüssel vorhanden (auch mit leerem Dict), damit Aufrufer
+    gefahrlos ``.get(kind, {})`` ohne weiteren Default-Fall nutzen können."""
+    rows = conn.execute(
+        "SELECT status, payload, app_port FROM jobs WHERE active=1"
+    ).fetchall()
+    out: dict[str, dict[str, int]] = {"job": {}, "claude": {}, "app": {}}
+    for r in rows:
+        bucket = out[display_kind(r["payload"], r["app_port"])]
+        bucket[r["status"]] = bucket.get(r["status"], 0) + 1
+    return out
 
 
 def next_due_at(conn: sqlite3.Connection) -> float | None:

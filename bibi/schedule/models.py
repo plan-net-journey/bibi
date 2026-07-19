@@ -56,6 +56,19 @@ def effective_kind(payload: str | None) -> str:
     return "job"
 
 
+def display_kind(payload: str | None, app_port: int | None) -> str:
+    """Wie ``effective_kind()``, zusätzlich ``"app"`` für Jobs mit ``app_port``
+    (Bibi4-Iteration, User-Fund: "Apps enden nicht" — fachlich eigene Kategorie,
+    trotz PLAN-25 Befund 7. Bewusst eine *separate* Funktion statt ``effective_kind()``
+    selbst zu ändern: dessen Aufrufer außerhalb der Anzeige — Silence-Timeout-Wahl,
+    Schedules-Übersicht/-Filter — sollen ``app_port`` weiterhin ignorieren). Einzige
+    Quelle für alle **Anzeige**-Stellen, die job/claude/app unterscheiden: Type-Spalte,
+    Job-Status-Card, Archive-Tabelle — sonst driften die Zählweisen wieder auseinander."""
+    if app_port:
+        return "app"
+    return effective_kind(payload)
+
+
 class Reason(StrEnum):
     """Root Causes für Terminal-/Sonderzustände (DESIGN §5.5)."""
 
