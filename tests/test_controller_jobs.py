@@ -321,6 +321,23 @@ def test_jobs_detail_live_fragment_meta_line_shows_type_trigger_git():
     assert 'class="chip modified"' in html and ">geändert<" in html
 
 
+def test_jobs_detail_live_fragment_shows_app_link_even_without_any_run():
+    # Bibi4-Iteration, User-Fund: "der fehlt" — vorher lieferte
+    # _local_job_view() None (nie gelaufen, nichts live), wodurch
+    # _live_panel() komplett leer blieb und der App-Link trotz statisch
+    # bekanntem app_port (MD-Frontmatter) nirgends auftauchte. Der Link muss
+    # deshalb aus local selbst kommen, nicht aus dem lauf-abhängigen job-Dict.
+    local = _row("a", app_port=9100)
+    html = render.jobs_detail_live_fragment("a", None, local, None,
+                                            public_host="example.ts.net")
+    assert '<a href="http://example.ts.net:9100/" target="_blank" rel="noopener">Zur App →</a>' in html
+
+
+def test_jobs_detail_live_fragment_no_app_link_without_app_port():
+    html = render.jobs_detail_live_fragment("a", None, _row("a"), None)
+    assert "Zur App" not in html
+
+
 def test_jobs_detail_live_fragment_no_status_duplicated_in_meta_line():
     # _local_job_meta_line() zeigt bewusst keinen eigenen Status mehr (anders
     # als die alte _local_job_meta()) — "letzter Lauf" kommt nur noch einmal,

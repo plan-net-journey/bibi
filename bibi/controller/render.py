@@ -1587,19 +1587,34 @@ _JOBS_LIVE_AUTOREFRESH_JS = """
 """
 
 
-def _local_job_meta_line(local: dict) -> str:
+def _local_job_meta_line(local: dict, *, public_host: str = "localhost",
+                         include_app_link: bool = True) -> str:
     """Typ/Trigger/Git-Zeile der Client-Job-Detailseite — reine MD-Discovery-
     Info ohne 1:1-Host-Entsprechung (dessen Meta-Zeile, ``live_fragment()``,
     zeigt Kind/Trigger/letzten-Status/nächsten-Lauf aus der Scheduler-DB,
     kennt aber keinen Git-Status je Datei). Status selbst steht bewusst NICHT
     hier (anders als beim Host), sondern ausschließlich im Status-Badge von
-    ``_live_panel()`` direkt darunter — keine doppelte Anzeige."""
+    ``_live_panel()`` direkt darunter — keine doppelte Anzeige.
+
+    App-Link hier als Fallback zu ``_live_panel()`` (Bibi4-Iteration, User-Fund:
+    "der fehlt"): ``_local_job_view()`` gibt ``None`` zurück, wenn der Job auf
+    diesem Knoten noch nie lief UND nichts live ist — dann bleibt
+    ``_live_panel()`` komplett leer, obwohl ``local["app_port"]`` (statische
+    MD-Frontmatter) längst bekannt ist. Auf dem Host gibt es diese Lücke nicht
+    (jede Schedule bekommt beim Rescan sofort eine ``job_db``-Zeile samt
+    ``app_port``, unabhängig vom ersten Lauf). ``include_app_link=False``
+    (vom Aufrufer gesetzt, sobald ``job`` nicht ``None`` ist) verhindert die
+    doppelte Anzeige, wenn ``_live_panel()`` den Link ohnehin schon zeigt."""
     kind = _e(_effective_sched_type(local))
     trigger = _e(local.get("schedule") or local.get("at") or "—")
     cls, git_label = _GIT_STATUS_LABEL.get(local.get("git_status", "clean"),
                                            ("chip", _e(str(local.get("git_status", "—")))))
+    app_port = local.get("app_port") if include_app_link else None
+    app_link = (f' · <a href="http://{public_host}:{app_port}/" target="_blank" '
+               f'rel="noopener">Zur App →</a>' if app_port else "")
     return (f'<p class="muted">Typ <b>{kind}</b> · '
-            f'Trigger <code>{trigger}</code> · Git <span class="{cls}">{git_label}</span></p>')
+            f'Trigger <code>{trigger}</code> · Git <span class="{cls}">{git_label}</span>'
+            f'{app_link}</p>')
 
 
 def jobs_detail_live_fragment(slug: str, live: dict | None, local: dict | None,
@@ -1625,7 +1640,9 @@ def jobs_detail_live_fragment(slug: str, live: dict | None, local: dict | None,
     action_job = job or {"id": "-", "status": ""}
     live_output = live if live else last_run_output
     body = (
-        _local_job_meta_line(local)
+        # include_app_link=(job is None): sobald job existiert, zeigt
+        # _live_panel() den App-Link bereits selbst — sonst stünde er doppelt.
+        _local_job_meta_line(local, public_host=public_host, include_app_link=job is None)
         + _action_bar(slug, action_job, local.get("exec_mode"),
                      base="/-/ui/jobs/detail", target="#jobsdetail-live")
         + _live_panel(job, now, live_output, slug=slug, public_host=public_host,
