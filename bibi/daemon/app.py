@@ -437,6 +437,26 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
         # hinzugekommenen FORMATIERTEN Events. `from` zählt hier in denselben
         # formatierten Einheiten wie der /output-Seed (Live-Box) — kein
         # Offset-Mismatch wie bei /stream, das roh zählt.
+        #
+        # User-Fund 2026-07-20 ("Output nicht sauber, Reload zeigt mehr"):
+        # `.liveterm`s ``es.onerror = () => es.close()`` (render.py) behandelte
+        # jeden Verbindungsabriss wie ein beabsichtigtes Server-Ende — der
+        # Browser sieht in beiden Fällen dasselbe onerror, es gab keine
+        # Möglichkeit zu unterscheiden. Drei Ergänzungen lösen das an der
+        # Wurzel, alle rein additiv (kein bestehendes Feld/Verhalten geändert):
+        # (1) jedes Event trägt jetzt eine ``id:``-Zeile == der `from`-Zählung
+        # danach — bei einem Reconnect schickt der Browser diese automatisch
+        # als `Last-Event-ID`-Header zurück (job_output_stream() liest ihn,
+        # override für `from`), kein eigenes Zähl-JS im Client nötig. (2) kurz
+        # vor dem regulären, beabsichtigten Schließen (Job terminal + alles
+        # gesendet) ein explizites ``event: done`` — der Client schließt SELBST
+        # darauf, bevor die Verbindung natürlich endet, onerror bleibt also nur
+        # noch für echte Abrisse übrig (und darf dort NICHT mehr schließen,
+        # s. render.py). (3) ``: ping``-Kommentarzeilen (von EventSource laut
+        # Spezifikation ignoriert) bei >=15s Sendepause — Verdacht: lange
+        # stille Phasen (24s+ beobachtet) reißen über Tailscale eher ab.
+        # Berührt nie output.jsonl / _last_activity() — Zombie/Silence-
+        # Erkennung (worker.py) bleibt komplett unbeeinflusst.
         conn = job_db.connect(worker.db_path)
         try:
             job = job_db.get_job(conn, job_id)
@@ -447,20 +467,36 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
 
         async def gen():
             sent = from_offset
+            last_sent_at = time.time()
             while True:
                 formatted = output_format.format_events(output.read_events(path), kind)
                 for e in formatted[sent:]:
-                    yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n"
-                sent = len(formatted)
+                    sent += 1
+                    yield f"id: {sent}\ndata: {json.dumps(e, ensure_ascii=False)}\n\n"
+                    last_sent_at = time.time()
                 st = _job_status(job_id)
                 if (st is not None and Status(st) in TERMINAL
                         and sent >= len(output_format.format_events(output.read_events(path), kind))):
+                    yield "event: done\ndata: {}\n\n"
                     break
+                if time.time() - last_sent_at >= 15:
+                    yield ": ping\n\n"
+                    last_sent_at = time.time()
                 await asyncio.sleep(0.2)
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     @app.get("/-/job/{id}/output/stream", tags=["job"])
-    def job_output_stream(id: str, from_: int = Query(0, alias="from")):  # noqa: A002
+    def job_output_stream(id: str, from_: int = Query(0, alias="from"),  # noqa: A002
+                           last_event_id: str | None = Header(default=None)):
+        # Last-Event-ID (User-Fund 2026-07-20, s. _formatted_sse()): schickt der
+        # Browser bei jedem automatischen EventSource-Reconnect selbst mit,
+        # sobald Events eine `id:`-Zeile tragen — verlässlicher als der einmalig
+        # eingefrorene `from`-Query-Parameter, deshalb Vorrang davor.
+        if last_event_id is not None:
+            try:
+                from_ = int(last_event_id)
+            except ValueError:
+                pass
         return _formatted_sse(id, from_)
 
     @app.get("/-/job/{id}/out", tags=["job"])

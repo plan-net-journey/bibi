@@ -198,6 +198,73 @@ def test_output_stream_stays_raw_passthrough_for_plain_job(client):
     assert "hallo" in r.text and "warnung" in r.text
 
 
+# ── User-Fund 2026-07-20: id:/Last-Event-ID/event:done/Heartbeat ────────────
+# .liveterm schloss bei JEDEM onerror (render.py) -- ununterscheidbar, ob der
+# Server absichtlich beendet hat (Job fertig) oder die Verbindung nur abriss.
+# Ein noch laufender Job fror dann fuer immer in der Live-Box ein.
+
+
+def test_output_stream_events_carry_running_id(client):
+    jid = _seed_complete([("out", "eins"), ("out", "zwei")])
+    r = client.get(f"/-/job/{jid}/output/stream")
+    assert "id: 1\ndata:" in r.text
+    assert "id: 2\ndata:" in r.text
+
+
+def test_output_stream_sends_done_event_when_job_is_terminal(client):
+    jid = _seed_complete([("out", "hallo")])
+    r = client.get(f"/-/job/{jid}/output/stream")
+    assert "event: done\ndata: {}" in r.text
+    # done kommt NACH dem letzten echten Event, nicht davor.
+    assert r.text.index("id: 1") < r.text.index("event: done")
+
+
+def test_output_stream_last_event_id_header_overrides_from_query(client):
+    jid = _seed_complete([("out", "eins"), ("out", "zwei")])
+    # Last-Event-ID=1 == "ich habe Event 1 schon", genau wie from=1 -- muss
+    # denselben Effekt haben (Browser schickt das automatisch bei Reconnect).
+    r = client.get(f"/-/job/{jid}/output/stream", headers={"Last-Event-ID": "1"})
+    assert "zwei" in r.text and "eins" not in r.text
+
+
+def test_output_stream_invalid_last_event_id_falls_back_to_from_query(client):
+    jid = _seed_complete([("out", "eins"), ("out", "zwei")])
+    r = client.get(f"/-/job/{jid}/output/stream?from=1", headers={"Last-Event-ID": "garbage"})
+    assert "zwei" in r.text and "eins" not in r.text
+
+
+def test_output_stream_pings_during_silence_on_still_running_job(client, monkeypatch):
+    # Heartbeat darf output.jsonl/_last_activity() (Zombie-Erkennung, worker.py)
+    # nie beruehren -- rein clientseitig zum Verbindung-Warmhalten. Simuliert
+    # per Fake-Clock: jeder time.time()-Aufruf springt um 20s weiter, die
+    # 15s-Schwelle greift also schon in der ersten Schleifenrunde. Treibt den
+    # Route-Handler direkt an (statt ueber TestClient/HTTP) -- ein noch
+    # laufender Job hat einen echt unendlichen gen()-Loop, das waere ueber
+    # einen synchronen HTTP-Request nicht sicher/zeitbegrenzt abzubrechen.
+    import asyncio
+    import itertools
+
+    from bibi.daemon import app as app_module
+
+    jid = _seed_status("running")
+    fake_now = itertools.count(1_000_000, 20)
+    monkeypatch.setattr(app_module.time, "time", lambda: next(fake_now))
+
+    route = next(r for r in client.app.routes if getattr(r, "path", None) == "/-/job/{id}/output/stream")
+    resp = route.endpoint(id=jid, from_=0, last_event_id=None)
+
+    async def collect_until_ping():
+        chunks = []
+        async for chunk in resp.body_iterator:
+            chunks.append(chunk)
+            if ": ping" in chunk:
+                return chunks
+        raise AssertionError("Generator endete ohne Ping")
+
+    chunks = asyncio.run(asyncio.wait_for(collect_until_ping(), timeout=5))
+    assert any(": ping" in c for c in chunks)
+
+
 def test_status_endpoint(client):
     jid = _seed_complete([("out", "x")])
     r = client.get(f"/-/job/{jid}/status")

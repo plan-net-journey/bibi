@@ -2584,8 +2584,15 @@ def live_output_box(job_id: str, events: list[dict] | None = None,
 #: Hängt an jede ``.liveterm[data-job]`` eine EventSource (ab ``data-from``), hängt
 #: out/err-Zeilen unten an (err rot), Autoscroll am Ende. Erneut nach htmx-Swaps
 #: (neue Boxen); ``hx-preserve`` sorgt dafür, dass bestehende Boxen + Streams bleiben
-#: (WeakSet verhindert Doppel-Abos). Der Server schließt den Stream bei terminal →
-#: ``onerror`` schließt clientseitig (kein Reconnect/Dup).
+#: (WeakSet verhindert Doppel-Abos). Der Server schickt kurz vor dem beabsichtigten
+#: Schließen (Job terminal) ein explizites ``event: done`` — NUR darauf schließt der
+#: Client selbst (User-Fund 2026-07-20: ``onerror`` feuert identisch bei einem
+#: einfachen Verbindungsabriss UND beim beabsichtigten Server-Ende, ein früheres
+#: ``es.close()`` in ``onerror`` fror deshalb auch noch laufende Jobs nach jedem
+#: Netzwerk-Hänger dauerhaft ein). ``onerror`` schließt jetzt nicht mehr — der
+#: automatische Browser-Reconnect greift, inkl. selbstständig mitgeschicktem
+#: ``Last-Event-ID`` (aus der ``id:``-Zeile jedes Events, s. ``_formatted_sse()``
+#: in ``app.py``), kein Duplikat-Risiko.
 #: ``hx-preserve`` hält Inhalt + EventSource über den 2s-#live-Poll am Leben, aber
 #: NICHT den Scroll-Zustand — das erneute Einhängen des (unveränderten) Elements in
 #: den DOM-Baum setzt ``scrollTop`` browserseitig auf 0 zurück. Live gemessen
@@ -2639,7 +2646,20 @@ _LIVE_JS = """
         box._bibiLastSpan = span;
         if (stick) box.scrollTop = box.scrollHeight;
       };
-      es.onerror = () => es.close();
+      // User-Fund 2026-07-20: 'done' (server schickt es explizit kurz vor dem
+      // beabsichtigten Schliessen, s. _formatted_sse()) ist jetzt das einzige
+      // Signal fuer "Job wirklich fertig" -- der Client schliesst SELBST,
+      // bevor die Verbindung natuerlich endet.
+      es.addEventListener('done', () => {
+        if (box._bibiEs) { box._bibiEs.close(); box._bibiEs = null; }
+      });
+      // onerror schliesst absichtlich NICHT mehr (frueher: es.close() fuer
+      // JEDEN Verbindungsabriss, ununterscheidbar vom obigen 'done'-Fall --
+      // ein Job, der noch lief, aber dessen Verbindung kurz haengt, fror in
+      // der Box fuer immer ein, "Erst ein manuelles Reload gibt mehr Output").
+      // Ohne eigenen Handler reconnectet EventSource automatisch (Browser-
+      // Standardverhalten) und schickt dabei von selbst Last-Event-ID mit --
+      // kein Duplikat-Risiko, kein eigenes Zaehl-JS noetig.
     });
   }
   // EventSources schließen bevor HTMX das Element entfernt (verhindert Leak).

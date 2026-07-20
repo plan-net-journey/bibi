@@ -110,6 +110,21 @@ def test_live_js_marks_thinking_stream_with_own_class():
     assert "'thinking'" in render._LIVE_JS
 
 
+def test_live_js_closes_on_explicit_done_event():
+    # User-Fund 2026-07-20: der Server schickt jetzt ein explizites
+    # `event: done` kurz vor dem beabsichtigten Schliessen -- nur DAS soll
+    # den Client zum Schliessen bringen, nicht mehr jedes onerror.
+    assert "addEventListener('done'" in render._LIVE_JS
+
+
+def test_live_js_onerror_no_longer_closes_stream():
+    # Vorher: es.onerror = () => es.close() -- schloss auch bei einem simplen
+    # Verbindungsabriss dauerhaft, ununterscheidbar vom beabsichtigten Ende
+    # (kein Reconnect mehr moeglich, Box fror fuer immer ein). Jetzt kein
+    # eigener onerror-Handler mehr -- der automatische Browser-Reconnect greift.
+    assert "es.onerror" not in render._LIVE_JS
+
+
 def test_live_js_scrolls_to_bottom_on_initial_bind():
     # PLAN-19 Befund 2, live reproduziert 2026-07-06: eine Box mit bereits
     # überfüllendem Seed-Inhalt hat scrollTop=0 beim ersten attach() — atBottom()
