@@ -99,6 +99,33 @@ def test_unmerged_conflict_reported_as_own_status_not_modified(team_repo: Path):
     assert result == {"vault/case/a.md": "conflict"}
 
 
+def test_modified_path_with_space_is_reported_correctly(team_repo: Path):
+    # User-Fund 2026-07-20: "Runner 1"/"Runner 5" (Pfade mit Leerzeichen)
+    # wurden trotz echter Änderung als "clean" gemeldet — ein unbegrenzter
+    # `.split(" ")[-1]` zerschnitt den Pfad selbst an seinem eigenen
+    # Leerzeichen und lieferte nur dessen letztes Wort als Dict-Key.
+    (team_repo / "vault/case/Runner 1.md").write_text("x", encoding="utf-8")
+    _commit_all(team_repo)
+    (team_repo / "vault/case/Runner 1.md").write_text("y", encoding="utf-8")
+    result = local_files_status(team_repo, ["vault/case/Runner 1.md"])
+    assert result == {"vault/case/Runner 1.md": "modified"}
+
+
+def test_conflict_path_with_space_is_reported_correctly(team_repo: Path):
+    path = team_repo / "vault/case/Runner 1.md"
+    path.write_text("base\n", encoding="utf-8")
+    _commit_all(team_repo)
+    _sh(team_repo, "checkout", "-q", "-b", "other")
+    path.write_text("from other branch\n", encoding="utf-8")
+    _commit_all(team_repo, "other change")
+    _sh(team_repo, "checkout", "-q", "trunk")
+    path.write_text("from trunk\n", encoding="utf-8")
+    _commit_all(team_repo, "trunk change")
+    subprocess.run(["git", "merge", "-q", "other"], cwd=team_repo, capture_output=True, text=True)
+    result = local_files_status(team_repo, ["vault/case/Runner 1.md"])
+    assert result == {"vault/case/Runner 1.md": "conflict"}
+
+
 def test_outside_git_repo_all_clean_no_crash(tmp_path: Path):
     # Kein Git-Repo (git-Aufruf schlägt fehl, returncode != 0) — defensiv:
     # kein Crash, alle angefragten Pfade "clean" statt eines Fehlers.

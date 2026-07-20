@@ -835,9 +835,16 @@ def create_app(
         live = worker_mod.local_run_live(slug)
         if live is None:
             return JSONResponse(status_code=404, content={"error": "not running", "slug": slug})
+        # User-Fund 2026-07-20 ("KILL auf deferred/failed: nix passiert, dient
+        # aber dem Stoppen"): ein ``not signaled`` früher hier hart auf 404
+        # zurückzuschicken machte KILL auf ``deferred``/``failed`` zum stillen
+        # No-Op — dort läuft gerade kein OS-Prozess (der Job wartet nur auf
+        # seinen nächsten Redispatch), ``pinned_worker.kill()`` kann also gar
+        # nichts signalisieren, obwohl der Zustandswechsel selbst (§5.4:
+        # (FAILED|DEFERRED, KILL) → KILLED) völlig legitim ist. Jetzt wie
+        # run_live_reset() unten: Signal ist best-effort, der DB-Write hängt
+        # nicht an dessen Erfolg.
         signaled = pinned_worker.kill(live["id"])
-        if not signaled:
-            return JSONResponse(status_code=404, content={"error": "not running", "slug": slug})
         # User-Fund 2026-07-13 ("KILL führt nicht zum Status Wechsel"): anders
         # als job_kill() (Host, oben) schrieb diese Route den Status bisher nie
         # selbst, sondern verließ sich komplett auf den Wrapper-Selbstreport
@@ -861,7 +868,7 @@ def create_app(
                                   output_ref=live["output_ref"])
         finally:
             conn.close()
-        return {"slug": slug, "signaled": True}
+        return {"slug": slug, "signaled": signaled}
 
     # User-Feedback 2026-07-13 ("warum nicht START, RESET und KILL wie auf
     # Host"): RESET ist der Not-Aus für eine hängen gebliebene Live-Anzeige —

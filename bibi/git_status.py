@@ -82,7 +82,19 @@ def local_files_status(root: Path | None, paths: list[str]) -> dict[str, str]:
     ``Path.relative_to().as_posix()`` liefert). ``--no-renames``, damit ein
     Rename immer als zwei einfache Zeilen (alter Pfad "gelöscht" — hier
     irrelevant, neuer Pfad "new") statt eines schwerer zu parsenden
-    Rename-Eintrags erscheint."""
+    Rename-Eintrags erscheint.
+
+    User-Fund 2026-07-20 ("Runner 1"/"Runner 5" trotz echter Änderung als
+    "clean" gemeldet): ``1 ``-Zeilen (ordinary changed) haben laut Porcelain-
+    v2-Format sieben feste Felder vor dem Pfad (``XY sub mH mI mW hH hI``),
+    ``u ``-Zeilen (unmerged) zehn (``XY sub m1 m2 m3 mW h1 h2 h3``) — ein
+    unbegrenzter ``.split(" ")[-1]`` zerschnitt bei jedem Pfad MIT Leerzeichen
+    (jede ``Runner N.md`` in diesem Vault) auch den Pfad selbst und lieferte
+    nur dessen letztes Wort als Dict-Key, der nie auf den vollen ``repo_path``
+    aus ``paths`` matchte — Fallback auf "clean". ``maxsplit`` begrenzt den
+    Split auf die Präfix-Felder, ein Leerzeichen im Pfad bleibt im letzten
+    Element erhalten — analog zum ``? ``-Zweig, der mit ``line[2:]`` von
+    Anfang an korrekt war."""
     proc = subprocess.run(
         ["git", "--no-optional-locks", "status", "--porcelain=v2",
          "--untracked-files=all", "--no-renames"],
@@ -94,7 +106,7 @@ def local_files_status(root: Path | None, paths: list[str]) -> dict[str, str]:
             if line.startswith("? "):
                 dirty[line[2:]] = "new"
             elif line.startswith("u "):
-                dirty[line.split(" ")[-1]] = "conflict"
+                dirty[line.split(" ", 10)[-1]] = "conflict"
             elif line.startswith("1 "):
-                dirty[line.split(" ")[-1]] = "modified"
+                dirty[line.split(" ", 8)[-1]] = "modified"
     return {p: dirty.get(p, "clean") for p in paths}

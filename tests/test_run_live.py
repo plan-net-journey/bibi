@@ -463,13 +463,51 @@ def test_run_live_kill_route_signals_running_job(client_with_pinned_worker, team
     assert row["output_ref"] == real_output_ref
 
 
-def test_run_live_kill_route_404_when_proc_already_exited(client_with_pinned_worker, team_repo):
+def test_run_live_kill_route_writes_killed_even_when_proc_already_exited(
+    client_with_pinned_worker, team_repo,
+):
+    # User-Fund 2026-07-20: signalisieren kann fehlschlagen (Prozess schon
+    # weg, oder — der eigentliche Auslöser dieses Funds — deferred/failed
+    # ohne jeden greifbaren Prozess), der Statuswechsel selbst bleibt trotzdem
+    # legitim. Vorher hier ein harter 404 ohne DB-Write — jetzt best-effort
+    # signalisieren, aber immer schreiben, analog zu run_live_reset() unten.
     c, pinned = client_with_pinned_worker
-    jid, _real_output_ref = _seed_pinned_job(team_repo, "myjob")
+    jid, real_output_ref = _seed_pinned_job(team_repo, "myjob")
     proc = _FakeProc(alive=False)
     pinned._register(jid, proc)
     r = c.post("/-/run/live/myjob/kill")
-    assert r.status_code == 404
+    assert r.status_code == 200
+    assert r.json() == {"slug": "myjob", "signaled": False}
+
+    conn = job_db.connect(team_repo / "data" / "jobs.sqlite")
+    row = conn.execute("SELECT status, reason, output_ref FROM jobs WHERE id=?", (jid,)).fetchone()
+    conn.close()
+    assert row["status"] == "killed"
+    assert row["reason"] == "by_user"
+    assert row["output_ref"] == real_output_ref
+
+
+def test_run_live_kill_route_writes_killed_for_deferred_job_with_no_process(
+    client_with_pinned_worker, team_repo,
+):
+    # Der eigentliche, live gemeldete Bug ("KILL auf deferred: nix passiert,
+    # dient aber dem Stoppen"): ein deferred-Job hat per Definition gerade
+    # keinen laufenden Prozess (wartet auf next_fire_at) — kill() hier also
+    # nie signalisiert, der Zustandswechsel (DEFERRED, KILL) → KILLED ist
+    # trotzdem ein erlaubter Übergang (lifecycle.py) und muss durchgeschrieben
+    # werden, kein 404.
+    c, _pinned = client_with_pinned_worker
+    jid, real_output_ref = _seed_pinned_job(team_repo, "myjob", status="deferred")
+    r = c.post("/-/run/live/myjob/kill")
+    assert r.status_code == 200
+    assert r.json() == {"slug": "myjob", "signaled": False}
+
+    conn = job_db.connect(team_repo / "data" / "jobs.sqlite")
+    row = conn.execute("SELECT status, reason, output_ref FROM jobs WHERE id=?", (jid,)).fetchone()
+    conn.close()
+    assert row["status"] == "killed"
+    assert row["reason"] == "by_user"
+    assert row["output_ref"] == real_output_ref
 
 
 # ── POST /-/run/live/{slug}/reset (User-Feedback 2026-07-13) ────────────────
