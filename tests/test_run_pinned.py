@@ -112,6 +112,69 @@ def test_run_pinned_custom_attempts(gitrepo, monkeypatch):
     assert row["attempts"] == 3
 
 
+# --- use_schedule_retry (Bugfix, User-Fund: "Runner 5" mit attempts: 2 in der
+# Frontmatter exhaustierte über den START-Button trotzdem beim ersten
+# Fehlschlag sofort zu error statt zweimal zu retryen — /-/run überging
+# attempts/backoff/defer_time/error_time der Schedule-MD komplett) ----------
+
+
+def test_run_pinned_without_use_schedule_retry_ignores_schedule_lifecycle(gitrepo, monkeypatch):
+    # Default False: unveraendertes CLI-sicheres Verhalten (kein Retry, egal
+    # was die Schedule-MD sagt) — genau das, was bibi-ctrl run braucht.
+    import bibi.daemon.worker as W
+    _seed(gitrepo, "retryjob/README.md",
+          '---\nschedule: never\njob: "exit 1"\nattempts: 2\nbackoff: exponential\n'
+          'defer_time: 15\nerror_time: 10\n---\n')
+    monkeypatch.setattr(W, "_run_wrapper", _fake_run_wrapper(gitrepo))
+    res = run_pinned(slug="retryjob", repo_root=gitrepo, host="mac")
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    row = conn.execute("SELECT attempts, backoff, defer_time, error_time FROM jobs WHERE id=?",
+                       (res["id"],)).fetchone()
+    conn.close()
+    assert row["attempts"] == 0
+    assert row["backoff"] == "fixed"
+    assert row["defer_time"] is None
+    assert row["error_time"] is None
+
+
+def test_run_pinned_with_use_schedule_retry_takes_over_schedule_lifecycle(gitrepo, monkeypatch):
+    # True (gesetzt von der HTTP-Route /-/run, die einen laufenden Daemon mit
+    # gepinntem Worker-Loop voraussetzt): attempts/backoff/defer_time/
+    # error_time kommen jetzt aus der Schedule-MD, nicht mehr den No-Retry-
+    # Defaults.
+    import bibi.daemon.worker as W
+    _seed(gitrepo, "retryjob/README.md",
+          '---\nschedule: never\njob: "exit 1"\nattempts: 2\nbackoff: exponential\n'
+          'defer_time: 15\nerror_time: 10\n---\n')
+    monkeypatch.setattr(W, "_run_wrapper", _fake_run_wrapper(gitrepo))
+    res = run_pinned(slug="retryjob", repo_root=gitrepo, host="mac", use_schedule_retry=True)
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    row = conn.execute("SELECT attempts, backoff, defer_time, error_time FROM jobs WHERE id=?",
+                       (res["id"],)).fetchone()
+    conn.close()
+    assert row["attempts"] == 2
+    assert row["backoff"] == "exponential"
+    assert row["defer_time"] == 15
+    assert row["error_time"] == 10
+
+
+def test_run_pinned_use_schedule_retry_by_cmd_stays_no_retry(gitrepo, monkeypatch):
+    # cmd=-Ad-hoc-Laeufe haben keine ScheduleSpec, aus der sich etwas
+    # uebernehmen liesse — use_schedule_retry=True darf dafuer nicht crashen
+    # und muss beim sicheren No-Retry-Default bleiben.
+    import bibi.daemon.worker as W
+    monkeypatch.setattr(W, "_run_wrapper", _fake_run_wrapper(gitrepo))
+    res = run_pinned(cmd="echo hi", repo_root=gitrepo, host="mac", use_schedule_retry=True)
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    row = conn.execute("SELECT attempts, backoff, defer_time, error_time FROM jobs WHERE id=?",
+                       (res["id"],)).fetchone()
+    conn.close()
+    assert row["attempts"] == 0
+    assert row["backoff"] == "fixed"
+    assert row["defer_time"] is None
+    assert row["error_time"] is None
+
+
 def test_run_pinned_other_host_cannot_reserve_it(gitrepo, monkeypatch):
     # Die Pin-Garantie gilt sofort, nicht erst beim nächsten Sweep/Loop-Tick.
     import bibi.daemon.worker as W

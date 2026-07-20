@@ -130,6 +130,16 @@ def test_local_run_live_ignores_terminal_status(team_repo: Path):
     assert worker.local_run_live("a") is None
 
 
+def test_local_run_live_finds_deferred_row(team_repo: Path):
+    # Bugfix (User-Fund, "von der defer habe ich nie etwas im FE gesehen"):
+    # _PINNED_LIVE_STATUSES enthielt "deferred" bisher nicht — ein gepinnter
+    # Lauf verschwand fuer die gesamte Defer-Phase komplett aus dieser Query,
+    # obwohl next_fire_at bereits einen Retry vorsah (kein Terminalzustand).
+    jid, _ = _seed_pinned_job(team_repo, "a", status="deferred")
+    live = worker.local_run_live("a")
+    assert live is not None and live["id"] == jid
+
+
 def test_local_run_live_ignores_other_hosts_pinned_jobs(team_repo: Path):
     _seed_pinned_job(team_repo, "a", host="sarasate")
     assert worker.local_run_live("a", host="mac") is None

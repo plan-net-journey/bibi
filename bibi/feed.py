@@ -192,6 +192,7 @@ def aggregate_feed(
 def activity_series_by_prefix(
     commits: list[CommitInfo], agent_shas: set[str], prefixes: dict[str, str],
     *, since_days: int, now: float | None = None,
+    own_paths: dict[str, str] | None = None,
 ) -> dict[str, list[int]]:
     """Tages-Buckets (älteste zuerst, heute zuletzt) agent-verursachter Commits
     je Pfad-Präfix — Baustein für die Jobs-Sparkline (Bibi4-Iteration, User-
@@ -199,10 +200,29 @@ def activity_series_by_prefix(
     Änderungen repräsentiert"). Reine Aggregation schon gesammelter Commits
     (kein eigener Git-Aufruf) — analog zu ``heatmap_buckets()``/
     ``group_entities()``: dieselbe ``collect_commits()``-Liste bedient alle
-    Jobs auf einmal, kein Aufruf je Zeile."""
+    Jobs auf einmal, kein Aufruf je Zeile.
+
+    ``own_paths`` (optional, Bugfix — User-Fund: "warum haben alle Runner die
+    gleiche Sparkline"): ``prefix`` ist bewusst der Case-**Ordner** eines
+    Jobs, nicht nur seine eigene MD (s. Aufrufer), damit Begleitdateien im
+    selben Ordner mitzählen. Liegen aber MEHRERE Jobs im selben Ordner (wie
+    ``Runner``/``Runner 1``.../``Runner 5`` alle in ``20260627.Test/``), matcht
+    ``p.startswith(prefix)`` für jeden von ihnen gleichermaßen — jede Änderung
+    an EINER Runner-MD zählte bisher für ALLE Runner im Ordner, die Serien
+    waren dadurch identisch. ``own_paths`` (slug → exakter ``repo_path``)
+    behebt das: ändert ein Commit genau die eigene Schedule-MD eines ANDEREN
+    bekannten Jobs im selben Ordner, zählt das nur für JENEN Job — eine echte
+    Begleitdatei (die zu keinem der bekannten Jobs gehört) zählt weiterhin für
+    alle Jobs des Ordners, wie ursprünglich beabsichtigt. ``None``/leer
+    reproduziert das alte (fehlerhafte) Verhalten unverändert."""
     now = time.time() if now is None else now
     today = datetime.datetime.fromtimestamp(now).date()
     series = {key: [0] * since_days for key in prefixes}
+    own_paths = own_paths or {}
+    siblings_by_key = {
+        key: {p for other, p in own_paths.items() if other != key}
+        for key in prefixes
+    }
     for c in commits:
         if c.sha not in agent_shas:
             continue
@@ -211,7 +231,8 @@ def activity_series_by_prefix(
             continue
         bucket = since_days - 1 - days_ago
         for key, prefix in prefixes.items():
-            if any(p.startswith(prefix) for p in c.paths):
+            siblings = siblings_by_key[key]
+            if any(p.startswith(prefix) and p not in siblings for p in c.paths):
                 series[key][bucket] += 1
     return series
 

@@ -90,6 +90,15 @@ def _scheduler_url() -> str | None:
     return os.environ.get("BIBI_SCHEDULER_URL") or config.read_env().get("BIBI_SCHEDULER_URL")
 
 
+#: TTL-Cache für _job_sparkline_series() (User-Feedback: minutengenaue
+#: Frische ist für eine 30-Tage-Activity-Sparkline nicht nötig, ein
+#: Stundentakt genügt) — Modul-Level statt Closure-lokal, damit ein einziger
+#: Cache über alle Requests dieses Prozesses hinweg gilt, unabhängig davon,
+#: wie oft add_controller_routes() aufgerufen wird.
+_SPARKLINE_CACHE_TTL = 3600
+_sparkline_cache: dict = {"result": None, "computed_at": 0.0, "slugs": frozenset()}
+
+
 def service_descriptor(roles: roles_mod.Roles) -> dict:
     """Knapper Maschinen-Deskriptor an der Wurzel (§2.1)."""
     return {
@@ -403,7 +412,22 @@ def add_controller_routes(
         (``repo_path``s Verzeichnis), nicht nur die job.md-Datei selbst, damit
         z. B. begleitende Notizen im selben Case-Ordner mitzählen. Nur vom
         initialen Seitenaufbau aufgerufen (``jobs_screen()``), bewusst nicht
-        vom 2s-Self-Poll (s. ``render._sparkline_cell()``-Docstring)."""
+        vom 2s-Self-Poll (s. ``render._sparkline_cell()``-Docstring).
+
+        ``own_paths`` (Bugfix, User-Fund: "warum haben alle Runner die
+        gleiche Sparkline" — mehrere Jobs im selben Case-Ordner, z. B.
+        ``Runner``/``Runner 1``.../``Runner 5``, teilten sich zuvor exakt
+        dieselbe Serie, s. ``feed.activity_series_by_prefix()``-Docstring)
+        disambiguiert Änderungen an einer ANDEREN Job-eigenen MD im selben
+        Ordner — nur echte Begleitdateien zählen weiter für alle.
+
+        TTL-Cache (User-Feedback: "Performance ist schlecht ... stündliches
+        Update genügt"): ``git log`` über 30 Tage ist auf großen Repos
+        spürbar (0,65s/Aufruf lokal gemessen, zwei Aufrufe pro Seitenaufbau)
+        — Ergebnis wird ``_SPARKLINE_CACHE_TTL`` Sekunden lang wiederverwendet.
+        Zusätzlich ans Slug-Set gebunden (nicht nur Zeit): ein frisch
+        entdeckter Job stünde sonst bis zu eine Stunde lang ganz ohne
+        Sparkline da, weil sein Slug im gecachten Ergebnis-Dict fehlt."""
         from pathlib import Path
         from bibi import feed as feed_mod
         from bibi import repo as repo_mod
@@ -413,11 +437,21 @@ def add_controller_routes(
         }
         if not prefixes:
             return {}
+        slugs = frozenset(prefixes)
+        now = time.time()
+        cached = _sparkline_cache
+        if (cached["result"] is not None and slugs == cached["slugs"]
+                and now - cached["computed_at"] < _SPARKLINE_CACHE_TTL):
+            return cached["result"]
+        own_paths = {row["slug"]: row["repo_path"] for row in rows if row.get("repo_path")}
         root = repo_mod.root()
         commits = feed_mod.collect_commits(root, since_days=_SPARKLINE_SINCE_DAYS)
         agent_shas = feed_mod.agent_commit_shas(root, since_days=_SPARKLINE_SINCE_DAYS)
-        return feed_mod.activity_series_by_prefix(
-            commits, agent_shas, prefixes, since_days=_SPARKLINE_SINCE_DAYS)
+        result = feed_mod.activity_series_by_prefix(
+            commits, agent_shas, prefixes, since_days=_SPARKLINE_SINCE_DAYS,
+            own_paths=own_paths)
+        cached["result"], cached["computed_at"], cached["slugs"] = result, now, slugs
+        return result
 
     def _jobs_archive_runs() -> list:
         # Flache Journal-Liste über alle lokalen Jobs (Bibi4-Iteration,

@@ -2869,7 +2869,10 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
             bits.append(f"finished {_ago(job['finished_at'], now)}")
     elif job.get("started_at"):
         bits.append(f"since {_ago(job['started_at'], now)}")
-    if job.get("status") == "pending" and job.get("next_fire_at"):
+    # Bugfix (User-Fund): "next run" fehlte bisher bei deferred komplett — die
+    # Box zeigte während der gesamten Defer-Phase weder wann noch dass
+    # überhaupt ein Retry ansteht (dasselbe next_fire_at-Feld wie bei pending).
+    if job.get("status") in ("pending", "deferred") and job.get("next_fire_at"):
         bits.append(f"next run {_until(job.get('next_fire_at'), now)}")
     if job.get("reason"):
         bits.append(_e(job.get("reason")))
@@ -2893,6 +2896,13 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
                    + output_block(live_output["events"], live_output.get("kind", "job"))
                    + "</div>")
         out += _hitl_panel(job)
+    elif job.get("status") == "deferred" and live_output and live_output.get("events"):
+        # Bugfix (User-Fund, "von der defer habe ich nie etwas im FE gesehen"):
+        # deferred hatte hier gar keinen Zweig — out blieb leer, obwohl der
+        # Wrapper vor dem Deferred(...)-Signal meist schon etwas ausgegeben hat.
+        out = ('<div class="liveout liveclamp">'
+               + output_block(live_output["events"], live_output.get("kind", "job"))
+               + "</div>")
     elif is_terminal and live_output and live_output.get("events"):
         out = ('<div class="liveout liveclamp">'
                + output_block(live_output["events"], live_output.get("kind", "job"))
@@ -2906,6 +2916,8 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
         label = "letzter Lauf"
     elif job.get("status") == "pending":
         label = "wartet"
+    elif job.get("status") == "deferred":
+        label = "wartet auf Retry"
     else:
         label = "aktiver Lauf"
     return (f'<div class="live"><div class="live-head">'

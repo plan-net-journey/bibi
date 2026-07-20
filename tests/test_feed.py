@@ -333,6 +333,66 @@ def test_activity_series_shape_matches_since_days_and_prefixes():
     assert len(series["foo"]) == 30 and len(series["bar"]) == 30
 
 
+# --- own_paths (Bugfix: mehrere Jobs im selben Case-Ordner) -------------------
+# User-Fund: "warum haben alle Runner die gleiche Sparkline" — Runner/Runner 1
+# .../Runner 5 liegen alle in vault/case/20260627.Test/, ohne Disambiguierung
+# matcht p.startswith(prefix) für jeden Job gleichermaßen.
+
+
+def test_activity_series_without_own_paths_reproduces_old_shared_bug():
+    # Regressionsanker: ohne own_paths bleibt das alte (fehlerhafte) Verhalten
+    # unveraendert — Aenderung an EINER MD zaehlt fuer BEIDE Jobs im Ordner.
+    commits = [_cp(datetime.datetime(2026, 7, 8, 10, 0), sha="agent1",
+                  paths=("vault/case/shared/Runner 1.md",))]
+    series = activity_series_by_prefix(
+        commits, {"agent1"},
+        {"Runner 1": "vault/case/shared/", "Runner 2": "vault/case/shared/"},
+        since_days=30, now=_NOW)
+    assert sum(series["Runner 1"]) == 1
+    assert sum(series["Runner 2"]) == 1
+
+
+def test_activity_series_own_paths_disambiguates_sibling_jobs_own_file():
+    # Aenderung an genau Runner 1s eigener MD zaehlt mit own_paths nur fuer
+    # Runner 1, nicht mehr fuer Runner 2 (derselbe Ordner-Praefix).
+    commits = [_cp(datetime.datetime(2026, 7, 8, 10, 0), sha="agent1",
+                  paths=("vault/case/shared/Runner 1.md",))]
+    series = activity_series_by_prefix(
+        commits, {"agent1"},
+        {"Runner 1": "vault/case/shared/", "Runner 2": "vault/case/shared/"},
+        since_days=30, now=_NOW,
+        own_paths={"Runner 1": "vault/case/shared/Runner 1.md",
+                  "Runner 2": "vault/case/shared/Runner 2.md"})
+    assert sum(series["Runner 1"]) == 1
+    assert sum(series["Runner 2"]) == 0
+
+
+def test_activity_series_own_paths_still_counts_genuine_companion_files():
+    # Eine echte Begleitdatei (gehoert zu keinem der bekannten Jobs) zaehlt
+    # weiterhin fuer alle Jobs im selben Ordner — das war der urspruengliche
+    # Zweck des Ordner-Praefixes und darf durch own_paths nicht verlorengehen.
+    commits = [_cp(datetime.datetime(2026, 7, 8, 10, 0), sha="agent1",
+                  paths=("vault/case/shared/notes.md",))]
+    series = activity_series_by_prefix(
+        commits, {"agent1"},
+        {"Runner 1": "vault/case/shared/", "Runner 2": "vault/case/shared/"},
+        since_days=30, now=_NOW,
+        own_paths={"Runner 1": "vault/case/shared/Runner 1.md",
+                  "Runner 2": "vault/case/shared/Runner 2.md"})
+    assert sum(series["Runner 1"]) == 1
+    assert sum(series["Runner 2"]) == 1
+
+
+def test_activity_series_own_paths_counts_a_jobs_own_file_for_itself():
+    commits = [_cp(datetime.datetime(2026, 7, 8, 10, 0), sha="agent1",
+                  paths=("vault/case/shared/Runner 1.md",))]
+    series = activity_series_by_prefix(
+        commits, {"agent1"}, {"Runner 1": "vault/case/shared/"},
+        since_days=30, now=_NOW,
+        own_paths={"Runner 1": "vault/case/shared/Runner 1.md"})
+    assert sum(series["Runner 1"]) == 1
+
+
 # --- GET /-/feed (rollenunabhängig, PLAN-18) ------------------------------------
 
 

@@ -728,8 +728,13 @@ def create_app(
             # register=pinned_worker._register (PLAN-28 Refactor B): derselbe
             # Proc-Registry-Callback wie beim teamweiten Worker — kein eigenes
             # Kill-Tracking mehr nötig, pinned_worker.kill() übernimmt das.
+            # use_schedule_retry=True (Bugfix, User-Fund): ein laufender Daemon
+            # bedient fällige Retries über den gepinnten Worker-Loop — anders
+            # als beim daemonlosen CLI-Pfad (bibi-ctrl run) darf/soll hier also
+            # attempts/backoff/defer_time/error_time aus der Schedule-MD
+            # gelten, statt immer sofort bei Fehlschlag zu exhaustieren.
             res = run_pinned(slug=req.slug, cmd=req.cmd, kind=req.kind,
-                             register=pinned_worker._register)
+                             register=pinned_worker._register, use_schedule_retry=True)
         except LookupError as exc:
             return JSONResponse(status_code=404, content={"error": str(exc)})
         except Exception as exc:  # noqa: BLE001 — Route darf nie unbehandelt crashen
@@ -756,7 +761,8 @@ def create_app(
 
         try:
             res = run_pinned(slug=req.slug, cmd=req.cmd, kind=req.kind,
-                             register=pinned_worker._register, in_place=True)
+                             register=pinned_worker._register, in_place=True,
+                             use_schedule_retry=True)
         except LookupError as exc:
             return JSONResponse(status_code=404, content={"error": str(exc)})
         except Exception as exc:  # noqa: BLE001 — Route darf nie unbehandelt crashen

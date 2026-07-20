@@ -483,6 +483,27 @@ def test_detail_live_panel_for_running_job():
     assert "noch keine Läufe" in html                    # Journal noch leer
 
 
+def test_detail_live_panel_deferred_shows_wartet_auf_retry():
+    # Bugfix (User-Fund, "von der defer habe ich nie etwas im FE gesehen"):
+    # deferred hatte weder einen eigenen Label- noch next_fire_at-Zweig.
+    s = {"slug": "a", "kind": "job", "trigger": "now"}
+    job = {"id": "j", "slug": "a", "status": "deferred", "started_at": 1.0,
+           "next_fire_at": 20.0}
+    html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
+    assert 'class="live"' in html and 'class="st deferred">deferred' in html
+    assert "wartet auf Retry" in html
+    assert "aktiver Lauf" not in html
+    assert "next run" in html
+
+
+def test_detail_live_panel_deferred_shows_output_from_before_defer():
+    job = {"id": "j", "slug": "a", "status": "deferred", "started_at": 1.0}
+    live = {"kind": "job", "events": [{"s": "out", "line": "bis hierhin gelaufen"}]}
+    html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0,
+                                        live_output=live)
+    assert 'class="liveout' in html and "bis hierhin gelaufen" in html
+
+
 def test_detail_app_link_defaults_to_localhost():
     # PLAN-22 Befund 6: ohne explizit übergebenen public_host bleibt localhost
     # der sichere Default (kein I/O in render.py — "pure" Funktionen, s.

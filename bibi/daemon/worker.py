@@ -720,8 +720,12 @@ def local_schedule_exec_mode(slug: str, *, repo_root: Path | None = None) -> str
 
 
 #: Live-Status-Werte (kein Terminalzustand) — deckungsgleich mit dem, was ein
-#: gerade tatsächlich laufender Wrapper-Subprozess haben kann.
-_PINNED_LIVE_STATUSES = ("running", "awaiting")
+#: gerade tatsächlich laufender Wrapper-Subprozess haben kann. "deferred"
+#: gehört dazu, obwohl in diesem Fenster gerade KEIN Subprozess läuft (Bugfix,
+#: User-Fund: ein gepinnter Lauf im Zustand deferred fiel aus dieser Query
+#: komplett heraus — die Job-Detail-Seite zeigte für die gesamte Defer-Phase
+#: "noch keine Läufe", obwohl next_fire_at bereits einen Retry vorsah).
+_PINNED_LIVE_STATUSES = ("running", "awaiting", "deferred")
 
 
 def _pinned_live_row(slug: str, *, db_path: Path | None = None,
@@ -849,6 +853,7 @@ def run_pinned(
     work_dir: Path | None = None, db_path: Path | None = None,
     worker_name: str | None = None, host: str | None = None,
     attempts: int = 0, register=None, in_place: bool = False,
+    use_schedule_retry: bool = False,
 ) -> dict:
     """**Lokale** On-Demand-Ausführung mit voller Scheduler-Lifecycle (PLAN-28).
 
@@ -884,6 +889,22 @@ def run_pinned(
     Daemon (die HTTP-Route ``/-/run``) können bei Bedarf explizit
     ``attempts>0`` übergeben, um echtes Retry-mit-Backoff zu aktivieren.
 
+    ``use_schedule_retry`` (Default **False**, Bugfix — User-Fund: ein über
+    den START-Button gepinnter Lauf von ``Runner 5`` mit ``attempts: 2`` in
+    der Frontmatter exhaustierte trotzdem beim ERSTEN Fehlschlag sofort zu
+    ``error`` statt zweimal zu retryen): bei ``True`` **und** einer
+    ``slug``-Auflösung (kein ``cmd=``-Ad-hoc-Lauf) übernimmt der Pin
+    ``attempts``/``backoff``/``defer_time``/``error_time`` direkt aus der
+    Schedule-MD (``s.attempts`` usw.) statt der No-Retry-Defaults oben —
+    genau das im Docstring seit PLAN-28 schon angekündigte, aber nie an der
+    ``/-/run``-Route umgesetzte Verhalten. **Nur** setzen, wenn ein
+    laufender Daemon mit gepinntem Worker-Loop einen fälligen Retry auch
+    tatsächlich bedient (die HTTP-Routen ``/-/run``/``/-/test``) — der
+    CLI-Pfad (``bibi-ctrl run``/``test``, kein Daemon) darf das NIE setzen,
+    sonst hängt ``_wait_until_terminal()`` für immer auf einem nie
+    bedienten Retry (s. ``ctrl/run_cmd.py``-Moduldocstring, derselbe
+    Deadlock, den der ``attempts=0``-Default oben verhindert).
+
     ``in_place`` (User-Fund 2026-07-14, ``bibi-ctrl test``): läuft **ohne**
     frischen Worktree direkt gegen ``repo_root`` (dirty tree erlaubt, kein
     Commit vorher nötig) und committet **nie** danach — Gegenstück zu ``run``,
@@ -898,6 +919,8 @@ def run_pinned(
     eff_soul = eff_session = None
     eff_schedule_ref: str | None = None
     eff_app_port = eff_app_prefix = eff_exec_mode = eff_image = None
+    eff_backoff = "fixed"
+    eff_defer_time = eff_error_time = None
     if cmd is not None:
         eff_slug, payload, eff_kind, eff_model = slug or "adhoc", cmd, kind, model
         # Bug gefunden (2026-07-14, User-Fund: "warum zeigt die Attribute-
@@ -932,6 +955,11 @@ def run_pinned(
         # geltenden Werts (z. B. 48h für Job/App-Payloads) — und jeden
         # expliziten wall_time-Override aus der MD nie.
         eff_silence_timeout, eff_wall_time = s.silence_timeout, s.wall_time
+        if use_schedule_retry:
+            attempts = s.attempts
+            eff_backoff = s.backoff
+            eff_defer_time = s.defer_time
+            eff_error_time = s.error_time
 
     # Eindeutiger jobs.slug (UNIQUE-Constraint) — unabhängig vom MD-/Cmd-Slug,
     # sonst kollidiert ein zweiter ▶ Start mit der noch nicht aufgeräumten
@@ -958,16 +986,19 @@ def run_pinned(
         conn.execute(
             "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, model, soul, "
             "session, app_port, app_prefix, exec_mode, image, silence_timeout, wall_time, "
-            "schedule, next_fire_at, attempts, pinned_host, status, enqueued_at) VALUES "
+            "schedule, next_fire_at, attempts, backoff, defer_time, error_time, "
+            "pinned_host, status, enqueued_at) VALUES "
             "(:id, :slug, :schedule_ref, :kind, :payload, :model, :soul, :session, "
             ":app_port, :app_prefix, :exec_mode, :image, :silence_timeout, :wall_time, "
-            "'now', :now, :attempts, :pinned_host, 'pending', :now)",
+            "'now', :now, :attempts, :backoff, :defer_time, :error_time, "
+            ":pinned_host, 'pending', :now)",
             {"id": jid, "slug": unique_slug, "schedule_ref": eff_schedule_ref or unique_slug,
              "kind": eff_kind, "payload": payload, "model": eff_model, "soul": eff_soul,
              "session": eff_session, "app_port": eff_app_port, "app_prefix": eff_app_prefix,
              "exec_mode": eff_exec_mode, "image": eff_image,
              "silence_timeout": eff_silence_timeout, "wall_time": eff_wall_time, "now": now,
-             "attempts": attempts, "pinned_host": host},
+             "attempts": attempts, "backoff": eff_backoff, "defer_time": eff_defer_time,
+             "error_time": eff_error_time, "pinned_host": host},
         )
         reservation = job_db.reserve_next(conn, host=host, pinned_only=True, now=now)
     finally:
