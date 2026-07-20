@@ -756,14 +756,36 @@ def reserve_next(
         # Eligibel nur, was **fällig** ist (§5.2): pending feuert erst, wenn
         # next_fire_at gesetzt UND erreicht ist (`now` ⇒ sofort, `at:`/cron ⇒ zur
         # Zeit, `never` ⇒ next_fire_at NULL ⇒ nie). Dazu retriable failed (Backoff
-        # fällig, Versuche übrig), fällige deferred (resume) und fällige complete
-        # (lazy Rearm — der Job bleibt bis hierhin sichtbar `complete`), §5.4.
+        # fällig), fällige deferred (resume) und fällige complete (lazy Rearm —
+        # der Job bleibt bis hierhin sichtbar `complete`), §5.4.
+        #
+        # Bugfix (User-Fund: "ein Failed wechselt sofort nach Ende auf ERROR,
+        # falls keine Versuche mehr übrig sind" — beobachtet aber stattdessen
+        # ein Failed, das für immer liegen blieb und erst durch den Sweeper
+        # extern zu error gezwungen wurde): das frühere ``attempt < attempts``
+        # hier war off-by-one UND redundant. _finish() (wrapper/__init__.py)
+        # entscheidet bereits synchron beim Abschluss jedes Versuchs "attempt_cur
+        # < attempts_max ⇒ Retry gewähren, sonst SOFORT (in derselben
+        # Wrapper-Instanz) direkt nach 'error', 'failed' wird dabei komplett
+        # übersprungen" — ein Job landet also PER KONSTRUKTION nur dann als
+        # 'failed' in der DB, wenn der zuletzt gewährte Retry noch aussteht,
+        # nie wenn er erschöpft ist. Die doppelte Prüfung hier verglich zudem
+        # den BEREITS INKREMENTIERTEN ``attempt`` (den Wert NACH der Gewährung)
+        # mit ``<`` statt ``<=`` gegen ``attempts`` — genau der zuletzt
+        # gewährte, noch nicht verbrauchte Versuch (``attempt == attempts``)
+        # wurde dadurch nie dispatcht: die Zeile blieb ewig 'failed' liegen,
+        # bis der (separate, verzögerte) Sweeper sie zu 'error' zwang, statt
+        # dass der Wrapper selbst sofort und synchron entscheidet. 'failed'
+        # jetzt wie 'deferred' rein zeitbasiert eligibel — job_db.sweep()s
+        # eigene "attempt >= attempts"-Erschöpfung bleibt als Sicherheitsnetz
+        # für Anomalien (z. B. ein abgestürzter Wrapper vor dem Report), greift
+        # im Normalbetrieb aber nicht mehr, weil 'failed' das per Konstruktion
+        # nie mehr erreicht.
         rows = conn.execute(
             "SELECT id, slug, status, priority, enqueued_at, rowid AS seq FROM jobs "
             f"WHERE active=1 AND locked_at IS NULL AND {pin_clause} AND ("
             "  (status='pending' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
-            "  OR (status='failed' AND attempt < attempts "
-            "      AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
+            "  OR (status='failed' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='deferred' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='complete' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             ")",
@@ -926,18 +948,38 @@ def report_status(
 def sweep(conn: sqlite3.Connection, now: float | None = None) -> dict:
     """Zeitgesteuerte Scheduler-Übergänge (§5.4/§5.5; PLAN-3 §3.5).
 
-    - **failed + erschöpft** (``attempt >= attempts``, Backoff fällig) → ``error``.
+    - **failed ohne next_fire_at** (Crash-Recovery, s. u.) → ``error``.
     - **deferred + abgelaufen** (``defer_max`` überschritten) → ``inactive``
       (``deferred_expired``).
 
     Worker-seitige Übergänge (wall_time/silence/no_process während der Ausführung)
     macht der Worker selbst — der Sweep deckt nur die rein zeit-/zählerbasierten
-    Scheduler-Entscheidungen ab."""
+    Scheduler-Entscheidungen ab.
+
+    Bugfix (User-Fund: "ein Failed wechselt sofort nach Ende auf ERROR, falls
+    keine Versuche mehr übrig sind — nicht erst beim nächsten [Sweep-]Versuch"):
+    der frühere ``attempt >= attempts``-Zweig hier setzte genau die falsche
+    Prämisse voraus, die auch ``reserve_next()``s inzwischen entfernte
+    ``attempt < attempts``-Bedingung hatte — ``_finish()``
+    (``wrapper/__init__.py``) löst Erschöpfung längst SYNCHRON auf: erschöpft
+    ein Versuch (``attempt_cur >= attempts_max``), meldet der Wrapper im selben
+    Aufruf direkt ``error``, ``failed`` wird dabei komplett übersprungen. Eine
+    Zeile mit ``status='failed'`` schuldet also per Konstruktion IMMER noch
+    einen Dispatch — ``attempt >= attempts`` hier hätte, jetzt wo der Sweeper
+    rollenunabhängig auf jedem Knoten läuft, gegen genau diesen noch
+    ausstehenden letzten ``reserve_next()``-Dispatch geracet und ihn manchmal
+    vorzeitig zu ``error`` gezwungen, bevor der Wrapper selbst entscheiden
+    konnte. Echter Crash-Recovery-Fall bleibt trotzdem abgedeckt: die
+    Erschöpfungs-Meldung in ``_finish()`` schreibt ``failed`` mit
+    ``next_fire_at=None`` als reinen Zwischenschritt, bevor sie synchron
+    ``error`` nachschiebt — stirbt der Wrapper-Prozess genau dazwischen, bleibt
+    eine Zeile ohne jedes ``next_fire_at`` zurück, die ``reserve_next()`` nie
+    wieder findet (``next_fire_at IS NOT NULL`` dort). Nur DAS ist der noch
+    gültige Sweep-Fall."""
     now = time.time() if now is None else now
     errored = inactivated = 0
     for r in conn.execute(
-        "SELECT id FROM jobs WHERE status='failed' AND attempt >= attempts "
-        "AND (next_fire_at IS NULL OR next_fire_at <= ?)", (now,)
+        "SELECT id FROM jobs WHERE status='failed' AND next_fire_at IS NULL"
     ).fetchall():
         report_status(conn, r["id"], status="error", now=now)
         errored += 1

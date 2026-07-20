@@ -1,9 +1,12 @@
 """Scheduler-Sweeper: zeitgesteuerte Lifecycle-Übergänge (PLAN-3 §3.5).
 
 Periodischer Loop (wie Synchronizer/Worker), der ``job_db.sweep`` tickt:
-erschöpfte ``failed``-Jobs → ``error``, abgelaufene ``deferred``-Jobs →
-``inactive``. Nur bei aktiver ``scheduler``-Rolle (der Scheduler besitzt diese
-Zustände, §5.4). Worker-seitige Kanten (wall_time/silence) macht der Worker selbst.
+``failed``-Jobs ohne ``next_fire_at`` (Crash-Recovery, s. ``job_db.sweep()``-
+Docstring) → ``error``, abgelaufene ``deferred``-Jobs → ``inactive``.
+Rollenunabhängig gestartet (Bugfix — gepinnte ``/-/run``-Läufe sind bewusst
+rollenunabhängig, ihr Aufräumer war es vorher nicht: ein erschöpfter gepinnter
+Job auf einem reinen Client blieb sonst für immer in ``failed`` hängen).
+Worker-seitige Kanten (wall_time/silence) macht der Worker selbst.
 """
 
 from __future__ import annotations
@@ -50,6 +53,16 @@ class Sweeper:
             conn.close()
 
     async def _loop(self) -> None:
+        # Bugfix (User-Fund via Testfehlschlag: der jetzt rollenunabhängig
+        # immer gestartete Sweeper tickte sofort beim Start — in Tests, die
+        # gleich nach TestClient(app) synchron eine Zeile seeden und direkt
+        # abfragen, konnte der allererste Tick dazwischenfunken, bevor der Test
+        # überhaupt fertig geschrieben hatte. Exakt dasselbe Muster wie
+        # Worker._loop() (PLAN-28: "ein zweiter, rollenunabhängig immer
+        # gestarteter Worker lief sonst in praktisch jedem Test sofort ...
+        # gegen dieselbe frische jobs.sqlite — 'database is locked'") — erst
+        # schlafen, dann ticken, beim allerersten Durchlauf.
+        await asyncio.sleep(self.interval)
         loop = asyncio.get_event_loop()
         while self._running:
             try:

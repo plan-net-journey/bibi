@@ -192,6 +192,15 @@ def test_silence_zombies_job(gitrepo: Path):
 
 @pytest.mark.slow
 def test_retry_then_error(gitrepo: Path, monkeypatch):
+    # Bugfix (User-Fund: "ein Failed wechselt sofort nach Ende auf ERROR, falls
+    # keine Versuche mehr uebrig sind" - beobachtet aber ein Failed, das nie
+    # wieder dispatcht und stattdessen nur durch einen externen Sweep zu error
+    # gezwungen wurde): attempts=2 gewaehrt zwei Retries (Versuch 1+2), attempt
+    # erreicht nach Versuch 2 den Wert 2 (== attempts) - das ist der zuletzt
+    # GEWAEHRTE, noch nicht VERBRAUCHTE Versuch, kein Erschoepfen. Erst der
+    # DRITTE Versuch (attempt_cur=2 >= attempts_max=2) loest in _finish() die
+    # synchrone Erschoepfung aus (failed->error im selben Wrapper-Aufruf,
+    # kein Sweep mehr noetig).
     monkeypatch.setenv("BIBI_RETRY_BASE", "0")  # kein Warten zwischen Versuchen
     jid = _seed(gitrepo, "boom/README.md",
                 '---\nschedule: now\njob: "exit 1"\nattempts: 2\n---\n')
@@ -208,13 +217,20 @@ def test_retry_then_error(gitrepo: Path, monkeypatch):
     conn.commit()
     conn.close()
 
-    assert w.tick_once() is True        # Versuch 2 (failed→running) → error (attempt 2)
+    assert w.tick_once() is True        # Versuch 2 (failed→running) → failed (attempt 2, letzter gewaehrter Versuch)
     row = _wait_terminal(gitrepo, jid)
-    assert row["status"] in ("failed", "error") and row["attempt"] == 2
+    assert row["status"] == "failed" and row["attempt"] == 2
+
+    # failed (attempt==attempts) → weiterhin reservierbar, kein Sweep noetig
     conn = job_db.connect(dbp)
-    job_db.sweep(conn)                  # Sweep: erschöpftes failed → error
-    row2 = conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
-    assert row2["status"] == "error"
+    conn.execute("UPDATE jobs SET next_fire_at=? WHERE id=?", (time.time(), jid))
+    conn.commit()
+    conn.close()
+
+    assert w.tick_once() is True        # Versuch 3 (failed→running) → erschoepft, SYNCHRON error
+    row = _wait_terminal(gitrepo, jid)
+    assert row["status"] == "error"
+    conn = job_db.connect(dbp)
     assert any(j["status"] == "error" for j in job_db.list_journal(conn))
     conn.close()
 
@@ -245,17 +261,22 @@ def test_attempts_zero_reaches_error_without_hanging(gitrepo: Path, monkeypatch)
 
 @pytest.mark.slow
 def test_retry_exponential_3x_to_error(gitrepo: Path, monkeypatch):
-    """PLAN-10 §10.1: 3 Fehlversuche mit exponentialem Backoff → ERROR; Slot nach FAILED frei."""
+    """PLAN-10 §10.1: 3 Fehlversuche mit exponentialem Backoff → ERROR; Slot nach FAILED frei.
+
+    Bugfix (User-Fund, s. test_retry_then_error oben): attempts=3 gewaehrt drei
+    Retries -> vier Dispatches insgesamt (Versuch 1-3 -> failed mit attempt
+    1/2/3, erst der VIERTE Versuch erschoepft synchron zu error, kein Sweep
+    mehr noetig)."""
     monkeypatch.setenv("BIBI_RETRY_BASE", "0")  # sofort retribar
     jid = _seed(gitrepo, "boom3/README.md",
                 '---\nschedule: now\njob: "exit 2"\nattempts: 3\nbackoff: exponential\n---\n')
     w = _worker(gitrepo)
     dbp = gitrepo / "data" / "jobs.sqlite"
 
-    for attempt_n in (1, 2, 3):
+    for attempt_n in (1, 2, 3, 4):
         assert w.tick_once() is True
         row = _wait_terminal(gitrepo, jid)
-        if attempt_n < 3:
+        if attempt_n < 4:
             assert row["status"] == "failed" and row["attempt"] == attempt_n
             # Slot nach FAILED sofort frei (Wrapper exitiert, _procs wird geleert)
             import time as _time
@@ -270,14 +291,12 @@ def test_retry_exponential_3x_to_error(gitrepo: Path, monkeypatch):
             conn.commit()
             conn.close()
         else:
-            # 3. Versuch erschöpft → failed oder direkt error
-            assert row["attempt"] == 3
+            # 4. Versuch: erschoepft (attempt_cur=3 >= attempts_max=3) -> synchron error
+            assert row["status"] == "error"
 
     conn = job_db.connect(dbp)
-    job_db.sweep(conn)
-    row_final = conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert any(j["status"] == "error" for j in job_db.list_journal(conn))
     conn.close()
-    assert row_final["status"] == "error"
 
 
 @pytest.mark.slow

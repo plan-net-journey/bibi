@@ -488,12 +488,19 @@ def test_next_due_at_empty_db(conn):
 # ── Concurrency: n parallele /next → disjunkt (§3.2/§3.8) ─────────────────────
 
 
-def test_sweep_exhausted_failed_to_error(conn):
+def test_sweep_failed_without_next_fire_at_to_error(conn):
+    # Bugfix (User-Fund: "ein Failed wechselt sofort nach Ende auf ERROR, falls
+    # keine Versuche mehr uebrig sind"): sweep()s frueherer "attempt>=attempts"-
+    # Zweig ist weg (_finish() loest Erschoepfung schon synchron auf, eine
+    # failed-Zeile schuldet also IMMER einen Dispatch). Der einzige verbliebene
+    # Sweep-Fall ist Crash-Recovery: next_fire_at=NULL (der transiente
+    # Zwischenschritt in _finish()s Erschoepfungspfad, falls der Wrapper genau
+    # dazwischen stirbt) - attempt/attempts sind dafuer irrelevant.
     import secrets
     jid = secrets.token_hex(4)
     conn.execute(
         "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempt, "
-        "attempts, next_fire_at, enqueued_at) VALUES (?,?,?,?,?, 'failed', 2, 2, 0, ?)",
+        "attempts, next_fire_at, enqueued_at) VALUES (?,?,?,?,?, 'failed', 1, 3, NULL, ?)",
         (jid, "x", "x.md", "job", "e", time.time()),
     )
     res = job_db.sweep(conn, now=time.time())
@@ -502,12 +509,15 @@ def test_sweep_exhausted_failed_to_error(conn):
     assert any(j["status"] == "error" for j in job_db.list_journal(conn))
 
 
-def test_sweep_leaves_retriable_failed(conn):
+def test_sweep_leaves_failed_with_next_fire_at_alone(conn):
+    # Egal ob der naechste Dispatch noch der letzte gewaehrte Versuch waere
+    # (attempt == attempts) - solange next_fire_at gesetzt ist, schuldet die
+    # Zeile reserve_next() noch einen Dispatch, sweep() fasst sie nicht an.
     import secrets
     jid = secrets.token_hex(4)
     conn.execute(
         "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempt, "
-        "attempts, next_fire_at, enqueued_at) VALUES (?,?,?,?,?, 'failed', 1, 2, 0, ?)",
+        "attempts, next_fire_at, enqueued_at) VALUES (?,?,?,?,?, 'failed', 2, 2, 0, ?)",
         (jid, "y", "y.md", "job", "e", time.time()),
     )
     assert job_db.sweep(conn, now=time.time())["errored"] == 0
@@ -544,6 +554,28 @@ def test_failed_retry_via_reserve_next(conn):
     row = conn.execute("SELECT status, attempt FROM jobs WHERE id=?", (jid,)).fetchone()
     assert row["status"] == "running"
     assert row["attempt"] == 1  # attempt unverändert (Reserve inkrementiert nicht)
+
+
+def test_failed_retry_via_reserve_next_dispatches_last_granted_attempt(conn):
+    # Bugfix (User-Fund: "ein Failed wechselt sofort nach Ende auf ERROR, falls
+    # keine Versuche mehr uebrig sind" - beobachtet aber ein Failed, das nie
+    # mehr dispatcht wurde): attempt == attempts ist der zuletzt GEWAEHRTE,
+    # noch nicht VERBRAUCHTE Versuch - reserve_next() muss ihn weiterhin
+    # dispatchen (die frueher hier zusaetzliche "attempt < attempts"-Bedingung
+    # war off-by-one und schloss genau diesen Fall faelschlich aus).
+    import secrets
+    jid = secrets.token_hex(4)
+    now = time.time()
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempt, "
+        "attempts, next_fire_at, enqueued_at) VALUES (?,?,?,?,?, 'failed', 2, 2, ?, ?)",
+        (jid, "retry2", "retry2.md", "job", "echo hi", now - 1, now),
+    )
+    res = job_db.reserve_next(conn, worker="w", host="h")
+    assert res is not None and res["id"] == jid
+    row = conn.execute("SELECT status, attempt FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "running"
+    assert row["attempt"] == 2
 
 
 def test_report_status_deferred_sets_deferred_at(conn):
@@ -843,7 +875,8 @@ def test_start_now_deferred_dispatches_immediately_like_pending(conn):
 def test_start_now_failed_dispatches_immediately_without_attempts_reset(conn):
     # User-Entscheidung (Job Lifecycle §START/failed): kein Attempts-Reset, nur
     # next_fire_at=now überspringt den Backoff-Timer — status bleibt `failed`,
-    # bis reserve_next() ihn (bei attempt < attempts) selbst dispatcht.
+    # bis reserve_next() ihn (rein next_fire_at-basiert, s. Bugfix oben) selbst
+    # dispatcht.
     jid = _seed_full(conn, slug="x", status="failed", attempt=1, attempts=3,
                      next_fire_at=time.time() + 9999)
     assert job_db.start_now(conn, jid) == "ok"
