@@ -563,7 +563,16 @@ def create_app(
     # (rollenunabhängig registriert, s. u.) — das deckt beide Worker-Instanzen
     # symmetrisch ab, ohne Sonderfall für ``roles.scheduler``.
     worker_registry = WorkerRegistry() if roles.scheduler else None
-    if sweeper is None and roles.scheduler:
+    # Bugfix (User-Fund: ein erschoepfter gepinnter Job blieb auf einem reinen
+    # Client fuer immer in "failed" haengen): job_db.sweep() (failed+erschoepft
+    # -> error, deferred+defer_max -> inactive) lief bisher nur unter
+    # roles.scheduler - genau wie pinned_worker (oben, IMMER gestartet) sind
+    # gepinnte /-/run-Laeufe aber bewusst rollenunabhaengig, ihr Aufraeumer war
+    # es bisher nicht. Sicher ohne Scheduler-Rolle: registry ist dann bereits
+    # None (kein Team-Worker-Registry vorhanden), Sweeper.tick_once() behandelt
+    # das schon als No-Op fuer den einzigen anderen Zweck (verwaiste Team-
+    # Worker erkennen) - nur die eigentliche job_db.sweep() laeuft dann ueberall.
+    if sweeper is None:
         from bibi.daemon.sweeper import Sweeper
         sweeper = Sweeper(registry=worker_registry,
                           local_worker_name=worker.worker_name if worker is not None else None)
@@ -795,9 +804,21 @@ def create_app(
         # Job-Detailseite eines lokal per /run gestarteten App-Jobs nie
         # "awaiting", nur "running" (der Signal-Kanal existierte schlicht nicht).
         sig_state = worker_mod.local_run_signal_state(raw)
+        # Bugfix (User-Fund: "angezeigt wird RUNNING, nicht FAILED" / "DEFERRED
+        # nie im Dashboard gesehen"): sig_state["status"] kommt aus den
+        # BIBI:-Signal-Events in output.jsonl und kennt strukturell nur
+        # "running"/"awaiting" — "deferred"/"failed" laufen im Wrapper nie über
+        # diesen Kanal (s. local_run_signal_state()-Docstring), der Default
+        # blieb deshalb immer "running". live["status"] (DB-Spalte, jetzt dank
+        # _PINNED_LIVE_STATUSES auch fuer deferred/failed vorhanden) traegt den
+        # echten Wert. "awaiting" bleibt Signal-Vorrang (positives, aktives
+        # Signal — die DB-Zeile bekommt es zwar meist auch selbst geschrieben,
+        # s. wrapper _handle_signal(), aber nicht garantiert fuer jeden
+        # Aufrufer/Testpfad ohne Scheduler-DB), sonst gewinnt die DB-Spalte.
+        status = "awaiting" if sig_state["status"] == "awaiting" else (live.get("status") or "running")
         return {"slug": slug, "id": live["id"], "started_at": live["started_at"],
                 "output_ref": live["output_ref"], "kind": kind,
-                "status": sig_state["status"], "app_url": sig_state["app_url"],
+                "status": status, "app_url": sig_state["app_url"],
                 "demand": sig_state["demand"],
                 "events": output_format.format_events(raw, kind)}
 

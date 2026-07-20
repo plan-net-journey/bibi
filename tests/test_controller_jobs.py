@@ -31,6 +31,24 @@ def _row(slug: str, *, git_status: str = "clean", live: dict | None = None,
             "live": live, "app_port": app_port}
 
 
+def test_jobs_row_live_deferred_status_shown_not_collapsed_to_running():
+    # Bugfix (User-Fund: "angezeigt wird RUNNING, nicht FAILED" / "DEFERRED nie
+    # im Dashboard gesehen"): dieselbe Kollabierung wie in _local_job_view().
+    html = render._jobs_row(
+        _row("a", live={"id": "jid1", "status": "deferred", "started_at": 100.0}),
+        {}, now=105.0)
+    assert '<span class="st deferred">deferred</span>' in html
+    assert '<span class="st running">running</span>' not in html
+
+
+def test_jobs_row_live_failed_status_shown_not_collapsed_to_running():
+    html = render._jobs_row(
+        _row("a", live={"id": "jid1", "status": "failed", "started_at": 100.0}),
+        {}, now=105.0)
+    assert '<span class="st failed">failed</span>' in html
+    assert '<span class="st running">running</span>' not in html
+
+
 def test_jobs_table_has_no_start_button():
     # PLAN-28 User-Feedback: "CTA START soll es hier gar nicht geben, das
     # gibt es nur auf der Detail Seite" — die Übersicht dient reinem Review.
@@ -361,6 +379,23 @@ def test_local_job_view_live_awaiting_from_signal():
         _row("a"), None,
         {"id": "jid1", "status": "awaiting", "app_url": "http://127.0.0.1:9100/"})
     assert job["status"] == "awaiting" and job["app_url"] == "http://127.0.0.1:9100/"
+
+
+def test_local_job_view_live_carries_deferred_status():
+    # Bugfix (User-Fund: "angezeigt wird RUNNING, nicht FAILED" / "DEFERRED nie
+    # im Dashboard gesehen"): die alte "awaiting sonst running"-Regel
+    # kollabierte jeden anderen Live-Status hart auf "running" — live["status"]
+    # (lokale worker.local_run_live(), jetzt mit echter DB-Spalte) muss
+    # unveraendert durchgereicht werden.
+    job = render._local_job_view(
+        _row("a"), None, {"id": "jid1", "status": "deferred", "started_at": 200.0})
+    assert job["status"] == "deferred"
+
+
+def test_local_job_view_live_carries_failed_status():
+    job = render._local_job_view(
+        _row("a"), None, {"id": "jid1", "status": "failed", "started_at": 200.0})
+    assert job["status"] == "failed"
 
 
 def test_local_job_view_carries_app_port_from_local_regardless_of_run_state():

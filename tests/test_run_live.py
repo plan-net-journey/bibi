@@ -94,6 +94,16 @@ def test_local_run_live_finds_seeded_pinned_row(team_repo: Path):
     assert live["kind"] == "job" and "started_at" in live
 
 
+def test_local_run_live_includes_status(team_repo: Path):
+    # Bugfix (User-Fund: "angezeigt wird RUNNING, nicht FAILED" / "DEFERRED nie
+    # im Dashboard gesehen"): status fehlte hier komplett, Aufrufer griffen
+    # stattdessen auf signal-basierte Erkennung zurueck, die deferred/failed
+    # strukturell nicht kennt.
+    _seed_pinned_job(team_repo, "a", status="deferred")
+    live = worker.local_run_live("a")
+    assert live["status"] == "deferred"
+
+
 def test_local_run_live_computes_output_ref_even_when_db_column_is_null(team_repo: Path):
     # User-Fund 2026-07-13 (echter Client-Test auf localhost): run_pinned()s
     # INSERT setzt jobs.output_ref NIE (erst der Wrapper beim Terminal-Report)
@@ -336,6 +346,37 @@ def test_run_live_detail_includes_signal_derived_status_and_app_url(client_only,
     assert body["status"] == "awaiting"
     assert body["app_url"] == "http://localhost:9100/"
     assert body["demand"] == {"input_request": "ja/j?", "port": 9100}
+
+
+def test_run_live_detail_shows_deferred_status_from_db(client_only, team_repo):
+    # Bugfix (User-Fund: "angezeigt wird RUNNING, nicht FAILED" / "DEFERRED nie
+    # im Dashboard gesehen"): sig_state kennt nur running/awaiting, deferred/
+    # failed muessen aus der DB-Spalte (local_run_live()) kommen.
+    _seed_pinned_job(team_repo, "myjob2", status="deferred")
+    body = client_only.get("/-/run/live/myjob2").json()
+    assert body["status"] == "deferred"
+
+
+def test_run_live_detail_shows_failed_status_from_db(client_only, team_repo):
+    _seed_pinned_job(team_repo, "myjob3", status="failed")
+    body = client_only.get("/-/run/live/myjob3").json()
+    assert body["status"] == "failed"
+
+
+def test_run_live_detail_awaiting_signal_wins_over_stale_db_running(client_only, team_repo):
+    # Deckt die bestehende Praezedenz ab: ein aktives awaiting-Signal in der
+    # Output-Datei gewinnt weiterhin gegen eine (noch) nicht nachgezogene
+    # DB-Spalte - genau der Fall aus
+    # test_run_live_detail_includes_signal_derived_status_and_app_url oben,
+    # nur diesmal explizit auf die Praezedenz-Reihenfolge selbst geprueft.
+    _jid, real_output_ref = _seed_pinned_job(team_repo, "myjob4", status="running")
+    out_path = team_repo / real_output_ref
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(
+        {"t": 0.0, "s": "signal", "line": json.dumps({"name": "awaiting"})}
+    ) + "\n")
+    body = client_only.get("/-/run/live/myjob4").json()
+    assert body["status"] == "awaiting"
 
 
 def test_run_live_detail_status_running_when_no_signal_events(client_only, team_repo):

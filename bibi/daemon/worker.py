@@ -784,8 +784,19 @@ def local_run_live(slug: str, *, db_path: Path | None = None,
     repo_root = repo_root or repo.root()
     run_id = job_db.run_id_for(row["slug"], row["id"], row["fire"])
     output_ref = _output_path(repo_root, run_id).relative_to(repo_root).as_posix()
+    # Bugfix (User-Fund: "angezeigt wird RUNNING, nicht FAILED" / "DEFERRED nie
+    # im Dashboard gesehen"): status fehlte hier komplett — Aufrufer (app.py
+    # run_live_detail()) griffen stattdessen auf local_run_signal_state()
+    # zurück, das aus den BIBI:-Signal-Events abgeleitet wird und "deferred"/
+    # "failed" strukturell nie erkennen kann (diese beiden Signale werden im
+    # Wrapper-pump() als current_status/env behandelt, nie als "signal"-Event
+    # in output.jsonl geschrieben, s. wrapper/__init__.py::pump()) — der
+    # Default dort blieb deshalb immer "running". Die DB-Spalte (row["status"],
+    # dank _PINNED_LIVE_STATUSES jetzt auch deferred/failed) trägt den echten
+    # Wert längst.
     return {"id": row["id"], "output_ref": output_ref, "kind": row["kind"],
-            "payload": row["payload"], "started_at": row["started_at"]}
+            "payload": row["payload"], "started_at": row["started_at"],
+            "status": row["status"]}
 
 
 def local_runs_live(*, db_path: Path | None = None, host: str | None = None) -> dict[str, dict]:

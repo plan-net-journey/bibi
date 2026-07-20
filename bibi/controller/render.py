@@ -1749,7 +1749,14 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
         # PLAN-27 Befund 4, User-Fund: "der Status awaiting wird in /ui/jobs
         # nicht angezeigt" — live["status"] kommt jetzt aus local_runs_live()
         # (worker.py), analog zu _local_job_meta()s Fallunterscheidung.
-        st = "awaiting" if live.get("status") == "awaiting" else "running"
+        #
+        # Bugfix (User-Fund: "angezeigt wird RUNNING, nicht FAILED" / "DEFERRED
+        # nie im Dashboard gesehen"): dieselbe Kollabierung wie in
+        # _local_job_view() — jeder Live-Status außer awaiting wurde hart zu
+        # "running", obwohl live["status"] den echten Wert (deferred/failed,
+        # seit dem _PINNED_LIVE_STATUSES-Fix hier überhaupt erst sichtbar)
+        # längst trägt.
+        st = live.get("status") or "running"
         status_cell = (f'<a class="rowlink" href="/-/ui/jobs/detail/{s}">'
                        f'<span class="st {st}">{st}</span></a>')
         started_at = live.get("started_at")
@@ -1987,7 +1994,14 @@ def _local_job_view(local: dict, last_run: dict | None, live: dict | None) -> di
         # awaiting über den Signal-Kanal (worker.local_run_signal_state()) —
         # ohne explizites Signal gilt ein live-Eintrag als "running" (dieselbe
         # Fallunterscheidung wie _jobs_row()/vormals _local_job_meta()).
-        status = "awaiting" if live.get("status") == "awaiting" else "running"
+        #
+        # Bugfix (User-Fund: "angezeigt wird RUNNING, nicht FAILED" / "DEFERRED
+        # nie im Dashboard gesehen"): die alte "awaiting sonst running"-Regel
+        # kollabierte JEDEN anderen Live-Status (deferred, failed — beide seit
+        # dem _PINNED_LIVE_STATUSES-Fix hier überhaupt erst ankommend) hart auf
+        # "running". live["status"] (worker.local_run_live(), DB-Spalte direkt)
+        # trägt den echten Wert längst mit — der wurde hier nur nie benutzt.
+        status = live.get("status") or "running"
         return {"id": live.get("id"), "status": status,
                 "started_at": live.get("started_at"), "app_port": app_port,
                 "app_url": live.get("app_url")}
