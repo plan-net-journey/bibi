@@ -2959,9 +2959,13 @@ _VERBS = ("start", "reset", "kill")
 # §5.4). Alle drei Buttons werden IMMER gerendert (_action_bar) — hier steht nur,
 # welche davon `disabled` bleiben. KILL greift auf reiner Lauf-Ebene (pending/
 # running/failed/deferred/awaiting — überall, wo gerade etwas aktiv oder
-# unmittelbar bevorstehend ist) und bleibt No-op auf allen echten Terminal-
-# zuständen inkl. complete (User-Feedback 2026-07-03: KILL vermischte vorher
-# Lauf- und Job/Schedule-Semantik). START erzwingt "sofort", RESET respektiert
+# unmittelbar bevorstehend ist) und bleibt No-op auf den übrigen echten
+# Terminalzuständen (error/inactive/zombie/killed). complete ist seit
+# 2026-07-20 die explizite Ausnahme (User-Redesign, widerruft den Teil von
+# 2026-07-03, der complete mit einschloss): ohne KILL konnte Lazy Rearm einen
+# wiederkehrenden complete-Job nie wirklich anhalten, ohne die MD zu editieren
+# — KILL archiviert den Lauf jetzt wie RESET, landet aber direkt auf killed
+# (s. lifecycle.py/report_status()). START erzwingt "sofort", RESET respektiert
 # den Trigger (siehe job_db.py).
 _VERBS_FOR_STATUS: dict[str, tuple[str, ...]] = {
     "pending":  ("start", "kill"),
@@ -2973,7 +2977,7 @@ _VERBS_FOR_STATUS: dict[str, tuple[str, ...]] = {
     "error":    ("start", "reset"),
     "zombie":   ("start", "reset"),
     "inactive": ("start", "reset"),
-    "complete": ("start",),
+    "complete": ("start", "kill"),
     # PLAN-29 Befund 3+5: ein Client-Job kann echt noch nie gelaufen sein
     # (keine jobs-Zeile existiert, anders als beim Host, wo jede entdeckte
     # Schedule sofort eine bekommt) — "" markiert genau diesen Fall, START

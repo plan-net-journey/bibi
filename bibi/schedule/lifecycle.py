@@ -87,14 +87,22 @@ _TRANSITIONS: dict[tuple[Status, Event], Status] = {
     # KILL greift überall dort, wo gerade noch ein Lauf aktiv oder unmittelbar
     # bevorstehend ist (pending wartet auf Trigger, failed auf Retry, deferred
     # auf Resume) — reine Lauf-Ebene, KEINE Job/Schedule-Semantik mehr (User-
-    # Feedback 2026-07-03: "vermischt Lauf und Job/Schedule-Behandlung"). complete
-    # bewusst NICHT dabei — ist ein echter Terminalzustand wie error/inactive/
-    # zombie/killed (KILL dort No-op), auch wenn es dank Lazy-Rearm einen
-    # next_fire_at trägt: das Aus-dem-Schedule-Nehmen läuft ausschließlich über
-    # die MD (`schedule`/`at`), nicht über einen Lifecycle-Button.
+    # Feedback 2026-07-03: "vermischt Lauf und Job/Schedule-Behandlung").
     (Status.PENDING, Event.KILL): Status.KILLED,
     (Status.FAILED, Event.KILL): Status.KILLED,
     (Status.DEFERRED, Event.KILL): Status.KILLED,
+    # User-Redesign 2026-07-20 (widerruft den Teil von 2026-07-03, der COMPLETE
+    # bewusst ausschloss): dank Lazy Rearm trägt ein wiederkehrender complete-
+    # Job weiter einen next_fire_at und dispatcht sich beim nächsten fälligen
+    # Tick von selbst neu — KILL war dort bis hierhin ein reiner No-op, ein Job
+    # ließ sich also gar nicht "anhalten", ohne die MD zu editieren. Jetzt: wie
+    # ein RESET archiviert dieser Übergang den abgeschlossenen Lauf (s.
+    # report_status()s eigener Archiv-Zweig für genau diese Kante), landet aber
+    # sofort auf KILLED statt PENDING — next_fire_at wird dabei genullt (kommt
+    # aus dem KILLED/ERROR/…-Zweig dort), Lazy Rearm kann diesen Zustand also
+    # nicht mehr überholen. Bleibt weiterhin reine Lauf-Ebene, keine MD-
+    # Änderung: ein RESET holt den Job jederzeit zurück in den Schedule.
+    (Status.COMPLETE, Event.KILL): Status.KILLED,
 }
 
 # ── Typ-gebundene Kanten ─────────────────────────────────────────────────────

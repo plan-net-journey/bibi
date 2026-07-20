@@ -896,6 +896,22 @@ def report_status(
         fields["next_fire_at"] = (
             _next_cron(row["schedule"], now) if is_recurring(row["schedule"]) else None
         )
+    if target is Status.KILLED and current is Status.COMPLETE:
+        # User-Redesign 2026-07-20 (lifecycle.py: (COMPLETE, KILL) → KILLED):
+        # derselbe Archiv-Schritt wie beim PENDING-Zweig oben — der
+        # abgeschlossene Lauf darf keine stale Startzeit/Exit-Code/Attempts
+        # mehr zeigen, sobald die Zeile auf einen frischen (sofort toten)
+        # Zyklus wechselt. finished_at NICHT hier anfassen — der generische
+        # TERMINAL-Zweig oben hat es schon korrekt auf "jetzt" gesetzt (der
+        # Zeitpunkt, zu dem DIESER Zyklus endete, nicht der alte). next_fire_at
+        # ebenfalls nicht hier setzen — kommt gleich aus dem KILLED/ERROR/…-
+        # Zweig unten (None statt Cron-Neuberechnung: anders als PENDING soll
+        # dieser Zyklus nicht von selbst wieder feuern).
+        fields["attempt"] = 0
+        fields["deferred_at"] = None
+        fields["started_at"] = None
+        fields["exit_code"] = None
+        fields["output_ref"] = None
     if target in (Status.KILLED, Status.ERROR, Status.INACTIVE, Status.ZOMBIE):
         # Echte Sackgassen: ein evtl. noch gesetzter next_fire_at (Backoff-Timer aus
         # dem vorigen failed/deferred, oder Rest von vor einem KILL) ist jetzt eine
@@ -928,11 +944,15 @@ def report_status(
         fields["app_url"] = None  # HITL beendet oder Terminal → Endpunkt löschen
 
     assignments = ", ".join(f"{k}=:{k}" for k in fields)
-    # RESET → neuer Lauf-Zähler, damit run_id = slug:fire in `_write_journal` eindeutig bleibt.
-    # Ohne fire++ würde der Dedup-Check (run_id, status) spätere Fehler-Journal-Einträge
-    # stillschweigend unterdrücken, wenn ein Status aus einem früheren Reset-Zyklus schon
-    # im Journal steht.
-    if target is Status.PENDING:
+    # RESET (und, seit 2026-07-20, KILL auf COMPLETE) → neuer Lauf-Zähler, damit
+    # run_id = slug:fire in `_write_journal` eindeutig bleibt. Ohne fire++ würde
+    # der Dedup-Check (run_id, status) spätere Journal-Einträge stillschweigend
+    # unterdrücken, wenn derselbe Status aus einem früheren Zyklus schon im
+    # Journal steht — für COMPLETE→KILLED konkret: der alte Lauf hat schon
+    # seinen eigenen "complete"-Journal-Eintrag (COMPLETE ist selbst terminal),
+    # der neue, sofort tote Zyklus braucht einen eigenen run_id für seinen
+    # "killed"-Eintrag.
+    if target is Status.PENDING or (target is Status.KILLED and current is Status.COMPLETE):
         assignments += ", fire=fire+1"
     fields["id"] = job_id
     conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)

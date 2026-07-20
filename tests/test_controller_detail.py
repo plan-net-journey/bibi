@@ -182,13 +182,15 @@ def test_action_bar_pending_kill_enabled():
     assert 'hx-post="/-/ui/schedule/x/kill" hx-target="#live" hx-swap="outerHTML">' in html
 
 
-def test_action_bar_complete_kill_and_reset_disabled():
-    # User-Feedback 2026-07-03: KILL ist reine Lauf-Ebene — complete bleibt ein
-    # echter Terminalzustand, KILL wie RESET dort No-op, nur START wirkt.
+def test_action_bar_complete_kill_enabled_reset_disabled():
+    # User-Redesign 2026-07-20 (widerruft den complete-Teil von 2026-07-03):
+    # KILL auf complete archiviert den Lauf und haelt Lazy Rearm an (s.
+    # lifecycle.py) — RESET bleibt fuer complete weiterhin No-op (dafuer gibt
+    # es START, das archiviert+sofort faellig macht, s. start_now()).
     job = {"id": "j1", "slug": "x", "status": "complete"}
     html = render.schedule_detail_page(
         {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
-    assert 'hx-post="/-/ui/schedule/x/kill" hx-target="#live" hx-swap="outerHTML" disabled>' in html
+    assert 'hx-post="/-/ui/schedule/x/kill" hx-target="#live" hx-swap="outerHTML">' in html
     assert 'hx-post="/-/ui/schedule/x/reset" hx-target="#live" hx-swap="outerHTML" disabled>' in html
     assert 'hx-post="/-/ui/schedule/x/start" hx-target="#live" hx-swap="outerHTML">' in html
 

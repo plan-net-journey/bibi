@@ -270,11 +270,33 @@ def test_kill_deferred_ok(client):
     assert r.json()["status"] == "killed"
 
 
-def test_kill_complete_is_409(client):
-    # User-Feedback 2026-07-03: KILL ist reine Lauf-Ebene, complete bleibt ein
-    # echter Terminalzustand wie error/inactive/zombie/killed — KILL No-op.
+def test_kill_complete_archives_and_lands_on_killed(client):
+    # User-Redesign 2026-07-20 (widerruft den complete-Ausschluss von
+    # 2026-07-03): Lazy Rearm dispatcht einen wiederkehrenden complete-Job
+    # sonst irgendwann von selbst neu — KILL muss ihn dauerhaft anhalten
+    # können, ohne die MD zu editieren.
     jid = _seed_complete([("out", "x")])
-    assert client.post(f"/-/job/{jid}/kill").status_code == 409
+    r = client.post(f"/-/job/{jid}/kill")
+    assert r.status_code == 200
+    assert r.json()["status"] == "killed"
+
+    conn = job_db.connect()
+    try:
+        row = conn.execute(
+            "SELECT status, attempt, started_at, exit_code, output_ref, next_fire_at, fire "
+            "FROM jobs WHERE id=?", (jid,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row["status"] == "killed"
+    # archiviert wie ein RESET: der abgeschlossene Lauf hinterlässt keine
+    # stale Werte in der frischen, sofort toten Zyklus-Zeile.
+    assert row["attempt"] == 0
+    assert row["started_at"] is None
+    assert row["exit_code"] is None
+    assert row["output_ref"] is None
+    assert row["next_fire_at"] is None  # kein Lazy Rearm mehr möglich
+    assert row["fire"] == 1  # eigener run_id, getrennt vom alten complete-Journal-Eintrag
 
 
 def test_kill_missing_is_404(client):

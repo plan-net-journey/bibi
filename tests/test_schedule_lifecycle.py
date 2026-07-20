@@ -34,6 +34,7 @@ EXPECTED_TRANSITIONS = [
     (Status.PENDING, Event.KILL, Status.KILLED),
     (Status.FAILED, Event.KILL, Status.KILLED),
     (Status.DEFERRED, Event.KILL, Status.KILLED),
+    (Status.COMPLETE, Event.KILL, Status.KILLED),
 ]
 
 
@@ -64,14 +65,15 @@ def test_forbidden_edges_explicit():
         (Status.RUNNING, Event.DISPATCH),   # nur aus pending
         (Status.PENDING, Event.RESET),      # pending ist kein Terminal
         (Status.ERROR, Event.RETRY),        # error nur via reset
-        # Echte Terminalzustände (inkl. complete) — KILL bleibt dort No-op,
-        # anders als bei pending/failed/deferred (§5.4, User-Feedback 2026-07-03:
-        # KILL ist reine Lauf-Ebene, keine Job/Schedule-Semantik mehr).
+        # Terminalzustände außer complete — KILL bleibt dort No-op (§5.4,
+        # User-Feedback 2026-07-03: KILL ist reine Lauf-Ebene, keine Job/
+        # Schedule-Semantik mehr). complete ist seit 2026-07-20 die explizite
+        # Ausnahme (s. EXPECTED_TRANSITIONS oben) — Lazy Rearm konnte einen
+        # complete-Job sonst nie wirklich anhalten, ohne die MD zu editieren.
         (Status.ERROR, Event.KILL),
         (Status.ZOMBIE, Event.KILL),
         (Status.INACTIVE, Event.KILL),
         (Status.KILLED, Event.KILL),
-        (Status.COMPLETE, Event.KILL),
     ]:
         assert not lc.can(src, ev)
         with pytest.raises(IllegalTransition):
@@ -84,9 +86,11 @@ def test_terminal_set_matches_design():
     )
     for t in lc.TERMINAL:
         assert lc.is_terminal(t)
-        # Terminal → einziges Event ist RESET → pending (§5.4). KILL bleibt auf
-        # ALLEN Terminalzuständen No-op, auch complete (User-Feedback 2026-07-03).
-        assert lc.events_from(t) == {Event.RESET}
+        # Terminal → RESET → pending (§5.4) bleibt für alle der einzige Ausgang.
+        # complete hat seit 2026-07-20 zusätzlich KILL → killed (Lazy-Rearm-
+        # Bremse, s. test_forbidden_edges_explicit) — die einzige Ausnahme.
+        expected = {Event.RESET, Event.KILL} if t is Status.COMPLETE else {Event.RESET}
+        assert lc.events_from(t) == expected
         assert lc.apply(t, Event.RESET) == Status.PENDING
     assert not lc.is_terminal(Status.RUNNING)
     assert not lc.is_terminal(Status.PENDING)
@@ -171,4 +175,4 @@ def test_targets_of_running():
 
 def test_targets_of_pending_and_terminal():
     assert lc.targets(Status.PENDING) == {Status.RUNNING, Status.KILLED}
-    assert lc.targets(Status.COMPLETE) == {Status.PENDING}
+    assert lc.targets(Status.COMPLETE) == {Status.PENDING, Status.KILLED}

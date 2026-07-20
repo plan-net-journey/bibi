@@ -585,6 +585,55 @@ def test_reset_increments_fire_and_allows_new_journal_entry(conn, tmp_path: Path
     assert s["last_status"] == "error"
 
 
+def test_reset_from_killed_resets_attempt_to_zero(conn, tmp_path: Path):
+    # User-Fund 2026-07-20 ("killed x reset: muss auch Attempts zurücksetzen"):
+    # report_status(status="pending") setzt attempt=0 fuer JEDEN Terminalzustand
+    # aus _ARCHIVE_AND_START, nicht nur fuer error -- killed ist keine Ausnahme.
+    # Regression, damit das nicht unbemerkt wieder auseinanderlaeuft.
+    _write(tmp_path / "case" / "once.md", '---\nschedule: never\njob: "echo x"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jid = conn.execute("SELECT id FROM jobs WHERE slug='once'").fetchone()["id"]
+
+    job_db.report_status(conn, jid, status="running")
+    job_db.report_status(conn, jid, status="failed", attempt=2)
+    job_db.report_status(conn, jid, status="killed")
+    attempt_before = conn.execute("SELECT attempt FROM jobs WHERE id=?", (jid,)).fetchone()["attempt"]
+    assert attempt_before == 2, "KILL selbst darf attempt nicht anfassen"
+
+    job_db.report_status(conn, jid, status="pending")
+    row = conn.execute("SELECT attempt FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["attempt"] == 0, "RESET aus killed muss attempt wie jeder andere Terminalzustand nullen"
+
+
+def test_kill_from_complete_archives_and_keeps_old_journal_entry(conn, tmp_path: Path):
+    # User-Redesign 2026-07-20: KILL auf complete archiviert wie RESET (eigener
+    # fire-Zaehler) statt den alten "complete"-Journal-Eintrag zu ueberschreiben
+    # oder zu blockieren -- beide Eintraege muessen nebeneinander stehen bleiben.
+    _write(tmp_path / "case" / "once.md", '---\nschedule: "0 9 * * *"\njob: "echo x"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jid = conn.execute("SELECT id FROM jobs WHERE slug='once'").fetchone()["id"]
+
+    job_db.report_status(conn, jid, status="running")
+    job_db.report_status(conn, jid, status="complete")
+    fire1 = conn.execute("SELECT fire FROM jobs WHERE id=?", (jid,)).fetchone()["fire"]
+
+    outcome = job_db.report_status(conn, jid, status="killed", reason="by_user")
+    assert outcome == "ok"
+    row = conn.execute("SELECT status, fire, next_fire_at FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "killed"
+    assert row["fire"] == fire1 + 1, "eigener run_id fuer den neuen Zyklus"
+    assert row["next_fire_at"] is None, "Lazy Rearm darf diesen Zustand nicht ueberholen"
+
+    entries = conn.execute(
+        "SELECT run_id, status FROM journal WHERE slug='once' ORDER BY id").fetchall()
+    assert [e["status"] for e in entries] == ["complete", "killed"]
+    assert entries[0]["run_id"] != entries[1]["run_id"]
+
+    # RESET holt den Job trotzdem jederzeit zurueck in den Schedule (reine
+    # Lauf-Ebene, keine MD-Aenderung noetig).
+    assert job_db.report_status(conn, jid, status="pending") == "ok"
+
+
 def test_schedule_view_shows_pending_after_reset_not_stale_terminal_status(conn, tmp_path: Path):
     # PLAN-22 Befund 2: RESET setzt jobs.status auf pending zurück, erzeugt aber
     # keinen neuen Journal-Eintrag — schedule_view() fiel deshalb auf den
