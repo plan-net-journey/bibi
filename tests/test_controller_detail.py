@@ -504,6 +504,18 @@ def test_detail_live_panel_deferred_shows_output_from_before_defer():
     assert 'class="liveout' in html and "bis hierhin gelaufen" in html
 
 
+def test_detail_live_panel_failed_shows_next_run():
+    # Bugfix (User-Fund, "keine Log-Eintraege beim Retry sichtbar"): next_fire_at
+    # fehlte bei failed komplett, obwohl der Job zwischen zwei Versuchen genau
+    # darauf wartet — dasselbe Feld, das pending/deferred schon zeigen.
+    s = {"slug": "a", "kind": "job", "trigger": "now"}
+    job = {"id": "j", "slug": "a", "status": "failed", "finished_at": 2.0,
+           "next_fire_at": 15.0}
+    html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
+    assert 'class="st failed">failed' in html
+    assert "next run" in html
+
+
 def test_detail_app_link_defaults_to_localhost():
     # PLAN-22 Befund 6: ohne explizit übergebenen public_host bleibt localhost
     # der sichere Default (kein I/O in render.py — "pure" Funktionen, s.

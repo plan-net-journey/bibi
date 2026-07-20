@@ -720,12 +720,16 @@ def local_schedule_exec_mode(slug: str, *, repo_root: Path | None = None) -> str
 
 
 #: Live-Status-Werte (kein Terminalzustand) — deckungsgleich mit dem, was ein
-#: gerade tatsächlich laufender Wrapper-Subprozess haben kann. "deferred"
-#: gehört dazu, obwohl in diesem Fenster gerade KEIN Subprozess läuft (Bugfix,
-#: User-Fund: ein gepinnter Lauf im Zustand deferred fiel aus dieser Query
-#: komplett heraus — die Job-Detail-Seite zeigte für die gesamte Defer-Phase
-#: "noch keine Läufe", obwohl next_fire_at bereits einen Retry vorsah).
-_PINNED_LIVE_STATUSES = ("running", "awaiting", "deferred")
+#: gerade tatsächlich laufender Wrapper-Subprozess haben kann. "deferred" UND
+#: "failed" gehören dazu, obwohl in diesem Fenster gerade KEIN Subprozess läuft
+#: (Bugfix, User-Fund: ein gepinnter Lauf in einem dieser beiden Zustände fiel
+#: aus dieser Query komplett heraus — die Job-Detail-Seite zeigte für die
+#: gesamte Wartephase zwischen zwei Versuchen "noch keine Läufe", obwohl
+#: next_fire_at bereits einen Retry vorsah. "failed" fehlte hier ursprünglich
+#: genauso wie "deferred" — beim ersten Fix übersehen, obwohl _live_panel()
+#: (render.py) "failed" schon länger wie einen Quasi-Terminalzustand behandelt;
+#: nur die Datenquelle hier hinkte hinterher).
+_PINNED_LIVE_STATUSES = ("running", "awaiting", "deferred", "failed")
 
 
 def _pinned_live_row(slug: str, *, db_path: Path | None = None,

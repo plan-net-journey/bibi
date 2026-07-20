@@ -140,6 +140,17 @@ def test_local_run_live_finds_deferred_row(team_repo: Path):
     assert live is not None and live["id"] == jid
 
 
+def test_local_run_live_finds_failed_row(team_repo: Path):
+    # Bugfix (User-Fund, "keine Log-Eintraege beim Retry sichtbar"): "failed"
+    # fehlte in _PINNED_LIVE_STATUSES genauso wie zuvor "deferred" - beim
+    # ersten Fix uebersehen. Ein gepinnter Lauf, der zwischen zwei
+    # Fehlversuchen auf den naechsten Retry wartet, verschwand dadurch
+    # ebenfalls komplett aus der Job-Detail-Seite.
+    jid, _ = _seed_pinned_job(team_repo, "a", status="failed")
+    live = worker.local_run_live("a")
+    assert live is not None and live["id"] == jid
+
+
 def test_local_run_live_ignores_other_hosts_pinned_jobs(team_repo: Path):
     _seed_pinned_job(team_repo, "a", host="sarasate")
     assert worker.local_run_live("a", host="mac") is None
