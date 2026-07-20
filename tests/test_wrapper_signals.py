@@ -67,6 +67,12 @@ def test_bibi_deferred_with_seconds():
     assert sig["seconds"] == 120
 
 
+def test_bibi_failed_with_seconds():
+    sig = _parse_bibi_line('BIBI:{"name":"failed","seconds":10}')
+    assert sig is not None
+    assert sig["seconds"] == 10
+
+
 # ── _handle_signal ────────────────────────────────────────────────────────────
 
 
@@ -453,6 +459,114 @@ def test_finish_killed_outcome_maps_to_killed_by_user(tmp_path):
     assert row["reason"] == "by_user"
 
 
+def test_finish_failed_uses_explicit_error_seconds_override(tmp_path):
+    # bibi.job.Failed(seconds=10) → pump() spiegelt es in BIBI_ERROR_SECONDS —
+    # _finish() muss das als exakte Wartezeit nehmen, Backoff-Strategie/base
+    # komplett ignorieren (analog defer_time bei bibi.job.Deferred).
+    db_path = tmp_path / "jobs.sqlite"
+    c = job_db.connect(db_path)
+    c.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempt, attempts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("z20", "z20", "z20.md", "job", "echo hi", "running", 0, 3),
+    )
+    c.close()
+    env = {"BIBI_JOB_ID": "z20", "BIBI_SCHEDULER_DB_PATH": str(db_path),
+           "BIBI_ATTEMPT": "0", "BIBI_ATTEMPTS": "3",
+           "BIBI_ERROR_SECONDS": "10", "BIBI_ERROR_TIME": "999", "BIBI_BACKOFF": "exponential"}
+
+    before = time.time()
+    _wrapper._finish(env, 1, "normal")
+    after = time.time()
+
+    c2 = job_db.connect(db_path)
+    row = c2.execute("SELECT status, next_fire_at FROM jobs WHERE id='z20'").fetchone()
+    c2.close()
+    assert row["status"] == "failed"
+    assert before + 10 <= row["next_fire_at"] <= after + 10
+
+
+def test_finish_deferred_falls_back_to_default_defer_time(tmp_path):
+    # Kein BIBI_DEFER_TIME (weder Deferred(seconds=N) noch Frontmatter
+    # defer_time:) -> letzter Fallback ist DEFAULT_DEFER_TIME (360s), nicht
+    # mehr der alte hartkodierte 60s-Wert.
+    from bibi.schedule.models import DEFAULT_DEFER_TIME
+    db_path = tmp_path / "jobs.sqlite"
+    c = job_db.connect(db_path)
+    c.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("z22", "z22", "z22.md", "job", "echo hi", "running"),
+    )
+    c.close()
+    env = {"BIBI_JOB_ID": "z22", "BIBI_SCHEDULER_DB_PATH": str(db_path),
+           "BIBI_ATTEMPT": "0", "BIBI_ATTEMPTS": "1"}
+
+    before = time.time()
+    _wrapper._finish(env, 0, "deferred")
+    after = time.time()
+
+    c2 = job_db.connect(db_path)
+    row = c2.execute("SELECT status, next_fire_at FROM jobs WHERE id='z22'").fetchone()
+    c2.close()
+    assert row["status"] == "deferred"
+    assert DEFAULT_DEFER_TIME == 360
+    assert before + DEFAULT_DEFER_TIME <= row["next_fire_at"] <= after + DEFAULT_DEFER_TIME
+
+
+def test_finish_failed_falls_back_to_default_base_without_any_override(tmp_path):
+    # Weder Failed(seconds=N) noch Frontmatter error_time: noch BIBI_RETRY_BASE
+    # gesetzt -> letzter Fallback ist backoff.DEFAULT_BASE (180s), nicht mehr
+    # der alte Wert (30s).
+    from bibi.schedule import backoff as _backoff
+    db_path = tmp_path / "jobs.sqlite"
+    c = job_db.connect(db_path)
+    c.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempt, attempts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("z23", "z23", "z23.md", "job", "echo hi", "running", 0, 3),
+    )
+    c.close()
+    env = {"BIBI_JOB_ID": "z23", "BIBI_SCHEDULER_DB_PATH": str(db_path),
+           "BIBI_ATTEMPT": "0", "BIBI_ATTEMPTS": "3"}
+
+    before = time.time()
+    _wrapper._finish(env, 1, "normal")
+    after = time.time()
+
+    c2 = job_db.connect(db_path)
+    row = c2.execute("SELECT status, next_fire_at FROM jobs WHERE id='z23'").fetchone()
+    c2.close()
+    assert row["status"] == "failed"
+    assert _backoff.DEFAULT_BASE == 180.0
+    assert before + 180 <= row["next_fire_at"] <= after + 180
+
+
+def test_finish_failed_uses_error_time_frontmatter_default(tmp_path):
+    # Ohne expliziten seconds-Override (kein BIBI_ERROR_SECONDS) zählt der
+    # Schedule-Frontmatter-Wert (error_time: → BIBI_ERROR_TIME) als Basis.
+    db_path = tmp_path / "jobs.sqlite"
+    c = job_db.connect(db_path)
+    c.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempt, attempts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("z21", "z21", "z21.md", "job", "echo hi", "running", 0, 3),
+    )
+    c.close()
+    env = {"BIBI_JOB_ID": "z21", "BIBI_SCHEDULER_DB_PATH": str(db_path),
+           "BIBI_ATTEMPT": "0", "BIBI_ATTEMPTS": "3", "BIBI_ERROR_TIME": "10"}
+
+    before = time.time()
+    _wrapper._finish(env, 1, "normal")
+    after = time.time()
+
+    c2 = job_db.connect(db_path)
+    row = c2.execute("SELECT status, next_fire_at FROM jobs WHERE id='z21'").fetchone()
+    c2.close()
+    assert row["status"] == "failed"
+    assert before + 10 <= row["next_fire_at"] <= after + 10
+
+
 def test_finish_exhausted_retries_reaches_error_not_stuck_running(tmp_path):
     # Bug gefunden bei PLAN-28 (erstmals beobachtet mit attempts=0, betrifft
     # aber jeden Job, der seine Retries je ausschöpft): "error" ist von
@@ -579,6 +693,46 @@ def test_run_app_deferred_via_bibi_job_exception(tmp_path):
     row = c2.execute("SELECT status FROM jobs WHERE id='d1'").fetchone()
     c2.close()
     assert row["status"] == "deferred"
+
+
+@pytest.mark.slow
+def test_run_app_failed_via_bibi_job_exception_with_seconds(tmp_path):
+    """bibi.job.Failed(seconds=N) → BIBI:failed-Signal → next_fire_at ≈ now+N,
+    unabhängig von backoff/attempts-Skalierung (das Pendant zu Deferred)."""
+    import sys as _sys
+    from bibi import wrapper as _wrapper
+
+    db_path = tmp_path / "jobs.sqlite"
+    c = job_db.connect(db_path)
+    c.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempt, attempts, "
+        "backoff, silence_timeout, hitl_timeout) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        ("f1", "f1", "f1.md", "job", "echo hi", "running", 0, 2, "fixed", 3600, 172800),
+    )
+    c.close()
+
+    script = tmp_path / "fail_job.py"
+    script.write_text("import bibi.job\nraise bibi.job.Failed(seconds=10)\n")
+
+    out = tmp_path / "output.jsonl"
+    env = {
+        "BIBI_JOB_TYPE": "job",
+        "BIBI_JOB_ID": "f1",
+        "BIBI_OUTPUT_PATH": str(out),
+        "BIBI_WORKTREE": str(tmp_path),
+        "BIBI_JOB_CMD": f"{_sys.executable} {script}",
+        "BIBI_SCHEDULER_DB_PATH": str(db_path),
+        "BIBI_ATTEMPT": "0", "BIBI_ATTEMPTS": "2",
+    }
+    before = time.time()
+    _wrapper.run_app(env)
+    after = time.time()
+
+    c2 = job_db.connect(db_path)
+    row = c2.execute("SELECT status, next_fire_at FROM jobs WHERE id='f1'").fetchone()
+    c2.close()
+    assert row["status"] == "failed"
+    assert before + 10 <= row["next_fire_at"] <= after + 10
 
 
 @pytest.mark.slow

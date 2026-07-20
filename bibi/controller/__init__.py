@@ -78,6 +78,7 @@ def _local_schedules() -> dict[str, dict]:
             "attempts": pr.spec.attempts, "backoff": pr.spec.backoff,
             "silence_timeout": pr.spec.silence_timeout, "wall_time": pr.spec.wall_time,
             "defer_time": pr.spec.defer_time, "defer_max": pr.spec.defer_max,
+            "error_time": pr.spec.error_time,
             "image": pr.spec.image,
         }
         for slug, pr in found.items()

@@ -133,6 +133,37 @@ def test_lifecycle_knobs_parsed():
     assert r.spec.backoff == "exponential"
 
 
+def test_defer_time_and_error_time_parsed():
+    # error_time ist das Pendant zu defer_time für den Fehlerfall (Retry-
+    # Backoff-Basis, s. job.py Failed(seconds=…)) — beide optional, None
+    # ohne Frontmatter-Angabe.
+    r = _parse('---\nschedule: now\njob: "x"\ndefer_time: 15\nerror_time: 10\n---\n')
+    assert r.spec.defer_time == 15
+    assert r.spec.error_time == 10
+
+
+def test_defer_time_and_error_time_default_none():
+    r = _parse('---\nschedule: now\njob: "x"\n---\n')
+    assert r.spec.defer_time is None
+    assert r.spec.error_time is None
+
+
+def test_wall_time_and_defer_max_have_real_defaults():
+    # Anders als defer_time/error_time (None-Sentinel, Praezedenz lebt im
+    # Wrapper) haben wall_time/defer_max einen eigenstaendigen globalen
+    # Default und werden wie silence_timeout IMMER gecoerct.
+    from bibi.schedule.models import DEFAULT_DEFER_MAX, DEFAULT_WALL_TIME
+    r = _parse('---\nschedule: now\njob: "x"\n---\n')
+    assert r.spec.wall_time == DEFAULT_WALL_TIME == 3600
+    assert r.spec.defer_max == DEFAULT_DEFER_MAX == 1200
+
+
+def test_wall_time_and_defer_max_explicit_overrides_win():
+    r = _parse('---\nschedule: now\njob: "x"\nwall_time: 5\ndefer_max: 7\n---\n')
+    assert r.spec.wall_time == 5
+    assert r.spec.defer_max == 7
+
+
 def test_silence_timeout_default_1h_for_claude_payload():
     # User-Feedback 2026-07-04: silence_timeout/hitl_timeout zusammengelegt —
     # claude-Payloads (Batch, kein HITL) bekommen den kurzen Default.

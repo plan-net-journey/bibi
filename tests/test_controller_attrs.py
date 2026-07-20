@@ -32,6 +32,15 @@ def test_schedule_attrs_page_trims_runtime_section():
         assert f"<b>{key}</b>" not in html
 
 
+def test_schedule_attrs_page_includes_error_time():
+    # error_time fehlte in _ATTRS_CONFIG_ORDER komplett, seit das Feld
+    # eingefuehrt wurde (defer_time/defer_max standen schon lange drin) —
+    # tauchte dadurch nie in der Attribute-Ansicht auf.
+    html = render.schedule_attrs_page("boom", {"slug": "boom", "error_time": 10})
+    assert "<b>error_time</b>" in html
+    assert "<code>10</code>" in html
+
+
 def test_schedule_attrs_page_respects_theme_preference():
     # User-Fund: die Seite liefert "immer nur im DARK Mode aus" — sie baut ihr
     # eigenes minimales <html> (kein _header()) und vergisst dabei _THEME_JS,

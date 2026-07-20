@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     wall_time       INTEGER,
     defer_time      INTEGER,
     defer_max       INTEGER,
+    error_time      INTEGER,
     hitl_timeout    INTEGER NOT NULL DEFAULT 172800,
 
     -- Registrierung (PLAN-14 Stufe 14.5): ist die MD noch im Vault entdeckt?

@@ -336,7 +336,7 @@ def _run_wrapper(
     wall_time: int | None = None, silence_timeout: int | None = None,
     app_port: int | None = None, app_prefix: str | None = None,
     exec_mode: str | None = None, image: str | None = None,
-    defer_time: int | None = None,
+    defer_time: int | None = None, error_time: int | None = None,
     repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
     in_place: bool = False,
     run_id: str | None = None,
@@ -442,6 +442,8 @@ def _run_wrapper(
             env["BIBI_APP_PREFIX"] = app_prefix
         if defer_time is not None:
             env["BIBI_DEFER_TIME"] = str(defer_time)
+        if error_time is not None:
+            env["BIBI_ERROR_TIME"] = str(error_time)
 
     # Detach-Modus: Commit + Report im Wrapper-Prozess.
     if detach:
@@ -534,9 +536,18 @@ def _run_wrapper(
 
 
 def _retry_fields(reservation: dict) -> dict:
-    """``failed``-Statusfelder mit Backoff/attempt++ (Retry; Dauerfehler exhaust→error, §5.5)."""
+    """``failed``-Statusfelder mit Backoff/attempt++ (Retry; Dauerfehler exhaust→error, §5.5).
+
+    Basis-Präzedenz analog zum Wrapper-Pfad (``_finish()``, §5.5 error_time):
+    Schedule-Frontmatter (``error_time``) > globaler ``BIBI_RETRY_BASE`` >
+    ``backoff.DEFAULT_BASE``. Ein per Job-Exception explizit übergebenes
+    ``seconds=N`` (``bibi.job.Failed``) wirkt nur im detachten Wrapper-Pfad —
+    dieser blockierende Pfad (``bibi-ctrl run``/``test``) sieht keine
+    BIBI-Signale des Kindprozesses."""
     attempt = (reservation.get("attempt") or 0) + 1
-    base = float(os.environ.get("BIBI_RETRY_BASE") or backoff.DEFAULT_BASE)
+    error_time = reservation.get("error_time")
+    base = float(error_time if error_time is not None
+                 else os.environ.get("BIBI_RETRY_BASE") or backoff.DEFAULT_BASE)
     nf = time.time() + backoff.delay(reservation.get("backoff") or "fixed", attempt, base=base)
     return {"status": "failed", "attempt": attempt, "next_fire_at": nf}
 
@@ -633,6 +644,7 @@ def execute_reservation(
             exec_mode=reservation.get("exec_mode"),
             image=reservation.get("image"),
             defer_time=reservation.get("defer_time"),
+            error_time=reservation.get("error_time"),
             repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=ephemeral,
             in_place=in_place,
             run_id=run_id, detach=True,

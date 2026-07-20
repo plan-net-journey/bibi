@@ -71,11 +71,15 @@ def test_deferred_is_exception(capsys):
     assert payload == {"name": "deferred", "seconds": 120}
 
 
-def test_deferred_default_seconds(capsys):
+def test_deferred_without_seconds_omits_key(capsys):
+    # Kein hartkodierter Default mehr — ohne explizites seconds entscheidet der
+    # Wrapper anhand von Schedule-Frontmatter (defer_time) bzw. globalem Default,
+    # nicht ein hier fest eingebauter Wert, der das stumm überschreiben würde.
     d = bibi.job.Deferred()
-    assert d.seconds == 60
+    assert d.seconds is None
     payload = json.loads(capsys.readouterr().out.split("BIBI:", 1)[1])
-    assert payload["seconds"] == 60
+    assert payload == {"name": "deferred"}
+    assert "seconds" not in payload
 
 
 def test_deferred_str_representation(capsys):
@@ -84,8 +88,44 @@ def test_deferred_str_representation(capsys):
     assert "300" in str(d)
 
 
+def test_deferred_str_representation_without_seconds(capsys):
+    d = bibi.job.Deferred()
+    capsys.readouterr()  # stdout verwerfen
+    assert str(d) == "deferred"
+
+
 def test_deferred_is_raisable(capsys):
     with pytest.raises(bibi.job.Deferred) as exc_info:
         raise bibi.job.Deferred(seconds=42)
     capsys.readouterr()  # stdout verwerfen
     assert exc_info.value.seconds == 42
+
+
+def test_failed_is_exception(capsys):
+    f = bibi.job.Failed(seconds=10)
+    assert f.seconds == 10
+    assert isinstance(f, Exception)
+    out = capsys.readouterr().out
+    payload = json.loads(out.split("BIBI:", 1)[1])
+    assert payload == {"name": "failed", "seconds": 10}
+
+
+def test_failed_without_seconds_omits_key(capsys):
+    f = bibi.job.Failed()
+    assert f.seconds is None
+    payload = json.loads(capsys.readouterr().out.split("BIBI:", 1)[1])
+    assert payload == {"name": "failed"}
+    assert "seconds" not in payload
+
+
+def test_failed_str_representation(capsys):
+    f = bibi.job.Failed(seconds=10)
+    capsys.readouterr()  # stdout verwerfen
+    assert "10" in str(f)
+
+
+def test_failed_is_raisable(capsys):
+    with pytest.raises(bibi.job.Failed) as exc_info:
+        raise bibi.job.Failed(seconds=10)
+    capsys.readouterr()  # stdout verwerfen
+    assert exc_info.value.seconds == 10

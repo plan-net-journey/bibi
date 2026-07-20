@@ -35,7 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from bibi.schedule.models import DEFAULT_CLAUDE_MODEL
+from bibi.schedule.models import DEFAULT_CLAUDE_MODEL, DEFAULT_DEFER_TIME
 from bibi.wrapper import exec_backend, output
 
 # Kein eigenes Logging-Setup (der Wrapper ruft nie activity.setup_logging() —
@@ -452,7 +452,7 @@ def _finish(env: dict[str, str], exit_code: int, outcome: str) -> None:
     elif outcome == "silence":
         status, reason = "zombie", "silence"
     elif outcome == "deferred":
-        defer_secs = int(env.get("BIBI_DEFER_TIME") or "60")
+        defer_secs = int(env.get("BIBI_DEFER_TIME") or DEFAULT_DEFER_TIME)
         next_fire_at = time.time() + defer_secs
         status, reason = "deferred", None
     elif exit_code == 0:
@@ -460,9 +460,22 @@ def _finish(env: dict[str, str], exit_code: int, outcome: str) -> None:
     elif attempt_cur < attempts_max:
         from bibi.schedule import backoff as _backoff
         next_attempt = attempt_cur + 1
-        base = float(os.environ.get("BIBI_RETRY_BASE") or _backoff.DEFAULT_BASE)
-        btype = env.get("BIBI_BACKOFF") or "fixed"
-        next_fire_at = time.time() + _backoff.delay(btype, next_attempt, base=base)
+        # Präzedenz (analog defer_time/Deferred): expliziter Job-Override
+        # (bibi.job.Failed(seconds=N), via pump() in BIBI_ERROR_SECONDS
+        # gespiegelt) > Schedule-Frontmatter (BIBI_ERROR_TIME, error_time:)
+        # > globaler BIBI_RETRY_BASE > backoff.DEFAULT_BASE. Der explizite
+        # Override ist wie bei deferred eine exakte Wartezeit, bypasst also
+        # die Backoff-Strategie-Skalierung (linear/exponential).
+        override_secs = env.get("BIBI_ERROR_SECONDS")
+        if override_secs is not None:
+            delay = float(override_secs)
+        else:
+            base = float(env.get("BIBI_ERROR_TIME")
+                         or os.environ.get("BIBI_RETRY_BASE")
+                         or _backoff.DEFAULT_BASE)
+            btype = env.get("BIBI_BACKOFF") or "fixed"
+            delay = _backoff.delay(btype, next_attempt, base=base)
+        next_fire_at = time.time() + delay
         report_attempt = next_attempt
         status, reason = "failed", "nonzero_exit"
     else:
@@ -555,6 +568,12 @@ def run_app(env: dict[str, str]) -> int:
                         current_status[0] = "deferred"
                         if not outcome[0]:
                             outcome[0] = "deferred"
+                elif name == "failed":
+                    # Pendant zu "deferred": kein current_status/outcome-Wechsel
+                    # nötig — der Prozess beendet sich selbst (Exception/exit≠0),
+                    # _finish() liest die Override-Sekunden unten aus env.
+                    if "seconds" in sig:
+                        env["BIBI_ERROR_SECONDS"] = str(sig["seconds"])
                 elif name == "activity":
                     pass  # reiner Herzschlag (wie im DB-Pfad _handle_signal) — keine Zeile
                 else:

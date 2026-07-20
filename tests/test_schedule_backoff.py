@@ -26,3 +26,14 @@ def test_unknown_strategy_is_fixed():
 
 def test_attempt_zero_is_no_delay():
     assert backoff.delay("linear", 0, base=10) == 0
+
+
+def test_default_base_is_180():
+    # error-time-Default (§5.5) — nur der letzte Fallback, wenn weder ein
+    # expliziter bibi.job.Failed(seconds=N) noch Schedule-Frontmatter
+    # (error_time:) noch der globale BIBI_RETRY_BASE-Env etwas vorgeben.
+    assert backoff.DEFAULT_BASE == 180.0
+
+
+def test_delay_uses_default_base_when_omitted():
+    assert backoff.delay("fixed", 1) == 180.0

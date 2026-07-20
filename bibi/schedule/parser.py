@@ -30,9 +30,11 @@ from dateutil import parser as _date_parser
 from bibi import frontmatter
 from bibi.schedule.models import (
     DEFAULT_CLAUDE_MODEL,
+    DEFAULT_DEFER_MAX,
     DEFAULT_SILENCE_TIMEOUT,
     DEFAULT_SILENCE_TIMEOUT_APP,
     DEFAULT_SILENCE_TIMEOUT_JOB,
+    DEFAULT_WALL_TIME,
     Kind,
     ScheduleSpec,
     is_claude_payload,
@@ -201,13 +203,19 @@ def parse_text(
         _default_silence = DEFAULT_SILENCE_TIMEOUT_JOB
     silence_timeout, e = _coerce_int(fm, "silence_timeout", _default_silence)
     errors += [e] if e else []
-    wall_time = defer_time = defer_max = app_port = None
-    if "wall_time" in fm:
-        wall_time, e = _coerce_int(fm, "wall_time", 0); errors += [e] if e else []
+    # wall_time/defer_max haben (anders als defer_time/error_time) einen
+    # eigenständigen globalen Default (§5.5, DEFAULT_WALL_TIME/DEFAULT_DEFER_MAX)
+    # und werden deshalb wie silence_timeout IMMER gecoerct, nicht nur bei
+    # Frontmatter-Präsenz — defer_time/error_time bleiben None-Sentinel, ihr
+    # Default lebt als 3-Tier-Präzedenz weiter unten im Wrapper (_finish()),
+    # damit der globale BIBI_RETRY_BASE-Override dort weiterhin greifen kann.
+    wall_time, e = _coerce_int(fm, "wall_time", DEFAULT_WALL_TIME); errors += [e] if e else []
+    defer_max, e = _coerce_int(fm, "defer_max", DEFAULT_DEFER_MAX); errors += [e] if e else []
+    defer_time = error_time = app_port = None
     if "defer_time" in fm:
         defer_time, e = _coerce_int(fm, "defer_time", 0); errors += [e] if e else []
-    if "defer_max" in fm:
-        defer_max, e = _coerce_int(fm, "defer_max", 0); errors += [e] if e else []
+    if "error_time" in fm:
+        error_time, e = _coerce_int(fm, "error_time", 0); errors += [e] if e else []
     if "app_port" in fm:
         app_port, e = _coerce_int(fm, "app_port", 0); errors += [e] if e else []
     if errors:
@@ -238,7 +246,7 @@ def parse_text(
         model=model, soul=soul, session=session,
         attempts=attempts, backoff=backoff.lower(),
         silence_timeout=silence_timeout, wall_time=wall_time,
-        defer_time=defer_time, defer_max=defer_max,
+        defer_time=defer_time, defer_max=defer_max, error_time=error_time,
         app_port=app_port, app_prefix=app_prefix, exec_mode=exec_mode, image=image,
     )
     return ParseResult(

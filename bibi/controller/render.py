@@ -3283,7 +3283,7 @@ _ATTRS_CONFIG_ORDER = [
     "slug", "kind", "payload", "schedule", "at_iso", "priority",
     "model", "soul", "session",
     "attempts", "backoff", "silence_timeout", "wall_time",
-    "defer_time", "defer_max",
+    "defer_time", "defer_max", "error_time",
     "app_port", "app_prefix", "exec_mode", "image",
     "schedule_ref",
 ]

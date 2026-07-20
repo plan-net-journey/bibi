@@ -796,6 +796,46 @@ def test_fresh_db_has_jobs_pinned_host_column(conn):
     assert "pinned_host" in cols
 
 
+def test_migration_v16_to_v17_adds_jobs_error_time(tmp_path: Path):
+    """Pendant zu defer_time für den Fehlerfall: bestehende v16-DB bekommt
+    jobs.error_time per Migration (s. job.py Failed(seconds=…))."""
+    import sqlite3 as _sqlite3
+    p = tmp_path / "old.sqlite"
+    c = _sqlite3.connect(p)
+    c.row_factory = _sqlite3.Row
+    c.execute("PRAGMA journal_mode = WAL")
+    c.execute("""
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE,
+            schedule_ref TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', active INTEGER NOT NULL DEFAULT 1,
+            pinned_host TEXT
+        )
+    """)
+    c.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    c.execute("CREATE TABLE journal (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, "
+              "slug TEXT, kind TEXT, status TEXT, archived_at REAL NOT NULL, "
+              "snapshot TEXT NOT NULL DEFAULT '{}', domain TEXT NOT NULL DEFAULT 'scheduled', "
+              "payload TEXT, commit_sha TEXT, branch TEXT, pinned_host TEXT)")
+    c.execute("CREATE TABLE transitions (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+              "job_id TEXT NOT NULL, slug TEXT NOT NULL, from_status TEXT, "
+              "to_status TEXT NOT NULL, ts REAL NOT NULL)")
+    c.execute("PRAGMA user_version = 16")
+    c.commit()
+    c.close()
+
+    conn2 = job_db.connect(p)
+    cols = {r["name"] for r in conn2.execute("PRAGMA table_info(jobs)")}
+    assert "error_time" in cols
+    assert conn2.execute("PRAGMA user_version").fetchone()[0] == job_db.SCHEMA_VERSION
+    conn2.close()
+
+
+def test_fresh_db_has_jobs_error_time_column(conn):
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)")}
+    assert "error_time" in cols
+
+
 # ── PLAN-12 Stufe 12.1: payload auf job_view/journal_view ───────────────────
 
 

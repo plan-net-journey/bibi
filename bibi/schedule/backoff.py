@@ -7,8 +7,11 @@ Wartezeit gilt bis zum nächsten Versuch.
 
 from __future__ import annotations
 
-#: Default-Basiseinheit (Sekunden) für die Backoff-Berechnung.
-DEFAULT_BASE = 30.0
+#: Default-Basiseinheit (Sekunden) für die Backoff-Berechnung — error-time-
+#: Default (§5.5), nur der letzte Fallback, wenn weder ein expliziter
+#: bibi.job.Failed(seconds=N) noch Schedule-Frontmatter (`error_time:`) noch
+#: der globale BIBI_RETRY_BASE-Env etwas anderes vorgeben.
+DEFAULT_BASE = 180.0
 
 
 def delay(strategy: str, attempt: int, *, base: float = DEFAULT_BASE) -> float:

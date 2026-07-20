@@ -26,7 +26,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status, display_kind
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -154,6 +154,14 @@ def _mig_journal_pinned_host(conn: sqlite3.Connection) -> None:  # v15 → v16
         conn.execute("ALTER TABLE journal ADD COLUMN pinned_host TEXT")
 
 
+def _mig_jobs_error_time(conn: sqlite3.Connection) -> None:  # v16 → v17
+    # Pendant zu defer_time für den Fehlerfall: per-Schedule-Default für die
+    # Retry-Backoff-Basis (statt nur des globalen BIBI_RETRY_BASE), s. job.py
+    # Failed(seconds=…).
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "error_time"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN error_time INTEGER")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -173,6 +181,7 @@ _MIGRATIONS: dict[int, list] = {
     13: [_mig_transitions],
     14: [_mig_jobs_pinned_host],
     15: [_mig_journal_pinned_host],
+    16: [_mig_jobs_error_time],
 }
 
 
@@ -312,6 +321,7 @@ def _spec_columns(pr: ParseResult, now: float) -> dict:
         "wall_time": s.wall_time,
         "defer_time": s.defer_time,
         "defer_max": s.defer_max,
+        "error_time": s.error_time,
     }
 
 
@@ -547,6 +557,7 @@ def job_full_view(row: sqlite3.Row) -> dict:
         "wall_time": row["wall_time"],
         "defer_time": row["defer_time"],
         "defer_max": row["defer_max"],
+        "error_time": row["error_time"],
         "app_prefix": row["app_prefix"],
         "exec_mode": row["exec_mode"],
         "image": row["image"],
@@ -705,6 +716,7 @@ def reservation_view(row: sqlite3.Row) -> dict:
         # vor PLAN-22 und oneshot vor PLAN-23.
         "image": row["image"],
         "defer_time": row["defer_time"],
+        "error_time": row["error_time"],
         # Vault-relativer Pfad der Schedule-MD (unter case_dir) — der Worker
         # leitet daraus das Job-cwd ab (Verzeichnis der MD, nicht Worktree-Root).
         "schedule_ref": row["schedule_ref"],

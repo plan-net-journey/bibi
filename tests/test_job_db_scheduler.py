@@ -133,7 +133,7 @@ def test_reservation_view_shape(conn):
     assert set(r) == {
         "id", "slug", "kind", "payload", "model", "soul", "session",
         "fire", "attempt", "attempts", "backoff", "wall_time", "silence_timeout",
-        "app_port", "app_prefix", "exec_mode", "image", "defer_time",
+        "app_port", "app_prefix", "exec_mode", "image", "defer_time", "error_time",
         "schedule_ref", "env",
     }
     assert r["kind"] == "job" and r["payload"] == "echo hi"

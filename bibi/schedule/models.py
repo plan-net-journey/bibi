@@ -103,6 +103,22 @@ DEFAULT_SILENCE_TIMEOUT = 3600
 DEFAULT_SILENCE_TIMEOUT_APP = 48 * 3600
 DEFAULT_SILENCE_TIMEOUT_JOB = 2 * 3600
 
+#: Wall-Time-Default (§5.5) — 1h, greift für JEDEN Job ohne explizites
+#: `wall_time:` im Frontmatter (vorher: kein Limit ohne explizite Angabe).
+DEFAULT_WALL_TIME = 3600
+
+#: Defer-Time-Default (§5.5) — nur der letzte Fallback in _finish(), wenn
+#: weder ein expliziter bibi.job.Deferred(seconds=N) noch Schedule-
+#: Frontmatter (`defer_time:`) etwas anderes vorgeben.
+DEFAULT_DEFER_TIME = 360
+
+#: defer_max-Default (§5.5) — ein Job, der 20 Minuten am Stück (seit dem
+#: ERSTEN Defer, `deferred_at`) nur deferred statt fertig zu werden, gilt als
+#: zu unzuverlässig und wird vom Sweep auf `inactive` gesetzt (User-Fund: "er
+#: ist zu faul, deferred ständig"). Vorher: kein Default, ein Job ohne
+#: explizites `defer_max:` verfiel nie automatisch.
+DEFAULT_DEFER_MAX = 20 * 60
+
 
 @dataclass(frozen=True)
 class ScheduleSpec:
@@ -133,9 +149,10 @@ class ScheduleSpec:
     attempts: int = 1
     backoff: str = "fixed"  # fixed | linear | exponential
     silence_timeout: int = DEFAULT_SILENCE_TIMEOUT
-    wall_time: int | None = None
+    wall_time: int = DEFAULT_WALL_TIME
     defer_time: int | None = None
-    defer_max: int | None = None
+    defer_max: int = DEFAULT_DEFER_MAX
+    error_time: int | None = None
 
     app_port: int | None = None
     app_prefix: str | None = None
