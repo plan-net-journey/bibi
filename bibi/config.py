@@ -43,6 +43,14 @@ KEYS: dict[str, str] = {
     # sondern dieselbe Kosten-Klasse wie die 2s-Polls der Schedules-/Jobs-
     # Tabelle ist.
     "BIBI_JOB_STATUS_POLL_INTERVAL": "2",
+    # Stabile, generierte Knoten-Identität für den Connected-Clients-Screen
+    # (Bibi4-Iteration, User-Fund: derselbe physische Client tauchte je nach
+    # Netzwerk mit unterschiedlichem BIBI_WORKER_NAME/Hostname auf, alte
+    # Registry-Einträge blieben stale liegen) — unabhängig von IP/Hostname,
+    # einmalig generiert (node_id() unten), danach nie mehr geändert. Anders
+    # als jeder andere Wert hier NIE interaktiv abgefragt (init_cmd.py
+    # special-cased das) — ein Mensch soll nie eine UUID eintippen müssen.
+    "BIBI_NODE_ID": "",
 }
 
 DAEMON_PORT_DEFAULT = 8769
@@ -219,3 +227,20 @@ def write_env(values: dict[str, str], path: Path | None = None) -> Path:
     tmp.chmod(0o600)
     tmp.replace(p)
     return p
+
+
+def node_id() -> str:
+    """Stabile, generierte Knoten-Identität (``BIBI_NODE_ID``, s. ``KEYS``-
+    Kommentar) — self-healing: fehlt der Wert (Bestandsknoten von vor dieser
+    Änderung, oder ein ``bibi-ctrl init`` ohne diesen Schlüssel), wird er beim
+    ersten Zugriff generiert und in dieselbe ``env``-Datei zurückgeschrieben,
+    kein manuelles Neu-``init`` auf bereits konfigurierten Knoten nötig."""
+    import uuid
+    existing = read_env()
+    val = existing.get("BIBI_NODE_ID", "").strip()
+    if val:
+        return val
+    new_id = uuid.uuid4().hex
+    existing["BIBI_NODE_ID"] = new_id
+    write_env(existing)
+    return new_id

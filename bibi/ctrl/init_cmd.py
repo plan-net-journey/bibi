@@ -52,6 +52,14 @@ def run(args: argparse.Namespace) -> int:
         "BIBI_STATUS_POLL_INTERVAL": "Feed-Status-Poll-Intervall (Sekunden)",
     }
     for key, fallback in config.KEYS.items():
+        if key == "BIBI_NODE_ID":
+            # Bibi4-Iteration: nie abfragen — ein Mensch soll keine UUID
+            # eintippen. Bestehenden Wert übernehmen, sonst neu generieren
+            # (config.node_id() selbst würde nur lesen, hier aktiv setzen,
+            # damit ein --force-Rewrite ihn nicht als leer überschreibt).
+            import uuid
+            values[key] = existing.get(key) or uuid.uuid4().hex
+            continue
         default = existing.get(key) or fallback
         values[key] = _prompt(labels.get(key, key), default)
 

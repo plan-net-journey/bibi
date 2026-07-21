@@ -18,7 +18,7 @@ import socket
 import time
 from pathlib import Path
 
-from bibi import repo
+from bibi import config, git_ops, repo
 from bibi.daemon import activity
 from bibi.git_status import working_tree_status
 
@@ -37,6 +37,11 @@ class Heartbeat:
         self.client = client
         self.worker_name = worker_name or socket.gethostname()
         self.host = socket.gethostname()
+        # Bibi4-Iteration (Connected-Clients-Screen, User-Fund: derselbe
+        # Client tauchte je nach Netzwerk unter anderem Namen auf) — einmal
+        # pro Prozesslebensdauer gelesen/generiert, bleibt über Netzwerk-/
+        # Hostname-Wechsel stabil, anders als worker_name/host oben.
+        self.node_id = config.node_id()
         self.repo_root = repo_root
         self.interval = interval
         self._task: asyncio.Task | None = None
@@ -60,7 +65,9 @@ class Heartbeat:
 
     def _beat(self) -> None:
         try:
-            self.client.register(self.worker_name, self.host, self._git_status())
+            self.client.register(self.worker_name, self.host, self._git_status(),
+                                 node_id=self.node_id,
+                                 git_user=git_ops.git_user_name(self.repo_root or repo.root()))
             self.last_ok = True
             activity.emit(log, logging.DEBUG, "connect.heartbeat", role="connect",
                           worker=self.worker_name)

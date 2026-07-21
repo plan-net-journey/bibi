@@ -166,6 +166,29 @@ def auto_commit_message() -> str:
     return f"auto: {ts} | {user} | {platform.node()}"
 
 
+def git_user_name(cwd: Path | None = None) -> str | None:
+    """Der lokal konfigurierte ``git config user.name`` (ambiente Identität,
+    fällt heute auf `~/.gitconfig` zurück, solange kein Repository Identität-
+    Setup lokal gesetzt hat) — für den Connected-Clients-Screen (Bibi4-
+    Iteration, User-Fund: "wir brauchen unbedingt den hinterlegten gitea/git
+    Nutzernamen ... die einzige Möglichkeit, den Menschen zu identifizieren").
+    Unnormalisiert, anders als ``auto_commit_message()``s intern
+    sluggifizierte Variante — hier soll der echte Anzeigename sichtbar sein.
+    ``None`` statt leerem String, wenn nichts konfiguriert ist.
+
+    ``cwd`` (anders als ``_git()``, das immer ``repo.root()`` fest verdrahtet)
+    erlaubt einen expliziten Checkout — ``Heartbeat`` hat mit ``repo_root``
+    schon einen eigenen Override (Tests/mehrere Instanzen desselben Prozesses),
+    den auch dieser Aufruf respektieren muss, statt am tatsächlichen
+    ``repo.root()`` vorbeizulesen."""
+    proc = subprocess.run(
+        ["git", "-c", "core.quotepath=false", "config", "user.name"],
+        cwd=cwd or repo.root(), capture_output=True, text=True, check=False,
+    )
+    raw = proc.stdout.strip()
+    return raw or None
+
+
 def diff_stat() -> tuple[str, int]:
     """Working-Tree-Delta als (Signal, geänderte Zeilen) (DESIGN §4.3).
 

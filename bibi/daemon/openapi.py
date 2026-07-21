@@ -153,11 +153,18 @@ class RunRequest(BaseModel):
 
 
 class WorkerHeartbeat(BaseModel):
-    """``POST /-/worker`` — Anmeldung/Heartbeat eines verbundenen Workers (A12, §3.6)."""
+    """``POST /-/worker`` — Anmeldung/Heartbeat eines verbundenen Workers (A12, §3.6).
+
+    ``node_id``/``git_user`` (Bibi4-Iteration, Connected-Clients-Screen):
+    optional statt required, damit ein älterer Client (vor dieser Änderung)
+    weiterhin ohne 422 registrieren kann — die Registry behandelt einen
+    fehlenden ``node_id`` als eigenen Fallback-Schlüssel, s. WorkerRegistry."""
 
     worker: str
     host: str
     git_status: str | None = None
+    node_id: str | None = None
+    git_user: str | None = None
 
 
 class WorkerView(BaseModel):
@@ -169,6 +176,8 @@ class WorkerView(BaseModel):
     last_heartbeat: float | None = None
     git_status: str | None = None
     stale: bool = False
+    node_id: str | None = None
+    git_user: str | None = None
 
 
 def _todo(endpoint: str) -> JSONResponse:

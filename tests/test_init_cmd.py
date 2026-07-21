@@ -32,3 +32,37 @@ def test_init_no_hint_when_claude_auth_present(tmp_path: Path, monkeypatch, caps
     assert rc == 0
     out = capsys.readouterr().out
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in out
+
+
+# ── BIBI_NODE_ID — nie abgefragt, stabil über mehrere init-Läufe (Bibi4-Iteration) ─
+
+
+def test_init_never_prompts_for_node_id(tmp_path: Path, monkeypatch):
+    from bibi import config
+    monkeypatch.setenv("BIBI_CONFIG_PATH", str(tmp_path / "env"))
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-test-token")
+    calls: list[str] = []
+
+    def _tracking_prompt(label: str, default: str) -> str:
+        calls.append(label)
+        return default
+    monkeypatch.setattr(init_cmd, "_prompt", _tracking_prompt)
+    rc = init_cmd.run(_args())
+    assert rc == 0
+    # Ein _prompt()-Aufruf pro KEYS-Eintrag außer BIBI_NODE_ID (special-cased,
+    # nie über _prompt()) — dieselbe Zahl beweist, dass der continue-Zweig
+    # tatsächlich greift, nicht nur, dass kein Label dafür existiert.
+    assert len(calls) == len(config.KEYS) - 1
+    node_id = config.read_env()["BIBI_NODE_ID"]
+    assert node_id and len(node_id) == 32
+
+
+def test_init_force_rerun_keeps_same_node_id(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BIBI_CONFIG_PATH", str(tmp_path / "env"))
+    monkeypatch.setattr("builtins.input", lambda *_: "")
+    init_cmd.run(_args())
+    from bibi import config
+    first = config.read_env()["BIBI_NODE_ID"]
+    init_cmd.run(_args(force=True))  # zweiter Lauf, force=True überschreibt die Datei
+    second = config.read_env()["BIBI_NODE_ID"]
+    assert first == second

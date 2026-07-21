@@ -21,14 +21,26 @@ class WorkerRegistry:
         self._lock = threading.Lock()
 
     def heartbeat(
-        self, worker: str, host: str, git_status: str | None = None,
+        self, worker: str, host: str, git_status: str | None = None, *,
+        node_id: str | None = None, git_user: str | None = None,
         now: float | None = None,
     ) -> dict:
+        """``node_id`` (Bibi4-Iteration, User-Fund: derselbe physische Client
+        tauchte je nach Netzwerk mit unterschiedlichem ``worker``-Namen auf,
+        alte Einträge blieben stale liegen) ist jetzt der Registry-Schlüssel
+        statt ``worker`` — ein Client mit wechselndem Anzeigenamen, aber
+        stabiler ``node_id``, aktualisiert dieselbe Zeile statt eine neue
+        anzulegen. Fällt auf ``worker`` zurück, wenn kein ``node_id``
+        mitgeschickt wird (älterer Client vor dieser Änderung) — schlechter
+        als eine stabile ID, aber nicht schlechter als das bisherige
+        Verhalten."""
         now = time.time() if now is None else now
+        key = node_id or worker
         with self._lock:
-            entry = self._w.get(worker) or {"worker": worker, "connected_at": now}
-            entry.update(host=host, git_status=git_status, last_heartbeat=now)
-            self._w[worker] = entry
+            entry = self._w.get(key) or {"connected_at": now}
+            entry.update(worker=worker, host=host, git_status=git_status,
+                         node_id=node_id, git_user=git_user, last_heartbeat=now)
+            self._w[key] = entry
             return dict(entry)
 
     def list(self, *, stale_after: float = STALE_AFTER, now: float | None = None) -> list[dict]:

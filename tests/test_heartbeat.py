@@ -42,8 +42,9 @@ class _FakeClient:
         self.fail = fail
         self.calls: list[tuple] = []
 
-    def register(self, worker: str, host: str, git_status: str | None = None) -> None:
-        self.calls.append((worker, host, git_status))
+    def register(self, worker: str, host: str, git_status: str | None = None, *,
+                 node_id: str | None = None, git_user: str | None = None) -> None:
+        self.calls.append((worker, host, git_status, node_id, git_user))
         if self.fail:
             raise ConnectionError("scheduler unreachable")
 
@@ -70,9 +71,39 @@ def test_start_registers_immediately(gitrepo: Path):
     client = _FakeClient()
     hb = Heartbeat(client=client, worker_name="w1", repo_root=gitrepo, interval=60)
     asyncio.run(hb.start())
-    assert client.calls == [("w1", hb.host, "trunk · clean · synced")]
+    assert len(client.calls) == 1
+    worker, host, git_status, node_id, git_user = client.calls[0]
+    assert (worker, host, git_status) == ("w1", hb.host, "trunk · clean · synced")
+    assert node_id == hb.node_id and len(node_id) == 32
+    assert git_user == "t"  # gitrepo-Fixture: git config user.name = "t"
     assert hb.last_ok is True
     assert hb.last_at is not None
+    asyncio.run(hb.stop())
+
+
+def test_node_id_stable_across_beats(gitrepo: Path):
+    # Bibi4-Iteration: node_id wird einmal in __init__ gelesen/generiert und
+    # bleibt für die gesamte Prozesslaufzeit stabil, anders als worker_name/
+    # host, die sich (laut User-Fund) je nach Netzwerk ändern können.
+    client = _FakeClient()
+    hb = Heartbeat(client=client, worker_name="w1", repo_root=gitrepo, interval=0.02)
+
+    async def run():
+        await hb.start()
+        await asyncio.sleep(0.07)
+        await hb.stop()
+
+    asyncio.run(run())
+    node_ids = {call[3] for call in client.calls}
+    assert node_ids == {hb.node_id}
+
+
+def test_git_user_included_in_heartbeat(gitrepo: Path):
+    from bibi import git_ops
+    client = _FakeClient()
+    hb = Heartbeat(client=client, worker_name="w1", repo_root=gitrepo, interval=60)
+    asyncio.run(hb.start())
+    assert client.calls[0][4] == git_ops.git_user_name(gitrepo) == "t"
     asyncio.run(hb.stop())
 
 

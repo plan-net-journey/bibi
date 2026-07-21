@@ -48,6 +48,45 @@ def test_registry_stale_workers():
     assert reg.stale_workers(now=100, stale_after=60) == {"dead"}
 
 
+# ── node_id-Rekeying (Bibi4-Iteration, Connected-Clients-Screen) ────────────
+# User-Fund: derselbe physische Client tauchte je nach Netzwerk mit anderem
+# worker-Namen auf, alte Registry-Einträge blieben stale liegen. node_id ist
+# jetzt der eigentliche Schlüssel, worker nur noch Anzeigename.
+
+
+def test_registry_keys_by_node_id_not_worker_name():
+    reg = WorkerRegistry()
+    reg.heartbeat("air2024", "mac", "trunk", node_id="stable-uuid", now=0)
+    # gleicher physischer Client, anderer Netzwerk-Hostname beim nächsten Beat:
+    reg.heartbeat("air-home", "mac", "trunk", node_id="stable-uuid", now=10)
+    lst = reg.list(now=10)
+    assert len(lst) == 1  # eine Zeile, nicht zwei
+    assert lst[0]["worker"] == "air-home"  # jüngster Anzeigename gewinnt
+    assert lst[0]["connected_at"] == 0  # aber der ursprüngliche connected_at bleibt
+
+
+def test_registry_different_node_ids_stay_separate_even_with_same_worker_name():
+    reg = WorkerRegistry()
+    reg.heartbeat("client", "h1", node_id="uuid-a", now=0)
+    reg.heartbeat("client", "h2", node_id="uuid-b", now=0)
+    assert len(reg.list(now=0)) == 2
+
+
+def test_registry_falls_back_to_worker_name_key_without_node_id():
+    # Rückwärtskompatibel: ein Heartbeat ohne node_id (älterer Client) verhält
+    # sich wie vor dieser Änderung — worker-Name selbst ist der Schlüssel.
+    reg = WorkerRegistry()
+    reg.heartbeat("w1", "h1", now=0)
+    reg.heartbeat("w1", "h2", now=10)
+    assert len(reg.list(now=10)) == 1
+
+
+def test_registry_stores_git_user():
+    reg = WorkerRegistry()
+    reg.heartbeat("w1", "h1", node_id="uuid-a", git_user="m.rau", now=0)
+    assert reg.list(now=0)[0]["git_user"] == "m.rau"
+
+
 def test_sweeper_reconciles_no_process(tmp_path: Path):
     import secrets
     import time as _t
@@ -147,6 +186,23 @@ def test_status_includes_workers(sched):
     sched.post("/-/worker", json={"worker": "w2", "host": "box"})
     status = sched.get("/-/status").json()
     assert any(w["worker"] == "w2" for w in status["workers"])
+
+
+def test_worker_heartbeat_passes_node_id_and_git_user_through(sched):
+    r = sched.post("/-/worker", json={
+        "worker": "air2024", "host": "mac", "git_status": "trunk",
+        "node_id": "stable-uuid", "git_user": "m.rau",
+    })
+    assert r.status_code == 200
+    workers = sched.get("/-/worker").json()
+    w = next(w for w in workers if w["worker"] == "air2024")
+    assert w["node_id"] == "stable-uuid" and w["git_user"] == "m.rau"
+    # gleiche node_id, anderer Anzeigename (Netzwerkwechsel) -> dieselbe Zeile
+    sched.post("/-/worker", json={
+        "worker": "air-home", "host": "mac", "node_id": "stable-uuid",
+    })
+    workers = sched.get("/-/worker").json()
+    assert sum(1 for w in workers if w["node_id"] == "stable-uuid") == 1
 
 
 # ── Shared-Secret-Auth (§1.3) ────────────────────────────────────────────────

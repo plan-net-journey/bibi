@@ -54,9 +54,33 @@ def test_write_then_read_roundtrip(cfg_home: Path):
         "BIBI_PUBLIC_HOST": "sarasate.tail9f9173.ts.net",
         "BIBI_STATUS_POLL_INTERVAL": "30",
         "BIBI_JOB_STATUS_POLL_INTERVAL": "2",
+        "BIBI_NODE_ID": "abc123",
     }
     config.write_env(values)
     assert config.read_env() == values
+
+
+# ── node_id() — stabile Knoten-Identität für Connected Clients (Bibi4-Iteration) ─
+
+
+def test_node_id_generates_and_persists_when_missing(cfg_home: Path):
+    val = config.node_id()
+    assert val and len(val) == 32  # uuid4().hex
+    assert config.read_env()["BIBI_NODE_ID"] == val
+
+
+def test_node_id_stable_across_calls(cfg_home: Path):
+    first = config.node_id()
+    second = config.node_id()
+    assert first == second
+
+
+def test_node_id_preserves_other_existing_keys(cfg_home: Path):
+    config.write_env({"BIBI_ROLE": "worker", "BIBI_WORKER_NAME": "sarasate-client"})
+    config.node_id()
+    env = config.read_env()
+    assert env["BIBI_ROLE"] == "worker"
+    assert env["BIBI_WORKER_NAME"] == "sarasate-client"
 
 
 def test_write_env_only_known_keys(cfg_home: Path):
