@@ -27,9 +27,19 @@ _DOCKER_CANDIDATES = (
 
 #: Statische Env-Variablen, die in den Container durchgereicht werden.
 #: Dynamische Job-Credentials kommen via ``BIBI_JOB_ENV_*``-Prefix in worker._exec_config.
+#: BIBI_JOB_ID (User-Fund 2026-07-21, Bibi4 Batch 6): "Reset Test (Container)"
+#: setzte im Container nie zurück, weil BIBI_* standardmäßig NICHT durchgereicht
+#: wird (Zeile ~262 unten) — jedes Skript, das der External-job-data-Konvention
+#: folgt (bibi.job.data_dir() oder eigener BIBI_JOB_ID-Handbau, s.
+#: reset-test.py), sah im Container immer den "adhoc"-Fallback statt der
+#: echten, stabilen Job-ID. Betraf nicht nur RESET: JEDES container-exec_mode-
+#: Skript, das sich per BIBI_JOB_ID scopen wollte, landete faktisch in einem
+#: einzigen geteilten "adhoc"-Ordner. Host-Modus war nie betroffen (dort läuft
+#: das Kind direkt mit dem vollen env-dict, keine Docker-"-e"-Filterung).
 _CONTAINER_ENV = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_API_KEY",
+    "BIBI_JOB_ID",
 )
 
 DEFAULT_IMAGE = "bibi-base:dev"

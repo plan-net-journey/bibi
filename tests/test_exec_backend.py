@@ -110,6 +110,24 @@ def test_container_mode_runs_as_mapped_host_user(tmp_path: Path):
     assert "HOME=/root" in spec.argv
 
 
+def test_container_passes_bibi_job_id(tmp_path: Path):
+    # User-Fund 2026-07-21 (Bibi4 Batch 6, "Reset Test (Container)"): BIBI_*
+    # wird standardmäßig NICHT in den Container durchgereicht (nur die
+    # statische _CONTAINER_ENV-Liste + Nicht-BIBI_-Keys) — jedes Skript, das
+    # sich per BIBI_JOB_ID scopen wollte (External-job-data-Konvention,
+    # bibi.job.data_dir()), sah im Container immer den "adhoc"-Fallback statt
+    # der echten, stabilen Job-ID. RESET konnte das entsprechende Verzeichnis
+    # deshalb nie treffen (job_db.wipe_job_data() globbt nach der echten ID).
+    spec = exec_backend.build_exec(["sh"], {
+        "BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
+        "BIBI_JOB_ID": "realjobid123", "BIBI_DOCKER_BIN": "/d/docker",
+        "BIBI_DATA_HOME": str(tmp_path / "data-home")})
+    assert "BIBI_JOB_ID" in spec.argv
+    i = spec.argv.index("BIBI_JOB_ID")
+    assert spec.argv[i - 1] == "-e"   # nur Name, Wert kommt aus spec.env
+    assert spec.env["BIBI_JOB_ID"] == "realjobid123"
+
+
 def test_container_passes_api_key_only_when_set(tmp_path: Path):
     base = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
             "BIBI_JOB_ID": "j", "BIBI_DOCKER_BIN": "/d/docker",
