@@ -411,9 +411,10 @@ def test_jobs_detail_live_fragment_never_run_shows_host_style_start_only():
     # PLAN-29 Befund 3, User-Entscheidung: "Host-Großschreibung, konsistent
     # mit dem Rest der App" statt der bisherigen Icon-Buttons (▶/↺/■).
     html = render.jobs_detail_live_fragment("a", None, _row("a"), None)
-    assert '<button hx-post="/-/ui/jobs/detail/a/start" hx-target="#jobsdetail-live" hx-swap="outerHTML">START</button>' in html
-    assert 'hx-post="/-/ui/jobs/detail/a/kill" hx-target="#jobsdetail-live" hx-swap="outerHTML" disabled' in html
-    assert 'hx-post="/-/ui/jobs/detail/a/reset" hx-target="#jobsdetail-live" hx-swap="outerHTML" disabled' in html
+    assert ('<button hx-post="/-/ui/jobs/detail/a/start" hx-target="#jobsdetail-live" '
+            'hx-swap="outerHTML" hx-disabled-elt="this">START') in html
+    assert 'hx-post="/-/ui/jobs/detail/a/kill" hx-target="#jobsdetail-live" hx-swap="outerHTML" hx-disabled-elt="this" disabled' in html
+    assert 'hx-post="/-/ui/jobs/detail/a/reset" hx-target="#jobsdetail-live" hx-swap="outerHTML" hx-disabled-elt="this" disabled' in html
     assert "▶" not in html and "↺" not in html and "■" not in html
     assert "startbtn" not in html and "killbtn" not in html and "resetbtn" not in html
 
@@ -421,8 +422,9 @@ def test_jobs_detail_live_fragment_never_run_shows_host_style_start_only():
 def test_jobs_detail_live_fragment_while_live_enables_kill_disables_start():
     html = render.jobs_detail_live_fragment(
         "a", {"id": "jid1", "started_at": 100.0, "events": []}, _row("a"), None)
-    assert 'hx-post="/-/ui/jobs/detail/a/kill" hx-target="#jobsdetail-live" hx-swap="outerHTML">KILL</button>' in html
-    assert 'hx-post="/-/ui/jobs/detail/a/start" hx-target="#jobsdetail-live" hx-swap="outerHTML" disabled' in html
+    assert ('hx-post="/-/ui/jobs/detail/a/kill" hx-target="#jobsdetail-live" '
+            'hx-swap="outerHTML" hx-disabled-elt="this">KILL') in html
+    assert 'hx-post="/-/ui/jobs/detail/a/start" hx-target="#jobsdetail-live" hx-swap="outerHTML" hx-disabled-elt="this" disabled' in html
     assert 'class="st running">running<' in html
 
 

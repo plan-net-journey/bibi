@@ -123,6 +123,17 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .liveclamp { max-height: 23.8rem; overflow-y: auto; }
 .actions { margin: .6rem 0 1.2rem; display: flex; gap: .5rem; }
 .actions button { padding: .3rem .8rem; font-weight: 600; }
+.actions button:disabled { opacity: .5; cursor: default; }
+/* Aktivitätsanzeige (Bibi4 Batch 6) — .btn-spinner sitzt im Button (s.
+   _BTN_SPINNER), unsichtbar per Default, htmx setzt die htmx-request-Klasse
+   automatisch aufs auslösende Element für die Dauer des Requests, kein
+   eigenes hx-indicator nötig. */
+.btn-spinner { display: inline-block; width: .55em; height: .55em; margin-left: .45em;
+               border-radius: 50%; background: currentColor; opacity: 0;
+               vertical-align: middle; }
+.htmx-request .btn-spinner { opacity: 1; animation: bibi-pulse .9s ease-in-out infinite; }
+@keyframes bibi-pulse { 0%, 100% { opacity: .25; transform: scale(.7); }
+                         50% { opacity: 1; transform: scale(1); } }
 .logbar { display: flex; gap: .6rem; align-items: center; margin: 1rem 0 .6rem;
           flex-wrap: wrap; }
 .logbar select, .logbar input { font: inherit; padding: .2rem .45rem; color: inherit;
@@ -3015,6 +3026,15 @@ _VERBS_FOR_STATUS: dict[str, tuple[str, ...]] = {
 #: reproduzierbar).
 _CONTAINER_VERBS = ("rebuild",)
 
+#: Aktivitätsanzeige an den Aktions-Buttons (Bibi4 Batch 6, User-Fund: "Man
+#: ist geneigt, den Button mehrfach zu klicken"). Zwei htmx-Bordmittel, kein
+#: eigenes JS: ``hx-disabled-elt="this"`` sperrt den Klick strukturell für
+#: die Request-Dauer, dieser Spinner-Span sitzt IM Button (Default-Ziel der
+#: htmx-request-Klasse ohne explizites hx-indicator) und wird per CSS nur
+#: während ``.htmx-request`` sichtbar (s. ``.btn-spinner``/``@keyframes
+#: bibi-pulse`` in _CSS).
+_BTN_SPINNER = '<span class="btn-spinner" aria-hidden="true"></span>'
+
 
 def _action_bar(slug: str, job: dict | None, exec_mode: str | None = None,
                 *, base: str = "/-/ui/schedule", target: str = "#live") -> str:
@@ -3029,14 +3049,15 @@ def _action_bar(slug: str, job: dict | None, exec_mode: str | None = None,
     enabled = _VERBS_FOR_STATUS.get(status, ())
     btns = "".join(
         f'<button hx-post="{base}/{s}/{v}" hx-target="{target}" '
-        f'hx-swap="outerHTML"{"" if v in enabled else " disabled"}>{v.upper()}</button> '
+        f'hx-swap="outerHTML" hx-disabled-elt="this"'
+        f'{"" if v in enabled else " disabled"}>{v.upper()}{_BTN_SPINNER}</button> '
         for v in _VERBS
     )
     if (exec_mode or "host").strip().lower() == "container":
         btns += (f'<button hx-post="{base}/{s}/rebuild" hx-target="{target}" '
-                 f'hx-swap="outerHTML" '
+                 f'hx-swap="outerHTML" hx-disabled-elt="this" '
                  f'title="Verwirft das per-Job-Image, nächster Lauf startet vom '
-                 f'Default-Image">REBUILD</button> ')
+                 f'Default-Image">REBUILD{_BTN_SPINNER}</button> ')
     return f'<div class="actions">{btns}</div>'
 
 

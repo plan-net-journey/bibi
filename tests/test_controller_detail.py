@@ -108,10 +108,10 @@ def test_schedule_detail_action_bar_with_job():
     job = {"id": "abc123", "slug": "boom", "status": "error"}
     html = render.schedule_detail_page(sched, [], job, slug="boom")
     for verb in ("start", "reset"):  # error: enabled
-        assert f'hx-post="/-/ui/schedule/boom/{verb}" hx-target="#live" hx-swap="outerHTML">' in html
+        assert f'hx-post="/-/ui/schedule/boom/{verb}" hx-target="#live" hx-swap="outerHTML" hx-disabled-elt="this">' in html
     # kill bleibt sichtbar, aber disabled (ist schon terminal) — alle 3 Buttons
     # rendern immer, Stage 3 der Job-Lifecycle-Matrix.
-    assert 'hx-post="/-/ui/schedule/boom/kill" hx-target="#live" hx-swap="outerHTML" disabled>' in html
+    assert 'hx-post="/-/ui/schedule/boom/kill" hx-target="#live" hx-swap="outerHTML" hx-disabled-elt="this" disabled>' in html
     assert 'id="live"' in html and 'id="journal"' in html
 
 
@@ -153,9 +153,9 @@ def test_action_bar_reset_disabled_start_and_kill_enabled_for_failed_job():
     job = {"id": "j1", "slug": "x", "status": "failed"}
     html = render.schedule_detail_page(
         {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
-    assert 'hx-post="/-/ui/schedule/x/reset" hx-target="#live" hx-swap="outerHTML" disabled>' in html
-    assert 'hx-post="/-/ui/schedule/x/start" hx-target="#live" hx-swap="outerHTML">' in html
-    assert 'hx-post="/-/ui/schedule/x/kill" hx-target="#live" hx-swap="outerHTML">' in html
+    assert 'hx-post="/-/ui/schedule/x/reset" hx-target="#live" hx-swap="outerHTML" hx-disabled-elt="this" disabled>' in html
+    assert 'hx-post="/-/ui/schedule/x/start" hx-target="#live" hx-swap="outerHTML" hx-disabled-elt="this">' in html
+    assert 'hx-post="/-/ui/schedule/x/kill" hx-target="#live" hx-swap="outerHTML" hx-disabled-elt="this">' in html
 
 
 # ── PLAN-14 Stufe 14.2 — START für inactive/zombie/killed (+ error/complete) ──
@@ -179,7 +179,7 @@ def test_action_bar_pending_kill_enabled():
     job = {"id": "j1", "slug": "x", "status": "pending"}
     html = render.schedule_detail_page(
         {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
-    assert 'hx-post="/-/ui/schedule/x/kill" hx-target="#live" hx-swap="outerHTML">' in html
+    assert 'hx-post="/-/ui/schedule/x/kill" hx-target="#live" hx-swap="outerHTML" hx-disabled-elt="this">' in html
 
 
 def test_action_bar_complete_kill_enabled_reset_disabled():
@@ -190,9 +190,9 @@ def test_action_bar_complete_kill_enabled_reset_disabled():
     job = {"id": "j1", "slug": "x", "status": "complete"}
     html = render.schedule_detail_page(
         {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
-    assert 'hx-post="/-/ui/schedule/x/kill" hx-target="#live" hx-swap="outerHTML">' in html
-    assert 'hx-post="/-/ui/schedule/x/reset" hx-target="#live" hx-swap="outerHTML" disabled>' in html
-    assert 'hx-post="/-/ui/schedule/x/start" hx-target="#live" hx-swap="outerHTML">' in html
+    assert 'hx-post="/-/ui/schedule/x/kill" hx-target="#live" hx-swap="outerHTML" hx-disabled-elt="this">' in html
+    assert 'hx-post="/-/ui/schedule/x/reset" hx-target="#live" hx-swap="outerHTML" hx-disabled-elt="this" disabled>' in html
+    assert 'hx-post="/-/ui/schedule/x/start" hx-target="#live" hx-swap="outerHTML" hx-disabled-elt="this">' in html
 
 
 # ── PLAN-24 Befund 5 — REBUILD-Aktion nur bei exec_mode: container ──────────
@@ -214,6 +214,45 @@ def test_action_bar_hides_rebuild_for_host_job():
     html = render.schedule_detail_page(
         {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
     assert "rebuild" not in html.lower()
+
+
+# ── Bibi4 Batch 6 — Aktivitätsanzeige an den Aktions-Buttons ─────────────────
+# Pulse/Spinner + hx-disabled-elt, Scope nur START/RESET/KILL/REBUILD (nicht
+# Sparkline-/Board-Fragment-Loads) — User-Entscheidung, Beobachtungen.md.
+
+
+def test_action_bar_buttons_carry_hx_disabled_elt():
+    # hx-disabled-elt sperrt den Klick strukturell für die Request-Dauer
+    # (verhindert Doppel-Submits), unabhängig vom serverseitigen "disabled".
+    job = {"id": "j1", "slug": "x", "status": "killed"}  # start/reset/kill alle enabled
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
+    assert html.count('hx-disabled-elt="this"') == 3  # start, reset, kill
+
+
+def test_action_bar_buttons_carry_spinner_span():
+    job = {"id": "j1", "slug": "x", "status": "killed"}
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now"}, [], job, slug="x")
+    assert html.count('<span class="btn-spinner" aria-hidden="true"></span>') == 3
+
+
+def test_action_bar_rebuild_button_carries_disabled_elt_and_spinner():
+    job = {"id": "j1", "slug": "x", "status": "pending"}
+    html = render.schedule_detail_page(
+        {"slug": "x", "kind": "job", "trigger": "now", "exec_mode": "container"},
+        [], job, slug="x")
+    assert 'hx-post="/-/ui/schedule/x/rebuild"' in html
+    rebuild_btn = html[html.index('hx-post="/-/ui/schedule/x/rebuild"'):]
+    assert 'hx-disabled-elt="this"' in rebuild_btn[:rebuild_btn.index("</button>")]
+    assert 'class="btn-spinner"' in rebuild_btn[:rebuild_btn.index("</button>")]
+
+
+def test_css_defines_btn_spinner_pulse_scoped_to_htmx_request():
+    # Kein eigenes hx-indicator nötig: htmx setzt htmx-request automatisch
+    # aufs auslösende Element (den Button selbst), der Spinner sitzt darin.
+    assert ".htmx-request .btn-spinner { opacity: 1" in render._CSS
+    assert "@keyframes bibi-pulse" in render._CSS
 
 
 def test_run_row_has_delete_button():
