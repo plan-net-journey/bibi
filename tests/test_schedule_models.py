@@ -58,7 +58,11 @@ def test_schedule_spec_defaults():
     s = ScheduleSpec(slug="hello", kind=Kind.JOB, payload="claude: Hallo?")
     assert s.priority == 0
     assert s.model == DEFAULT_CLAUDE_MODEL == "claude-sonnet-4-6"
-    assert s.attempts == 1
+    # 0, nicht 1 (User-Fund 2026-07-21, Bibi4 Batch 6): attempts=1 hätte
+    # einen zusätzlichen Retry gewährt (attempt_cur < attempts_max im
+    # Wrapper), 0 heißt "ein Versuch, kein automatischer Retry" ohne jede
+    # Frontmatter-Angabe.
+    assert s.attempts == 0
     assert s.silence_timeout == 3600
     assert s.at is None and s.schedule is None
     # wall_time/defer_max haben einen eigenstaendigen globalen Default (§5.5);

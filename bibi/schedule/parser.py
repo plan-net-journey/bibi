@@ -183,7 +183,18 @@ def parse_text(
     # ── Ganzzahl-Felder (§5.5) ───────────────────────────────────────────────
     errors: list[str] = []
     priority, e = _coerce_int(fm, "priority", 0); errors += [e] if e else []
-    attempts, e = _coerce_int(fm, "attempts", 1); errors += [e] if e else []
+    # Default 0 (nicht 1!) — User-Fund 2026-07-21 (Bibi4 Batch 6, Witz.md lief
+    # 2× vor "error"): der Wrapper prüft "attempt_cur < attempts_max"
+    # (_finish()), attempts=1 gewährt also EINEN Retry (2 Gesamtversuche),
+    # nicht "1 Versuch, kein Retry" wie der Feldname nahelegt — "attempts:"
+    # meint N Retries zusätzlich zum ersten Lauf (0c2b822-Commit-Text: "attempts:
+    # 2 = 2 Retries, 3 Gesamtversuche"). Default 0 = ein Versuch, kein
+    # automatischer Retry, ohne jede Frontmatter-Angabe — deckt sich mit
+    # run_pinned()s längst bewusst gewähltem CLI-Default (worker.py, dortiger
+    # Docstring). Kein Betriebsrisiko: alle produktiven Collectors
+    # (news-aggregator, gmail-*, calendar-transfer, daily-digest) setzen
+    # attempts: bereits explizit.
+    attempts, e = _coerce_int(fm, "attempts", 0); errors += [e] if e else []
     # User-Feedback 2026-07-04: silence_timeout/hitl_timeout zusammengelegt —
     # claude:-Payloads (Batch, run_job, kein HITL) bekommen den kurzen Default,
     # echte Apps (long-lived, HITL-fähig über run_app) den langen. PLAN-31

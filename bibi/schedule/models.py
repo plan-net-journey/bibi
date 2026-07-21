@@ -146,7 +146,11 @@ class ScheduleSpec:
     session: str | None = None
 
     # Lifecycle-Stellschrauben (§5.5) — vom Worker ausgewertet (Stufe 3.5).
-    attempts: int = 1
+    # attempts = Retries ZUSÄTZLICH zum ersten Lauf, nicht Gesamtversuche
+    # (Wrapper: "attempt_cur < attempts_max" in _finish()) — Default 0 heißt
+    # ein Versuch, kein automatischer Retry (User-Fund 2026-07-21, Bibi4
+    # Batch 6: attempts=1 lief tatsächlich zweimal vor "error").
+    attempts: int = 0
     backoff: str = "fixed"  # fixed | linear | exponential
     silence_timeout: int = DEFAULT_SILENCE_TIMEOUT
     wall_time: int = DEFAULT_WALL_TIME
