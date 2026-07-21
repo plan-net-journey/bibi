@@ -1408,7 +1408,7 @@ def _status_cards(status: dict, now: float) -> str:
 
 _TREE_LABEL_CLASS = {"clean": "tree-clean", "modified": "tree-modified"}
 _SYNC_LABEL_CLASS = {"synced": "sync-synced", "ahead": "sync-ahead",
-                     "behind": "sync-behind", "conflict": "sync-conflict"}
+                     "behind": "sync-behind", "diverged": "sync-conflict"}
 
 
 def _lines_card(label: str, lines: list[str], sub: str = "") -> str:
@@ -1497,10 +1497,15 @@ def _format_sync_value(sync: str, oid: str | None, ahead: int, behind: int) -> s
     """SYNC-Zeilenwert inkl. Commit-Hash (PLAN-25 Befund 8-Nachtrag, User-Fund:
     "Release-Stand — Commit-Hash und Anzahl commits behind — reporten"),
     Format je Zustand final geklärt: ``synced: <hash>``, ``behind: <hash> (N)``,
-    ``ahead: <hash> (N)``, ``conflict: <hash> (+N, -M)`` (``conflict`` heißt
-    hier divergiert — ahead UND behind zugleich > 0 — nicht ein unaufgelöster
-    Merge-Konflikt mit ``<<<<<<<``-Markern, s. ``git_status.working_tree_status()``).
-    Ohne ``oid`` (ältere Aufrufer/Tests) bleibt es beim reinen Zustandswort."""
+    ``ahead: <hash> (N)``, ``diverged: <hash> (+N, -M)`` — ahead UND behind
+    zugleich > 0, kein unaufgelöster Merge-Konflikt mit ``<<<<<<<``-Markern
+    (``git_status.working_tree_status()``). Hieß bis Batch 7 Stufe 3
+    ``"conflict"`` — umbenannt (User-Fund: "ich verstehe die Bedeutung von
+    conflict und sync: !conflict nicht"), derselbe Wert reist unverändert bis
+    in die CLI-Statuszeile (``statusline_cmd.py``s ``_SYNC_COLOR``) — beide
+    Oberflächen lesen denselben ``WorkingTreeStatus.sync``-Wert, keine
+    getrennte Semantik. Ohne ``oid`` (ältere Aufrufer/Tests) bleibt es beim
+    reinen Zustandswort."""
     if not oid:
         return sync
     short = oid[:7]
@@ -1508,7 +1513,7 @@ def _format_sync_value(sync: str, oid: str | None, ahead: int, behind: int) -> s
         return f"{sync}: {short} ({behind})"
     if sync == "ahead":
         return f"{sync}: {short} ({ahead})"
-    if sync == "conflict":
+    if sync == "diverged":
         return f"{sync}: {short} (+{ahead}, -{behind})"
     return f"{sync}: {short}"
 

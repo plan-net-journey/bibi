@@ -16,7 +16,7 @@ from pathlib import Path
 @dataclass(frozen=True, slots=True)
 class WorkingTreeStatus:
     tree: str            # "clean" | "modified"
-    sync: str            # "synced" | "ahead" | "behind" | "conflict"
+    sync: str            # "synced" | "ahead" | "behind" | "diverged"
     branch: str | None   # None bei detached HEAD
     oid: str | None = None    # voller Commit-Hash (# branch.oid), None wenn unparsbar
     ahead: int = 0
@@ -52,7 +52,15 @@ def working_tree_status(root: Path | None = None) -> WorkingTreeStatus | None:
 
     tree = "modified" if dirty else "clean"
     if ahead and behind:
-        sync = "conflict"
+        # Bibi4-Iteration (Batch 7 Stufe 3, User-Fund: "ich verstehe die
+        # Bedeutung von conflict und sync: !conflict nicht") — "conflict"
+        # war hier eine unglückliche Namenswahl für "gleichzeitig vor UND
+        # hinter dem Remote", kein echter, blockierender Merge-Konflikt (den
+        # gibt es an anderer Stelle bereits korrekt benannt: der per-Datei-
+        # Chip in local_files_status() unten, und der daemon-globale
+        # sync_conflict-Flag in state.py/.state.md). "diverged" trifft den
+        # tatsächlichen Git-Graph-Zustand, ohne den echten Fall zu verwässern.
+        sync = "diverged"
     elif ahead:
         sync = "ahead"
     elif behind:

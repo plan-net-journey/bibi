@@ -71,13 +71,14 @@ def test_git_segment_card_ahead_shows_hash_and_count():
     assert "ahead: 95a04a7 (23)" in html
 
 
-def test_git_segment_card_conflict_shows_hash_and_both_deltas():
-    # "conflict" = divergiert (ahead UND behind > 0), kein echter Merge-
-    # Konflikt mit <<<<<<<-Markern — s. git_status.working_tree_status().
+def test_git_segment_card_diverged_shows_hash_and_both_deltas():
+    # "diverged" (bis Batch 7 Stufe 3 "conflict" genannt) = ahead UND behind
+    # > 0, kein echter Merge-Konflikt mit <<<<<<<-Markern — s.
+    # git_status.working_tree_status().
     html = render._git_segment_card(
-        {"tree": "clean", "sync": "conflict", "branch": "trunk",
+        {"tree": "clean", "sync": "diverged", "branch": "trunk",
          "oid": "95a04a7197fd3e5dfb63283f591e8e77458bf401", "ahead": 23, "behind": 3})
-    assert "conflict: 95a04a7 (+23, -3)" in html
+    assert "diverged: 95a04a7 (+23, -3)" in html
 
 
 def test_git_segment_card_without_oid_falls_back_to_plain_sync():

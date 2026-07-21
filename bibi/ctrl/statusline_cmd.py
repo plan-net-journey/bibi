@@ -5,14 +5,20 @@ bibi-Repo-State (`.claude/.state.md` + git) zu einer Zeile:
 
     <tree> · <sync> │ <branch> │ <model> │ ctx:<pct>% [│ proto:<state>] │ sync:<state>
 
-`<tree>` ist clean|modified, `<sync>` ist synced|ahead|behind|conflict — zwei
+`<tree>` ist clean|modified, `<sync>` ist synced|ahead|behind|diverged — zwei
 orthogonale Dimensionen, beide sichtbar; nur der Happy Path `clean · synced`
-kollabiert zu `clean`.
+kollabiert zu `clean`. `diverged` (bis Batch 7 Stufe 3 `conflict` genannt —
+umbenannt, User-Fund: "ich verstehe die Bedeutung von conflict und sync:
+!conflict nicht") heißt ahead UND behind zugleich > 0, kein echter,
+blockierender Merge-Konflikt (`bibi.git_status.working_tree_status()`).
 
-Der letzte `sync:<state>`-Segment ist `!conflict` (aktiver Pull-Konflikt) >
-`!stuck(N)` (PLAN-30 Ebene 3: N Job-Branches nach 3 Fehlschlägen aus dem
-automatischen Merge-back-Retry eskaliert, `bibi/daemon/merge_quarantine.py`)
-> `on`/`off` (stehende Push-Zustimmung) — in dieser Priorität, nur einer sichtbar.
+Der letzte `sync:<state>`-Segment ist `!conflict` (aktiver Pull-Konflikt, aus
+`.state.md`s `sync_conflict`-Flag — ein davon komplett unabhängiger dritter
+Begriff, absichtlich weiterhin "conflict" genannt, weil hier wirklich ein
+echter, blockierender `<<<<<<<`-Merge ansteht) > `!stuck(N)` (PLAN-30 Ebene 3:
+N Job-Branches nach 3 Fehlschlägen aus dem automatischen Merge-back-Retry
+eskaliert, `bibi/daemon/merge_quarantine.py`) > `on`/`off` (stehende Push-
+Zustimmung) — in dieser Priorität, nur einer sichtbar.
 
 Der aktive Case kommt aus dem **Display-Mirror** `path:` in `.state.md`, NICHT
 aus dem cwd: die Statusleiste läuft in einem Subprozess ohne Sicht auf das
@@ -46,7 +52,7 @@ def _color(text: str, code: str) -> str:
 
 
 _TREE_COLOR = {"clean": GREEN, "modified": YELLOW}
-_SYNC_COLOR = {"synced": GREEN, "ahead": CYAN, "behind": RED, "conflict": RED}
+_SYNC_COLOR = {"synced": GREEN, "ahead": CYAN, "behind": RED, "diverged": RED}
 
 
 def _git_segment() -> str:

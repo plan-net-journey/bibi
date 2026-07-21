@@ -55,7 +55,7 @@ def test_ahead_behind_counts_exposed(repo_with_origin, tmp_path):
     _sh(root, "commit", "-q", "-m", "local")
     _sh(root, "fetch", "-q", "origin")
     s = working_tree_status(root)
-    assert s.sync == "conflict"
+    assert s.sync == "diverged"
     assert s.ahead == 1 and s.behind == 1
 
 
@@ -87,7 +87,7 @@ def test_behind(repo_with_origin, tmp_path):
     assert s.sync == "behind"
 
 
-def test_conflict_both_ahead_and_behind(repo_with_origin, tmp_path):
+def test_diverged_both_ahead_and_behind(repo_with_origin, tmp_path):
     root, origin = repo_with_origin
     other = _clone(origin, tmp_path / "other")
     (other / "r.txt").write_text("r", encoding="utf-8")
@@ -99,7 +99,7 @@ def test_conflict_both_ahead_and_behind(repo_with_origin, tmp_path):
     _sh(root, "commit", "-q", "-m", "local")
     _sh(root, "fetch", "-q", "origin")
     s = working_tree_status(root)
-    assert s.sync == "conflict"
+    assert s.sync == "diverged"
 
 
 def test_none_outside_git_repo(tmp_path: Path):
