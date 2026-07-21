@@ -732,14 +732,17 @@ def local_schedule_exec_mode(slug: str, *, repo_root: Path | None = None) -> str
 _PINNED_LIVE_STATUSES = ("running", "awaiting", "deferred", "failed")
 
 
-def _pinned_live_row(slug: str, *, db_path: Path | None = None,
-                     host: str | None = None) -> sqlite3.Row | None:
-    """Die jüngste laufende ``jobs``-Zeile für den **Bucket-Slug** ``slug`` an
-    diesem Host, oder ``None`` — Query-Basis für ``local_run_live()``/
+def _pinned_row(slug: str, *, db_path: Path | None = None, host: str | None = None,
+                statuses: tuple[str, ...] | None = None) -> sqlite3.Row | None:
+    """Die jüngste ``jobs``-Zeile für den **Bucket-Slug** ``slug`` an diesem
+    Host, oder ``None`` — Query-Basis für ``local_run_live()``/
     ``local_runs_live()`` (PLAN-28: reale ``jobs``-Zeile statt In-Memory-Dict,
     s. Modul-Kommentar oben). ``jobs.slug`` ist pro Lauf eindeutig
     (``f"{bucket_slug}-{token}"``, s. ``run_pinned()`` — ``-`` statt dem
     ursprünglichen ``:``, da Git-Refs keinen Doppelpunkt erlauben).
+    ``statuses=None`` (Bibi4-Iteration, Client-RESET-Lücke): die jüngste
+    Zeile unabhängig vom Status — auch bereits terminale, für die
+    ``_pinned_live_row()`` nichts mehr findet.
 
     Bug gefunden (2026-07-13, User-Fund: "hitl-test-app-container und
     hitl-test-app geraten beim Output durcheinander"): ein offenes
@@ -753,14 +756,33 @@ def _pinned_live_row(slug: str, *, db_path: Path | None = None,
     host = host or socket.gethostname()
     conn = job_db.connect(db_path)
     try:
-        placeholders = ",".join("?" * len(_PINNED_LIVE_STATUSES))
-        return conn.execute(
-            f"SELECT * FROM jobs WHERE pinned_host=? AND slug LIKE ? "
-            f"AND status IN ({placeholders}) ORDER BY enqueued_at DESC LIMIT 1",
-            (host, f"{slug}-________", *_PINNED_LIVE_STATUSES),
-        ).fetchone()
+        sql = "SELECT * FROM jobs WHERE pinned_host=? AND slug LIKE ?"
+        params: list = [host, f"{slug}-________"]
+        if statuses:
+            placeholders = ",".join("?" * len(statuses))
+            sql += f" AND status IN ({placeholders})"
+            params.extend(statuses)
+        sql += " ORDER BY enqueued_at DESC LIMIT 1"
+        return conn.execute(sql, params).fetchone()
     finally:
         conn.close()
+
+
+def _pinned_live_row(slug: str, *, db_path: Path | None = None,
+                     host: str | None = None) -> sqlite3.Row | None:
+    return _pinned_row(slug, db_path=db_path, host=host, statuses=_PINNED_LIVE_STATUSES)
+
+
+def _pinned_last_row(slug: str, *, db_path: Path | None = None,
+                     host: str | None = None) -> sqlite3.Row | None:
+    """Die jüngste ``jobs``-Zeile für ``slug``, **unabhängig vom Status** —
+    im Unterschied zu ``_pinned_live_row()`` findet das auch einen bereits
+    terminalen (z. B. ``killed``) Lauf. Query-Basis für den Client-RESET-Pfad
+    (``run_live_reset()``, ``app.py``): ein Lauf, der schon terminal ist, hat
+    keine "live"-Zeile mehr, RESET soll dessen Job-Daten aber trotzdem wischen
+    können (Bibi4-Iteration, User-Fund "Reset Test Container: Laufzahl nach
+    RESET nicht zurückgesetzt")."""
+    return _pinned_row(slug, db_path=db_path, host=host, statuses=None)
 
 
 def local_run_live(slug: str, *, db_path: Path | None = None,

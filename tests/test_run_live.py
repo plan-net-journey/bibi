@@ -546,6 +546,51 @@ def test_run_live_reset_route_forces_killed_even_without_registered_proc(
     assert row["output_ref"] == real_output_ref
 
 
+# ── RESET wischt ~/.local/share/bibi/ auch auf dem Client-Pfad (Bibi4-Iteration,
+# User-Fund "Reset Test Container: Laufzahl nach COMPLETE -> KILL -> RESET ->
+# START nicht zurückgesetzt") — job_reset() (Host) bekam die Wipe-Verdrahtung
+# in Batch 6, run_live_reset() (Client) nie, weder für den Live- noch für den
+# bereits-terminalen Zweig. HOME hier explizit monkeypatchen (s. Kommentar bei
+# test_reset_wipes_job_data_dir in test_daemon_worker_routes.py).
+
+
+def test_run_live_reset_route_wipes_job_data_for_live_row(
+    client_with_pinned_worker, team_repo, tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    c, _pinned = client_with_pinned_worker
+    jid, _ = _seed_pinned_job(team_repo, "myjob")
+    job_dir = tmp_path / ".local" / "share" / "bibi" / "reset-test" / jid
+    job_dir.mkdir(parents=True)
+    (job_dir / "counter.txt").write_text("3")
+    r = c.post("/-/run/live/myjob/reset")
+    assert r.status_code == 200
+    assert not job_dir.exists()
+
+
+def test_run_live_reset_route_wipes_job_data_when_already_terminal(
+    client_only, team_repo, tmp_path, monkeypatch,
+):
+    # Genau der gemeldete Bug: der Lauf ist schon "killed" (kein Eintrag mehr
+    # in _PINNED_LIVE_STATUSES), local_run_live() findet also nichts mehr —
+    # vorher endete das in einem stillen 404 ohne jeden Wipe.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    jid, _ = _seed_pinned_job(team_repo, "myjob", status="killed")
+    job_dir = tmp_path / ".local" / "share" / "bibi" / "reset-test" / jid
+    job_dir.mkdir(parents=True)
+    (job_dir / "counter.txt").write_text("3")
+    r = client_only.post("/-/run/live/myjob/reset")
+    assert r.status_code == 200
+    assert r.json() == {"slug": "myjob", "reset": True}
+    assert not job_dir.exists()
+
+
+def test_run_live_reset_route_still_404_when_slug_never_ran(client_only, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    r = client_only.post("/-/run/live/nope/reset")
+    assert r.status_code == 404
+
+
 # ── local_schedule_exec_mode() + POST /-/run/live/{slug}/rebuild ────────────
 # User-Fund 2026-07-13 ("REBUILD müsste doch auch beim Client notwendig
 # sein, oder?"): REBUILD (PLAN-24 Befund 5) verwirft das per-Job-Image eines

@@ -924,7 +924,19 @@ def create_app(
     def run_live_reset(slug: str):
         live = worker_mod.local_run_live(slug)
         if live is None:
-            return JSONResponse(status_code=404, content={"error": "not running", "slug": slug})
+            # Bibi4-Iteration, User-Fund ("Reset Test Container: Laufzahl nach
+            # COMPLETE -> KILL -> RESET -> START nicht zurückgesetzt"): ein
+            # bereits terminaler Lauf (z. B. killed) hat keine "live"-Zeile
+            # mehr (_PINNED_LIVE_STATUSES greift nicht) — vorher 404, stiller
+            # No-Op, RESET wischte die Job-Daten hier nie. Jetzt: jüngste
+            # Zeile unabhängig vom Status suchen und, falls vorhanden, wie
+            # unten deren Job-Daten wischen (kein Signal/Status-Write nötig,
+            # der Lauf ist ja schon terminal).
+            row = worker_mod._pinned_last_row(slug)
+            if row is None:
+                return JSONResponse(status_code=404, content={"error": "not running", "slug": slug})
+            job_db.wipe_job_data(row["id"])
+            return {"slug": slug, "reset": True}
         pinned_worker.kill(live["id"])  # best-effort, Rückgabewert bewusst ignoriert
         # output_ref: gleicher Grund wie in run_live_kill() oben — sonst bleibt
         # die Spalte NULL und der spätere (falls doch noch einer kommt)
@@ -935,6 +947,11 @@ def create_app(
                                   output_ref=live["output_ref"])
         finally:
             conn.close()
+        # Bibi4 Batch 6 (RESET wischt Job-Daten, START bewahrt sie) galt bisher
+        # nur für den Host-Pfad (job_reset() oben) — der Client-Pfad hier bekam
+        # dieselbe Verdrahtung nie, obwohl RESET laut Verb-Modell uniform für
+        # JOB/CLAUDE/APP gelten soll, Host wie Client.
+        job_db.wipe_job_data(live["id"])
         return {"slug": slug, "reset": True}
 
     # User-Fund 2026-07-13 ("REBUILD müsste doch auch beim Client notwendig
