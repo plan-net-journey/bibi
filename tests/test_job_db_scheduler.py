@@ -847,6 +847,41 @@ def test_reset_to_pending_clears_previous_run_snapshot(conn):
     assert row["output_ref"] is None
 
 
+# ── wipe_job_data() — RESET-Cleanup für ~/.local/share/bibi/ (Bibi4 Batch 6) ─
+# monkeypatch HOME explizit: anders als XDG_CONFIG_HOME (autouse-isoliert,
+# s. conftest._isolate_node_config) ist Path.home() hier nicht global
+# gesandboxt — ein echter Zugriff auf ~/.local/share/bibi/ im Testlauf wäre
+# sowohl falsch isoliert als auch ein versehentlicher Schreibzugriff.
+
+
+def test_wipe_job_data_removes_dirs_across_subsystems(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / ".local" / "share" / "bibi"
+    (root / "gmail" / "jid1").mkdir(parents=True)
+    (root / "gmail" / "jid1" / "watermark.txt").write_text("42")
+    (root / "reset-test" / "jid1").mkdir(parents=True)
+    job_db.wipe_job_data("jid1")
+    assert not (root / "gmail" / "jid1").exists()
+    assert not (root / "reset-test" / "jid1").exists()
+
+
+def test_wipe_job_data_leaves_other_job_ids_untouched(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / ".local" / "share" / "bibi"
+    (root / "gmail" / "jid1").mkdir(parents=True)
+    (root / "gmail" / "jid2").mkdir(parents=True)
+    job_db.wipe_job_data("jid1")
+    assert not (root / "gmail" / "jid1").exists()
+    assert (root / "gmail" / "jid2").is_dir()
+
+
+def test_wipe_job_data_noop_when_nothing_to_clean(tmp_path, monkeypatch):
+    # Kein ~/.local/share/bibi/ überhaupt (Job hat nie unter der Konvention
+    # geschrieben) — best-effort, kein Fehler.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    job_db.wipe_job_data("jid1")  # darf nicht raisen
+
+
 def test_start_now_archive_clears_previous_run_snapshot(conn):
     jid = _seed_full(conn, slug="x", status="error",
                      started_at=1.0, finished_at=2.0, exit_code=1,

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -1025,6 +1026,24 @@ def fire_startup(conn: sqlite3.Connection, now: float | None = None) -> int:
         {"now": now},
     )
     return cur.rowcount
+
+
+def wipe_job_data(job_id: str) -> None:
+    """RESET-Cleanup für job-eigene, per ``bibi.job.data_dir()`` abgelegte
+    Daten (External job data & secrets, ``vault/CONVENTIONS.md``) — Bibi4
+    Batch 6, User-Entscheidung "RESET wischt, START bewahrt". Generisches
+    Glob über ``~/.local/share/bibi/*/<job_id>/``, kein Wissen über den
+    Job-Inhalt oder das jeweilige Subsystem nötig (dasselbe Prinzip wie der
+    generische Container-Mount, ``DESIGN.md`` §7.4, nur fürs Aufräumen statt
+    fürs Mounten). Nur aus ``job_reset()`` gerufen, NICHT aus ``start_now()``
+    — ein Job, der nie unter der Konvention geschrieben hat, hat schlicht
+    nichts zu löschen (best-effort, keine Fehler bei fehlendem Root)."""
+    root = Path.home() / ".local" / "share" / "bibi"
+    if not root.is_dir():
+        return
+    for d in root.glob(f"*/{job_id}"):
+        if d.is_dir():
+            shutil.rmtree(d, ignore_errors=True)
 
 
 #: Terminalzustände, die ``start`` archiviert (= report_status→pending) statt

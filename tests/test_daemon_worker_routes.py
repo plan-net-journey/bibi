@@ -421,6 +421,48 @@ def test_reset_missing_is_404(client):
     assert client.post("/-/job/deadbeef/reset").status_code == 404
 
 
+# ── RESET wischt ~/.local/share/bibi/, START nie (Bibi4 Batch 6) ────────────
+# Path.home() ist hier nicht global gesandboxt (anders als XDG_CONFIG_HOME,
+# s. conftest._isolate_node_config) — HOME explizit monkeypatchen, sonst
+# Zugriff auf die echte ~/.local/share/bibi/ im Testlauf.
+
+
+def test_reset_wipes_job_data_dir(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    jid = _seed_complete([("out", "x")])
+    job_dir = tmp_path / ".local" / "share" / "bibi" / "reset-test" / jid
+    job_dir.mkdir(parents=True)
+    (job_dir / "counter.txt").write_text("3")
+    r = client.post(f"/-/job/{jid}/reset")
+    assert r.status_code == 200
+    assert not job_dir.exists()
+
+
+def test_reset_rejected_leaves_job_data_dir_untouched(client, tmp_path, monkeypatch):
+    # 409/404-Fälle (kein echter Übergang) dürfen nichts löschen — wipe_job_data()
+    # sitzt hinter den outcome-Checks in job_reset(), nicht davor.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    jid = _seed_status("running")  # running ist kein Terminalzustand → 409
+    job_dir = tmp_path / ".local" / "share" / "bibi" / "reset-test" / jid
+    job_dir.mkdir(parents=True)
+    assert client.post(f"/-/job/{jid}/reset").status_code == 409
+    assert job_dir.is_dir()
+
+
+def test_start_does_not_wipe_job_data_dir(client, tmp_path, monkeypatch):
+    # Kernversprechen der Verb-Semantik: START rührt job-eigene Daten nie an,
+    # auch nicht über den archivierenden _ARCHIVE_AND_START-Pfad (killed → start).
+    monkeypatch.setenv("HOME", str(tmp_path))
+    jid = _seed_status("killed")
+    job_dir = tmp_path / ".local" / "share" / "bibi" / "reset-test" / jid
+    job_dir.mkdir(parents=True)
+    (job_dir / "counter.txt").write_text("3")
+    r = client.post(f"/-/job/{jid}/start")
+    assert r.status_code == 200
+    assert job_dir.is_dir()
+    assert (job_dir / "counter.txt").read_text() == "3"
+
+
 def test_start_pending_ok(client):
     jid = _seed_status("pending")
     assert client.post(f"/-/job/{jid}/start").status_code == 200

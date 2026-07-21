@@ -4,6 +4,46 @@ import pytest
 import bibi.job
 
 
+# ── data_dir() — External job data & secrets (Bibi4 Batch 6) ────────────────
+# monkeypatch HOME für jeden Test: data_dir() nutzt Path.home() direkt, ein
+# echter Home-Zugriff im Testlauf wäre sowohl falsch isoliert als auch ein
+# versehentlicher Schreibzugriff auf die echte ~/.local/share/bibi/.
+
+
+def test_data_dir_builds_subsystem_job_id_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("BIBI_JOB_ID", "abc123")
+    d = bibi.job.data_dir("reset-test")
+    assert d == tmp_path / ".local" / "share" / "bibi" / "reset-test" / "abc123"
+
+
+def test_data_dir_creates_the_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("BIBI_JOB_ID", "abc123")
+    d = bibi.job.data_dir("reset-test")
+    assert d.is_dir()
+
+
+def test_data_dir_falls_back_to_adhoc_without_job_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("BIBI_JOB_ID", raising=False)
+    d = bibi.job.data_dir("reset-test")
+    assert d.name == "adhoc"
+
+
+def test_data_dir_same_job_id_returns_same_path_across_calls(tmp_path, monkeypatch):
+    # Simuliert KILL→START auf derselben DB-Zeile (BIBI_JOB_ID bleibt stabil,
+    # s. worker.py:385) — genau der Mechanismus, den RESET jetzt gezielt
+    # unterbricht (job_db.wipe_job_data()), START aber bewusst nicht.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("BIBI_JOB_ID", "stable-id")
+    first = bibi.job.data_dir("reset-test")
+    (first / "counter.txt").write_text("1")
+    second = bibi.job.data_dir("reset-test")
+    assert second == first
+    assert (second / "counter.txt").read_text() == "1"
+
+
 def test_running_writes_signal(capsys):
     bibi.job.running()
     assert capsys.readouterr().out.strip() == 'BIBI:{"name":"running"}'

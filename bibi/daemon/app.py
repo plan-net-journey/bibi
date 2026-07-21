@@ -536,6 +536,10 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
             return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
         if outcome == "invalid":
             return JSONResponse(status_code=409, content={"error": "not resettable", "id": id})
+        # Bibi4 Batch 6: RESET wischt job-eigene ~/.local/share/bibi/-Daten,
+        # START (job_start() unten) rührt sie nie an — nur bei echtem
+        # Übergang (nicht bei not_found/invalid oben).
+        job_db.wipe_job_data(id)
         return {"id": id, "status": "pending"}
 
     @app.post("/-/job/{id}/start", tags=["job"])

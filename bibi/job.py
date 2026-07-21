@@ -3,11 +3,36 @@
 Schreibt BIBI:{...}-Zeilen auf stdout. Der Wrapper parst und verarbeitet sie.
 """
 import json
+import os
 import sys
+from pathlib import Path
 
 
 def _emit(payload: dict) -> None:
     print(f"BIBI:{json.dumps(payload, separators=(',', ':'))}", flush=True)
+
+
+def data_dir(subsystem: str) -> Path:
+    """Job-eigenes, worktree-unabhängiges Datenverzeichnis unter
+    ``~/.local/share/bibi/<subsystem>/<job_id>/`` (External job data &
+    secrets, ``vault/CONVENTIONS.md``) — überlebt den Worktree-Wipe zwischen
+    Fires/Retries (anders als alles Gitignorte *im* Worktree, z. B.
+    ``vault/case/*/data/``).
+
+    ``BIBI_JOB_ID`` kommt vom Wrapper: stabil über alle Retries EINES Laufs
+    und über die gesamte Lebensdauer eines wiederkehrenden Host-Jobs (nur ein
+    interner ``fire``-Zähler zählt pro Dispatch hoch, die Zeilen-ID bleibt).
+    Genau das macht diesen Pfad zum richtigen RESET-Angriffspunkt: RESET
+    räumt ihn generisch per Glob über alle Subsystem-Ordner auf
+    (``job_db.wipe_job_data()``), START rührt ihn nie an (Bibi4 Batch 6,
+    User-Entscheidung: "RESET wischt, START bewahrt").
+
+    Ohne ``BIBI_JOB_ID`` (adhoc-Aufruf außerhalb eines echten Jobs) fällt der
+    Job-Anteil auf ``"adhoc"`` zurück, statt zu crashen."""
+    job_id = os.environ.get("BIBI_JOB_ID", "adhoc")
+    d = Path.home() / ".local" / "share" / "bibi" / subsystem / job_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def running() -> None:
