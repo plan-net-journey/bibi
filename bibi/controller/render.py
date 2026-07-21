@@ -621,6 +621,84 @@ def archive_page(schedules: list[dict], now: float | None = None,
     )
 
 
+# ── Connected-Clients-Screen (Host, Bibi4-Iteration) ─────────────────────────
+# Backend existierte schon lange vor diesem Screen (WorkerRegistry, /-/worker,
+# in /-/status.workers exponiert) — hier nur die erste Darstellung dafür.
+# node_id/git_user (Bibi4-Iteration, User-Fund: "wir brauchen unbedingt den
+# hinterlegten gitea/git Nutzernamen") reisen seit dem Heartbeat-Ausbau mit.
+
+_CLIENTS_POLL = "every 10s [window.bibiFollow]"
+
+
+def _clients_table(workers: list[dict], now: float) -> str:
+    if not workers:
+        return '<p class="out-empty">— keine verbundenen Clients —</p>'
+    rows = []
+    for w in sorted(workers, key=lambda w: w.get("worker") or ""):
+        stale = w.get("stale", False)
+        status_html = ('<span class="chip conflict">disconnected</span>' if stale
+                       else '<span class="chip clean">connected</span>')
+        rows.append(
+            "<tr>"
+            f"<td>{_e(w.get('worker') or '—')}</td>"
+            f"<td>{_e(w.get('host') or '—')}</td>"
+            f"<td>{_e(w.get('git_user') or '—')}</td>"
+            f"<td>{_e(w.get('git_status') or '—')}</td>"
+            f"<td>{status_html}</td>"
+            f"<td>{_abs_datetime(w.get('connected_at'), now)}</td>"
+            f"<td>{_ago(w.get('last_heartbeat'), now)}</td>"
+            "</tr>"
+        )
+    return (
+        '<table><thead><tr><th>Name</th><th>Host</th><th>Git-User</th>'
+        '<th>Git-Status</th><th>Status</th><th>Connected seit</th>'
+        '<th>Letzter Heartbeat</th></tr></thead>'
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
+def clients_fragment(workers: list[dict], now: float | None = None) -> str:
+    now = time.time() if now is None else now
+    return (
+        f'<div id="clientsboard" hx-get="/-/ui/clients/board" '
+        f'hx-trigger="{_CLIENTS_POLL}" hx-swap="outerHTML">'
+        '<div class="panel-card"><h2>Clients</h2>'
+        f"{_clients_table(workers, now)}</div>"
+        "</div>"
+    )
+
+
+def clients_page(workers: list[dict], now: float | None = None, *,
+                 daemon_status: dict | None = None, git_status: dict | None = None,
+                 host_url: str | None = None, status_poll_interval_s: int = 30,
+                 job_status_poll_interval_s: int = 2) -> str:
+    """Connected-Clients-Screen — nur für die ``scheduler``-Rolle im Nav
+    verlinkt (``_screen_nav()``), die Route selbst ist trotzdem rollenfrei
+    erreichbar (analog zu Archive/Jobs — ein direkter Aufruf 404t nicht,
+    zeigt bei fehlender Rolle nur eine leere Tabelle, da ``workers`` dann
+    leer ist: ``WorkerRegistry`` existiert nur mit ``scheduler``-Rolle,
+    s. ``app.py``)."""
+    now = time.time() if now is None else now
+    daemon_status = daemon_status or {}
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="de"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>bibi · Clients</title>"
+        f"<script>{_FOLLOW_JS}</script>"
+        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
+        f"<style>{_CSS}</style></head><body>"
+        f"{_header('Clients', daemon_status)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
+        f"{clients_fragment(workers, now)}"
+        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
+
+
 # ── Lauf-Historie-Chart (PLAN-21 Befund 11, v2 — User-Redesign 2026-07-08) ───
 #
 # v1 (Zeitfenster-Overlap über waiting/running/halt, s. git-Historie) wurde
@@ -936,6 +1014,7 @@ def _screen_nav(active: str, roles: list[str] | None = None) -> str:
     if "scheduler" in roles:
         tabs.append(("Jobs", "/-/ui/schedules"))
         tabs.append(("Archive", "/-/ui/archive"))
+        tabs.append(("Clients", "/-/ui/clients"))
     if "connect" in roles:
         tabs.append(("Jobs", "/-/ui/jobs"))
         tabs.append(("Archive", "/-/ui/jobs/archive"))
@@ -1360,7 +1439,15 @@ def _host_card(status: dict, host_url: str | None, now: float) -> str:
     conn = status.get("connect")
     if conn is None:
         own = status.get("hostname")
-        return _lines_card("Host", [_e(own)] if own else ["—"])
+        # Bibi4-Iteration, User-Fund: "next in ..." wandert von der Job-
+        # Status-Kachel hierher, plus Anzahl verbundener Clients (Connected-
+        # Clients-Screen, Stufe 2) — beides ausschließlich eine Host-
+        # Perspektive, deshalb nur in diesem Zweig, nicht bei "Client" unten.
+        job_stats = status.get("job_stats") or {}
+        workers = status.get("workers") or []
+        n_clients = sum(1 for w in workers if not w.get("stale"))
+        sub = f"next {_until(job_stats.get('next_due_at'), now)} · {n_clients} clients connected"
+        return _lines_card("Host", [_e(own)] if own else ["—"], sub=sub)
     hostname = None
     if host_url:
         from urllib.parse import urlparse
@@ -1477,8 +1564,10 @@ def _job_status_card(job_stats: dict, now: float) -> str:
     kind-aufgeschlüsselte Historie bräuchte einen eigenen DB-Zähler, kein
     Anzeige-Thema dieser Iteration) — genau wie ``complete`` selbst NICHT aus
     ``counts`` kommt (Live-Zählung aktiver Jobs, sinkt sobald abgeschlossene
-    Jobs archiviert werden). Sub-Zeile kombiniert ``next_due_at``
-    (``_until()``-formatiert) und den Complete-Zähler in einer Zeile.
+    Jobs archiviert werden). Sub-Zeile zeigt nur noch den Complete-Zähler —
+    "next ..." ist zur Host-Kachel gewandert (Bibi4-Iteration, User-Fund:
+    "Lass uns den Teil next in ... verschieben in die Host Kachel", s.
+    ``_host_card()``), damit steht die Scheduling-Info nicht mehr doppelt.
 
     Kein eigener Titel mehr (Bibi4-Iteration, User-Fund: "entferne die
     Überschrift Job Status und beginne ganz oben mit JOB CLAUDE APP") — die
@@ -1499,7 +1588,7 @@ def _job_status_card(job_stats: dict, now: float) -> str:
             f'<div class="jsg-v">{cell(kind, statuses)}</div>' for kind, _ in _JOB_STATUS_KINDS)
         for row_label, statuses in _JOB_STATUS_ROWS)
     complete = job_stats.get("complete_since_uptime", 0)
-    sub = f"next {_until(job_stats.get('next_due_at'), now)} · {complete} complete"
+    sub = f"{complete} complete"
     return (f'<div class="card">'
            f'<div class="jobstatus-grid">{header}{rows}</div>'
            f'<div class="sub">{_e(sub)}</div></div>')
@@ -1525,43 +1614,44 @@ def job_status_fragment(job_stats: dict | None, now: float, *, poll_interval_s: 
     return f'<div {attrs}>{_job_status_card(job_stats, now)}</div>'
 
 
+#: Zeilen der Client-Matrix — dieselbe Form wie _JOB_STATUS_ROWS (Label,
+#: Menge matchender git_status-Werte), nur git-Gesundheit statt Lifecycle.
+#: "clean" bewusst keine eigene Zeile (etablierte Konvention: der stille
+#: Normalzustand bleibt unsichtbar, s. _jobs_row()-Docstring) — anders als
+#: bei _JOB_STATUS_ROWS sind diese drei Zeilen NICHT erschöpfend für "alle
+#: Jobs", sondern zeigen nur die vom Normalzustand abweichenden.
+_CLIENT_STATUS_ROWS = (("New", ("new",)), ("Modified", ("modified",)), ("Conflict", ("conflict",)))
+
+
 def _client_job_status_card(rows: list[dict]) -> str:
     """4. Stat-Karte für den Client (Bibi4-Iteration, User-Brainstorm: "was
     zeigen wir an Stelle der Host Job Status Card beim Client?") — Gegenstück
     zu ``_job_status_card()``, aber mit Repo-Struktur- statt Live-Scheduling-
     Daten: ``job_stats``/``counts_by_kind`` existiert nur für die
     ``scheduler``-Rolle (job_db-gestützt); der Client hat stattdessen die
-    ohnehin schon geladene Discovery-Liste (dieselbe wie ``_jobs_table()``),
-    keine neue Datenquelle nötig. Gleiche äußere Form wie die Host-Karte
-    (``.jobstatus-grid`` + Subline, kein Titel) für optische Konsistenz —
-    Grid = Typ-Zahlen Job/Claude/App, Subline = Git-Gesundheit (modified/
-    konfliktär-Zählung; "clean" bewusst nicht gezählt, s. ``_jobs_row()``-
-    Docstring: der stille Normalzustand). Eine Empfehlung aus dem Brainstorm,
-    keine Matrix wie beim Host — wäre für die angestrebte Kompaktheit
-    vermutlich zu groß geworden."""
-    counts = {"job": 0, "claude": 0, "app": 0}
-    git_counts = {"new": 0, "modified": 0, "conflict": 0}
-    for row in rows:
-        kind = models.display_kind(row.get("payload"), row.get("app_port"))
-        counts[kind] = counts.get(kind, 0) + 1
-        gs = row.get("git_status", "clean")
-        if gs in git_counts:
-            git_counts[gs] += 1
+    ohnehin schon geladene Discovery-Liste (dieselbe wie ``_jobs_table()``).
+
+    Echte Matrix seit der Bibi4-Iteration (User-Fund: "mir gefällt die
+    schnöde Zusammenfassung nicht, ich hätte gerne die Matrix immer wie beim
+    Host") — löst die vorherige, auf eine Fließtext-Subline reduzierte
+    Fassung ab: 3 Zeilen (New/Modified/Conflict, **immer alle drei gezeigt,
+    auch bei 0** — explizite User-Entscheidung, analog zu ``_JOB_STATUS_ROWS``,
+    das WAITING/RUNNING/STOPPED ebenfalls unbedingt zeigt) x 3 Spalten
+    (Job/Claude/App). Keine Fußzeile mehr — "next in ..."/Client-Count
+    wanderten in die Host-Kachel (``_host_card()``)."""
+    def cell(kind: str, statuses: tuple[str, ...]) -> int:
+        return sum(
+            1 for r in rows
+            if models.display_kind(r.get("payload"), r.get("app_port")) == kind
+            and r.get("git_status", "clean") in statuses
+        )
     header = '<div class="jsg-h"></div>' + "".join(
         f'<div class="jsg-h">{label}</div>' for _, label in _JOB_STATUS_KINDS)
-    row_html = '<div class="jsg-k"></div>' + "".join(
-        f'<div class="jsg-v">{counts[kind]}</div>' for kind, _ in _JOB_STATUS_KINDS)
-    parts = []
-    if git_counts["new"]:
-        parts.append(f'{git_counts["new"]} new')
-    if git_counts["modified"]:
-        parts.append(f'{git_counts["modified"]} modified')
-    if git_counts["conflict"]:
-        parts.append(f'{git_counts["conflict"]} conflict')
-    sub = " · ".join(parts) if parts else "all clean"
-    return (f'<div class="card">'
-           f'<div class="jobstatus-grid">{header}{row_html}</div>'
-           f'<div class="sub">{_e(sub)}</div></div>')
+    body = "".join(
+        f'<div class="jsg-k">{row_label}</div>' + "".join(
+            f'<div class="jsg-v">{cell(kind, statuses)}</div>' for kind, _ in _JOB_STATUS_KINDS)
+        for row_label, statuses in _CLIENT_STATUS_ROWS)
+    return f'<div class="card"><div class="jobstatus-grid">{header}{body}</div></div>'
 
 
 def feed_status_fragment(

@@ -172,6 +172,34 @@ def test_host_card_dash_without_hostname_and_without_connect_role():
     assert ">—<" in html
 
 
+def test_host_card_shows_next_due_and_client_count_on_host_branch():
+    # Bibi4-Iteration, User-Fund: "next in ..." wandert von der Job-Status-
+    # Kachel hierher, plus Anzahl verbundener Clients.
+    status = {
+        "hostname": "sarasate",
+        "job_stats": {"next_due_at": 400.0},
+        "workers": [{"stale": False}, {"stale": False}, {"stale": True}],
+    }
+    html = render._host_card(status, "http://localhost:8780", now=100.0)
+    assert '<div class="sub">next in 5 min · 2 clients connected</div>' in html
+
+
+def test_host_card_next_due_none_and_no_clients_shows_dash_and_zero():
+    status = {"hostname": "sarasate"}
+    html = render._host_card(status, "http://localhost:8780", now=100.0)
+    assert '<div class="sub">next — · 0 clients connected</div>' in html
+
+
+def test_host_card_client_branch_has_no_next_due_sub_line():
+    # Die Client-Karte (mit connect-Rolle) zeigt weiterhin nur Heartbeat,
+    # kein "next"/Client-Count — das ist ausschließlich Host-Perspektive.
+    html = render._host_card(
+        {"connect": {"ok": True, "last_at": 96.0}},
+        "http://sarasate.tail9f9173.ts.net:8780", now=100.0)
+    assert "next" not in html
+    assert "clients connected" not in html
+
+
 # --- Mode-Kachel (PLAN-19 Befund 4: Auto-Sync+Maintenance+Uptime zusammen) ------
 
 
@@ -235,16 +263,14 @@ def test_job_status_card_complete_uses_cumulative_counter_not_live_count():
     assert "47 complete" in html
 
 
-def test_job_status_card_shows_next_due_sub_line():
+def test_job_status_card_sub_line_shows_only_complete_count():
+    # Bibi4-Iteration, User-Fund: "next in ..." wandert in die Host-Kachel
+    # (s. test_host_card_shows_next_due_and_client_count_on_host_branch) —
+    # hier bleibt nur noch der Complete-Zähler übrig.
     html = render._job_status_card(
-        {"counts_by_kind": {}, "complete_since_uptime": 0, "next_due_at": 400.0}, now=100.0)
-    assert '<div class="sub">next in 5 min · 0 complete</div>' in html
-
-
-def test_job_status_card_next_due_none_shows_dash():
-    html = render._job_status_card(
-        {"counts_by_kind": {}, "complete_since_uptime": 0, "next_due_at": None}, now=100.0)
-    assert '<div class="sub">next — · 0 complete</div>' in html
+        {"counts_by_kind": {}, "complete_since_uptime": 3, "next_due_at": 400.0}, now=100.0)
+    assert '<div class="sub">3 complete</div>' in html
+    assert "next" not in html
 
 
 def test_job_status_card_has_no_title_row():
@@ -289,10 +315,13 @@ def test_feed_status_fragment_shows_client_card_when_client_rows_given():
     html = render.feed_status_fragment({}, None, None, now=100.0, client_rows=rows)
     assert html.count('<div class="card">') == 4
     assert '<div class="jobstatus-grid">' in html
-    assert "1 modified" in html
+    assert '<div class="jsg-k">Modified</div><div class="jsg-v">1</div>' in html
 
 
-def test_client_job_status_card_counts_kinds_and_git_health():
+def test_client_job_status_card_is_a_full_matrix_like_host():
+    # Bibi4-Iteration, User-Fund: "mir gefällt die schnöde Zusammenfassung
+    # nicht, ich hätte gerne die Matrix immer wie beim Host" — New/Modified/
+    # Conflict x Job/Claude/App, keine Fließtext-Subline mehr.
     rows = [
         {"payload": "echo a", "app_port": None, "git_status": "clean"},
         {"payload": "echo b", "app_port": None, "git_status": "modified"},
@@ -300,14 +329,20 @@ def test_client_job_status_card_counts_kinds_and_git_health():
         {"payload": "echo c", "app_port": 9100, "git_status": "conflict"},
     ]
     html = render._client_job_status_card(rows)
-    assert '<div class="jsg-v">2</div><div class="jsg-v">1</div><div class="jsg-v">1</div>' in html
-    assert "1 new · 1 modified · 1 conflict" in html
+    assert '<div class="jsg-k">New</div><div class="jsg-v">0</div><div class="jsg-v">1</div><div class="jsg-v">0</div>' in html
+    assert '<div class="jsg-k">Modified</div><div class="jsg-v">1</div><div class="jsg-v">0</div><div class="jsg-v">0</div>' in html
+    assert '<div class="jsg-k">Conflict</div><div class="jsg-v">0</div><div class="jsg-v">0</div><div class="jsg-v">1</div>' in html
+    assert '<div class="sub">' not in html  # keine Fußzeile mehr
 
 
-def test_client_job_status_card_all_clean_shows_reassuring_subline():
+def test_client_job_status_card_shows_all_zero_rows_when_everything_clean():
+    # User-Entscheidung (AskUserQuestion): immer alle 3 Zeilen zeigen, auch
+    # bei 0 — volle visuelle Parität mit der Host-Matrix.
     rows = [{"payload": "echo a", "app_port": None, "git_status": "clean"}]
     html = render._client_job_status_card(rows)
-    assert '<div class="sub">all clean</div>' in html
+    assert '<div class="jsg-k">New</div><div class="jsg-v">0</div><div class="jsg-v">0</div><div class="jsg-v">0</div>' in html
+    assert '<div class="jsg-k">Modified</div><div class="jsg-v">0</div><div class="jsg-v">0</div><div class="jsg-v">0</div>' in html
+    assert '<div class="jsg-k">Conflict</div><div class="jsg-v">0</div><div class="jsg-v">0</div><div class="jsg-v">0</div>' in html
 
 
 def test_client_job_status_card_no_title_matches_host_shape():
@@ -323,7 +358,7 @@ def test_feed_status_fragment_prefers_host_card_when_both_present():
                             "next_due_at": None}}
     html = render.feed_status_fragment(
         status, None, None, now=100.0, client_rows=[{"payload": "x", "app_port": None}])
-    assert "next — · 0 complete" in html
+    assert '<div class="jsg-h"></div><div class="jsg-h">Job</div>' in html
 
 
 # --- Feed-Kachel-Grid: jetzt 3 statt 6 (PLAN-19 Befund 4) -----------------------

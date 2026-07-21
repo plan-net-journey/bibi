@@ -321,6 +321,23 @@ def add_controller_routes(
         from bibi import config
         return HTMLResponse(render.archive_fragment(_schedules(), public_host=config.public_host()))
 
+    @app.get("/-/ui/clients", include_in_schema=False)
+    def clients_screen():
+        # Connected-Clients-Screen (Host, Bibi4-Iteration) — Backend
+        # (WorkerRegistry, /-/worker) existierte schon lange, hier nur die
+        # erste Darstellung. status["workers"] kommt schon über _status()
+        # (/-/status), keine neue Datenquelle nötig.
+        from bibi import config
+        status = _status()
+        return HTMLResponse(render.clients_page(
+            status.get("workers") or [], daemon_status=status, git_status=_feed_git_status(),
+            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
+            job_status_poll_interval_s=config.job_status_poll_interval()))
+
+    @app.get("/-/ui/clients/board", include_in_schema=False)
+    def clients_board_fragment():
+        return HTMLResponse(render.clients_fragment(_status().get("workers") or []))
+
     @app.get("/-/ui/schedules/timeseries", include_in_schema=False)
     def schedules_timeseries_fragment(request: Request, res: int | None = None):
         # Self-Poll-Ziel des Stat-Grid/Charts — eigene Route, eigene

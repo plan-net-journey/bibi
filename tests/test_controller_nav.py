@@ -242,6 +242,17 @@ def test_screen_nav_hides_client_archive_without_connect_role():
     assert 'href="/-/ui/jobs/archive"' not in html
 
 
+def test_screen_nav_shows_clients_tab_with_scheduler_role():
+    # Bibi4-Iteration, User-Fund: Connected-Clients-Screen, nur beim Host.
+    html = render._screen_nav("Live-Log", roles=["scheduler"])
+    assert 'href="/-/ui/clients">Clients' in html
+
+
+def test_screen_nav_hides_clients_tab_without_scheduler_role():
+    html = render._screen_nav("Live-Log", roles=["connect"])
+    assert 'href="/-/ui/clients"' not in html
+
+
 def test_screen_nav_active_tab_has_active_class():
     # PLAN-25 Befund 2, User-Fund: der aktive Tab war bisher nur reiner Text
     # ohne eigene CSS-Klasse — "Hervorhebung" war die zufällige Abwesenheit
