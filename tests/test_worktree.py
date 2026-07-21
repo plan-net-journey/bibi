@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -61,6 +63,40 @@ def test_prepare_is_fresh_each_run(repo: Path):
     (p1 / "scratch.txt").write_text("dirty\n")
     p2 = wt.prepare(repo_root=repo, work_dir=work, slug="run1")  # neu von trunk
     assert not (p2 / "scratch.txt").exists()
+
+
+def test_prepare_serializes_concurrent_worktree_git_calls(repo: Path, monkeypatch):
+    """Bibi4-Iteration, User-Fund "Runner 5 hängt" (Beobachtungen.md): mehrere
+    gleichzeitige prepare()-Aufrufe dürfen ihre `git worktree add/remove`-
+    Anteile nicht parallel laufen lassen — Semaphore(1) serialisiert sie. Der
+    `is_ahead()`-Vorab-Check bleibt bewusst außerhalb (darf weiter parallel
+    laufen), deshalb wird hier nur um `args[0] == "worktree"` gemessen."""
+    work = repo / "data" / "worktrees"
+    original_git = wt._git
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def slow_git(args, *, cwd, check=True):
+        nonlocal active, max_active
+        if args and args[0] == "worktree":
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+        return original_git(args, cwd=cwd, check=check)
+
+    monkeypatch.setattr(wt, "_git", slow_git)
+    threads = [threading.Thread(
+        target=wt.prepare, kwargs=dict(repo_root=repo, work_dir=work, slug=f"run{i}"))
+        for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert max_active == 1
 
 
 def test_commit_noop_when_clean(repo: Path):

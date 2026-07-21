@@ -20,12 +20,24 @@ import logging
 import re
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger("bibi.worktree")
 
 BOT_EMAIL = "bibi@local"
+
+#: Bibi4-Iteration, User-Fund "Runner 5 hängt" (Beobachtungen.md): mehrere
+#: gleichzeitige Job-Dispatches lösen mehrere parallele ``git worktree add``+
+#: ``git-lfs filter-process``-Subprozessketten aus, die um CPU/IO konkurrieren
+#: — gemessen bis zu 107,8s für einen einzelnen prepare()-Aufruf, der
+#: `tick_once()`s komplette Pinned-Worker-Schleife für die Dauer blockiert
+#: (kein Deadlock, aber unbegrenzte, ungeschützte Wartezeit). Serialisiert
+#: statt begrenzt (Semaphore(1) statt z. B. 2-3) — User-Entscheidung, s.
+#: Beobachtungen.md "(b)!": lieber Dispatches nacheinander abarbeiten als
+#: sich weiterhin gegenseitig ausbremsen.
+_PREPARE_SEMAPHORE = threading.Semaphore(1)
 
 #: Analog zu exec_backend._TAG_UNSAFE_RE: Slugs kommen oft roh aus einem
 #: Dateistamm (schedule.parser.derive_slug — kein slugify dort, da der Slug
@@ -96,7 +108,12 @@ def prepare(*, repo_root: Path, work_dir: Path, slug: str, trunk: str = "trunk")
     **F-b (PLAN-7):** Hat ``agent/<slug>`` noch **ungemergte** Commits voraus von
     trunk (Merge-back stand aus), würde ``-B`` sie verwerfen → Datenverlust. Darum:
     abbrechen statt verwerfen. Der periodische Merge-Sweep (F-a) holt den Branch
-    nach; der Lauf scheitert sauber als ``failed`` und wird neu versucht."""
+    nach; der Lauf scheitert sauber als ``failed`` und wird neu versucht.
+
+    Der eigentliche Git-/LFS-Anteil läuft serialisiert über ``_PREPARE_SEMAPHORE``
+    (s. dortiger Kommentar) — der günstige ``is_ahead()``-Vorab-Check bleibt
+    außerhalb, der blockiert nichts, den soll ein wartender Aufrufer nicht auch
+    noch verzögern."""
     branch = branch_name(slug)
     if is_ahead(repo_root=repo_root, branch=branch, trunk=trunk):
         raise GitOpError(
@@ -105,11 +122,12 @@ def prepare(*, repo_root: Path, work_dir: Path, slug: str, trunk: str = "trunk")
             "-B-Reset verweigert (F-b), Merge-Sweep holt nach", 1)
     work_dir.mkdir(parents=True, exist_ok=True)
     path = work_dir / slug
-    if path.exists():
-        _git(["worktree", "remove", "--force", str(path)], cwd=repo_root, check=False)
+    with _PREPARE_SEMAPHORE:
         if path.exists():
-            shutil.rmtree(path, ignore_errors=True)
-    _git(["worktree", "add", "-B", branch_name(slug), str(path), trunk], cwd=repo_root)
+            _git(["worktree", "remove", "--force", str(path)], cwd=repo_root, check=False)
+            if path.exists():
+                shutil.rmtree(path, ignore_errors=True)
+        _git(["worktree", "add", "-B", branch_name(slug), str(path), trunk], cwd=repo_root)
     return path
 
 
