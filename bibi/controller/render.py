@@ -1854,10 +1854,8 @@ def _sparkline_cell_lazy(slug: str, index: int = 0) -> str:
     noch unaufgelöst) durch ist und sich selbst per ``hx-swap=\"outerHTML\"``
     ersetzt."""
     s = _e(slug)
-    trigger = f"load delay:{index * 120}ms" if index > 0 else "load"
     return (f'<span id="spark-{s}" hx-preserve="true" '
-           f'hx-get="/-/ui/jobs/{s}/sparkline" hx-trigger="{trigger}" '
-           f'hx-swap="outerHTML"></span>')
+           f'hx-get="/-/ui/jobs/{s}/sparkline" hx-trigger="load" hx-swap="outerHTML"></span>')
 
 
 def _jobs_type_cell(row: dict, public_host: str) -> str:
