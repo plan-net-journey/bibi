@@ -507,8 +507,12 @@ def _sched_row(s: dict, now: float, *, public_host: str = "localhost") -> str:
 
 
 def _sched_table(items: list[dict], now: float, *, public_host: str = "localhost") -> str:
+    # Bibi4-Iteration, Seitenabgleich (User-Fund): Spaltenkopf war "Schedule",
+    # der Client sagt für dieselbe Spalte schon "Slug" (_jobs_table()) — auch
+    # dein ursprünglicher Batch-1-Spaltenplan für den Host wollte "Slug" als
+    # erste Spalte, das war nie nachgezogen worden.
     rows = "".join(_sched_row(s, now, public_host=public_host) for s in items)
-    return ('<table class="sched"><thead><tr><th>Schedule</th><th>Type</th><th>Status</th>'
+    return ('<table class="sched"><thead><tr><th>Slug</th><th>Type</th><th>Status</th>'
             f'<th>last / since</th><th>next</th></tr></thead><tbody>{rows}'
             "</tbody></table>")
 
@@ -1940,12 +1944,18 @@ def jobs_fragment(
 
 
 def _client_archive_row(r: dict, now: float) -> str:
-    """Eine Archive-Zeile (Client) — Slug/Type/Status/Runtime/next, dieselbe
-    Spaltenstruktur wie ``_sched_row()`` (Host), aus einem Journal-Run-Dict
-    statt einem Schedule-Dict. "Type" nutzt ``models.effective_kind()`` statt
-    ``display_kind()`` — die journal-Tabelle trägt kein ``app_port`` (nur
+    """Eine Archive-Zeile (Client) — Slug/Type/Status/last-since/Runtime/next,
+    dieselbe Spaltenstruktur wie ``_sched_row()`` (Host), aus einem Journal-
+    Run-Dict statt einem Schedule-Dict. "Type" nutzt ``models.effective_kind()``
+    statt ``display_kind()`` — die journal-Tabelle trägt kein ``app_port`` (nur
     ``payload``, s. schema.sql), genau wie beim Host-Archiv/Journal
     (``_sched_row()`` selbst nutzt ebenfalls nur ``_effective_sched_type()``).
+
+    "last/since" (Bibi4-Iteration, User-Fund: fehlendes Datum/Uhrzeit im
+    Client-Archive) nutzt ``finished_at`` über denselben ``_time_toggle_cell()``
+    wie der Host — für einen archivierten Lauf ist "wann fertig" das Analogon
+    zu "letzter Lauf".
+
     "next" ist beim Client immer "—" (User-Fund: einmalige /run-Läufe kennen
     keinen künftigen Termin) — bewusst sichtbar mit "—" statt ausgeblendet
     (Bibi4-Iteration, User-Fund "eine App": nicht verfügbare Spalten disabled/
@@ -1953,17 +1963,21 @@ def _client_archive_row(r: dict, now: float) -> str:
     slug = _e(r.get("slug"))
     kind = _e(models.effective_kind(r.get("payload")))
     status = _e(r.get("status"))
+    when = _time_toggle_cell(r.get("finished_at"), now, rel_fn=_ago)
     runtime = _duration_cell(r)
     jid = r.get("id")
     slug_cell = (f'<a class="slug" href="/-/ui/run/{jid}">{slug}</a>'
                 if jid is not None else slug)
     status_cell = (f'<a class="st {status}" href="/-/ui/run/{jid}">{status}</a>'
                   if jid is not None else f'<span class="st {status}">{status}</span>')
+    when_cell = (f'<a class="rowlink" href="/-/ui/run/{jid}">{when}</a>'
+                if jid is not None else when)
     return (
         "<tr>"
         f"<td>{slug_cell}</td>"
         f'<td class="kind">{kind}</td>'
         f"<td>{status_cell}</td>"
+        f"<td>{when_cell}</td>"
         f"<td>{runtime}</td>"
         "<td>—</td>"
         "</tr>"
@@ -1974,8 +1988,9 @@ def _client_archive_table(runs: list[dict], now: float) -> str:
     if not runs:
         return '<p class="out-empty">— keine lokalen Läufe —</p>'
     rows = "".join(_client_archive_row(r, now) for r in runs)
-    return ('<table class="sched"><thead><tr><th>Schedule</th><th>Type</th><th>Status</th>'
-            f'<th>runtime</th><th>next</th></tr></thead><tbody>{rows}</tbody></table>')
+    return ('<table class="sched"><thead><tr><th>Slug</th><th>Type</th><th>Status</th>'
+            f'<th>last/since</th><th>runtime</th><th>next</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table>')
 
 
 def jobs_archive_fragment(runs: list[dict], now: float | None = None) -> str:

@@ -281,16 +281,26 @@ def test_jobs_page_includes_sparklines_when_given():
 # ── Archive-Screen (Client, Bibi4-Iteration) ─────────────────────────────────
 
 
-def test_client_archive_table_renders_slug_type_status_runtime_next():
+def test_client_archive_table_renders_slug_type_status_when_runtime_next():
     runs = [{"id": 7, "slug": "mein-testjob", "status": "complete",
             "payload": "claude: tu was", "exec_runtime": 3.2, "finished_at": 100.0}]
     html = render._client_archive_table(runs, now=200.0)
-    assert '<th>Schedule</th><th>Type</th><th>Status</th><th>runtime</th><th>next</th>' in html
+    assert ('<th>Slug</th><th>Type</th><th>Status</th><th>last/since</th>'
+            '<th>runtime</th><th>next</th>') in html
     assert 'href="/-/ui/run/7">mein-testjob<' in html
     assert '<td class="kind">claude</td>' in html
     assert 'class="st complete" href="/-/ui/run/7">complete<' in html
     assert "3s" in html
     assert "<td>—</td>" in html  # next: beim Client immer "—", nicht ausgeblendet
+
+
+def test_client_archive_table_shows_finished_at_datetime():
+    # Bibi4-Iteration, User-Fund: fehlendes Datum/Uhrzeit im Client-Archive —
+    # analog zum Host, der last/since via _time_toggle_cell()/_ago() zeigt.
+    runs = [{"id": 7, "slug": "mein-testjob", "status": "complete",
+            "payload": "echo x", "exec_runtime": 3.2, "finished_at": 100.0}]
+    html = render._client_archive_table(runs, now=200.0)
+    assert "ago" in html or "min" in html or "s" in html  # relative _ago()-Ausgabe
 
 
 def test_client_archive_table_empty_shows_placeholder():
