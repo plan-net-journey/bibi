@@ -2182,6 +2182,12 @@ def _local_job_meta_line(local: dict, *, public_host: str = "localhost",
     hier (anders als beim Host), sondern ausschließlich im Status-Badge von
     ``_live_panel()`` direkt darunter — keine doppelte Anzeige.
 
+    Wrapper seit dem Seitenabgleich (Batch 8) ``<div class="meta">`` statt
+    ``<p class="muted">`` — dasselbe Markup wie ``live_fragment()`` (Host) für
+    dieselbe Rolle im Layout, auch wenn der Inhalt rollenspezifisch bleibt
+    (Host: letzter/nächster Lauf aus der Scheduler-DB; Client: Git-Status +
+    App-Link, die der Host so nicht kennt).
+
     App-Link hier als Fallback zu ``_live_panel()`` (Bibi4-Iteration, User-Fund:
     "der fehlt"): ``_local_job_view()`` gibt ``None`` zurück, wenn der Job auf
     diesem Knoten noch nie lief UND nichts live ist — dann bleibt
@@ -2198,9 +2204,9 @@ def _local_job_meta_line(local: dict, *, public_host: str = "localhost",
     app_port = local.get("app_port") if include_app_link else None
     app_link = (f' · <a href="http://{public_host}:{app_port}/" target="_blank" '
                f'rel="noopener">Zur App →</a>' if app_port else "")
-    return (f'<p class="muted">Typ <b>{kind}</b> · '
+    return (f'<div class="meta">Typ <b>{kind}</b> · '
             f'Trigger <code>{trigger}</code> · Git <span class="{cls}">{git_label}</span>'
-            f'{app_link}</p>')
+            f'{app_link}</div>')
 
 
 def jobs_detail_live_fragment(slug: str, live: dict | None, local: dict | None,

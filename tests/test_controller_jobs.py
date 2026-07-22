@@ -459,6 +459,16 @@ def test_jobs_detail_live_fragment_meta_line_shows_type_trigger_git():
     assert 'class="chip modified"' in html and ">geändert<" in html
 
 
+def test_jobs_detail_live_fragment_meta_line_uses_same_markup_as_host():
+    # Seitenabgleich (Batch 8, User-Fund): dieselbe Meta-Zeilen-Umhüllung wie
+    # live_fragment() (Host) — <div class="meta">, nicht mehr <p class="muted">
+    # — auch wenn der Inhalt rollenspezifisch bleibt (Git-Status/App-Link statt
+    # letzter/nächster Lauf).
+    html = render.jobs_detail_live_fragment("a", None, _row("a"), None)
+    assert '<div class="meta">Typ' in html
+    assert 'class="muted"' not in html
+
+
 def test_jobs_detail_live_fragment_shows_app_link_even_without_any_run():
     # Bibi4-Iteration, User-Fund: "der fehlt" — vorher lieferte
     # _local_job_view() None (nie gelaufen, nichts live), wodurch
