@@ -278,6 +278,31 @@ def test_jobs_page_includes_sparklines_when_given():
     assert "Lokale Läufe" not in html
 
 
+def test_sparkline_cell_lazy_renders_load_trigger():
+    # Bibi4-Iteration, User-Fund ("Sparklines dauern beim Reload immer"):
+    # Entkopplung vom initialen Seitenaufbau — Platzhalter mit hx-get gegen
+    # eine eigene Pro-Slug-Route statt der bisherigen blockierenden
+    # _job_sparkline_series()-Berechnung inline in jobs_screen().
+    html = render._sparkline_cell_lazy("a")
+    assert html == (
+        '<span id="spark-a" hx-get="/-/ui/jobs/a/sparkline" '
+        'hx-trigger="load" hx-swap="outerHTML"></span>'
+    )
+
+
+def test_jobs_page_uses_lazy_sparklines_when_requested():
+    html = render.jobs_page([_row("a")], {}, now=100.0, lazy_sparklines=True)
+    assert 'hx-get="/-/ui/jobs/a/sparkline" hx-trigger="load"' in html
+
+
+def test_jobs_page_lazy_sparklines_ignores_eager_sparklines_arg():
+    # lazy_sparklines gewinnt, falls beides übergeben wird — kein Doppel-Render.
+    html = render.jobs_page([_row("a")], {}, now=100.0,
+                            sparklines={"a": [0, 5]}, lazy_sparklines=True)
+    assert "<svg" not in html
+    assert 'hx-get="/-/ui/jobs/a/sparkline"' in html
+
+
 # ── Archive-Screen (Client, Bibi4-Iteration) ─────────────────────────────────
 
 
@@ -733,6 +758,84 @@ def test_jobs_route_shows_app_port_link_for_discovered_app_job(team_repo: Path, 
         assert r.status_code == 200
         assert ('<a href="http://localhost:9100/" target="_blank" '
                'rel="noopener">app :9100</a>') in r.text
+
+
+# ── Sparkline-Entkopplung (zweite Bibi4-Iteration) ──────────────────────────
+
+
+def test_jobs_route_renders_lazy_sparkline_placeholder_not_svg(team_repo: Path, app_with):
+    # User-Fund: "Sparklines dauern beim Reload immer" — der initiale
+    # Seitenaufbau darf die Serie nicht mehr selbst berechnen (das war der
+    # blockierende Teil), nur noch einen Platzhalter mit hx-get liefern.
+    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
+    client = _FakeClient()
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs")
+        assert r.status_code == 200
+        assert 'hx-get="/-/ui/jobs/mein-testjob/sparkline" hx-trigger="load"' in r.text
+        assert "<svg" not in r.text
+
+
+def test_jobs_sparkline_route_returns_resolved_cell(team_repo: Path, app_with):
+    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
+    client = _FakeClient()
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/mein-testjob/sparkline")
+        assert r.status_code == 200
+        assert 'id="spark-mein-testjob" hx-preserve="true">' in r.text
+        assert 'hx-get' not in r.text  # aufgelöst, kein erneuter Lazy-Trigger
+
+
+def test_jobs_sparkline_route_unknown_slug_returns_empty_cell(team_repo: Path, app_with):
+    # Kein Crash bei einem Slug, der (Rennen mit Löschen/Umbenennen) nicht
+    # mehr existiert — leere, aber valide Zelle statt 404/500.
+    client = _FakeClient()
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/jobs/gone/sparkline")
+        assert r.status_code == 200
+        assert 'id="spark-gone" hx-preserve="true"></span>' in r.text
+
+
+def test_jobs_sparkline_concurrent_requests_compute_once(team_repo: Path, app_with, monkeypatch):
+    # Kern des Fixes: mehrere gleichzeitige Pro-Slug-Requests (wie beim
+    # initialen Laden mehrerer Zeilen, alle mit hx-trigger="load") duerfen
+    # bei kaltem Cache nur EINE teure git-log-Berechnung ausloesen, nicht
+    # eine pro Zeile (thundering herd) — sonst waere die Entkopplung fuer
+    # den Cache-Miss-Fall schlechter als der alte, einmalige Blockier-Aufruf.
+    import threading
+    import time as time_mod
+    from bibi import feed as feed_mod
+
+    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
+    calls = []
+    real_collect = feed_mod.collect_commits
+
+    def slow_collect_commits(root, **kw):
+        calls.append(1)
+        time_mod.sleep(0.2)  # simuliert einen teuren git log
+        return real_collect(root, **kw)
+
+    monkeypatch.setattr(feed_mod, "collect_commits", slow_collect_commits)
+
+    client = _FakeClient()
+    app, _ = app_with(client)
+    with TestClient(app) as c:
+        results = []
+
+        def _fetch():
+            results.append(c.get("/-/ui/jobs/mein-testjob/sparkline").status_code)
+
+        threads = [threading.Thread(target=_fetch) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+    assert results == [200] * 5
+    assert len(calls) == 1
 
 
 def test_jobs_detail_attrs_route(team_repo: Path, app_with):

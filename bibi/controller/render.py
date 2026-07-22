@@ -1811,6 +1811,27 @@ def _sparkline_cell(slug: str, series_by_slug: dict[str, list[int]] | None) -> s
     return f'<span id="spark-{_e(slug)}" hx-preserve="true">{svg}</span>'
 
 
+def _sparkline_cell_lazy(slug: str) -> str:
+    """Entkoppelter Platzhalter (Bibi4-Iteration, User-Fund: "Sparklines
+    dauern beim Reload immer") — löst ``jobs_screen()``s bisherige, den
+    kompletten Seitenaufbau blockierende ``_job_sparkline_series()``-
+    Berechnung ab. Statt die Serie eager mitzuliefern, feuert die Zelle
+    selbst einen ``hx-get`` gegen eine eigene Pro-Slug-Route
+    (``/-/ui/jobs/{slug}/sparkline``), sobald sie ins DOM eingehängt wird
+    (``hx-trigger=\"load\"``) — dieselbe ``id`` wie ``_sparkline_cell()``,
+    damit ein späterer 2s-Poll das dann schon aufgelöste Element per
+    ``hx-preserve`` unangetastet lässt, statt den Lazy-Load erneut
+    anzustoßen. Analog zum bestehenden ``hx-trigger=\"revealed\"``-Muster in
+    ``_journal_sentinel_row()``, hier ``load`` statt ``revealed`` — eine
+    normale Jobs-Tabelle braucht kein Scroll-Gating, alle Zeilen sind eh
+    sichtbar; der eigentliche Entlastungseffekt kommt aus dem gemeinsamen,
+    gesperrten Cache in ``_job_sparkline_series()``, nicht aus verzögertem
+    Laden."""
+    s = _e(slug)
+    return (f'<span id="spark-{s}" hx-get="/-/ui/jobs/{s}/sparkline" '
+           f'hx-trigger="load" hx-swap="outerHTML"></span>')
+
+
 def _jobs_type_cell(row: dict, public_host: str) -> str:
     """Type-Zelle nur für die Jobs-Tabelle (PLAN-29 Befund 2, User-Fund:
     "Type, bei Apps mit Port und als Link (auch wenn die App down ist)").
@@ -1830,7 +1851,8 @@ def _jobs_type_cell(row: dict, public_host: str) -> str:
 
 
 def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
-              *, public_host: str = "localhost", sparklines: dict[str, list[int]] | None = None) -> str:
+              *, public_host: str = "localhost", sparklines: dict[str, list[int]] | None = None,
+              lazy_sparklines: bool = False) -> str:
     """Eine Zeile: Slug(+Git-Chip)/Type/Status/last-since/Runtime (Bibi4-
     Iteration, User-Fund: "Slug/Type/Status/last-since/Runtime" — löst die
     vorherige 7-Spalten-Form (eigene Git-Spalte, getrennte Start/Ende-Spalten)
@@ -1893,17 +1915,19 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
         last_cell = runtime_cell = "—"
 
     type_cell = _jobs_type_cell(row, public_host)
-    spark_cell = _sparkline_cell(slug, sparklines)
+    spark_cell = _sparkline_cell_lazy(slug) if lazy_sparklines else _sparkline_cell(slug, sparklines)
 
     return (f"<tr><td>{slug_cell}</td><td>{type_cell}</td><td>{status_cell}</td>"
             f"<td>{last_cell}</td><td>{runtime_cell}</td><td>{spark_cell}</td></tr>")
 
 
 def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
-                *, public_host: str = "localhost", sparklines: dict[str, list[int]] | None = None) -> str:
+                *, public_host: str = "localhost", sparklines: dict[str, list[int]] | None = None,
+                lazy_sparklines: bool = False) -> str:
     if not rows:
         return '<p class="out-empty">— keine Job-MDs im Repository gefunden —</p>'
-    body = "".join(_jobs_row(r, local_runs, now, public_host=public_host, sparklines=sparklines)
+    body = "".join(_jobs_row(r, local_runs, now, public_host=public_host, sparklines=sparklines,
+                            lazy_sparklines=lazy_sparklines)
                   for r in rows)
     return (
         '<table><thead><tr><th>Slug</th><th>Type</th><th>Status</th>'
@@ -1916,6 +1940,7 @@ def jobs_fragment(
     rows: list[dict], local_runs: dict[str, dict],
     *, now: float | None = None, public_host: str = "localhost",
     sparklines: dict[str, list[int]] | None = None,
+    lazy_sparklines: bool = False,
 ) -> str:
     """Der austauschbare Jobs-Kern (``#jobsboard``): lokale Job-MDs + Git-
     Status + letzter Start/Ende/Laufzeit je Zeile (PLAN-21 Befund 10 — löst
@@ -1936,12 +1961,16 @@ def jobs_fragment(
     ``sparklines`` (Bibi4-Iteration, User-Fund: "eine Sparkline ... git
     Änderungen") kommt nur vom initialen Seitenaufbau (``jobs_page()``) — der
     2s-Self-Poll hier übergibt bewusst ``None``, s. ``_sparkline_cell()``-
-    Docstring (hx-preserve, zu teuer für den Sekundentakt)."""
+    Docstring (hx-preserve, zu teuer für den Sekundentakt).
+
+    ``lazy_sparklines`` (zweite Bibi4-Iteration, User-Fund: "Sparklines dauern
+    beim Reload immer") — der initiale Seitenaufbau selbst rechnet die Serie
+    nicht mehr, sondern rendert nur noch Platzhalter, s. ``_sparkline_cell_lazy()``."""
     now = time.time() if now is None else now
     return (
         f'<div id="jobsboard" hx-get="/-/ui/jobs/board" hx-trigger="{_POLL}" hx-swap="outerHTML">'
         '<div class="panel-card"><h2>Jobs</h2>'
-        f"{_jobs_table(rows, local_runs, now, public_host=public_host, sparklines=sparklines)}</div>"
+        f"{_jobs_table(rows, local_runs, now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines)}</div>"
         "</div>"
     )
 
@@ -2049,6 +2078,7 @@ def jobs_page(
     job_status_poll_interval_s: int = 2,
     now: float | None = None, public_host: str = "localhost",
     sparklines: dict[str, list[int]] | None = None,
+    lazy_sparklines: bool = False,
 ) -> str:
     """Jobs-Screen (PLAN-17 Stufe 17.2, umgebaut PLAN-21 Befund 10): lokale
     Repository-Realität + Git-Status + letzter Start/Ende/Laufzeit je Zeile.
@@ -2073,7 +2103,7 @@ def jobs_page(
         f"{_header('Jobs', status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s, client_rows=rows)}"
-        f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines)}"
+        f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines)}"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"

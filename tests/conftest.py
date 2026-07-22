@@ -75,6 +75,21 @@ def _reset_dispatch_count():
 
 
 @pytest.fixture(autouse=True)
+def _reset_sparkline_cache():
+    """``controller._sparkline_cache`` ist bewusst Modul-Level statt Closure-
+    lokal (ein Cache über alle Requests EINES Prozesses, s. dortiger
+    Kommentar) — das ist in Produktion korrekt (ein Repo pro Prozess), leakt
+    aber zwischen Tests: ``repo_path`` ist repo-WURZEL-relativ, zwei
+    verschiedene ``team_repo``-Fixtures mit demselben Slug-Namen (z. B.
+    "mein-testjob") ergeben denselben Cache-Key, obwohl es unterschiedliche
+    physische Repos sind — ein späterer Test bekäme sonst das Ergebnis eines
+    früheren zurück, ohne dass ``git log`` überhaupt läuft."""
+    from bibi import controller
+    controller._sparkline_cache = {"result": None, "computed_at": 0.0, "slugs": frozenset()}
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_node_config(tmp_path_factory, monkeypatch: pytest.MonkeyPatch):
     """Tests nie gegen die **echte** ``~/.config/bibi/env`` laufen lassen — sonst
     leaken Knoten-Settings (BIBI_EXEC_MODE=container, Auth-Token, BIBI_CLAUDE_BIN …)

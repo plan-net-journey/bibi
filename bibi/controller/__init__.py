@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 
 from fastapi import FastAPI, Request
@@ -97,6 +98,13 @@ def _scheduler_url() -> str | None:
 #: wie oft add_controller_routes() aufgerufen wird.
 _SPARKLINE_CACHE_TTL = 3600
 _sparkline_cache: dict = {"result": None, "computed_at": 0.0, "slugs": frozenset()}
+#: Schützt die Cache-Befüllung (Bibi4-Iteration, Sparkline-Entkopplung):
+#: mehrere gleichzeitige Pro-Slug-Requests (eine je Zeile, s. render.
+#: _sparkline_cell_lazy()) dürfen bei kaltem Cache nicht je einen eigenen
+#: teuren git-log-Aufruf auslösen (thundering herd) — nur der erste
+#: Anfragende rechnet tatsächlich, alle anderen warten kurz und lesen dann
+#: den frisch befüllten Cache.
+_sparkline_lock = threading.Lock()
 
 
 def service_descriptor(roles: roles_mod.Roles) -> dict:
@@ -444,7 +452,17 @@ def add_controller_routes(
         — Ergebnis wird ``_SPARKLINE_CACHE_TTL`` Sekunden lang wiederverwendet.
         Zusätzlich ans Slug-Set gebunden (nicht nur Zeit): ein frisch
         entdeckter Job stünde sonst bis zu eine Stunde lang ganz ohne
-        Sparkline da, weil sein Slug im gecachten Ergebnis-Dict fehlt."""
+        Sparkline da, weil sein Slug im gecachten Ergebnis-Dict fehlt.
+
+        ``_sparkline_lock`` (zweite Bibi4-Iteration, Sparkline-Entkopplung):
+        seit ``jobs_screen()`` selbst nicht mehr eager rechnet, sondern jede
+        Zeile per ``hx-trigger=\"load\"`` einen eigenen Request gegen
+        ``/-/ui/jobs/{slug}/sparkline`` feuert, träfen bei kaltem Cache sonst
+        N gleichzeitige Requests auf N redundante ``git log``-Läufe
+        (thundering herd) — schlechter als der alte, einmalige Blockier-
+        Aufruf. Double-checked locking: nur der erste Anfragende rechnet,
+        alle anderen warten kurz auf den Lock und lesen danach den frisch
+        befüllten Cache."""
         from pathlib import Path
         from bibi import feed as feed_mod
         from bibi import repo as repo_mod
@@ -455,20 +473,28 @@ def add_controller_routes(
         if not prefixes:
             return {}
         slugs = frozenset(prefixes)
+
+        def _fresh(cached: dict, now: float) -> bool:
+            return (cached["result"] is not None and slugs == cached["slugs"]
+                    and now - cached["computed_at"] < _SPARKLINE_CACHE_TTL)
+
         now = time.time()
-        cached = _sparkline_cache
-        if (cached["result"] is not None and slugs == cached["slugs"]
-                and now - cached["computed_at"] < _SPARKLINE_CACHE_TTL):
-            return cached["result"]
-        own_paths = {row["slug"]: row["repo_path"] for row in rows if row.get("repo_path")}
-        root = repo_mod.root()
-        commits = feed_mod.collect_commits(root, since_days=_SPARKLINE_SINCE_DAYS)
-        agent_shas = feed_mod.agent_commit_shas(root, since_days=_SPARKLINE_SINCE_DAYS)
-        result = feed_mod.activity_series_by_prefix(
-            commits, agent_shas, prefixes, since_days=_SPARKLINE_SINCE_DAYS,
-            own_paths=own_paths)
-        cached["result"], cached["computed_at"], cached["slugs"] = result, now, slugs
-        return result
+        if _fresh(_sparkline_cache, now):
+            return _sparkline_cache["result"]
+        with _sparkline_lock:
+            now = time.time()
+            cached = _sparkline_cache
+            if _fresh(cached, now):  # ein anderer Thread hat inzwischen befüllt
+                return cached["result"]
+            own_paths = {row["slug"]: row["repo_path"] for row in rows if row.get("repo_path")}
+            root = repo_mod.root()
+            commits = feed_mod.collect_commits(root, since_days=_SPARKLINE_SINCE_DAYS)
+            agent_shas = feed_mod.agent_commit_shas(root, since_days=_SPARKLINE_SINCE_DAYS)
+            result = feed_mod.activity_series_by_prefix(
+                commits, agent_shas, prefixes, since_days=_SPARKLINE_SINCE_DAYS,
+                own_paths=own_paths)
+            cached["result"], cached["computed_at"], cached["slugs"] = result, now, slugs
+            return result
 
     def _jobs_archive_runs() -> list:
         # Flache Journal-Liste über alle lokalen Jobs (Bibi4-Iteration,
@@ -482,13 +508,30 @@ def add_controller_routes(
 
     @app.get("/-/ui/jobs", include_in_schema=False)
     def jobs_screen():
+        # Bibi4-Iteration, Sparkline-Entkopplung (User-Fund: "Sparklines
+        # dauern beim Reload immer") — der initiale Seitenaufbau rechnet die
+        # Serie nicht mehr selbst (das war der blockierende Teil), sondern
+        # liefert nur Platzhalter (lazy_sparklines=True); jede Zeile lädt
+        # ihre eigene Sparkline per hx-trigger="load" nach, s. /-/ui/jobs/
+        # {slug}/sparkline unten.
         from bibi import config
         rows, local_runs = _jobs_data()
         return HTMLResponse(render.jobs_page(
             rows, local_runs, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
             job_status_poll_interval_s=config.job_status_poll_interval(),
-            public_host=config.public_host(), sparklines=_job_sparkline_series(rows)))
+            public_host=config.public_host(), lazy_sparklines=True))
+
+    @app.get("/-/ui/jobs/{slug}/sparkline", include_in_schema=False)
+    def jobs_sparkline(slug: str):
+        # Pro-Slug-Gegenstück zu jobs_screen()s lazy_sparklines=True — jede
+        # Zeile feuert das beim initialen Laden einmal selbst (s. render.
+        # _sparkline_cell_lazy()). Ruft dieselbe gecachte, jetzt gesperrte
+        # _job_sparkline_series() wie zuvor auf (s. dortiger Docstring) —
+        # kein neuer Berechnungspfad, nur ein neuer Zugriffspunkt darauf.
+        rows, _local_runs = _jobs_data()
+        sparklines = _job_sparkline_series(rows)
+        return HTMLResponse(render._sparkline_cell(slug, sparklines))
 
     @app.get("/-/ui/jobs/board", include_in_schema=False)
     def jobs_board():
