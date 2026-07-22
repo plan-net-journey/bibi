@@ -1458,17 +1458,17 @@ def _host_card(status: dict, host_url: str | None, now: float) -> str:
         # (zweite Iteration, User-Fund: "nur beim Host gehört 785 complete
         # ebenfalls nach HOST, sarasate, next in 2 min - 2 clients
         # connected") — alle drei ausschließlich eine Host-Perspektive,
-        # deshalb nur in diesem Zweig, nicht bei "Client" unten. Drei eigene
-        # Zeilen statt einer " · "-verketteten (User-Mockup: "- 2 clients
-        # connected / - next Job in 2 min / - 785 Jobs complete").
+        # deshalb nur in diesem Zweig, nicht bei "Client" unten. Zwei Zeilen
+        # (dritte Iteration, User-Fund: "schreib '2 clients connected' in
+        # der ersten Zeile und 'next Job in 1 min, 11 complete' in der
+        # zweiten Zeile" — next/complete auf eine Zeile zusammengelegt).
         job_stats = status.get("job_stats") or {}
         workers = status.get("workers") or []
         n_clients = sum(1 for w in workers if not w.get("stale"))
         complete = job_stats.get("complete_since_uptime", 0)
         subs = [
             f"{n_clients} clients connected",
-            f"next Job {_until(job_stats.get('next_due_at'), now)}",
-            f"{complete} Jobs complete",
+            f"next Job {_until(job_stats.get('next_due_at'), now)}, {complete} complete",
         ]
         return _lines_card("Host", [_e(own)] if own else ["—"], sub=subs)
     hostname = None

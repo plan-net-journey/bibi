@@ -177,9 +177,10 @@ def test_host_card_shows_next_due_client_count_and_complete_on_host_branch():
     # Bibi4-Iteration, User-Fund: "next in ..." wandert von der Job-Status-
     # Kachel hierher, plus Anzahl verbundener Clients — und (zweite Iteration,
     # User-Fund: "nur beim Host gehört 785 complete ebenfalls nach HOST") der
-    # Complete-Zähler noch dazu. Drei eigene Zeilen statt einer " · "-Fließtext-
-    # Zeile (User-Mockup: "HOST / sarasate / - 2 clients connected / - next Job
-    # in 2 min / - 785 Jobs complete").
+    # Complete-Zähler noch dazu. Zwei Zeilen (dritte Iteration, User-Fund:
+    # "schreib '2 clients connected' in der ersten Zeile und 'next Job in
+    # 1 min, 11 complete' in der zweiten Zeile" — next/complete auf eine
+    # Zeile zusammengelegt, nicht mehr drei separate).
     status = {
         "hostname": "sarasate",
         "job_stats": {"next_due_at": 400.0, "complete_since_uptime": 785},
@@ -187,16 +188,14 @@ def test_host_card_shows_next_due_client_count_and_complete_on_host_branch():
     }
     html = render._host_card(status, "http://localhost:8780", now=100.0)
     assert '<div class="sub">2 clients connected</div>' in html
-    assert '<div class="sub">next Job in 5 min</div>' in html
-    assert '<div class="sub">785 Jobs complete</div>' in html
+    assert '<div class="sub">next Job in 5 min, 785 complete</div>' in html
 
 
 def test_host_card_next_due_none_and_no_clients_shows_dash_and_zero():
     status = {"hostname": "sarasate"}
     html = render._host_card(status, "http://localhost:8780", now=100.0)
     assert '<div class="sub">0 clients connected</div>' in html
-    assert '<div class="sub">next Job —</div>' in html
-    assert '<div class="sub">0 Jobs complete</div>' in html
+    assert '<div class="sub">next Job —, 0 complete</div>' in html
 
 
 def test_host_card_uses_cumulative_complete_counter_not_live_count():
@@ -206,7 +205,7 @@ def test_host_card_uses_cumulative_complete_counter_not_live_count():
     # Job-Status-Kachel galt, jetzt hier, weil der Zähler mit umgezogen ist.
     status = {"hostname": "sarasate", "job_stats": {"complete_since_uptime": 47}}
     html = render._host_card(status, "http://localhost:8780", now=100.0)
-    assert "47 Jobs complete" in html
+    assert "47 complete" in html
 
 
 def test_host_card_client_branch_has_no_next_due_sub_line():
@@ -218,7 +217,7 @@ def test_host_card_client_branch_has_no_next_due_sub_line():
         "http://sarasate.tail9f9173.ts.net:8780", now=100.0)
     assert "next" not in html
     assert "clients connected" not in html
-    assert "Jobs complete" not in html
+    assert "complete" not in html
 
 
 # --- Mode-Kachel (PLAN-19 Befund 4: Auto-Sync+Maintenance+Uptime zusammen) ------
