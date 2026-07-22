@@ -368,6 +368,25 @@ def test_missing_claude_auth_no_finding_when_no_claude_jobs():
     assert hygiene.check_missing_claude_auth(has_claude_jobs=False, token_present=False) == []
 
 
+# ── BIBI_PUBLIC_HOST-Check (Bibi4-Iteration, User-Fund App-Link-Hostname) ──────
+
+
+def test_missing_public_host_flags_when_apps_and_no_public_host():
+    findings = hygiene.check_missing_public_host(has_apps=True, public_host_set=False)
+    assert len(findings) == 1
+    assert findings[0].kind == "public-host-missing"
+
+
+def test_missing_public_host_no_finding_when_public_host_set():
+    assert hygiene.check_missing_public_host(has_apps=True, public_host_set=True) == []
+
+
+def test_missing_public_host_no_finding_when_no_apps():
+    # Kein App-Job im Vault -> App-Links spielen für diesen Knoten keine
+    # Rolle, kein False Positive (analog check_missing_claude_auth).
+    assert hygiene.check_missing_public_host(has_apps=False, public_host_set=False) == []
+
+
 def test_doctor_flags_missing_claude_auth(gitrepo: Path, capsys, monkeypatch):
     monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)

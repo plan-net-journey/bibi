@@ -23,7 +23,7 @@ class Finding:
     kind: str    # "lfs-missing" | "large-unmanaged" | "data-committed" | "conventions-missing"
                  # | "orphan-worktree" | "invalid-schedule" (PLAN-13 Stufe 13.3)
                  # | "html-placeholder-tag" | "markdown-hardwrap" (PLAN-15)
-                 # | "claude-auth-missing"
+                 # | "claude-auth-missing" | "public-host-missing"
     path: str    # betroffener Pfad ("" = global)
     detail: str
 
@@ -120,6 +120,23 @@ def check_missing_claude_auth(*, has_claude_jobs: bool, token_present: bool) -> 
             "claude-auth-missing", "",
             "vault/ enthält claude:-Jobs, aber weder CLAUDE_CODE_OAUTH_TOKEN "
             "noch ANTHROPIC_API_KEY ist in der Umgebung gesetzt")]
+    return []
+
+
+def check_missing_public_host(*, has_apps: bool, public_host_set: bool) -> list[Finding]:
+    """``BIBI_PUBLIC_HOST`` fehlt trotz App-Jobs im Vault (Bibi4-Iteration,
+    User-Fund: ein Client zeigte den Hostnamen seines Schedulers statt seines
+    eigenen in App-Links). Ohne explizites ``BIBI_PUBLIC_HOST`` liefert
+    ``config.public_host()`` seit dem Wegfall der ``BIBI_SCHEDULER_URL``-
+    Heuristik nur noch den ``localhost``-Default — für jeden Knoten, der von
+    einem anderen Rechner erreicht wird, falsch. Nur ein Fund, wenn das Vault
+    tatsächlich App-Jobs (``app_port`` gesetzt) enthält — kein False Positive
+    für Setups ohne Apps, analog ``check_missing_claude_auth``."""
+    if has_apps and not public_host_set:
+        return [Finding(
+            "public-host-missing", "",
+            "vault/ enthält App-Jobs (app_port gesetzt), aber BIBI_PUBLIC_HOST "
+            "ist nicht gesetzt — App-Links zeigen nur 'localhost'")]
     return []
 
 

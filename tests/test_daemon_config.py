@@ -124,14 +124,18 @@ def test_public_host_from_config_file(cfg_home: Path):
     assert config.public_host() == "sarasate.tail9f9173.ts.net"
 
 
-def test_public_host_falls_back_to_scheduler_url_hostname(
+def test_public_host_ignores_scheduler_url_falls_back_to_localhost(
     cfg_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # Client-Rolle-Heuristik: kein eigenes BIBI_PUBLIC_HOST gesetzt, aber ein
-    # BIBI_SCHEDULER_URL — dessen Hostname ist besser als gar nichts, aber
-    # kein Beweis (löst den Host-Rolle-Fall wie sarasate nicht, s. Befund 6).
+    # Bibi4-Iteration, User-Fund (App-Link auf dem Mac zeigt sarasates
+    # Hostnamen statt localhost): die frühere "vom BIBI_SCHEDULER_URL
+    # borgen"-Heuristik half laut eigener Doku nie dem Host-Rolle-Fall (der
+    # braucht Stufe 1 ohnehin zwingend) und war für einen echten Remote-
+    # Client wie diesen schlicht falsch — sie borgte den Hostnamen eines
+    # FREMDEN Knotens. Ersatzlos entfernt: ohne explizites BIBI_PUBLIC_HOST
+    # bleibt es beim reinen "localhost"-Default, kein Rätselraten mehr.
     monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://sarasate.tail9f9173.ts.net:8780")
-    assert config.public_host() == "sarasate.tail9f9173.ts.net"
+    assert config.public_host() == "localhost"
 
 
 def test_public_host_explicit_wins_over_scheduler_url(

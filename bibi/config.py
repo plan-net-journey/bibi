@@ -123,27 +123,21 @@ def public_host() -> str:
     PLAN-22 Befund 6 — löst die zuvor an drei Stellen hartkodierte
     ``127.0.0.1``-Adresse ab, die auf einem Remote-Host wie sarasate tot war).
 
-    Stufen: ``BIBI_PUBLIC_HOST`` (env > ``~/.config/bibi/env``) > Hostname aus
-    ``BIBI_SCHEDULER_URL`` > ``localhost``.
+    Stufen: ``BIBI_PUBLIC_HOST`` (env > ``~/.config/bibi/env``) > ``localhost``.
 
-    Stufe 2 ist nur eine Heuristik für Client-Rolle-Knoten (die überhaupt eine
-    ``BIBI_SCHEDULER_URL`` gesetzt haben) — kein Beweis, dass die eigene
-    Adresse im selben Netz liegt. **Host-Rolle-Knoten wie ein Scheduler selbst
-    haben kein ``BIBI_SCHEDULER_URL``, das auf sie selbst zeigt** — für sie
-    ist Stufe 1 nicht optional, sondern der einzige Weg zu einer für Remote-
-    Zugriff korrekten Adresse.
+    Früher gab es eine Zwischenstufe, die ohne explizites ``BIBI_PUBLIC_HOST``
+    den Hostnamen aus ``BIBI_SCHEDULER_URL`` borgte — entfernt (Bibi4-
+    Iteration, User-Fund: ein Client zeigte den Hostnamen seines Schedulers
+    statt seines eigenen). Sie half laut ihrer eigenen ursprünglichen Doku nie
+    dem Host-Rolle-Fall (der braucht Stufe 1 ohnehin zwingend) und war für
+    einen echten Remote-Client schlicht falsch — sie borgte die Adresse eines
+    FREMDEN Knotens. Ohne explizites ``BIBI_PUBLIC_HOST`` bleibt es jetzt beim
+    reinen ``localhost``-Default, kein Rätselraten mehr.
     """
     explicit = (os.environ.get("BIBI_PUBLIC_HOST", "").strip()
                 or read_env().get("BIBI_PUBLIC_HOST", "").strip())
     if explicit:
         return explicit
-
-    scheduler_url = (os.environ.get("BIBI_SCHEDULER_URL", "").strip()
-                      or read_env().get("BIBI_SCHEDULER_URL", "").strip())
-    if scheduler_url:
-        hostname = urlparse(scheduler_url).hostname
-        if hostname:
-            return hostname
 
     return "localhost"
 

@@ -8,7 +8,9 @@ History aufblähen, §3.5), (c) committete Sammeldaten unter ``vault/.../data/``
 (f) Schedule-MDs, die der Parser nicht lesen konnte, (g) bloße
 ``<Platzhalter>``-Tags außerhalb Code/Backticks (Obsidian rendert sie falsch),
 (h) hart umgebrochene Absätze (CONVENTIONS.md § Markdown style), (i) fehlender
-Claude-Auth-Token trotz vorhandener ``claude:``-Jobs. Exit 1 bei Befunden
+Claude-Auth-Token trotz vorhandener ``claude:``-Jobs, (j) fehlendes
+``BIBI_PUBLIC_HOST`` trotz vorhandener App-Jobs (sonst zeigen App-Links nur
+``localhost``, s. ``config.public_host()``). Exit 1 bei Befunden
 (pre-commit/CI-tauglich), sonst 0. Reine Prüflogik: ``hygiene``.
 """
 
@@ -18,7 +20,7 @@ import argparse
 import os
 import subprocess
 
-from bibi import hygiene, repo
+from bibi import config, hygiene, repo
 from bibi.daemon import job_db
 from bibi.schedule import discovery
 from bibi.schedule.models import is_claude_payload
@@ -98,6 +100,11 @@ def run(args: argparse.Namespace) -> int:
     token_present = bool(
         os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
     )
+    has_apps = any(r.spec.app_port for r in discovered.found.values())
+    public_host_set = bool(
+        os.environ.get("BIBI_PUBLIC_HOST", "").strip()
+        or config.read_env().get("BIBI_PUBLIC_HOST", "").strip()
+    )
 
     findings = (
         hygiene.git_lfs_finding(hygiene.git_lfs_installed())
@@ -109,6 +116,8 @@ def run(args: argparse.Namespace) -> int:
         + _markdown_style_findings(repo.vault())
         + hygiene.check_missing_claude_auth(
             has_claude_jobs=has_claude_jobs, token_present=token_present)
+        + hygiene.check_missing_public_host(
+            has_apps=has_apps, public_host_set=public_host_set)
     )
     if not findings:
         print("doctor: keine Hygiene-Probleme ✓")
