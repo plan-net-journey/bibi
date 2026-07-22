@@ -2246,7 +2246,12 @@ def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
     (Host), s. Modul-Kommentar. "Attribute →" verlinkt auf die neue, lokal
     gespeiste jobs_detail_attrs_page() (Gegenstück zu schedule_attrs_page(),
     die auf einem Client mangels Scheduler-Rolle nur leere Platzhalter
-    zeigen würde, s. dortiger PLAN-29-Befund)."""
+    zeigen würde, s. dortiger PLAN-29-Befund).
+
+    Kein "← Jobs"-Link mehr (zweite Bibi4-Iteration, User-Fund: derselbe
+    Seitenabgleich-Wunsch, der schedule_detail_page() den "← zurück"-Link
+    genommen hat, gilt explizit auch hier) — die Nav-Leiste trägt schon
+    einen Jobs-Tab dorthin zurück, der Link war redundant."""
     now = time.time() if now is None else now
     local = local or {}
     s = _e(slug)
@@ -2262,7 +2267,6 @@ def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
         f"<style>{_CSS}</style></head><body>"
         f"{_header('', daemon_status)}"
         f'<div style="display:flex;gap:.75rem;align-items:baseline">'
-        f'<a class="back" href="/-/ui/jobs">← Jobs</a>'
         f'<a class="back" href="/-/ui/jobs/detail/{s}/attrs">Attribute →</a>'
         f'</div>'
         f'<h1>{s}</h1>'

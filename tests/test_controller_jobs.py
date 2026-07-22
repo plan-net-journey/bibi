@@ -559,10 +559,17 @@ def test_jobs_detail_page_has_breadcrumb_meta_and_journal():
     html = render.jobs_detail_page(
         "a", _row("a"), {"status": "complete"},
         [{"id": 7, "slug": "a", "status": "complete", "finished_at": 100.0}], now=200.0)
-    assert 'href="/-/ui/jobs"' in html  # ← Jobs statt ← zurück (kein Schedule-Bezug)
     assert "<h1>a</h1>" in html
     assert 'id="journal"' in html
     assert 'hx-delete="/-/ui/jobs/detail/a/run/7"' in html
+
+
+def test_jobs_detail_page_has_no_back_link():
+    # Zweite Bibi4-Iteration, User-Fund: derselbe Seitenabgleich, der
+    # schedule_detail_page() den "← zurück"-Link genommen hat, gilt explizit
+    # auch für den Client — die Nav-Leiste hat schon einen Jobs-Tab.
+    html = render.jobs_detail_page("a", _row("a"), None, [], now=100.0)
+    assert '<a class="back" href="/-/ui/jobs">← Jobs</a>' not in html
 
 
 def test_jobs_detail_page_unknown_slug_still_renders():
