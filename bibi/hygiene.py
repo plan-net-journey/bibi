@@ -87,9 +87,10 @@ def check_orphan_worktrees(worktree_slugs, known_slugs) -> list[Finding]:
     Schedule-MD ohne dass das Verzeichnis geräumt wird (z. B. Case gelöscht,
     ohne dass zwischenzeitlich ein Fire lief), bleibt ein toter Checkout
     zurück. ``worktree_slugs``: Verzeichnisnamen unter ``data/worktrees/``.
-    ``known_slugs``: jeder Slug, der (aktiv oder deaktiviert) noch eine
-    ``jobs``-Zeile hat — nur eine komplett unbekannte Zeile gilt als Waise,
-    ein bloß deaktivierter (pausierter) Slug nicht."""
+    ``known_slugs``: von der aufrufenden Seite (``doctor_cmd._known_slugs()``)
+    bereits auf Slugs eingeschränkt, deren Job noch etwas mit seinem Worktree
+    vorhat — ein deaktivierter oder terminal-ohne-künftigen-Fire-Slug zählt
+    dort nicht mehr als bekannt, landet also hier korrekt als Waise."""
     out: list[Finding] = []
     for slug in sorted(worktree_slugs):
         if slug not in known_slugs:

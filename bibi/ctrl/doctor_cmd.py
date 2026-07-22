@@ -59,7 +59,7 @@ def _known_slugs(root) -> set[str]:
         return set()
     conn = job_db.connect(db_path)
     try:
-        return {r["slug"] for r in conn.execute("SELECT DISTINCT slug FROM jobs")}
+        return job_db.active_worktree_slugs(conn)
     finally:
         conn.close()
 

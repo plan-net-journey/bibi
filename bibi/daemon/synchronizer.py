@@ -242,6 +242,7 @@ class Synchronizer:
 
         self._resolve_conflict(oks, kinds)
         self._merge_sweep()
+        self._worktree_sweep()
         return did
 
     def _merge_sweep(self) -> None:
@@ -295,6 +296,60 @@ class Synchronizer:
             activity.emit(log, logging.DEBUG, "merge.sweep.quiet", role="synchronizer",
                           quiet=len(quiet),
                           branches=",".join(f"{b}:{s}" for b, s in quiet.items()))
+
+    def _worktree_sweep(self) -> None:
+        """Periodischer Aufräum-Sweep für Job-Worktrees (Bug "Kein Worktree
+        Cleanup", Case 20260621.Bibi4-870bd9db, 2026-07-22): reguläre
+        Scheduler-Dispatches legen ihren Worktree einmal an und lassen ihn
+        über Fires hinweg liegen (``worktree.prepare()``, anders als
+        ephemere ``run``/``test``-Läufe, die sich schon selbst aufräumen,
+        s. ``worker.py::run_pinned()``) — für Jobs, die nie wieder feuern,
+        entfernte das bisher niemand (live beobachtet: 19 Leichen, ~31 GB,
+        sarasate-root auf 92 %). Dieselbe "noch in Gebrauch"-Regel wie
+        doctors Orphan-Check (``job_db.active_worktree_slugs()``), damit
+        Sweep und doctor nie auseinanderlaufen. Ungemergte Commits (F-b,
+        ``worktree.prepare()``s Dokstring) werden nie weggeworfen — der
+        Merge-Sweep oben bekommt zuerst die Chance, sie nach trunk zu
+        holen; erst ein Worktree ohne Voraus-Commits gilt als sicher
+        entfernbar. Wie ``_merge_sweep()``: ein Sweep-Fehler darf den
+        Sync-Loop nie killen (§2.7)."""
+        if self._repo_root is None:
+            return
+        work_dir = self._repo_root / "data" / "worktrees"
+        if not work_dir.is_dir():
+            return
+        from bibi.daemon import job_db, worktree
+        db_path = self._repo_root / "data" / "jobs.sqlite"
+        if not db_path.exists():
+            return
+        try:
+            conn = job_db.connect(db_path)
+            try:
+                known = job_db.active_worktree_slugs(conn)
+            finally:
+                conn.close()
+        except Exception:
+            log.warning("worktree-sweep übersprungen (DB nicht lesbar)", exc_info=True)
+            return
+
+        removed = []
+        for path in sorted(work_dir.iterdir()):
+            if not path.is_dir() or path.name in known:
+                continue
+            try:
+                branch = worktree.branch_name(path.name)
+                if worktree.is_ahead(repo_root=self._repo_root, branch=branch):
+                    continue  # Merge-Sweep zuerst — nie ungemergte Arbeit wegwerfen
+                with self._lock_ctx():
+                    worktree.remove(repo_root=self._repo_root, worktree=path)
+            except Exception:
+                log.warning("worktree-sweep: %s konnte nicht entfernt werden",
+                           path.name, exc_info=True)
+                continue
+            removed.append(path.name)
+        if removed:
+            activity.emit(log, logging.INFO, "worktree.sweep", role="synchronizer",
+                          removed=len(removed), slugs=",".join(removed))
 
     def _pull_due(self, now: float) -> bool:
         return self._last_pull_at is None or (now - self._last_pull_at) >= self.pull_interval_s

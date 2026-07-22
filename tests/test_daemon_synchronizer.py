@@ -392,5 +392,125 @@ def test_tick_merge_sweep_logs_stuck_conflict(tmp_path, caplog):
 
 
 def test_tick_no_sweep_without_repo_root(team_repo):
-    s, calls = _mk()           # repo_root=None ⇒ kein Sweep, kein Fehler
+    s, calls = _mk()           # repo_root=None ⇒ kein Merge-/Worktree-Sweep, kein Fehler
     s.tick(0.0)                # darf nicht werfen
+
+
+# ── Worktree-Sweep (Bug "Kein Worktree Cleanup", Case 20260621.Bibi4-870bd9db) ─
+
+def test_tick_worktree_sweep_removes_orphaned_worktree(tmp_path):
+    """Ein abgeschlossener Einmal-Job (`at:`, kein `schedule:`) feuert nie
+    wieder — der Tick räumt seinen liegengebliebenen Worktree jetzt weg,
+    statt ihn für immer stehen zu lassen (live beobachtet: 19 Leichen,
+    ~31 GB, sarasate-root auf 92 %)."""
+    import subprocess
+
+    from bibi.daemon import job_db as jdb
+    from bibi.daemon import worktree as wt
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+
+    vault = root / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    vault.mkdir(parents=True)
+    (vault / "OneShot.md").write_text(
+        '---\nat: "2020-01-01T09:00:00"\njob: "echo hi"\n---\n', encoding="utf-8")
+
+    conn = jdb.connect(root / "data" / "jobs.sqlite")
+    jdb.rescan(conn, vault_root=root / "vault" / "case")
+    job_id = conn.execute("SELECT id FROM jobs WHERE slug=?", ("OneShot",)).fetchone()["id"]
+    jdb.report_status(conn, job_id, status="running")
+    jdb.report_status(conn, job_id, status="complete")
+    conn.close()
+
+    p = wt.prepare(repo_root=root, work_dir=root / "data" / "worktrees", slug="OneShot")
+    assert p.exists()
+
+    s = Synchronizer(repo_root=root)  # kein push/pull, nur Sweep
+    s.tick(0.0)
+
+    assert not p.exists()
+
+
+def test_tick_worktree_sweep_keeps_active_slug(tmp_path):
+    """Ein wiederkehrender, noch aktiver Job (pending, künftiger Fire fällig)
+    bleibt unangetastet — nur echte Leichen werden entfernt."""
+    import subprocess
+
+    from bibi.daemon import job_db as jdb
+    from bibi.daemon import worktree as wt
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+
+    vault = root / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    vault.mkdir(parents=True)
+    (vault / "Runner.md").write_text(
+        '---\nschedule: "*/5 * * * *"\njob: "echo hi"\n---\n', encoding="utf-8")
+
+    conn = jdb.connect(root / "data" / "jobs.sqlite")
+    jdb.rescan(conn, vault_root=root / "vault" / "case")
+    conn.close()
+
+    p = wt.prepare(repo_root=root, work_dir=root / "data" / "worktrees", slug="Runner")
+
+    s = Synchronizer(repo_root=root)
+    s.tick(0.0)
+
+    assert p.exists()
+
+
+def test_tick_worktree_sweep_never_removes_unmerged_work(tmp_path):
+    """F-b-Sicherheitsprinzip (``worktree.prepare()``s Dokstring) gilt auch
+    hier: ein Slug ohne jobs-Zeile ist zwar orphan, aber solange sein
+    Branch Commits voraus von trunk hat, entfernt der Sweep ihn nicht — der
+    Merge-Sweep bekommt zuerst die Chance, sie nach trunk zu holen."""
+    import subprocess
+
+    from bibi.daemon import job_db as jdb
+    from bibi.daemon import worktree as wt
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+
+    jdb.connect(root / "data" / "jobs.sqlite").close()  # DB existiert, "ghost" unbekannt
+
+    p = wt.prepare(repo_root=root, work_dir=root / "data" / "worktrees", slug="ghost")
+    (p / "n.md").write_text("hi\n")
+    wt.commit(worktree=p, message="run", slug="ghost")
+    assert wt.is_ahead(repo_root=root, branch="agent/ghost", trunk="trunk")
+
+    s = Synchronizer(repo_root=root)
+    s.tick(0.0)
+
+    assert p.exists()  # trotz fehlender jobs-Zeile nicht entfernt — ungemergte Arbeit

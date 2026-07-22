@@ -182,6 +182,56 @@ def test_doctor_ignores_worktree_with_known_slug(gitrepo: Path, capsys, monkeypa
     assert "orphan-worktree" not in out
 
 
+def test_doctor_flags_orphan_worktree_when_slug_deactivated(gitrepo: Path, capsys, monkeypatch):
+    # Case 20260621.Bibi4-870bd9db, "Kein Worktree Cleanup": eine Schedule-MD
+    # verschwindet (Case aufgeräumt, MD verschoben/gelöscht), der Worktree
+    # bleibt liegen — die jobs-Zeile bleibt wegen der Journal-Historie
+    # stehen (active=0, PLAN-14 §14.5), darf aber nicht mehr als "bekannt"
+    # zählen, sonst sieht doctor die Leiche nie.
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "data" / "worktrees" / "Runner").mkdir(parents=True)
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    md = d / "Runner.md"
+    md.write_text('---\nschedule: "*/5 * * * *"\njob: "echo hi"\n---\n', encoding="utf-8")
+    from bibi.daemon import job_db as jdb
+    conn = jdb.connect(gitrepo / "data" / "jobs.sqlite")
+    jdb.rescan(conn, vault_root=gitrepo / "vault" / "case")
+    md.unlink()
+    jdb.rescan(conn, vault_root=gitrepo / "vault" / "case")
+    conn.close()
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "orphan-worktree" in out and "data/worktrees/Runner" in out
+
+
+def test_doctor_flags_orphan_worktree_when_job_terminal_without_next_fire(
+        gitrepo: Path, capsys, monkeypatch):
+    # Ein abgeschlossener Einmal-Job (`at:`, kein `schedule:`) feuert nie
+    # wieder — next_fire_at bleibt None, auch wenn die MD noch im Vault
+    # liegt und die jobs-Zeile active=1 bleibt. Muss trotzdem als Waise
+    # auffallen, sonst bleibt sein Worktree für immer unsichtbar.
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "data" / "worktrees" / "OneShot").mkdir(parents=True)
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    (d / "OneShot.md").write_text(
+        '---\nat: "2020-01-01T09:00:00"\njob: "echo hi"\n---\n', encoding="utf-8")
+    from bibi.daemon import job_db as jdb
+    conn = jdb.connect(gitrepo / "data" / "jobs.sqlite")
+    jdb.rescan(conn, vault_root=gitrepo / "vault" / "case")
+    job_id = conn.execute("SELECT id FROM jobs WHERE slug=?", ("OneShot",)).fetchone()["id"]
+    jdb.report_status(conn, job_id, status="running")
+    jdb.report_status(conn, job_id, status="complete")
+    conn.commit()
+    conn.close()
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "orphan-worktree" in out and "data/worktrees/OneShot" in out
+
+
 def test_doctor_flags_invalid_schedule(gitrepo: Path, capsys, monkeypatch):
     monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
     d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"

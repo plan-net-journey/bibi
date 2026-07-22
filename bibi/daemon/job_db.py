@@ -415,6 +415,34 @@ def deactivate_slugs(conn: sqlite3.Connection, slugs: set[str]) -> int:
     return n
 
 
+def active_worktree_slugs(conn: sqlite3.Connection) -> set[str]:
+    """Slugs, deren Job-Worktree (``data/worktrees/<slug>/``) noch gebraucht
+    wird — nicht jede je gesehene Zeile (Bug "Kein Worktree Cleanup", Case
+    20260621.Bibi4-870bd9db, 2026-07-22).
+
+    ``active=0`` heißt: die Schedule-MD ist bei einem Rescan aus dem Vault
+    verschwunden (``deactivate_slugs()`` oben), die Zeile bleibt nur wegen
+    der Journal-Historie stehen (PLAN-14 §14.5) — nie wieder ein Fire. Ein
+    terminaler Job ohne ``next_fire_at`` (einmaliger Job, fertig) feuert
+    ebenso nie wieder, auch wenn seine MD noch im Vault liegt — anders als
+    ein wiederkehrender Job, dessen ``next_fire_at`` schon den nächsten
+    Zyklus trägt (s. ``reserve_next()``s ``status='complete' AND
+    next_fire_at IS NOT NULL``-Zweig weiter unten). Gemeinsame Quelle für
+    den Orphan-Worktree-Check (``doctor``) UND den periodischen
+    Worktree-Sweep (``Synchronizer``) — beide müssen exakt dasselbe
+    "noch in Gebrauch" verstehen, sonst räumt der Sweep etwas weg, das
+    doctor gerade erst als unbedenklich eingestuft hat, oder umgekehrt."""
+    rows = conn.execute("SELECT slug, status, active, next_fire_at FROM jobs").fetchall()
+    known: set[str] = set()
+    for r in rows:
+        if not r["active"]:
+            continue
+        if lifecycle.is_terminal(Status(r["status"])) and r["next_fire_at"] is None:
+            continue
+        known.add(r["slug"])
+    return known
+
+
 def status_counts(conn: sqlite3.Connection) -> dict[str, int]:
     """Aktuelle Zustands-Zählung aller aktiven Jobs (PLAN-21 Befund 11 Stat-Grid)."""
     rows = conn.execute(
