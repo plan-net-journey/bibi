@@ -1818,18 +1818,33 @@ def _sparkline_cell_lazy(slug: str) -> str:
     Berechnung ab. Statt die Serie eager mitzuliefern, feuert die Zelle
     selbst einen ``hx-get`` gegen eine eigene Pro-Slug-Route
     (``/-/ui/jobs/{slug}/sparkline``), sobald sie ins DOM eingehängt wird
-    (``hx-trigger=\"load\"``) — dieselbe ``id`` wie ``_sparkline_cell()``,
-    damit ein späterer 2s-Poll das dann schon aufgelöste Element per
-    ``hx-preserve`` unangetastet lässt, statt den Lazy-Load erneut
-    anzustoßen. Analog zum bestehenden ``hx-trigger=\"revealed\"``-Muster in
-    ``_journal_sentinel_row()``, hier ``load`` statt ``revealed`` — eine
-    normale Jobs-Tabelle braucht kein Scroll-Gating, alle Zeilen sind eh
-    sichtbar; der eigentliche Entlastungseffekt kommt aus dem gemeinsamen,
-    gesperrten Cache in ``_job_sparkline_series()``, nicht aus verzögertem
-    Laden."""
+    (``hx-trigger=\"load\"``). Analog zum bestehenden
+    ``hx-trigger=\"revealed\"``-Muster in ``_journal_sentinel_row()``, hier
+    ``load`` statt ``revealed`` — eine normale Jobs-Tabelle braucht kein
+    Scroll-Gating, alle Zeilen sind eh sichtbar; der eigentliche
+    Entlastungseffekt kommt aus dem gemeinsamen, gesperrten Cache in
+    ``_job_sparkline_series()``, nicht aus verzögertem Laden.
+
+    ``hx-preserve=\"true\"`` **hier auch schon im unaufgelösten Zustand**
+    (Regression, User-Fund nach Deploy: "Sparklines erscheinen jetzt gar
+    nicht mehr") — ohne das riss der 2s-Self-Poll (``#jobsboard``,
+    ``jobs_board()``, rendert jede Zeile mit ``sparklines=None`` neu) diesen
+    Platzhalter samt seines noch laufenden ``hx-get``s aus dem DOM, sobald
+    der Poll vor dessen Auflösung feuerte (praktisch immer bei mehreren
+    Zeilen: der Poll tickt alle 2s, mehrere gleichzeitige Pro-Slug-Requests
+    konkurrieren um Browser-Verbindungen + den Cache-Lock). Die dadurch neu
+    eingesetzte, leere ``_sparkline_cell(slug, None)``-Zelle hat zwar selbst
+    ``hx-preserve``, aber das schützt nur VOR zukünftigen Swaps, nicht
+    rückwirkend — die Zeile blieb ab dann für immer leer, ohne dass je
+    wieder ein Ladeversuch angestoßen wurde. Jetzt tragen beide Zustände
+    (unaufgelöst hier, aufgelöst in ``_sparkline_cell()``) dieselbe ``id``
+    UND ``hx-preserve`` — welcher Zustand auch gerade im DOM steht, ein
+    Ancestor-Poll lässt ihn unangetastet, bis der eigene ``hx-get`` (falls
+    noch unaufgelöst) durch ist und sich selbst per ``hx-swap=\"outerHTML\"``
+    ersetzt."""
     s = _e(slug)
-    return (f'<span id="spark-{s}" hx-get="/-/ui/jobs/{s}/sparkline" '
-           f'hx-trigger="load" hx-swap="outerHTML"></span>')
+    return (f'<span id="spark-{s}" hx-preserve="true" '
+           f'hx-get="/-/ui/jobs/{s}/sparkline" hx-trigger="load" hx-swap="outerHTML"></span>')
 
 
 def _jobs_type_cell(row: dict, public_host: str) -> str:

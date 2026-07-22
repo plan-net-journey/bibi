@@ -285,9 +285,28 @@ def test_sparkline_cell_lazy_renders_load_trigger():
     # _job_sparkline_series()-Berechnung inline in jobs_screen().
     html = render._sparkline_cell_lazy("a")
     assert html == (
-        '<span id="spark-a" hx-get="/-/ui/jobs/a/sparkline" '
-        'hx-trigger="load" hx-swap="outerHTML"></span>'
+        '<span id="spark-a" hx-preserve="true" '
+        'hx-get="/-/ui/jobs/a/sparkline" hx-trigger="load" hx-swap="outerHTML"></span>'
     )
+
+
+def test_sparkline_cell_lazy_survives_poll_before_it_resolves():
+    # Regression, User-Fund (live nach dem Deploy): "Sparklines erscheinen
+    # jetzt gar nicht mehr." Root Cause: der Lazy-Platzhalter fehlte
+    # hx-preserve — der 2s-Self-Poll (jobs_board(), sparklines=None) rissn
+    # ihn samt seines noch laufenden hx-get("load") aus dem DOM, bevor der
+    # sich auflösen konnte; jede folgende Poll-Antwort (leere hx-preserve-
+    # Zelle ohne hx-get) wurde danach für immer preserved -> dauerhaft leer.
+    # hx-preserve muss auf BEIDEN Zuständen sitzen (unaufgelöst UND
+    # aufgelöst), damit htmx den unaufgelösten Zustand über einen Poll
+    # hinweg am Leben hält, bis sein eigener hx-get durch ist.
+    lazy = render._sparkline_cell_lazy("a")
+    polled = render._sparkline_cell("a", None)
+    assert 'hx-preserve="true"' in lazy
+    assert 'hx-preserve="true"' in polled
+    assert lazy.split(" ")[0] == polled.split(" ")[0] == '<span'
+    # dieselbe id in beiden Zuständen -> htmx matched sie beim Swap
+    assert 'id="spark-a"' in lazy and 'id="spark-a"' in polled
 
 
 def test_jobs_page_uses_lazy_sparklines_when_requested():
