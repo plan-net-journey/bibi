@@ -136,11 +136,20 @@ def test_branch_created_on_run(gitrepo: Path):
 
 
 @pytest.mark.slow
-def test_failed_job_reports_failed(gitrepo: Path):
+def test_failing_job_without_explicit_attempts_reaches_error_immediately(gitrepo: Path):
+    # War bis zum attempts-Default-Fix (Batch 6, 2026-07-21, `7a64545`) noch
+    # "failed" (Default damals 1, ein ungenutzter Retry blieb liegen, da
+    # dieser Test nie ein zweites tick_once() macht — _wait_terminal() nahm
+    # nur den 10s-Timeout-Fallback). Ohne explizites attempts: ist der Default
+    # seither 0 (kein automatischer Retry) — dieselbe synchrone Erschöpfung
+    # wie in test_attempts_zero_reaches_error_without_hanging, nur über den
+    # Parser-Default statt expliziter Frontmatter-Angabe. Test war bis jetzt
+    # nicht nachgezogen worden (@pytest.mark.slow, lief nicht in der schnellen
+    # Suite, die der attempts-Fix damals validiert hat).
     jid = _seed(gitrepo, "boom/README.md", '---\nschedule: now\njob: "exit 7"\n---\n')
     _worker(gitrepo).tick_once()
     row = _wait_terminal(gitrepo, jid)
-    assert row["status"] == "failed" and row["exit_code"] == 7
+    assert row["status"] == "error" and row["exit_code"] == 7
 
 
 @pytest.mark.slow
