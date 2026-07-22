@@ -50,11 +50,16 @@ def test_clients_table_handles_missing_git_user_gracefully():
 
 def test_clients_table_shows_role():
     # Bibi4-Iteration, User-Fund: "Client Übersicht braucht die Rollen je
-    # Client" — derselbe Präzedenzfall wie git_user/node_id.
+    # Client" — derselbe Präzedenzfall wie git_user/node_id. Zweite
+    # Iteration (User-Fund: "vielleicht als Spalten mit leerem oder
+    # gefülltem Rechteck") ersetzt den rohen Komma-Text durch eine
+    # Spalten-Matrix, ein Kästchen pro bekannter Rolle.
     workers = [{"worker": "air2024", "host": "mac", "role": "synchronizer,controller",
                "stale": False, "connected_at": 0, "last_heartbeat": 0}]
     html = render._clients_table(workers, now=0)
-    assert "synchronizer,controller" in html
+    assert html.count('role-box on"') == 2
+    assert html.count('role-box off"') == 3
+    assert '<abbr title="Synchronizer">' in html
 
 
 def test_clients_table_handles_missing_role_gracefully():
@@ -62,6 +67,8 @@ def test_clients_table_handles_missing_role_gracefully():
                "connected_at": 0, "last_heartbeat": 0}]
     html = render._clients_table(workers, now=0)
     assert "<td>—</td>" in html
+    assert html.count('role-box on"') == 0
+    assert html.count('role-box off"') == 5
 
 
 def test_clients_fragment_has_self_poll_attrs():

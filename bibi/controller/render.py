@@ -74,6 +74,12 @@ td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
    Client zeigen dieselbe Toggle-Menge, nicht verfügbare Funktionen (z.B.
    MAINT auf dem Client) bleiben an Ort und Stelle, statt zu verschwinden. */
 .toggle:disabled { opacity: .35; cursor: default; text-decoration: none; }
+/* Rollen-Matrix (Bibi4-Iteration, User-Fund: "Rollen etwas schoener
+   visualisieren, vielleicht als Spalten mit leerem oder gefuelltem
+   Rechteck") — ersetzt die alte Komma-Text-Spalte im Clients-Screen. */
+.role-box { font-size: 1rem; }
+.role-box.on { color: #5fb37a; }
+.role-box.off { color: #666; opacity: .45; }
 /* Time-Toggle (Bibi4-Iteration, User-Fund: "Time: abs./rel./both" für die
    last/since- und next-Spalten) — alle drei Varianten stehen serverseitig
    immer im Markup, data-timeformat auf <html> blendet per CSS genau eine
@@ -635,6 +641,34 @@ def archive_page(schedules: list[dict], now: float | None = None,
 
 _CLIENTS_POLL = "every 10s [window.bibiFollow]"
 
+# Reihenfolge wie vom User vorgegeben: "Mit Scheduler, Controller,
+# Synchronizer, Connected, Worker." role-Werte (roher komma-getrennter
+# String, s. roles.Roles.active_names()) tragen "connect", nicht
+# "connected" — nur das Spalten-Label ist "Connected".
+_ROLE_COLUMNS = (
+    ("scheduler", "Sched", "Scheduler"),
+    ("controller", "Ctrl", "Controller"),
+    ("synchronizer", "Sync", "Synchronizer"),
+    ("connect", "Conn", "Connected"),
+    ("worker", "Work", "Worker"),
+)
+
+
+def _role_matrix_header() -> str:
+    return "".join(f'<th><abbr title="{full}">{short}</abbr></th>'
+                    for _name, short, full in _ROLE_COLUMNS)
+
+
+def _role_matrix_cells(role: str | None) -> str:
+    active = {r.strip() for r in (role or "").split(",") if r.strip()}
+    cells = []
+    for name, _short, full in _ROLE_COLUMNS:
+        on = name in active
+        cls = "role-box on" if on else "role-box off"
+        mark = "■" if on else "□"
+        cells.append(f'<td><span class="{cls}" title="{full}">{mark}</span></td>')
+    return "".join(cells)
+
 
 def _clients_table(workers: list[dict], now: float) -> str:
     if not workers:
@@ -648,7 +682,7 @@ def _clients_table(workers: list[dict], now: float) -> str:
             "<tr>"
             f"<td>{_e(w.get('worker') or '—')}</td>"
             f"<td>{_e(w.get('host') or '—')}</td>"
-            f"<td>{_e(w.get('role') or '—')}</td>"
+            f"{_role_matrix_cells(w.get('role'))}"
             f"<td>{_e(w.get('git_user') or '—')}</td>"
             f"<td>{_e(w.get('git_status') or '—')}</td>"
             f"<td>{status_html}</td>"
@@ -657,7 +691,9 @@ def _clients_table(workers: list[dict], now: float) -> str:
             "</tr>"
         )
     return (
-        '<table><thead><tr><th>Name</th><th>Host</th><th>Rolle</th><th>Git-User</th>'
+        '<table><thead><tr><th>Name</th><th>Host</th>'
+        f"{_role_matrix_header()}"
+        '<th>Git-User</th>'
         '<th>Git-Status</th><th>Status</th><th>Connected seit</th>'
         '<th>Letzter Heartbeat</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"
