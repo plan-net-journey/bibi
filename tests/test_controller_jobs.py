@@ -782,18 +782,20 @@ def test_jobs_route_shows_app_port_link_for_discovered_app_job(team_repo: Path, 
 # ── Sparkline-Entkopplung (zweite Bibi4-Iteration) ──────────────────────────
 
 
-def test_jobs_route_renders_lazy_sparkline_placeholder_not_svg(team_repo: Path, app_with):
-    # User-Fund: "Sparklines dauern beim Reload immer" — der initiale
-    # Seitenaufbau darf die Serie nicht mehr selbst berechnen (das war der
-    # blockierende Teil), nur noch einen Platzhalter mit hx-get liefern.
+def test_jobs_route_renders_eager_sparkline_not_lazy_placeholder(team_repo: Path, app_with):
+    # Revert (User-Fund 2026-07-22: die Lazy-Variante — 19 Pro-Slug-hx-get-
+    # Requests gleichzeitig mit dem 2s-Self-Poll — hängte den Browser-Tab
+    # komplett auf, live in mehreren frischen Tabs reproduziert; Staffelung
+    # allein behob es nicht). jobs_screen() rechnet die Serie jetzt wieder
+    # synchron (wie vor der Sparkline-Entkopplung), keine Pro-Slug-Requests
+    # mehr vom initialen Seitenaufbau.
     _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
     client = _FakeClient()
     app, _ = app_with(client)
     with TestClient(app) as c:
         r = c.get("/-/ui/jobs")
         assert r.status_code == 200
-        assert 'hx-get="/-/ui/jobs/mein-testjob/sparkline" hx-trigger="load"' in r.text
-        assert "<svg" not in r.text
+        assert 'hx-get="/-/ui/jobs/mein-testjob/sparkline"' not in r.text
 
 
 def test_jobs_sparkline_route_returns_resolved_cell(team_repo: Path, app_with):

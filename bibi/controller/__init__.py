@@ -508,19 +508,22 @@ def add_controller_routes(
 
     @app.get("/-/ui/jobs", include_in_schema=False)
     def jobs_screen():
-        # Bibi4-Iteration, Sparkline-Entkopplung (User-Fund: "Sparklines
-        # dauern beim Reload immer") — der initiale Seitenaufbau rechnet die
-        # Serie nicht mehr selbst (das war der blockierende Teil), sondern
-        # liefert nur Platzhalter (lazy_sparklines=True); jede Zeile lädt
-        # ihre eigene Sparkline per hx-trigger="load" nach, s. /-/ui/jobs/
-        # {slug}/sparkline unten.
+        # Revert (User-Fund 2026-07-22, live: die Lazy-Variante (19 Pro-Slug-
+        # hx-get-Requests + 2s-Self-Poll gleichzeitig) hängte den Browser-Tab
+        # komplett auf — reproduziert in mehreren frischen Tabs, Server
+        # antwortete über curl weiterhin schnell; Staffelung allein behob es
+        # nicht. Bis das sauber root-caused ist: zurück zur eager, synchronen
+        # Berechnung (Stand vor der Sparkline-Entkopplung) — bekannt stabil
+        # über Wochen, Kosten bleiben durch den TTL-Cache in
+        # _job_sparkline_series() bei warmem Cache gering.
         from bibi import config
         rows, local_runs = _jobs_data()
+        sparklines = _job_sparkline_series(rows)
         return HTMLResponse(render.jobs_page(
             rows, local_runs, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
             job_status_poll_interval_s=config.job_status_poll_interval(),
-            public_host=config.public_host(), lazy_sparklines=True))
+            public_host=config.public_host(), sparklines=sparklines))
 
     @app.get("/-/ui/jobs/{slug}/sparkline", include_in_schema=False)
     def jobs_sparkline(slug: str):
