@@ -1411,12 +1411,18 @@ _SYNC_LABEL_CLASS = {"synced": "sync-synced", "ahead": "sync-ahead",
                      "behind": "sync-behind", "diverged": "sync-conflict"}
 
 
-def _lines_card(label: str, lines: list[str], sub: str = "") -> str:
+def _lines_card(label: str, lines: list[str], sub: str | list[str] = "") -> str:
     """Karte mit mehreren linksbündigen Zeilen statt einem einzelnen Wert
     (PLAN-19 Befund 4) — ``lines`` sind bereits fertiges HTML (Farb-Spans/
     Links), werden hier nicht mehr escaped. Baustein für Host/Mode/Git im
-    neuen 3-Karten-Feed-Header."""
-    sub_html = f'<div class="sub">{_e(sub)}</div>' if sub else ""
+    neuen 3-Karten-Feed-Header.
+
+    ``sub`` ist entweder eine einzelne Zeile (str, wie bisher) oder mehrere
+    (list[str], Bibi4-Iteration — Host-Kachel braucht jetzt drei eigene
+    Zeilen statt einer " · "-verketteten) — jede wird als eigenes
+    ``.sub``-Div gerendert, leere Einträge fallen weg."""
+    subs = [sub] if isinstance(sub, str) else sub
+    sub_html = "".join(f'<div class="sub">{_e(s)}</div>' for s in subs if s)
     body = "".join(f'<div class="cardline">{ln}</div>' for ln in lines)
     return f'<div class="card"><div class="label">{_e(label)}</div>{body}{sub_html}</div>'
 
@@ -1441,13 +1447,23 @@ def _host_card(status: dict, host_url: str | None, now: float) -> str:
         own = status.get("hostname")
         # Bibi4-Iteration, User-Fund: "next in ..." wandert von der Job-
         # Status-Kachel hierher, plus Anzahl verbundener Clients (Connected-
-        # Clients-Screen, Stufe 2) — beides ausschließlich eine Host-
-        # Perspektive, deshalb nur in diesem Zweig, nicht bei "Client" unten.
+        # Clients-Screen, Stufe 2), später ergänzt um den Complete-Zähler
+        # (zweite Iteration, User-Fund: "nur beim Host gehört 785 complete
+        # ebenfalls nach HOST, sarasate, next in 2 min - 2 clients
+        # connected") — alle drei ausschließlich eine Host-Perspektive,
+        # deshalb nur in diesem Zweig, nicht bei "Client" unten. Drei eigene
+        # Zeilen statt einer " · "-verketteten (User-Mockup: "- 2 clients
+        # connected / - next Job in 2 min / - 785 Jobs complete").
         job_stats = status.get("job_stats") or {}
         workers = status.get("workers") or []
         n_clients = sum(1 for w in workers if not w.get("stale"))
-        sub = f"next {_until(job_stats.get('next_due_at'), now)} · {n_clients} clients connected"
-        return _lines_card("Host", [_e(own)] if own else ["—"], sub=sub)
+        complete = job_stats.get("complete_since_uptime", 0)
+        subs = [
+            f"{n_clients} clients connected",
+            f"next Job {_until(job_stats.get('next_due_at'), now)}",
+            f"{complete} Jobs complete",
+        ]
+        return _lines_card("Host", [_e(own)] if own else ["—"], sub=subs)
     hostname = None
     if host_url:
         from urllib.parse import urlparse
@@ -1564,22 +1580,18 @@ def _job_status_card(job_stats: dict, now: float) -> str:
     "Apps enden nicht" — fachlich eigene Kategorie, siehe ``models.display_kind()``):
     3 Zeilen Waiting/Running/Stopped x 3 Spalten job/claude/app, aus
     ``job_stats["counts_by_kind"]`` (``job_db.status_counts_by_kind()``).
-    ``complete`` bleibt bewusst EIN aggregierter Wert ohne Kind-Aufschlüsselung
-    (kumulativ seit Prozessstart, ``complete_since_uptime`` — eine
-    kind-aufgeschlüsselte Historie bräuchte einen eigenen DB-Zähler, kein
-    Anzeige-Thema dieser Iteration) — genau wie ``complete`` selbst NICHT aus
-    ``counts`` kommt (Live-Zählung aktiver Jobs, sinkt sobald abgeschlossene
-    Jobs archiviert werden). Sub-Zeile zeigt nur noch den Complete-Zähler —
-    "next ..." ist zur Host-Kachel gewandert (Bibi4-Iteration, User-Fund:
-    "Lass uns den Teil next in ... verschieben in die Host Kachel", s.
-    ``_host_card()``), damit steht die Scheduling-Info nicht mehr doppelt.
+
+    Keine Fußzeile mehr (zweite Bibi4-Iteration, User-Fund: "nur beim Host
+    gehört 785 complete ebenfalls nach HOST, sarasate, next in 2 min - 2
+    clients connected") — der Complete-Zähler ist zur Host-Kachel gewandert,
+    zusammen mit dem schon vorher dorthin verschobenen "next ..." (s.
+    ``_host_card()``). Damit ist diese Kachel jetzt reine Matrix ohne Sub-
+    Zeile, symmetrisch zu ``_client_job_status_card()``.
 
     Kein eigener Titel mehr (Bibi4-Iteration, User-Fund: "entferne die
     Überschrift Job Status und beginne ganz oben mit JOB CLAUDE APP") — die
     Kopfzeile der Matrix trägt die Beschriftung jetzt selbst, spart eine Zeile
-    Höhe gegenüber Mode/Git. Sub-Zeile komplett Englisch (User-Entscheidung:
-    "wir werden früher oder später die Sprache eh auf Englisch
-    vereinheitlichen") — Zeilen-/Spaltenlabels waren es schon."""
+    Höhe gegenüber Mode/Git."""
     by_kind = job_stats.get("counts_by_kind") or {}
 
     def cell(kind: str, statuses: tuple[str, ...]) -> int:
@@ -1592,11 +1604,7 @@ def _job_status_card(job_stats: dict, now: float) -> str:
         f'<div class="jsg-k">{row_label}</div>' + "".join(
             f'<div class="jsg-v">{cell(kind, statuses)}</div>' for kind, _ in _JOB_STATUS_KINDS)
         for row_label, statuses in _JOB_STATUS_ROWS)
-    complete = job_stats.get("complete_since_uptime", 0)
-    sub = f"{complete} complete"
-    return (f'<div class="card">'
-           f'<div class="jobstatus-grid">{header}{rows}</div>'
-           f'<div class="sub">{_e(sub)}</div></div>')
+    return f'<div class="card"><div class="jobstatus-grid">{header}{rows}</div></div>'
 
 
 def job_status_fragment(job_stats: dict | None, now: float, *, poll_interval_s: int = 2) -> str:

@@ -173,32 +173,52 @@ def test_host_card_dash_without_hostname_and_without_connect_role():
     assert ">—<" in html
 
 
-def test_host_card_shows_next_due_and_client_count_on_host_branch():
+def test_host_card_shows_next_due_client_count_and_complete_on_host_branch():
     # Bibi4-Iteration, User-Fund: "next in ..." wandert von der Job-Status-
-    # Kachel hierher, plus Anzahl verbundener Clients.
+    # Kachel hierher, plus Anzahl verbundener Clients — und (zweite Iteration,
+    # User-Fund: "nur beim Host gehört 785 complete ebenfalls nach HOST") der
+    # Complete-Zähler noch dazu. Drei eigene Zeilen statt einer " · "-Fließtext-
+    # Zeile (User-Mockup: "HOST / sarasate / - 2 clients connected / - next Job
+    # in 2 min / - 785 Jobs complete").
     status = {
         "hostname": "sarasate",
-        "job_stats": {"next_due_at": 400.0},
+        "job_stats": {"next_due_at": 400.0, "complete_since_uptime": 785},
         "workers": [{"stale": False}, {"stale": False}, {"stale": True}],
     }
     html = render._host_card(status, "http://localhost:8780", now=100.0)
-    assert '<div class="sub">next in 5 min · 2 clients connected</div>' in html
+    assert '<div class="sub">2 clients connected</div>' in html
+    assert '<div class="sub">next Job in 5 min</div>' in html
+    assert '<div class="sub">785 Jobs complete</div>' in html
 
 
 def test_host_card_next_due_none_and_no_clients_shows_dash_and_zero():
     status = {"hostname": "sarasate"}
     html = render._host_card(status, "http://localhost:8780", now=100.0)
-    assert '<div class="sub">next — · 0 clients connected</div>' in html
+    assert '<div class="sub">0 clients connected</div>' in html
+    assert '<div class="sub">next Job —</div>' in html
+    assert '<div class="sub">0 Jobs complete</div>' in html
+
+
+def test_host_card_uses_cumulative_complete_counter_not_live_count():
+    # complete_since_uptime (kumulativ seit Start), NICHT counts["complete"]
+    # (Live-Zählung aktiver Jobs — sinkt, sobald abgeschlossene Jobs
+    # archiviert werden) — dieselbe Unterscheidung, die früher in der
+    # Job-Status-Kachel galt, jetzt hier, weil der Zähler mit umgezogen ist.
+    status = {"hostname": "sarasate", "job_stats": {"complete_since_uptime": 47}}
+    html = render._host_card(status, "http://localhost:8780", now=100.0)
+    assert "47 Jobs complete" in html
 
 
 def test_host_card_client_branch_has_no_next_due_sub_line():
     # Die Client-Karte (mit connect-Rolle) zeigt weiterhin nur Heartbeat,
-    # kein "next"/Client-Count — das ist ausschließlich Host-Perspektive.
+    # kein "next"/Client-Count/Complete — das ist ausschließlich Host-
+    # Perspektive.
     html = render._host_card(
         {"connect": {"ok": True, "last_at": 96.0}},
         "http://sarasate.tail9f9173.ts.net:8780", now=100.0)
     assert "next" not in html
     assert "clients connected" not in html
+    assert "Jobs complete" not in html
 
 
 # --- Mode-Kachel (PLAN-19 Befund 4: Auto-Sync+Maintenance+Uptime zusammen) ------
@@ -255,23 +275,17 @@ def test_job_status_card_missing_kind_defaults_to_zero():
     assert '<div class="jsg-k">Running</div><div class="jsg-v">0</div><div class="jsg-v">0</div><div class="jsg-v">2</div>' in html
 
 
-def test_job_status_card_complete_uses_cumulative_counter_not_live_count():
-    # complete_since_uptime (kumulativ seit Start), NICHT counts["complete"]
-    # (Live-Zählung aktiver Jobs — sinkt, sobald abgeschlossene Jobs
-    # archiviert werden).
-    job_stats = {"counts_by_kind": {}, "complete_since_uptime": 47, "next_due_at": None}
-    html = render._job_status_card(job_stats, now=100.0)
-    assert "47 complete" in html
-
-
-def test_job_status_card_sub_line_shows_only_complete_count():
-    # Bibi4-Iteration, User-Fund: "next in ..." wandert in die Host-Kachel
-    # (s. test_host_card_shows_next_due_and_client_count_on_host_branch) —
-    # hier bleibt nur noch der Complete-Zähler übrig.
+def test_job_status_card_has_no_sub_line():
+    # Bibi4-Iteration, User-Fund: "next in ..." (Batch 7) und "785 complete"
+    # (zweite Iteration, "nur beim Host gehört 785 complete ebenfalls nach
+    # HOST") sind beide in die Host-Kachel gewandert — die Job-Status-Kachel
+    # ist jetzt reine Matrix ohne Fußzeile, symmetrisch zu
+    # _client_job_status_card().
     html = render._job_status_card(
         {"counts_by_kind": {}, "complete_since_uptime": 3, "next_due_at": 400.0}, now=100.0)
-    assert '<div class="sub">3 complete</div>' in html
+    assert '<div class="sub">' not in html
     assert "next" not in html
+    assert "complete" not in html
 
 
 def test_job_status_card_has_no_title_row():
