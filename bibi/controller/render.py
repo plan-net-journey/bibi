@@ -1811,19 +1811,30 @@ def _sparkline_cell(slug: str, series_by_slug: dict[str, list[int]] | None) -> s
     return f'<span id="spark-{_e(slug)}" hx-preserve="true">{svg}</span>'
 
 
-def _sparkline_cell_lazy(slug: str) -> str:
+def _sparkline_cell_lazy(slug: str, index: int = 0) -> str:
     """Entkoppelter Platzhalter (Bibi4-Iteration, User-Fund: "Sparklines
     dauern beim Reload immer") — löst ``jobs_screen()``s bisherige, den
     kompletten Seitenaufbau blockierende ``_job_sparkline_series()``-
     Berechnung ab. Statt die Serie eager mitzuliefern, feuert die Zelle
     selbst einen ``hx-get`` gegen eine eigene Pro-Slug-Route
-    (``/-/ui/jobs/{slug}/sparkline``), sobald sie ins DOM eingehängt wird
-    (``hx-trigger=\"load\"``). Analog zum bestehenden
-    ``hx-trigger=\"revealed\"``-Muster in ``_journal_sentinel_row()``, hier
-    ``load`` statt ``revealed`` — eine normale Jobs-Tabelle braucht kein
-    Scroll-Gating, alle Zeilen sind eh sichtbar; der eigentliche
-    Entlastungseffekt kommt aus dem gemeinsamen, gesperrten Cache in
-    ``_job_sparkline_series()``, nicht aus verzögertem Laden.
+    (``/-/ui/jobs/{slug}/sparkline``), sobald sie ins DOM eingehängt wird.
+    Analog zum bestehenden ``hx-trigger=\"revealed\"``-Muster in
+    ``_journal_sentinel_row()``, hier ``load`` statt ``revealed`` — eine
+    normale Jobs-Tabelle braucht kein Scroll-Gating, alle Zeilen sind eh
+    sichtbar.
+
+    ``delay:{index*120}ms`` (Bugfix, User-Fund 2026-07-22: "zieht meinen
+    ganzen Rechner in die Knie. Immer noch!", eskaliert bis zum Browser-Tab-
+    Crash) — ohne Staffelung feuern bei N Zeilen alle N ``hx-get``s im
+    selben Tick (das war die ursprüngliche, im Case-Dokument selbst
+    gewünschte "eine nach der anderen"-Ladefolge, die hier zuvor NICHT
+    umgesetzt war). Jede Anfrage bringt unabhängig von
+    ``_job_sparkline_series()``s Cache/Lock ihre eigene
+    ``jobs_sparkline()``-Route-Kosten mit (Discovery-Scan über
+    ``_local_schedules()``) — N gleichzeitige Anfragen multiplizieren das,
+    N gestaffelte über ~120ms Abstand nicht. Reiner Anzeige-Effekt (die
+    Zellen füllen sich sichtbar nacheinander statt schlagartig), keine
+    Server-Änderung nötig.
 
     ``hx-preserve=\"true\"`` **hier auch schon im unaufgelösten Zustand**
     (Regression, User-Fund nach Deploy: "Sparklines erscheinen jetzt gar
@@ -1843,8 +1854,10 @@ def _sparkline_cell_lazy(slug: str) -> str:
     noch unaufgelöst) durch ist und sich selbst per ``hx-swap=\"outerHTML\"``
     ersetzt."""
     s = _e(slug)
+    trigger = f"load delay:{index * 120}ms" if index > 0 else "load"
     return (f'<span id="spark-{s}" hx-preserve="true" '
-           f'hx-get="/-/ui/jobs/{s}/sparkline" hx-trigger="load" hx-swap="outerHTML"></span>')
+           f'hx-get="/-/ui/jobs/{s}/sparkline" hx-trigger="{trigger}" '
+           f'hx-swap="outerHTML"></span>')
 
 
 def _jobs_type_cell(row: dict, public_host: str) -> str:
@@ -1867,7 +1880,7 @@ def _jobs_type_cell(row: dict, public_host: str) -> str:
 
 def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
               *, public_host: str = "localhost", sparklines: dict[str, list[int]] | None = None,
-              lazy_sparklines: bool = False) -> str:
+              lazy_sparklines: bool = False, index: int = 0) -> str:
     """Eine Zeile: Slug(+Git-Chip)/Type/Status/last-since/Runtime (Bibi4-
     Iteration, User-Fund: "Slug/Type/Status/last-since/Runtime" — löst die
     vorherige 7-Spalten-Form (eigene Git-Spalte, getrennte Start/Ende-Spalten)
@@ -1930,7 +1943,8 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
         last_cell = runtime_cell = "—"
 
     type_cell = _jobs_type_cell(row, public_host)
-    spark_cell = _sparkline_cell_lazy(slug) if lazy_sparklines else _sparkline_cell(slug, sparklines)
+    spark_cell = (_sparkline_cell_lazy(slug, index) if lazy_sparklines
+                  else _sparkline_cell(slug, sparklines))
 
     return (f"<tr><td>{slug_cell}</td><td>{type_cell}</td><td>{status_cell}</td>"
             f"<td>{last_cell}</td><td>{runtime_cell}</td><td>{spark_cell}</td></tr>")
@@ -1942,8 +1956,8 @@ def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
     if not rows:
         return '<p class="out-empty">— keine Job-MDs im Repository gefunden —</p>'
     body = "".join(_jobs_row(r, local_runs, now, public_host=public_host, sparklines=sparklines,
-                            lazy_sparklines=lazy_sparklines)
-                  for r in rows)
+                            lazy_sparklines=lazy_sparklines, index=i)
+                  for i, r in enumerate(rows))
     return (
         '<table><thead><tr><th>Slug</th><th>Type</th><th>Status</th>'
         '<th>last / since</th><th>Runtime</th><th>Activity</th></tr></thead>'

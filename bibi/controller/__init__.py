@@ -529,7 +529,19 @@ def add_controller_routes(
         # _sparkline_cell_lazy()). Ruft dieselbe gecachte, jetzt gesperrte
         # _job_sparkline_series() wie zuvor auf (s. dortiger Docstring) —
         # kein neuer Berechnungspfad, nur ein neuer Zugriffspunkt darauf.
-        rows, _local_runs = _jobs_data()
+        #
+        # Bugfix (User-Fund 2026-07-22, "zieht meinen ganzen Rechner in die
+        # Knie. Immer noch!"): rief hier bis eben _jobs_data() — vault-weite
+        # Discovery + git-status-Subprozess + zwei HTTP-Selbstaufrufe
+        # (run_live_list()/run_journal()) — pro Zeile auf, obwohl
+        # _job_sparkline_series() aus jeder Zeile ausschließlich slug+
+        # repo_path liest; git_status/live/local_runs wurden berechnet und
+        # sofort verworfen. Bei N Jobs multiplizierte das die teuerste
+        # Teil-Pipeline (Discovery-Scan) von 1x auf N+1x pro Seitenaufbau —
+        # jetzt _local_schedules() direkt, ohne Git-Subprozess und ohne die
+        # zwei Selbstaufrufe.
+        rows = [{"slug": s, "repo_path": v["repo_path"]}
+                for s, v in _local_schedules().items() if v.get("repo_path")]
         sparklines = _job_sparkline_series(rows)
         return HTMLResponse(render._sparkline_cell(slug, sparklines))
 
