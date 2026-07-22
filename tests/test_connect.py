@@ -87,6 +87,14 @@ def test_registry_stores_git_user():
     assert reg.list(now=0)[0]["git_user"] == "m.rau"
 
 
+def test_registry_stores_role():
+    # Bibi4-Iteration, User-Fund: "Client Übersicht braucht die Rollen je
+    # Client" — derselbe Präzedenzfall wie git_user/node_id.
+    reg = WorkerRegistry()
+    reg.heartbeat("w1", "h1", node_id="uuid-a", role="synchronizer,controller", now=0)
+    assert reg.list(now=0)[0]["role"] == "synchronizer,controller"
+
+
 def test_sweeper_reconciles_no_process(tmp_path: Path):
     import secrets
     import time as _t
@@ -203,6 +211,17 @@ def test_worker_heartbeat_passes_node_id_and_git_user_through(sched):
     })
     workers = sched.get("/-/worker").json()
     assert sum(1 for w in workers if w["node_id"] == "stable-uuid") == 1
+
+
+def test_worker_heartbeat_passes_role_through(sched):
+    r = sched.post("/-/worker", json={
+        "worker": "air2024", "host": "mac", "node_id": "stable-uuid",
+        "role": "synchronizer,controller",
+    })
+    assert r.status_code == 200
+    workers = sched.get("/-/worker").json()
+    w = next(w for w in workers if w["worker"] == "air2024")
+    assert w["role"] == "synchronizer,controller"
 
 
 # ── Shared-Secret-Auth (§1.3) ────────────────────────────────────────────────

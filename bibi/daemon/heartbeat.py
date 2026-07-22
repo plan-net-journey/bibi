@@ -33,6 +33,7 @@ class Heartbeat:
     def __init__(
         self, *, client, worker_name: str | None = None,
         repo_root: Path | None = None, interval: float = 15.0,
+        role: str | None = None,
     ) -> None:
         self.client = client
         self.worker_name = worker_name or socket.gethostname()
@@ -42,6 +43,11 @@ class Heartbeat:
         # pro Prozesslebensdauer gelesen/generiert, bleibt über Netzwerk-/
         # Hostname-Wechsel stabil, anders als worker_name/host oben.
         self.node_id = config.node_id()
+        # Zweite Bibi4-Iteration, User-Fund ("Client Übersicht braucht die
+        # Rollen je Client") — vom Aufrufer übergeben (daemon_cmd.py kennt
+        # dort schon den aufgelösten Roles.active_names(), genauer als hier
+        # erneut BIBI_ROLE zu parsen), nicht pro Beat neu ermittelt.
+        self.role = role
         self.repo_root = repo_root
         self.interval = interval
         self._task: asyncio.Task | None = None
@@ -67,7 +73,8 @@ class Heartbeat:
         try:
             self.client.register(self.worker_name, self.host, self._git_status(),
                                  node_id=self.node_id,
-                                 git_user=git_ops.git_user_name(self.repo_root or repo.root()))
+                                 git_user=git_ops.git_user_name(self.repo_root or repo.root()),
+                                 role=self.role)
             self.last_ok = True
             activity.emit(log, logging.DEBUG, "connect.heartbeat", role="connect",
                           worker=self.worker_name)

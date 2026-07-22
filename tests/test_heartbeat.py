@@ -43,8 +43,9 @@ class _FakeClient:
         self.calls: list[tuple] = []
 
     def register(self, worker: str, host: str, git_status: str | None = None, *,
-                 node_id: str | None = None, git_user: str | None = None) -> None:
-        self.calls.append((worker, host, git_status, node_id, git_user))
+                 node_id: str | None = None, git_user: str | None = None,
+                 role: str | None = None) -> None:
+        self.calls.append((worker, host, git_status, node_id, git_user, role))
         if self.fail:
             raise ConnectionError("scheduler unreachable")
 
@@ -72,12 +73,25 @@ def test_start_registers_immediately(gitrepo: Path):
     hb = Heartbeat(client=client, worker_name="w1", repo_root=gitrepo, interval=60)
     asyncio.run(hb.start())
     assert len(client.calls) == 1
-    worker, host, git_status, node_id, git_user = client.calls[0]
+    worker, host, git_status, node_id, git_user, role = client.calls[0]
     assert (worker, host, git_status) == ("w1", hb.host, "trunk · clean · synced")
     assert node_id == hb.node_id and len(node_id) == 32
     assert git_user == "t"  # gitrepo-Fixture: git config user.name = "t"
+    assert role is None  # kein role= übergeben -> nichts zu senden
     assert hb.last_ok is True
     assert hb.last_at is not None
+    asyncio.run(hb.stop())
+
+
+def test_role_included_in_heartbeat(gitrepo: Path):
+    # Bibi4-Iteration, User-Fund: "Client Übersicht braucht die Rollen je
+    # Client" — role wird einmal im Konstruktor übergeben (analog worker_name),
+    # nicht pro Beat neu ermittelt.
+    client = _FakeClient()
+    hb = Heartbeat(client=client, worker_name="w1", repo_root=gitrepo,
+                   interval=60, role="synchronizer,controller")
+    asyncio.run(hb.start())
+    assert client.calls[0][5] == "synchronizer,controller"
     asyncio.run(hb.stop())
 
 

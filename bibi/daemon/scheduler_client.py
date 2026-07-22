@@ -61,7 +61,8 @@ class LocalScheduler:
             conn.close()
 
     def register(self, worker: str, host: str, git_status: str | None = None, *,
-                 node_id: str | None = None, git_user: str | None = None) -> None:
+                 node_id: str | None = None, git_user: str | None = None,
+                 role: str | None = None) -> None:
         pass  # Single-Node: keine Anmeldung nötig
 
 
@@ -102,9 +103,10 @@ class RemoteScheduler:
         return {200: "ok", 409: "invalid", 404: "not_found"}.get(code, "error")
 
     def register(self, worker: str, host: str, git_status: str | None = None, *,
-                 node_id: str | None = None, git_user: str | None = None) -> None:
+                 node_id: str | None = None, git_user: str | None = None,
+                 role: str | None = None) -> None:
         self._post("/-/worker", {"worker": worker, "host": host, "git_status": git_status,
-                                 "node_id": node_id, "git_user": git_user})
+                                 "node_id": node_id, "git_user": git_user, "role": role})
 
     def _get(self, path: str) -> object:
         headers = {"Accept": "application/json"}

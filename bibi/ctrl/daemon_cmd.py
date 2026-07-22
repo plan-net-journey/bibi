@@ -117,7 +117,8 @@ def run(args: argparse.Namespace) -> int:
             connect_url or "http://127.0.0.1:8769",
             secret=os.environ.get("BIBI_CONNECT_SECRET"),
         )
-        heartbeat = Heartbeat(client=hb_client, repo_root=repo.root(), worker_name=worker_name)
+        heartbeat = Heartbeat(client=hb_client, repo_root=repo.root(), worker_name=worker_name,
+                              role=",".join(r.active_names()))
 
     import uvicorn
 

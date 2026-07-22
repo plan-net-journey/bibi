@@ -23,7 +23,7 @@ class WorkerRegistry:
     def heartbeat(
         self, worker: str, host: str, git_status: str | None = None, *,
         node_id: str | None = None, git_user: str | None = None,
-        now: float | None = None,
+        role: str | None = None, now: float | None = None,
     ) -> dict:
         """``node_id`` (Bibi4-Iteration, User-Fund: derselbe physische Client
         tauchte je nach Netzwerk mit unterschiedlichem ``worker``-Namen auf,
@@ -33,13 +33,15 @@ class WorkerRegistry:
         anzulegen. Fällt auf ``worker`` zurück, wenn kein ``node_id``
         mitgeschickt wird (älterer Client vor dieser Änderung) — schlechter
         als eine stabile ID, aber nicht schlechter als das bisherige
-        Verhalten."""
+        Verhalten. ``role`` (zweite Bibi4-Iteration, User-Fund: "Client
+        Übersicht braucht die Rollen je Client") ist der rohe
+        ``BIBI_ROLE``-String des sendenden Knotens, unverändert gespeichert."""
         now = time.time() if now is None else now
         key = node_id or worker
         with self._lock:
             entry = self._w.get(key) or {"connected_at": now}
             entry.update(worker=worker, host=host, git_status=git_status,
-                         node_id=node_id, git_user=git_user, last_heartbeat=now)
+                         node_id=node_id, git_user=git_user, role=role, last_heartbeat=now)
             self._w[key] = entry
             return dict(entry)
 

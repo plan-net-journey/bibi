@@ -630,6 +630,8 @@ def archive_page(schedules: list[dict], now: float | None = None,
 # in /-/status.workers exponiert) — hier nur die erste Darstellung dafür.
 # node_id/git_user (Bibi4-Iteration, User-Fund: "wir brauchen unbedingt den
 # hinterlegten gitea/git Nutzernamen") reisen seit dem Heartbeat-Ausbau mit.
+# role (zweite Bibi4-Iteration, User-Fund: "Client Übersicht braucht die
+# Rollen je Client") denselben Weg: Heartbeat -> WorkerRegistry -> hier.
 
 _CLIENTS_POLL = "every 10s [window.bibiFollow]"
 
@@ -646,6 +648,7 @@ def _clients_table(workers: list[dict], now: float) -> str:
             "<tr>"
             f"<td>{_e(w.get('worker') or '—')}</td>"
             f"<td>{_e(w.get('host') or '—')}</td>"
+            f"<td>{_e(w.get('role') or '—')}</td>"
             f"<td>{_e(w.get('git_user') or '—')}</td>"
             f"<td>{_e(w.get('git_status') or '—')}</td>"
             f"<td>{status_html}</td>"
@@ -654,7 +657,7 @@ def _clients_table(workers: list[dict], now: float) -> str:
             "</tr>"
         )
     return (
-        '<table><thead><tr><th>Name</th><th>Host</th><th>Git-User</th>'
+        '<table><thead><tr><th>Name</th><th>Host</th><th>Rolle</th><th>Git-User</th>'
         '<th>Git-Status</th><th>Status</th><th>Connected seit</th>'
         '<th>Letzter Heartbeat</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"
