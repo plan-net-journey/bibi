@@ -7,7 +7,6 @@ import json
 from bibi.schedule.models import (
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_DEFER_MAX,
-    DEFAULT_WALL_TIME,
     JobRow,
     JournalEntry,
     Kind,
@@ -65,10 +64,11 @@ def test_schedule_spec_defaults():
     assert s.attempts == 0
     assert s.silence_timeout == 3600
     assert s.at is None and s.schedule is None
-    # wall_time/defer_max haben einen eigenstaendigen globalen Default (§5.5);
-    # defer_time/error_time bleiben None-Sentinel — ihre Praezedenz lebt im
-    # Wrapper (_finish()), nicht hier im Datenmodell.
-    assert s.wall_time == DEFAULT_WALL_TIME == 3600
+    # defer_max hat einen eigenstaendigen globalen Default (§5.5); wall_time/
+    # defer_time/error_time bleiben None-Sentinel (Bibi4-Iteration, User-Fund:
+    # wall_time sollte per Default AUS sein, sonst killt es Apps, die absichtlich
+    # endlos laufen, nach 1h — nur noch Opt-in wie defer_time/error_time).
+    assert s.wall_time is None
     assert s.defer_max == DEFAULT_DEFER_MAX == 1200
     assert s.defer_time is None
     assert s.error_time is None

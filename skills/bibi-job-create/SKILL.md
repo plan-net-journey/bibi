@@ -140,9 +140,12 @@ Ask explicitly: "Use defaults or customise?"
 
 - **Defaults** (most common, matches the parser's own bibi4 defaults —
   don't hardcode a different set): `attempts: 1, backoff: fixed`, no
-  `wall_time` override, `silence_timeout` left unset (auto-picks 1h for AI
-  jobs, 2h for plain jobs, 48h for apps — PLAN-31 Befund 4; only override if
-  the user has a specific reason).
+  `wall_time` override (unset means no wall-clock limit at all — apps and
+  long-running jobs rely on the zombie check instead, not wall_time; only
+  set it for a job that should hard-fail past a fixed duration),
+  `silence_timeout` left unset (auto-picks 1h for AI jobs, 2h for plain
+  jobs, 48h for apps — PLAN-31 Befund 4; only override if the user has a
+  specific reason).
 - **Customise** → ask only for the fields the user wants to change (most
   commonly `wall_time` for a job that legitimately runs long; `attempts` for
   "no retry, one shot only" — explicit `attempts: 1` already is that).

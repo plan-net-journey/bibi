@@ -103,9 +103,11 @@ DEFAULT_SILENCE_TIMEOUT = 3600
 DEFAULT_SILENCE_TIMEOUT_APP = 48 * 3600
 DEFAULT_SILENCE_TIMEOUT_JOB = 2 * 3600
 
-#: Wall-Time-Default (§5.5) — 1h, greift für JEDEN Job ohne explizites
-#: `wall_time:` im Frontmatter (vorher: kein Limit ohne explizite Angabe).
-DEFAULT_WALL_TIME = 3600
+#: Wall-Time (§5.5) — None-Sentinel wie defer_time/error_time (Bibi4-Iteration,
+#: User-Fund: "wall_time Default muss doch None sein ... sonst laufen Apps in
+#: die Default Wall Time und wir wollen bei Apps den Zombie Status verwenden").
+#: Kein globaler DEFAULT_WALL_TIME mehr — Wall Time ist reines Opt-in fürs
+#: einzelne Schedule, nie ein ungewollter Default für JOB/CLAUDE/APP gleichermaßen.
 
 #: Defer-Time-Default (§5.5) — nur der letzte Fallback in _finish(), wenn
 #: weder ein expliziter bibi.job.Deferred(seconds=N) noch Schedule-
@@ -153,7 +155,7 @@ class ScheduleSpec:
     attempts: int = 0
     backoff: str = "fixed"  # fixed | linear | exponential
     silence_timeout: int = DEFAULT_SILENCE_TIMEOUT
-    wall_time: int = DEFAULT_WALL_TIME
+    wall_time: int | None = None
     defer_time: int | None = None
     defer_max: int = DEFAULT_DEFER_MAX
     error_time: int | None = None

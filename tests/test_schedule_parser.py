@@ -148,13 +148,23 @@ def test_defer_time_and_error_time_default_none():
     assert r.spec.error_time is None
 
 
-def test_wall_time_and_defer_max_have_real_defaults():
-    # Anders als defer_time/error_time (None-Sentinel, Praezedenz lebt im
-    # Wrapper) haben wall_time/defer_max einen eigenstaendigen globalen
-    # Default und werden wie silence_timeout IMMER gecoerct.
-    from bibi.schedule.models import DEFAULT_DEFER_MAX, DEFAULT_WALL_TIME
+def test_wall_time_default_none():
+    # Bibi4-Iteration, User-Fund: "wall_time Default muss doch None sein ...
+    # sonst laufen Apps in die Default Wall Time und wir wollen bei Apps den
+    # Zombie Status (48h) verwenden" — wall_time ist jetzt genau wie
+    # defer_time/error_time ein None-Sentinel (Praesenz-basiert), nicht mehr
+    # IMMER gecoerct. Betraf zuvor JEDEN Kind-Typ gleichermassen (keine
+    # app_port-Ausnahme wie bei silence_timeout) und killte eine App ohne
+    # explizites wall_time: nach 1h, obwohl sie aktiv Output produzierte.
     r = _parse('---\nschedule: now\njob: "x"\n---\n')
-    assert r.spec.wall_time == DEFAULT_WALL_TIME == 3600
+    assert r.spec.wall_time is None
+
+
+def test_defer_max_still_has_real_default():
+    # defer_max behaelt seinen eigenstaendigen globalen Default (unveraendert,
+    # anders als wall_time jetzt) und wird wie silence_timeout IMMER gecoerct.
+    from bibi.schedule.models import DEFAULT_DEFER_MAX
+    r = _parse('---\nschedule: now\njob: "x"\n---\n')
     assert r.spec.defer_max == DEFAULT_DEFER_MAX == 1200
 
 
