@@ -386,6 +386,11 @@ def add_controller_routes(
             "stale": False,
             "connected_at": None,
             "last_heartbeat": None,
+            # PLAN-32 Stufe 32.1: der Host schaltet sich nicht selbst frei
+            # (kein eigener approved_nodes-Eintrag, er heartbeatet sich nie
+            # selbst) — für die Anzeige immer "approved", analog zu "stale":
+            # False oben.
+            "approval_status": "approved",
         }
 
     @app.get("/-/ui/clients", include_in_schema=False)
@@ -405,6 +410,20 @@ def add_controller_routes(
 
     @app.get("/-/ui/clients/board", include_in_schema=False)
     def clients_board_fragment():
+        workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+        return HTMLResponse(render.clients_fragment(workers))
+
+    @app.post("/-/ui/clients/{node_id}/{verb}", include_in_schema=False)
+    def clients_node_action(node_id: str, verb: str):
+        # PLAN-32 Stufe 32.1: Approve-/Block-Buttons im Nodes-Screen — wirkt,
+        # dann #clientsboard sofort neu rendern (analog schedule_action()s
+        # Sofort-Swap statt auf den nächsten 10s-Self-Poll zu warten).
+        if verb not in ("approve", "block"):
+            return JSONResponse(status_code=404, content={"error": "unknown verb"})
+        try:
+            client.node_action(node_id, verb)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
         workers = [_host_worker_entry(), *(_status().get("workers") or [])]
         return HTMLResponse(render.clients_fragment(workers))
 

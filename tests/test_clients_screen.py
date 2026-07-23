@@ -119,6 +119,7 @@ def test_clients_page_includes_header_and_table():
 class _FakeClient:
     def __init__(self, *, workers: list[dict] | None = None) -> None:
         self._workers = workers or []
+        self.node_actions: list[tuple[str, str]] = []
 
     def status(self) -> dict:
         return {"roles": ["scheduler", "controller"], "workers": self._workers}
@@ -128,6 +129,10 @@ class _FakeClient:
 
     def landings(self, *, since: float | None = None) -> list[dict]:
         return []
+
+    def node_action(self, node_id: str, verb: str) -> dict:
+        self.node_actions.append((node_id, verb))
+        return {"node_id": node_id, "status": "approved" if verb == "approve" else "blocked"}
 
 
 def test_clients_screen_route_renders_registered_worker(team_repo: Path):
@@ -168,3 +173,62 @@ def test_clients_screen_route_shows_host_itself_without_any_registered_worker(te
     assert "keine Knoten" not in r.text
     assert '<span class="chip clean">connected</span>' in r.text
     assert r.text.count('role-box on"') == 1  # nur "controller" ist aktiv
+
+
+# ── Open-Trust-Connect-Gate: Approve-/Block-Zelle + Route (PLAN-32 Stufe 32.1) ──
+
+
+def test_node_approval_cell_pending_shows_approve_button():
+    html = render._node_approval_cell("n1", "pending")
+    assert '<span class="chip modified">pending</span>' in html
+    assert 'hx-post="/-/ui/clients/n1/approve"' in html
+    assert "Block" not in html
+
+
+def test_node_approval_cell_approved_shows_block_button():
+    html = render._node_approval_cell("n1", "approved")
+    assert '<span class="chip clean">approved</span>' in html
+    assert 'hx-post="/-/ui/clients/n1/block"' in html
+
+
+def test_node_approval_cell_blocked_shows_approve_button():
+    html = render._node_approval_cell("n1", "blocked")
+    assert '<span class="chip conflict">blocked</span>' in html
+    assert 'hx-post="/-/ui/clients/n1/approve"' in html
+
+
+def test_node_approval_cell_no_node_id_no_button():
+    # Host-Zeile (_host_worker_entry()) oder älterer Client ohne node_id —
+    # serverseitig nicht individuell adressierbar.
+    html = render._node_approval_cell(None, "approved")
+    assert html == '<span class="chip clean">approved</span>'
+
+
+def test_clients_table_includes_approval_column():
+    workers = [{"worker": "w1", "host": "h", "node_id": "n1",
+               "approval_status": "pending", "stale": False,
+               "connected_at": 0, "last_heartbeat": 0}]
+    html = render._clients_table(workers, now=0)
+    assert "<th>Freigabe</th>" in html
+    assert 'hx-post="/-/ui/clients/n1/approve"' in html
+
+
+def test_clients_node_action_route_calls_client_and_rerenders(team_repo: Path):
+    client = _FakeClient(workers=[{"worker": "w1", "host": "h", "node_id": "n1",
+                                   "approval_status": "pending", "stale": False,
+                                   "connected_at": 0, "last_heartbeat": 0}])
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.post("/-/ui/clients/n1/approve")
+    assert r.status_code == 200
+    assert client.node_actions == [("n1", "approve")]
+    assert 'id="clientsboard"' in r.text
+
+
+def test_clients_node_action_route_rejects_unknown_verb(team_repo: Path):
+    client = _FakeClient()
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.post("/-/ui/clients/n1/frobnicate")
+    assert r.status_code == 404
+    assert client.node_actions == []

@@ -348,11 +348,48 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
             conn.close()
 
     # ── Worker-Verbund: Anmeldung/Heartbeat + Liste (PLAN-3 §3.6, A12) ────────
-    @app.post("/-/worker", tags=["worker"], dependencies=[Depends(_auth)])
+    # PLAN-32 Stufe 32.1 ("Open Trust"): der frühere BIBI_CONNECT_SECRET-Gate
+    # (``_auth``, oben) entfällt hier zugunsten eines Host-seitig gepflegten
+    # Freischalt-Status je ``node_id`` (``job_db.approved_nodes`` — bewusst
+    # NICHT im In-Memory-``WorkerRegistry``, s. dortiger Docstring). Ein
+    # unbekannter Knoten wird beim ersten Heartbeat als "pending" sichtbar
+    # (harmlos, keine Arbeit/kein Config-Bundle); ein explizit "blocked"er
+    # Knoten wird vollständig abgelehnt — kein Sonderfall, der ihn nur
+    # teilweise durchlässt (s. PLAN-32, Client-Ban-Entscheidung). Clients ohne
+    # ``node_id`` (älter als diese Änderung) können nicht individuell gebannt
+    # werden und gelten als "approved" — Rückwärtskompatibilität, kein
+    # Sicherheitsverlust (galt vorher ohnehin fail-open, s. PLAN-32).
+    @app.post("/-/worker", tags=["worker"])
     def worker_heartbeat(hb: WorkerHeartbeat):
+        if hb.node_id:
+            conn = job_db.connect()
+            try:
+                status = job_db.node_approval_status(conn, hb.node_id)
+            finally:
+                conn.close()
+            if status == "blocked":
+                raise HTTPException(status_code=401, detail="node blocked by host operator")
         return registry.heartbeat(hb.worker, hb.host, hb.git_status,
                                   node_id=hb.node_id, git_user=hb.git_user, role=hb.role,
                                   port=hb.port)
+
+    @app.post("/-/worker/{node_id}/approve", tags=["worker"])
+    def worker_approve(node_id: str):
+        conn = job_db.connect()
+        try:
+            job_db.set_node_approval(conn, node_id, "approved")
+        finally:
+            conn.close()
+        return {"node_id": node_id, "status": "approved"}
+
+    @app.post("/-/worker/{node_id}/block", tags=["worker"])
+    def worker_block(node_id: str):
+        conn = job_db.connect()
+        try:
+            job_db.set_node_approval(conn, node_id, "blocked")
+        finally:
+            conn.close()
+        return {"node_id": node_id, "status": "blocked"}
 
     @app.get("/-/worker", response_model=list[WorkerView], tags=["worker"])
     def worker_list():
@@ -706,7 +743,18 @@ def create_app(
         if synchronizer is not None:
             out["synchronizer"] = synchronizer.status()
         if worker_registry is not None:
-            out["workers"] = worker_registry.list()
+            workers = worker_registry.list()
+            # PLAN-32 Stufe 32.1: Freischalt-Status lebt in job_db (dauerhaft),
+            # nicht im In-Memory-WorkerRegistry — hier für den Nodes-Screen
+            # zusammengeführt, eine Abfrage statt einer je Zeile.
+            conn = job_db.connect()
+            try:
+                approvals = job_db.list_node_approvals(conn)
+            finally:
+                conn.close()
+            for w in workers:
+                w["approval_status"] = approvals.get(w.get("node_id"), "pending")
+            out["workers"] = workers
         # Host-Verbindungsstatus (A12) — eigenständig von der Worker-Rolle (§4.8-Fix
         # 2026-07-05): ein Client meldet hier, ob sein letzter Heartbeat-Versuch
         # beim Scheduler ankam, unabhängig davon, ob er selbst Jobs ausführt.

@@ -155,3 +155,7 @@ class ControllerClient:
     def maintenance(self, on: bool) -> dict:
         # POST = an, DELETE = aus (§ daemon-weit, /-/maintenance).
         return self._request("POST" if on else "DELETE", "/-/maintenance") or {}
+
+    def node_action(self, node_id: str, verb: str) -> dict:
+        # verb ∈ {approve, block} — PLAN-32 Stufe 32.1, Open-Trust-Connect-Gate.
+        return self._request("POST", f"/-/worker/{node_id}/{verb}") or {}

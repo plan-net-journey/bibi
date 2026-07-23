@@ -747,6 +747,35 @@ def _node_git_status_chips(git_status: str | None) -> str:
             f'<span class="{sync_cls}">{_e(sync)}</span>')
 
 
+_APPROVAL_CHIP_CLASS = {"pending": "chip modified", "approved": "chip clean",
+                        "blocked": "chip conflict"}
+
+
+def _node_approval_cell(node_id: str | None, approval_status: str) -> str:
+    """PLAN-32 Stufe 32.1 (Open-Trust-Connect-Gate): Freischalt-Status-Chip +
+    Approve-/Block-Button je Zeile, wirkt sofort auf ``#clientsboard`` (analog
+    ``_action_bar()``s Job-Verben). Ohne ``node_id`` (älterer Client vor
+    dieser Änderung, oder die synthetische Host-Zeile) kein Button — serverseitig
+    nicht individuell adressierbar, gilt implizit als "approved"
+    (s. ``app.py::worker_heartbeat()``)."""
+    chip = f'<span class="{_APPROVAL_CHIP_CLASS.get(approval_status, "chip")}">{_e(approval_status)}</span>'
+    if not node_id:
+        return chip
+    nid = _e(node_id)
+    if approval_status == "approved":
+        btn = (f'<button class="killbtn" hx-post="/-/ui/clients/{nid}/block" '
+               f'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this">'
+               f'Block{_BTN_SPINNER}</button>')
+    else:
+        # pending oder blocked: "Approve" ist die primäre Aktion — ein
+        # pending-Knoten soll nicht erst einen Umweg über "Block" nehmen, um
+        # dann wieder "Approve" angeboten zu bekommen.
+        btn = (f'<button class="startbtn" hx-post="/-/ui/clients/{nid}/approve" '
+               f'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this">'
+               f'Approve{_BTN_SPINNER}</button>')
+    return f'{chip} {btn}'
+
+
 def _clients_table(workers: list[dict], now: float) -> str:
     if not workers:
         return '<p class="out-empty">— keine Knoten —</p>'
@@ -762,6 +791,7 @@ def _clients_table(workers: list[dict], now: float) -> str:
             f"<td>{_e(w.get('git_user') or '—')}</td>"
             f"<td>{_node_git_status_chips(w.get('git_status'))}</td>"
             f"<td>{status_html}</td>"
+            f"<td>{_node_approval_cell(w.get('node_id'), w.get('approval_status', 'pending'))}</td>"
             f"<td>{_abs_datetime(w.get('connected_at'), now)}</td>"
             f"<td>{_ago(w.get('last_heartbeat'), now)}</td>"
             "</tr>"
@@ -770,7 +800,7 @@ def _clients_table(workers: list[dict], now: float) -> str:
         '<table><thead><tr><th>Name</th>'
         f"{_role_matrix_header()}"
         '<th>Git-User</th>'
-        '<th>Git-Status</th><th>Status</th><th>Connected seit</th>'
+        '<th>Git-Status</th><th>Status</th><th>Freigabe</th><th>Connected seit</th>'
         '<th>Letzter Heartbeat</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"
     )

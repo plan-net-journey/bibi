@@ -27,7 +27,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status, display_kind
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -163,6 +163,21 @@ def _mig_jobs_error_time(conn: sqlite3.Connection) -> None:  # v16 → v17
         conn.execute("ALTER TABLE jobs ADD COLUMN error_time INTEGER")
 
 
+def _mig_approved_nodes(conn: sqlite3.Connection) -> None:  # v17 → v18
+    # PLAN-32 Stufe 32.1 (Open-Trust-Connect-Gate): Freischaltung ist eine
+    # Host-Entscheidung, kein Client-Selbstbericht — gehört bewusst NICHT ins
+    # In-Memory-WorkerRegistry-Dict (das ist nur für selbstheilende
+    # Heartbeat-Felder gedacht), sonst würde jeder Host-Neustart alle
+    # Freischaltungen löschen.
+    conn.executescript(
+        "CREATE TABLE IF NOT EXISTS approved_nodes ("
+        "    node_id    TEXT PRIMARY KEY,"
+        "    status     TEXT NOT NULL DEFAULT 'pending',"  # pending | approved | blocked
+        "    updated_at REAL NOT NULL"
+        ");"
+    )
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -183,6 +198,7 @@ _MIGRATIONS: dict[int, list] = {
     14: [_mig_jobs_pinned_host],
     15: [_mig_journal_pinned_host],
     16: [_mig_jobs_error_time],
+    17: [_mig_approved_nodes],
 }
 
 
@@ -1529,3 +1545,52 @@ def get_demand(conn: sqlite3.Connection, job_id: str) -> dict | None:
 def set_app_port(conn: sqlite3.Connection, job_id: str, port: int) -> None:
     """Setzt app_port (PLAN-11.3: app_register-Signal vom Job)."""
     conn.execute("UPDATE jobs SET app_port=? WHERE id=?", (port, job_id))
+
+
+# ── Open-Trust-Connect-Gate (PLAN-32 Stufe 32.1) ─────────────────────────────
+
+_KNOWN_NODE_STATUSES = ("pending", "approved", "blocked")
+
+
+def node_approval_status(conn: sqlite3.Connection, node_id: str, *,
+                         now: float | None = None) -> str:
+    """Liest den Freischalt-Status eines Knotens; legt ihn bei erstem Aufruf
+    (unbekannter ``node_id``) mit Status ``"pending"`` an — genau EIN
+    atomarer Read-or-Create, kein separates "existiert schon?"-Vorab-SELECT.
+    Bewusst in `job_db` statt im In-Memory-`WorkerRegistry` (dortiger
+    Docstring, PLAN-32): eine Freischaltung ist eine Host-Entscheidung, kein
+    Client-Selbstbericht, muss also einen Host-Neustart überleben."""
+    row = conn.execute(
+        "SELECT status FROM approved_nodes WHERE node_id=?", (node_id,)
+    ).fetchone()
+    if row is not None:
+        return row["status"]
+    now = time.time() if now is None else now
+    conn.execute(
+        "INSERT OR IGNORE INTO approved_nodes (node_id, status, updated_at) "
+        "VALUES (?, 'pending', ?)", (node_id, now)
+    )
+    return "pending"
+
+
+def set_node_approval(conn: sqlite3.Connection, node_id: str, status: str, *,
+                      now: float | None = None) -> None:
+    """Setzt den Freischalt-Status explizit (Host-Operator-Aktion über den
+    Nodes-Screen: Freischalten/Blockieren). ``status`` eines von
+    ``_KNOWN_NODE_STATUSES`` — kein Enum, um dieselbe leichte Validierung wie
+    an anderen Stellen dieser Datei (z. B. ``report_status()``) zu spiegeln."""
+    if status not in _KNOWN_NODE_STATUSES:
+        raise ValueError(f"unbekannter Node-Status: {status!r}")
+    now = time.time() if now is None else now
+    conn.execute(
+        "INSERT INTO approved_nodes (node_id, status, updated_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(node_id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at",
+        (node_id, status, now)
+    )
+
+
+def list_node_approvals(conn: sqlite3.Connection) -> dict[str, str]:
+    """Alle bekannten Freischalt-Status, für den Nodes-Screen (eine Abfrage
+    statt einer je Zeile)."""
+    return {r["node_id"]: r["status"]
+            for r in conn.execute("SELECT node_id, status FROM approved_nodes")}

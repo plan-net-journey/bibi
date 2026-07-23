@@ -228,21 +228,81 @@ def test_worker_heartbeat_passes_role_through(sched):
 
 
 def test_secret_required_when_configured(team_repo: Path, monkeypatch):
+    # PLAN-32 Stufe 32.1: /-/worker nutzt den Shared-Secret-Gate nicht mehr
+    # (Open-Trust-Connect-Gate ersetzt ihn, s. Tests unten) — /-/scheduler/next
+    # bleibt unverändert secret-gated (Worker-Dispatch, kein Client-Connect-Pfad).
     monkeypatch.setenv("BIBI_CONNECT_SECRET", "s3cret")
     app = create_app(roles.resolve({"scheduler"}))
     with TestClient(app) as c:
-        # ohne Header → 401
         assert c.post("/-/scheduler/next").status_code == 401
-        assert c.post("/-/worker", json={"worker": "w", "host": "h"}).status_code == 401
-        # mit korrektem Header → erlaubt
         h = {"X-Bibi-Secret": "s3cret"}
         assert c.post("/-/scheduler/next", headers=h).status_code == 204
-        assert c.post("/-/worker", json={"worker": "w", "host": "h"}, headers=h).status_code == 200
 
 
 def test_no_secret_means_open(sched):
     # ohne konfiguriertes Secret bleibt der Verbund offen (Loopback/Trust-Netz)
     assert sched.post("/-/scheduler/next").status_code == 204
+
+
+# ── Open-Trust-Connect-Gate (PLAN-32 Stufe 32.1) ─────────────────────────────
+
+
+def test_worker_heartbeat_ignores_connect_secret(team_repo: Path, monkeypatch):
+    # /-/worker akzeptiert auch mit konfiguriertem BIBI_CONNECT_SECRET jeden
+    # Aufrufer ohne Header — der Gate ist jetzt node_id-basiert, nicht mehr
+    # secret-basiert.
+    monkeypatch.setenv("BIBI_CONNECT_SECRET", "s3cret")
+    app = create_app(roles.resolve({"scheduler"}))
+    with TestClient(app) as c:
+        r = c.post("/-/worker", json={"worker": "w", "host": "h", "node_id": "n1"})
+        assert r.status_code == 200
+
+
+def test_worker_heartbeat_without_node_id_always_accepted(sched):
+    # Rückwärtskompatibilität: ein Client vor dieser Änderung schickt keine
+    # node_id mit — kann nicht individuell gebannt werden, gilt implizit als
+    # "approved" (kein Sicherheitsverlust ggü. dem vorherigen fail-open Default).
+    r = sched.post("/-/worker", json={"worker": "old-client", "host": "h"})
+    assert r.status_code == 200
+
+
+def test_worker_heartbeat_unknown_node_id_becomes_pending(sched, team_repo: Path):
+    from bibi.daemon import job_db
+    r = sched.post("/-/worker", json={"worker": "w", "host": "h", "node_id": "brand-new"})
+    assert r.status_code == 200
+    conn = job_db.connect()
+    try:
+        assert job_db.node_approval_status(conn, "brand-new") == "pending"
+    finally:
+        conn.close()
+
+
+def test_worker_heartbeat_blocked_node_rejected(sched):
+    sched.post("/-/worker", json={"worker": "w", "host": "h", "node_id": "n2"})
+    assert sched.post("/-/worker/n2/block").status_code == 200
+    r = sched.post("/-/worker", json={"worker": "w", "host": "h", "node_id": "n2"})
+    assert r.status_code == 401
+
+
+def test_worker_approve_then_heartbeat_accepted(sched):
+    sched.post("/-/worker", json={"worker": "w", "host": "h", "node_id": "n3"})
+    sched.post("/-/worker/n3/block")
+    assert sched.post("/-/worker/n3/approve").status_code == 200
+    r = sched.post("/-/worker", json={"worker": "w", "host": "h", "node_id": "n3"})
+    assert r.status_code == 200
+
+
+def test_approval_status_survives_across_connections(sched, team_repo: Path):
+    # Der ganze Zweck von job_db statt In-Memory-Registry: eine frische
+    # Connection (analog einem Host-Neustart) darf die Freischaltung nicht
+    # verlieren.
+    from bibi.daemon import job_db
+    sched.post("/-/worker/n4/block")
+    conn = job_db.connect()
+    try:
+        assert job_db.node_approval_status(conn, "n4") == "blocked"
+    finally:
+        conn.close()
 
 
 # ── RemoteScheduler (HTTP-Mapping, _post gemockt) ────────────────────────────

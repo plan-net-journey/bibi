@@ -72,6 +72,14 @@ def test_ensure_schema_still_writes_when_migration_runs():
             m.fetchone.return_value = (job_db.SCHEMA_VERSION - 1,)
             return m
 
+        def executescript(self, sql, *a, **kw):
+            # Manche Migrationen (z. B. _mig_transitions/_mig_approved_nodes,
+            # CREATE TABLE) nutzen executescript() statt execute() — welche
+            # Migration konkret bei SCHEMA_VERSION - 1 hängt, ist Implementierungs-
+            # detail, dieser Fake muss beides unterstützen.
+            calls.append(sql)
+            return MagicMock()
+
     job_db._MIGRATIONS.setdefault(job_db.SCHEMA_VERSION - 1, [])
     job_db._ensure_schema(_FakeConn())
     write_calls = [c for c in calls if c.strip().upper().startswith("PRAGMA USER_VERSION =")]

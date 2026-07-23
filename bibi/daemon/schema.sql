@@ -139,3 +139,13 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Open-Trust-Connect-Gate (PLAN-32 Stufe 32.1, Schema v18). Freischaltung
+-- eines per Heartbeat gemeldeten Knotens ist eine Host-Entscheidung, kein
+-- Client-Selbstbericht — bewusst hier statt im In-Memory-WorkerRegistry-Dict,
+-- sonst würde ein Host-Neustart alle Freischaltungen löschen.
+CREATE TABLE IF NOT EXISTS approved_nodes (
+    node_id    TEXT PRIMARY KEY,
+    status     TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | blocked
+    updated_at REAL NOT NULL
+);
