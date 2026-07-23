@@ -230,6 +230,11 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .chip.modified { background: #d6a23e2e; color: #d6a23e; }
 .chip.new { background: #5a9fe02e; color: #5a9fe0; }
 .chip.conflict { background: #e06c5a2e; color: #e06c5a; }
+/* Nodes-Screen Git-Status-Chips (Batch 9 Punkt 3) — dieselben Farben wie
+   .tree-*/.sync-* (Feed-Git-Kachel), hier als Chip statt Klartext. */
+.chip.synced { background: #5fb37a2e; color: #5fb37a; }
+.chip.ahead { background: #d6a23e2e; color: #d6a23e; }
+.chip.behind, .chip.diverged { background: #e06c5a2e; color: #e06c5a; }
 .sparkline { display: block; vertical-align: middle; }
 .startbtn { font: inherit; font-size: .78rem; background: #5a9fe033; border: 1px solid #5a9fe066;
         border-radius: .35rem; padding: .2rem .55rem; cursor: pointer; color: inherit; font-weight: 600;
@@ -668,17 +673,21 @@ _CLIENTS_POLL = "every 10s [window.bibiFollow]"
 # String, s. roles.Roles.active_names()) tragen "connect", nicht
 # "connected" — nur das Spalten-Label war "Connected".
 #
-# Batch 9 Punkt 3 (Nodes-Screen), User-Fund: Spaltenkopf höchstens 3
-# Buchstaben (Sched/Ctrl/Sync/Work -> SCH/CTL/SYN/WRK), CONNECT-Spalte
-# entfällt — WorkerRegistry-Einträge sind per Konstruktion immer verbunden
-# (sie existieren nur, weil ein Heartbeat ankam), die Spalte trug also nie
+# Batch 9 Punkt 3 (Nodes-Screen), User-Fund: CONNECT-Spalte entfällt —
+# WorkerRegistry-Einträge sind per Konstruktion immer verbunden (sie
+# existieren nur, weil ein Heartbeat ankam), die Spalte trug also nie
 # Information, die nicht schon die Status-Spalte (connected/disconnected)
-# zeigt.
+# zeigt. Labels CRON/CTRL/SYNC/WORK (User-Fund, „## Clients Screen",
+# explizit in Großbuchstaben — löst die zuerst gebaute ≤3-Zeichen-Kürzung
+# SCH/CTL/SYN/WRK ab, "cron" statt "sch" für Scheduler) — Spaltenanzahl
+# bewusst bei vier belassen (User-Frage "ctrl weglassen?" beantwortet:
+# behalten, sonst verschwindet die Information, dass ein reiner Client
+# wirklich kein Worker/Scheduler ist).
 _ROLE_COLUMNS = (
-    ("scheduler", "SCH", "Scheduler"),
-    ("controller", "CTL", "Controller"),
-    ("synchronizer", "SYN", "Synchronizer"),
-    ("worker", "WRK", "Worker"),
+    ("scheduler", "CRON", "Scheduler"),
+    ("controller", "CTRL", "Controller"),
+    ("synchronizer", "SYNC", "Synchronizer"),
+    ("worker", "WORK", "Worker"),
 )
 
 
@@ -698,6 +707,46 @@ def _role_matrix_cells(role: str | None) -> str:
     return "".join(cells)
 
 
+def _node_link_cell(worker: str | None, host: str | None, port: int | None) -> str:
+    """Name+Host zu einem Link kombiniert (Batch 9 Punkt 3, User-Fund:
+    ``[{name} :{port}](http://{host}:{port}/-/)``) — die URL, wie der Knoten
+    sich selbst kennt (sein eigener ``BIBI_DAEMON_PORT``), nicht wie ein
+    anderer Knoten ihn erreichen würde; bewusst so, auch wenn das bei
+    ``localhost`` verwirrend aussieht (User-Entscheidung, s. „## Clients
+    Screen"). Ohne ``port`` (älterer Client vor dieser Änderung, oder erster
+    Heartbeat noch nicht durch) bleibt es reiner Text statt totem Link."""
+    name = _e(worker or "—")
+    if not host or not port:
+        return name
+    href = _e(f"http://{host}:{port}/-/")
+    return f'<a href="{href}" target="_blank" rel="noopener">{name} :{port}</a>'
+
+
+_NODE_TREE_CHIP_CLASS = {"clean": "chip clean", "modified": "chip modified"}
+_NODE_SYNC_CHIP_CLASS = {"synced": "chip synced", "ahead": "chip ahead",
+                         "behind": "chip behind", "diverged": "chip diverged"}
+
+
+def _node_git_status_chips(git_status: str | None) -> str:
+    """Batch 9 Punkt 3, User-Fund: "alle git Status Elemente ebenfalls als
+    Chip (wie Status selbst) darstellen" — dieselbe ``.chip``-Optik wie die
+    Status-Spalte, hier für Tree+Sync aus dem Heartbeat-String (``"<branch>
+    · <tree> · <sync>"``, ``Heartbeat._git_status()``). Branch bleibt
+    Klartext (kein Status, keine Farbsemantik, kein Präzedenzfall dafür
+    irgendwo sonst im FE). Unerwartetes Format (z. B. "n/a" ohne lokales
+    Repo, ältere Clients ohne Sync-Feld) fällt auf reinen Text zurück."""
+    if not git_status:
+        return "—"
+    parts = git_status.split(" · ")
+    if len(parts) != 3:
+        return _e(git_status)
+    branch, tree, sync = parts
+    tree_cls = _NODE_TREE_CHIP_CLASS.get(tree, "chip")
+    sync_cls = _NODE_SYNC_CHIP_CLASS.get(sync, "chip")
+    return (f'{_e(branch)} <span class="{tree_cls}">{_e(tree)}</span> '
+            f'<span class="{sync_cls}">{_e(sync)}</span>')
+
+
 def _clients_table(workers: list[dict], now: float) -> str:
     if not workers:
         return '<p class="out-empty">— keine Knoten —</p>'
@@ -708,18 +757,17 @@ def _clients_table(workers: list[dict], now: float) -> str:
                        else '<span class="chip clean">connected</span>')
         rows.append(
             "<tr>"
-            f"<td>{_e(w.get('worker') or '—')}</td>"
-            f"<td>{_e(w.get('host') or '—')}</td>"
+            f"<td>{_node_link_cell(w.get('worker'), w.get('host'), w.get('port'))}</td>"
             f"{_role_matrix_cells(w.get('role'))}"
             f"<td>{_e(w.get('git_user') or '—')}</td>"
-            f"<td>{_e(w.get('git_status') or '—')}</td>"
+            f"<td>{_node_git_status_chips(w.get('git_status'))}</td>"
             f"<td>{status_html}</td>"
             f"<td>{_abs_datetime(w.get('connected_at'), now)}</td>"
             f"<td>{_ago(w.get('last_heartbeat'), now)}</td>"
             "</tr>"
         )
     return (
-        '<table><thead><tr><th>Name</th><th>Host</th>'
+        '<table><thead><tr><th>Name</th>'
         f"{_role_matrix_header()}"
         '<th>Git-User</th>'
         '<th>Git-Status</th><th>Status</th><th>Connected seit</th>'

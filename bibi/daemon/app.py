@@ -351,7 +351,8 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
     @app.post("/-/worker", tags=["worker"], dependencies=[Depends(_auth)])
     def worker_heartbeat(hb: WorkerHeartbeat):
         return registry.heartbeat(hb.worker, hb.host, hb.git_status,
-                                  node_id=hb.node_id, git_user=hb.git_user, role=hb.role)
+                                  node_id=hb.node_id, git_user=hb.git_user, role=hb.role,
+                                  port=hb.port)
 
     @app.get("/-/worker", response_model=list[WorkerView], tags=["worker"])
     def worker_list():

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import socket
 import time
 from pathlib import Path
@@ -69,12 +70,21 @@ class Heartbeat:
             return "n/a"
         return f"{s.branch or '(detached)'} · {s.tree} · {s.sync}"
 
+    def _port(self) -> int | None:
+        """Batch 9 Punkt 3 (Name+Host-Link im Nodes-Screen): ``BIBI_DAEMON_PORT``
+        ist der tatsächliche Bind-Port dieses Prozesses, von ``daemon_cmd.py``
+        VOR ``heartbeat.start()`` im Environment verankert (derselbe Wert, den
+        auch der Wrapper für seinen Merge-back-Trigger liest) — kein neuer
+        Mechanismus, nur ein weiterer Leser desselben schon etablierten Werts."""
+        raw = os.environ.get("BIBI_DAEMON_PORT")
+        return int(raw) if raw and raw.isdigit() else None
+
     def _beat(self) -> None:
         try:
             self.client.register(self.worker_name, self.host, self._git_status(),
                                  node_id=self.node_id,
                                  git_user=git_ops.git_user_name(self.repo_root or repo.root()),
-                                 role=self.role)
+                                 role=self.role, port=self._port())
             self.last_ok = True
             activity.emit(log, logging.DEBUG, "connect.heartbeat", role="connect",
                           worker=self.worker_name)

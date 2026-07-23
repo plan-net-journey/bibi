@@ -62,7 +62,7 @@ class LocalScheduler:
 
     def register(self, worker: str, host: str, git_status: str | None = None, *,
                  node_id: str | None = None, git_user: str | None = None,
-                 role: str | None = None) -> None:
+                 role: str | None = None, port: int | None = None) -> None:
         pass  # Single-Node: keine Anmeldung nötig
 
 
@@ -104,9 +104,10 @@ class RemoteScheduler:
 
     def register(self, worker: str, host: str, git_status: str | None = None, *,
                  node_id: str | None = None, git_user: str | None = None,
-                 role: str | None = None) -> None:
+                 role: str | None = None, port: int | None = None) -> None:
         self._post("/-/worker", {"worker": worker, "host": host, "git_status": git_status,
-                                 "node_id": node_id, "git_user": git_user, "role": role})
+                                 "node_id": node_id, "git_user": git_user, "role": role,
+                                 "port": port})
 
     def _get(self, path: str) -> object:
         headers = {"Accept": "application/json"}

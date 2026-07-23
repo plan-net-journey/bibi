@@ -22,14 +22,35 @@ def test_clients_table_empty_state():
 
 def test_clients_table_renders_worker_row():
     workers = [{
-        "worker": "air2024", "host": "mac", "git_user": "m.rau",
+        "worker": "air2024", "host": "mac", "port": 8780, "git_user": "m.rau",
         "git_status": "trunk · clean · synced", "stale": False,
         "connected_at": 0, "last_heartbeat": 90,
     }]
     html = render._clients_table(workers, now=100)
-    assert "air2024" in html and "mac" in html and "m.rau" in html
-    assert "trunk · clean · synced" in html
+    # Batch 9 Punkt 3: Name+Host+Port zu einem Link kombiniert statt zwei
+    # getrennter Spalten.
+    assert '<a href="http://mac:8780/-/" target="_blank" rel="noopener">air2024 :8780</a>' in html
+    assert "m.rau" in html
+    # Batch 9 Punkt 3: git-Status jetzt als Chips (Branch Klartext, Tree/Sync
+    # als .chip-Spans), nicht mehr der rohe " · "-verkettete String.
+    assert "trunk" in html and '<span class="chip clean">clean</span>' in html
+    assert '<span class="chip synced">synced</span>' in html
     assert "connected" in html and "disconnected" not in html
+
+
+def test_clients_table_link_cell_falls_back_to_plain_name_without_port():
+    # Älterer Client (vor der port-Erweiterung) heartbeatet ohne port — darf
+    # keinen toten Link (host ohne Port) erzeugen, nur den Namen zeigen.
+    workers = [{"worker": "old-client", "host": "h", "stale": False,
+               "connected_at": 0, "last_heartbeat": 0}]
+    html = render._clients_table(workers, now=0)
+    assert "old-client" in html
+    assert "<a href=" not in html
+
+
+def test_node_git_status_chips_falls_back_to_plain_text_on_unexpected_format():
+    assert render._node_git_status_chips("n/a") == "n/a"
+    assert render._node_git_status_chips(None) == "—"
 
 
 def test_clients_table_shows_disconnected_chip_when_stale():

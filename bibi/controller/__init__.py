@@ -361,6 +361,7 @@ def add_controller_routes(
         ``daemon/roles.py``). ``git_status`` folgt demselben Format wie
         ``Heartbeat._git_status()`` (``daemon/heartbeat.py``), damit die Zelle
         neben echten (Heartbeat-gemeldeten) Zeilen nicht anders aussieht."""
+        import os
         import socket
         from bibi import config, git_ops, repo as repo_mod
         from bibi.git_status import working_tree_status
@@ -373,11 +374,13 @@ def add_controller_routes(
                 git_status = f"{s.branch or '(detached)'} · {s.tree} · {s.sync}"
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
+        raw_port = os.environ.get("BIBI_DAEMON_PORT")
         return {
             "worker": config.read_env().get("BIBI_WORKER_NAME") or socket.gethostname(),
             "host": socket.gethostname(),
             "role": ",".join(roles.active_names()),
             "node_id": config.node_id(),
+            "port": int(raw_port) if raw_port and raw_port.isdigit() else None,
             "git_user": git_user,
             "git_status": git_status,
             "stale": False,

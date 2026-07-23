@@ -44,8 +44,8 @@ class _FakeClient:
 
     def register(self, worker: str, host: str, git_status: str | None = None, *,
                  node_id: str | None = None, git_user: str | None = None,
-                 role: str | None = None) -> None:
-        self.calls.append((worker, host, git_status, node_id, git_user, role))
+                 role: str | None = None, port: int | None = None) -> None:
+        self.calls.append((worker, host, git_status, node_id, git_user, role, port))
         if self.fail:
             raise ConnectionError("scheduler unreachable")
 
@@ -73,11 +73,12 @@ def test_start_registers_immediately(gitrepo: Path):
     hb = Heartbeat(client=client, worker_name="w1", repo_root=gitrepo, interval=60)
     asyncio.run(hb.start())
     assert len(client.calls) == 1
-    worker, host, git_status, node_id, git_user, role = client.calls[0]
+    worker, host, git_status, node_id, git_user, role, port = client.calls[0]
     assert (worker, host, git_status) == ("w1", hb.host, "trunk · clean · synced")
     assert node_id == hb.node_id and len(node_id) == 32
     assert git_user == "t"  # gitrepo-Fixture: git config user.name = "t"
     assert role is None  # kein role= übergeben -> nichts zu senden
+    assert port is None  # kein BIBI_DAEMON_PORT in der Test-Umgebung gesetzt
     assert hb.last_ok is True
     assert hb.last_at is not None
     asyncio.run(hb.stop())

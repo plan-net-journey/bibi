@@ -160,7 +160,11 @@ class WorkerHeartbeat(BaseModel):
     Änderung) weiterhin ohne 422 registrieren kann — die Registry behandelt
     ein fehlendes Feld als eigenen Fallback, s. WorkerRegistry. ``role``
     (User-Fund: "Client Übersicht braucht die Rollen je Client") ist der
-    rohe ``BIBI_ROLE``-Wert des sendenden Knotens, unverändert durchgereicht."""
+    rohe ``BIBI_ROLE``-Wert des sendenden Knotens, unverändert durchgereicht.
+    ``port`` (Batch 9 Punkt 3, User-Fund: "Name+Host zu einem Link
+    kombinieren") ist der tatsächliche Bind-Port des sendenden Knotens,
+    gelesen aus ``BIBI_DAEMON_PORT`` (``Heartbeat._beat()``) — derselbe
+    Env-Var-Wert, den auch der Wrapper für seinen Merge-back-Trigger nutzt."""
 
     worker: str
     host: str
@@ -168,6 +172,7 @@ class WorkerHeartbeat(BaseModel):
     node_id: str | None = None
     git_user: str | None = None
     role: str | None = None
+    port: int | None = None
 
 
 class WorkerView(BaseModel):
@@ -182,6 +187,7 @@ class WorkerView(BaseModel):
     node_id: str | None = None
     git_user: str | None = None
     role: str | None = None
+    port: int | None = None
 
 
 def _todo(endpoint: str) -> JSONResponse:
