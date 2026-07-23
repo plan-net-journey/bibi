@@ -454,7 +454,11 @@ def test_doctor_flags_missing_claude_auth(gitrepo: Path, capsys, monkeypatch):
 
 def test_doctor_ignores_claude_auth_when_token_present(gitrepo: Path, capsys, monkeypatch):
     monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    # PLAN-32 Stufe 32.0: präfigierte Form auch gesetzt, sonst feuert
+    # zusätzlich (korrekt) "legacy-job-env-name" — dieser Test prüft
+    # ausschließlich claude-auth-missing, nicht die Migrations-Warnung.
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-test-token")
+    monkeypatch.setenv("BIBI_JOB_ENV_CLAUDE_CODE_OAUTH_TOKEN", "sk-test-token")
     d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
     d.mkdir(parents=True)
     (d / "Digest.md").write_text(
@@ -478,3 +482,50 @@ def test_doctor_ignores_claude_auth_when_no_claude_jobs(gitrepo: Path, capsys, m
     out = capsys.readouterr().out
     assert rc == 0
     assert "claude-auth-missing" not in out
+
+
+# ── Legacy-Job-Env-Namen-Check (PLAN-32 Stufe 32.0) ────────────────────────────
+
+
+def test_legacy_job_env_names_flags_bare_name_without_prefix():
+    findings = hygiene.check_legacy_job_env_names({"ANTHROPIC_API_KEY": "sk-x"})
+    assert len(findings) == 1
+    assert findings[0].kind == "legacy-job-env-name"
+    assert findings[0].path == "ANTHROPIC_API_KEY"
+
+
+def test_legacy_job_env_names_no_finding_when_prefixed_form_present():
+    assert hygiene.check_legacy_job_env_names({
+        "ANTHROPIC_API_KEY": "sk-x", "BIBI_JOB_ENV_ANTHROPIC_API_KEY": "sk-x",
+    }) == []
+
+
+def test_legacy_job_env_names_no_finding_when_neither_set():
+    assert hygiene.check_legacy_job_env_names({}) == []
+
+
+def test_legacy_job_env_names_checks_both_credential_names():
+    findings = hygiene.check_legacy_job_env_names({
+        "ANTHROPIC_API_KEY": "sk-x", "CLAUDE_CODE_OAUTH_TOKEN": "sk-y",
+    })
+    assert {f.path for f in findings} == {"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}
+
+
+def test_doctor_flags_legacy_job_env_name(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-legacy")
+    monkeypatch.delenv("BIBI_JOB_ENV_ANTHROPIC_API_KEY", raising=False)
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "legacy-job-env-name" in out
+
+
+def test_doctor_ignores_legacy_job_env_name_when_prefixed_form_set(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-legacy")
+    monkeypatch.setenv("BIBI_JOB_ENV_ANTHROPIC_API_KEY", "sk-legacy")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "legacy-job-env-name" not in out

@@ -10,8 +10,10 @@ History aufblähen, §3.5), (c) committete Sammeldaten unter ``vault/.../data/``
 (h) hart umgebrochene Absätze (CONVENTIONS.md § Markdown style), (i) fehlender
 Claude-Auth-Token trotz vorhandener ``claude:``-Jobs, (j) fehlendes
 ``BIBI_PUBLIC_HOST`` trotz vorhandener App-Jobs (sonst zeigen App-Links nur
-``localhost``, s. ``config.public_host()``). Exit 1 bei Befunden
-(pre-commit/CI-tauglich), sonst 0. Reine Prüflogik: ``hygiene``.
+``localhost``, s. ``config.public_host()``), (k) veraltete bare
+``ANTHROPIC_API_KEY``/``CLAUDE_CODE_OAUTH_TOKEN``-Namen ohne ``BIBI_JOB_ENV_``-
+Präfix (PLAN-32 Stufe 32.0 — Fallback bleibt funktional, aber veraltet). Exit 1
+bei Befunden (pre-commit/CI-tauglich), sonst 0. Reine Prüflogik: ``hygiene``.
 """
 
 from __future__ import annotations
@@ -105,6 +107,8 @@ def run(args: argparse.Namespace) -> int:
         os.environ.get("BIBI_PUBLIC_HOST", "").strip()
         or config.read_env().get("BIBI_PUBLIC_HOST", "").strip()
     )
+    # PLAN-32 Stufe 32.0: dieselbe Env>Config-Präzedenz wie worker.py::_exec_config().
+    cfg_and_env = {**config.read_env(), **os.environ}
 
     findings = (
         hygiene.git_lfs_finding(hygiene.git_lfs_installed())
@@ -118,6 +122,7 @@ def run(args: argparse.Namespace) -> int:
             has_claude_jobs=has_claude_jobs, token_present=token_present)
         + hygiene.check_missing_public_host(
             has_apps=has_apps, public_host_set=public_host_set)
+        + hygiene.check_legacy_job_env_names(cfg_and_env)
     )
     if not findings:
         print("doctor: keine Hygiene-Probleme ✓")

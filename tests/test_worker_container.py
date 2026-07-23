@@ -30,6 +30,31 @@ def test_exec_config_and_is_container(monkeypatch, team_repo):
     assert worker._is_container() is True
 
 
+def test_exec_config_reads_prefixed_job_env_credential(monkeypatch, team_repo):
+    # PLAN-32 Stufe 32.0: ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN wandern
+    # unter BIBI_JOB_ENV_-Präfix — dieselbe Namenskonvention wie jedes andere
+    # Job-Credential, kein Sonderfall mehr über den generischen Präfix-Scan hinaus.
+    monkeypatch.setattr("bibi.daemon.worker.config.read_env",
+                        lambda: {"BIBI_JOB_ENV_ANTHROPIC_API_KEY": "sk-prefixed"})
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("BIBI_JOB_ENV_ANTHROPIC_API_KEY", raising=False)
+    cfg = worker._exec_config()
+    assert cfg["ANTHROPIC_API_KEY"] == "sk-prefixed"
+
+
+def test_exec_config_prefixed_credential_wins_over_bare_fallback(monkeypatch, team_repo):
+    # Migration: sind beide Formen gesetzt (Übergangszeit), gewinnt die
+    # präfigierte — der bare Fallback ist nur für Knoten gedacht, die noch
+    # nicht umbenannt haben.
+    monkeypatch.setattr("bibi.daemon.worker.config.read_env",
+                        lambda: {"BIBI_JOB_ENV_ANTHROPIC_API_KEY": "sk-prefixed",
+                                 "ANTHROPIC_API_KEY": "sk-legacy"})
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("BIBI_JOB_ENV_ANTHROPIC_API_KEY", raising=False)
+    cfg = worker._exec_config()
+    assert cfg["ANTHROPIC_API_KEY"] == "sk-prefixed"
+
+
 def test_is_container_default_host(monkeypatch, team_repo):
     monkeypatch.setattr("bibi.daemon.worker.config.read_env", lambda: {})
     monkeypatch.delenv("BIBI_EXEC_MODE", raising=False)

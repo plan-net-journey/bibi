@@ -85,24 +85,44 @@ def _monitored_wait(
 
 # ── Container-Exec-Konfig + Terminierung (PLAN-8 Slice B) ────────────────────
 
+#: PLAN-32 Stufe 32.0 (Config-Restrukturierung): CLAUDE_CODE_OAUTH_TOKEN/
+#: ANTHROPIC_API_KEY sind keine hart codierten Sonderfälle mehr, sondern
+#: wandern unter dieselbe BIBI_JOB_ENV_-Namenskonvention wie jedes andere
+#: Job-Credential — bare Namen bleiben Fallback für bestehende Deployments
+#: (sarasate, Mac), s. _exec_config().
+_LEGACY_JOB_ENV_KEYS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+
+
 def _exec_config() -> dict[str, str]:
     """Container-Exec-Env aus Prozess-Env > Knoten-Config (an den Wrapper gereicht).
-    Leer/`host` ⇒ Host-Modus. Inkl. ANTHROPIC_API_KEY für claude-im-Container (D5).
-    Alle Einträge aus ~/.config/bibi/env mit Prefix ``BIBI_JOB_ENV_`` werden
-    ohne Prefix weitergereicht — damit können beliebige Credentials ohne
-    Engine-Änderung in Jobs verfügbar gemacht werden."""
+    Leer/`host` ⇒ Host-Modus. Alle Einträge aus ~/.config/bibi/env mit Prefix
+    ``BIBI_JOB_ENV_`` werden ohne Prefix weitergereicht — damit können
+    beliebige Credentials ohne Engine-Änderung in Jobs verfügbar gemacht
+    werden. CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY nutzen seit PLAN-32
+    Stufe 32.0 genau dasselbe Präfix (``BIBI_JOB_ENV_ANTHROPIC_API_KEY`` etc.)
+    — der bare Name ohne Präfix bleibt als Fallback gültig (Migration, s.
+    ``hygiene.check_legacy_job_env_names()`` für die zugehörige doctor-Warnung),
+    wird aber nicht mehr aktiv beworben."""
     cfg = config.read_env()
     out: dict[str, str] = {}
-    for key in ("BIBI_EXEC_MODE", "BIBI_JOB_IMAGE", "BIBI_DOCKER_BIN",
-                "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
+    for key in ("BIBI_EXEC_MODE", "BIBI_JOB_IMAGE", "BIBI_DOCKER_BIN"):
         val = os.environ.get(key) or cfg.get(key)
         if val:
             out[key] = val
     # Dynamische Job-Env-Vars: BIBI_JOB_ENV_FOO → FOO im Container
     prefix = "BIBI_JOB_ENV_"
-    for raw_key, val in {**cfg, **os.environ}.items():
+    merged = {**cfg, **os.environ}
+    for raw_key, val in merged.items():
         if raw_key.startswith(prefix) and val:
             out[raw_key[len(prefix):]] = val
+    # Fallback für bare CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY (Migration) —
+    # nur wenn die präfigierte Form nicht schon oben gegriffen hat.
+    for legacy_key in _LEGACY_JOB_ENV_KEYS:
+        if legacy_key in out:
+            continue
+        val = merged.get(legacy_key)
+        if val:
+            out[legacy_key] = val
     return out
 
 

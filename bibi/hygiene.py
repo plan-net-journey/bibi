@@ -24,6 +24,7 @@ class Finding:
                  # | "orphan-worktree" | "invalid-schedule" (PLAN-13 Stufe 13.3)
                  # | "html-placeholder-tag" | "markdown-hardwrap" (PLAN-15)
                  # | "claude-auth-missing" | "public-host-missing"
+                 # | "legacy-job-env-name" (PLAN-32 Stufe 32.0)
     path: str    # betroffener Pfad ("" = global)
     detail: str
 
@@ -139,6 +140,25 @@ def check_missing_public_host(*, has_apps: bool, public_host_set: bool) -> list[
             "vault/ enthält App-Jobs (app_port gesetzt), aber BIBI_PUBLIC_HOST "
             "ist nicht gesetzt — App-Links zeigen nur 'localhost'")]
     return []
+
+
+def check_legacy_job_env_names(cfg_and_env: dict[str, str]) -> list[Finding]:
+    """PLAN-32 Stufe 32.0: ``ANTHROPIC_API_KEY``/``CLAUDE_CODE_OAUTH_TOKEN``
+    wandern unter das ``BIBI_JOB_ENV_``-Präfix (``worker.py::_exec_config()``,
+    Config-Restrukturierung — dieselbe Namenskonvention, die für beliebige
+    Job-Credentials schon existiert). Der alte bare Name bleibt als Fallback
+    funktional, ist aber veraltet — nur ein Fund, wenn der bare Name gesetzt
+    ist UND die präfigierte Form fehlt (sonst wurde schon migriert).
+    ``cfg_and_env``: zusammengeführte Sicht aus ``os.environ`` +
+    ``~/.config/bibi/env``, dieselbe Präzedenz wie ``_exec_config()``."""
+    out: list[Finding] = []
+    for legacy in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        prefixed = f"BIBI_JOB_ENV_{legacy}"
+        if cfg_and_env.get(legacy) and not cfg_and_env.get(prefixed):
+            out.append(Finding(
+                "legacy-job-env-name", legacy,
+                f"veraltet ohne BIBI_JOB_ENV_-Präfix gesetzt — auf {prefixed} umbenennen"))
+    return out
 
 
 # ── PLAN-15: Markdown-Hygiene (kaputte Platzhalter-Tags, Hartumbruch) ────────
