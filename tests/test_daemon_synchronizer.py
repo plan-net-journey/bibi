@@ -484,8 +484,21 @@ def test_tick_worktree_sweep_never_removes_unmerged_work(tmp_path):
     """F-b-Sicherheitsprinzip (``worktree.prepare()``s Dokstring) gilt auch
     hier: ein Slug ohne jobs-Zeile ist zwar orphan, aber solange sein
     Branch Commits voraus von trunk hat, entfernt der Sweep ihn nicht — der
-    Merge-Sweep bekommt zuerst die Chance, sie nach trunk zu holen."""
+    Merge-Sweep bekommt zuerst die Chance, sie nach trunk zu holen.
+
+    Korrektur (User-Fund, `--slow`-Lauf 2026-07-23): der ursprüngliche Aufbau
+    ließ trunk und den "ghost"-Branch nie divergieren — der Merge-Sweep
+    mergte "ghost" deshalb anstandslos (kein Konflikt, s.
+    `test_tick_merge_sweep_logs_stuck_conflict` oben für denselben
+    Konflikt-Aufbau), womit `is_ahead()` beim Worktree-Sweep direkt danach
+    schon `False` war — das Entfernen war also technisch korrekt, der Test
+    hat nie echte "ungemergte Arbeit" hergestellt. Jetzt wie beim Nachbartest:
+    trunk UND der Branch ändern dieselbe Datei unterschiedlich, damit der
+    Merge-back real konfligiert und die Arbeit bis zum Worktree-Sweep
+    tatsächlich noch unmerged/ahead ist."""
+    import os
     import subprocess
+    import time
 
     from bibi.daemon import job_db as jdb
     from bibi.daemon import worktree as wt
@@ -505,12 +518,22 @@ def test_tick_worktree_sweep_never_removes_unmerged_work(tmp_path):
 
     jdb.connect(root / "data" / "jobs.sqlite").close()  # DB existiert, "ghost" unbekannt
 
+    # agent/ghost-Branch ändert f.txt ...
     p = wt.prepare(repo_root=root, work_dir=root / "data" / "worktrees", slug="ghost")
-    (p / "n.md").write_text("hi\n")
+    (p / "f.txt").write_text("from agent\n")
     wt.commit(worktree=p, message="run", slug="ghost")
+    # ... trunk ändert dieselbe Datei anders → echter Merge-Konflikt beim Sweep,
+    # vordatiert (wie im Nachbartest), sonst wertet Ebene 4s Idle-Guard sie als
+    # "kürzlich bearbeitet" und der Sweep bricht mit "live_edit" statt Konflikt ab.
+    (root / "f.txt").write_text("from trunk\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "trunk edit")
+    stale = time.time() - 300
+    os.utime(root / "f.txt", (stale, stale))
     assert wt.is_ahead(repo_root=root, branch="agent/ghost", trunk="trunk")
 
     s = Synchronizer(repo_root=root)
     s.tick(0.0)
 
+    assert wt.is_ahead(repo_root=root, branch="agent/ghost", trunk="trunk")  # Merge blieb Konflikt
     assert p.exists()  # trotz fehlender jobs-Zeile nicht entfernt — ungemergte Arbeit
