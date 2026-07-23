@@ -384,6 +384,36 @@ def test_schedule_detail_route_has_rescan_and_reflects_maintenance(app_with):
         assert 'id="maint" class="toggle warn"' in r.text
 
 
+def test_schedule_detail_meta_shows_app_type_via_display_kind(app_with):
+    # Batch 9 Punkt 2(a): live_fragment()s Typ-Zeile leitete "Typ" bisher roh
+    # aus schedule["kind"] ab (immer "job"), statt wie die Schedules-Tabelle
+    # (_sched_row()) über _jobs_type_cell()/display_kind() zu gehen — ein
+    # App-Job (app_port gesetzt) zeigte auf der Detailseite fälschlich "job"
+    # statt "app :<port>" + Link.
+    client = FakeClient(
+        schedules=[{"slug": "hitl-test-app", "kind": "job", "trigger": "now",
+                    "app_port": 9101, "next_fire_at": None, "last_status": "pending"}])
+    with TestClient(app_with(client)) as c:
+        r = c.get("/-/ui/schedule/hitl-test-app")
+        assert r.status_code == 200
+        assert "app :9101" in r.text
+
+
+def test_schedule_detail_route_shows_app_link_for_running_app_job(app_with):
+    # Batch 9 Punkt 2(b): _detail_data() reichte job["app_port"] nie durch —
+    # _live_panel()s "Zur App →"-Link (render.py) blieb dadurch für jeden
+    # App-Job auf der Host-Detailseite unsichtbar, obwohl der zugehörige
+    # Schedule app_port längst kennt (schedule_view()).
+    client = FakeClient(
+        schedules=[{"slug": "hitl-test-app", "kind": "job", "trigger": "now",
+                    "app_port": 9101, "next_fire_at": None, "last_status": "running"}],
+        jobs=[{"id": "j1", "slug": "hitl-test-app", "status": "running", "started_at": 1.0}])
+    with TestClient(app_with(client)) as c:
+        r = c.get("/-/ui/schedule/hitl-test-app")
+        assert r.status_code == 200
+        assert "Zur App →" in r.text and ":9101" in r.text
+
+
 def test_schedule_detail_route_shows_output_for_terminal_job(app_with):
     # User-Feedback 2026-07-01: der Controller holt jetzt auch für einen
     # bereits terminalen Job den Output — die Route darf ihn nicht mehr

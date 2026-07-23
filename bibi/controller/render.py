@@ -478,8 +478,10 @@ def _group_schedules(schedules: list[dict]) -> tuple[list[dict], list[dict], lis
     return active, archive, journaled
 
 
-def _sched_row(s: dict, now: float, *, public_host: str = "localhost") -> str:
-    slug = _e(s.get("slug"))
+def _sched_row(s: dict, now: float, *, public_host: str = "localhost",
+              sparklines: dict[str, list[int]] | None = None) -> str:
+    raw_slug = s.get("slug")
+    slug = _e(raw_slug)
     st = _e(s.get("last_status"))
     # Bibi4-Iteration, User-Fund: "Type (beim Host wird app noch nicht
     # angezeigt, soll es aber, auch mit Port!)" — dieselbe Zellen-Ableitung
@@ -501,6 +503,11 @@ def _sched_row(s: dict, now: float, *, public_host: str = "localhost") -> str:
                    if run_id is not None else f'<span class="st {st}">{st}</span>')
     ago_cell = (f'<a class="rowlink" href="/-/ui/run/{run_id}">{ago}</a>'
                 if run_id is not None else ago)
+    # Batch 9 Punkt 1 (Host-Sparkline-Spalte): dieselbe hx-preserve-Zelle wie
+    # die Jobs-Tabelle (_jobs_row()) — sparklines kommt nur vom initialen
+    # Seitenaufbau (schedules_screen()/archive_screen()), der 2s-Self-Poll
+    # übergibt None (s. _sparkline_cell()-Docstring).
+    spark_cell = _sparkline_cell(raw_slug, sparklines)
     return (
         "<tr>"
         f'<td><a class="slug" href="/-/ui/schedule/{slug}">{slug}</a></td>'
@@ -508,61 +515,69 @@ def _sched_row(s: dict, now: float, *, public_host: str = "localhost") -> str:
         f"<td>{status_cell}</td>"
         f"<td>{ago_cell}</td>"
         f'<td><a class="rowlink" href="/-/ui/schedule/{slug}">{nxt}</a></td>'
+        f"<td>{spark_cell}</td>"
         "</tr>"
     )
 
 
-def _sched_table(items: list[dict], now: float, *, public_host: str = "localhost") -> str:
+def _sched_table(items: list[dict], now: float, *, public_host: str = "localhost",
+                 sparklines: dict[str, list[int]] | None = None) -> str:
     # Bibi4-Iteration, Seitenabgleich (User-Fund): Spaltenkopf war "Schedule",
     # der Client sagt für dieselbe Spalte schon "Slug" (_jobs_table()) — auch
     # dein ursprünglicher Batch-1-Spaltenplan für den Host wollte "Slug" als
     # erste Spalte, das war nie nachgezogen worden.
-    rows = "".join(_sched_row(s, now, public_host=public_host) for s in items)
+    rows = "".join(_sched_row(s, now, public_host=public_host, sparklines=sparklines)
+                  for s in items)
     return ('<table class="sched"><thead><tr><th>Slug</th><th>Type</th><th>Status</th>'
-            f'<th>last / since</th><th>next</th></tr></thead><tbody>{rows}'
-            "</tbody></table>")
+            '<th>last / since</th><th>next</th><th>Activity</th></tr></thead>'
+            f"<tbody>{rows}</tbody></table>")
 
 
 def _schedule_active_block(schedules: list[dict], now: float,
-                           *, public_host: str = "localhost") -> str:
+                           *, public_host: str = "localhost",
+                           sparklines: dict[str, list[int]] | None = None) -> str:
     head = f'<h2>Schedules ({len(schedules)})</h2>'
     if not schedules:
         return head + '<p class="out-empty">— no schedules —</p>'
     active, _archive, _journaled = _group_schedules(schedules)
-    body = (_sched_table(active, now, public_host=public_host) if active
+    body = (_sched_table(active, now, public_host=public_host, sparklines=sparklines) if active
             else '<p class="out-empty">— no active schedules —</p>')
     return head + body
 
 
 def _schedule_archive_block(schedules: list[dict], now: float,
-                            *, public_host: str = "localhost") -> str:
+                            *, public_host: str = "localhost",
+                            sparklines: dict[str, list[int]] | None = None) -> str:
     if not schedules:
         return ""
     _active, archive, journaled = _group_schedules(schedules)
     body = ""
     if archive:
-        body += f'<h3>Archive ({len(archive)})</h3>' + _sched_table(archive, now, public_host=public_host)
+        body += (f'<h3>Archive ({len(archive)})</h3>'
+                + _sched_table(archive, now, public_host=public_host, sparklines=sparklines))
     if journaled:
         body += (f'<h3>Journal — history only ({len(journaled)})</h3>'
-                + _sched_table(journaled, now, public_host=public_host))
+                + _sched_table(journaled, now, public_host=public_host, sparklines=sparklines))
     return body
 
 
 def schedule_list(schedules: list[dict], now: float | None = None,
-                  *, public_host: str = "localhost") -> str:
+                  *, public_host: str = "localhost",
+                  sparklines: dict[str, list[int]] | None = None) -> str:
     """Die volle Liste, gruppiert nach Registrierungs-Zustand (PLAN-14 Stufe
     14.6, erweitert PLAN-23 Befund 2): Aktiv (MD entdeckt) / Archive (MD
     entfernt ODER abgeschlossener oneshot) / Journal (nur Journal-Historie).
     Flach + immer sichtbar, kein Klapp mehr — überlebt so den 2s-Poll ohne
     Expand-Verlust."""
     now = time.time() if now is None else now
-    return (_schedule_active_block(schedules, now, public_host=public_host)
-           + _schedule_archive_block(schedules, now, public_host=public_host))
+    return (_schedule_active_block(schedules, now, public_host=public_host, sparklines=sparklines)
+           + _schedule_archive_block(schedules, now, public_host=public_host, sparklines=sparklines))
 
 
 def schedules_fragment(schedules: list[dict], now: float | None = None,
                        *, typ: str | None = None, status: str | None = None,
-                       public_host: str = "localhost") -> str:
+                       public_host: str = "localhost",
+                       sparklines: dict[str, list[int]] | None = None) -> str:
     """Self-pollender Wrapper um die (bereits gefilterte) aktive Schedule-
     Liste. Der Self-Poll trägt den aktiven Filter in der URL, damit er ihn
     über den 2s-Tick bewahrt. Ziel = ``/-/ui/schedules/list`` (das Fragment;
@@ -570,7 +585,10 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
     Bibi4-Iteration nicht mehr hier, sondern auf einem eigenen Screen
     (``archive_fragment()``/``archive_page()``, User-Fund: "Archive wird
     verschoben auf einen eigenen Screen") — löst PLAN-25 Befund 6 (3 Rahmen
-    Chart/Schedules/Archive auf einer Seite) ab."""
+    Chart/Schedules/Archive auf einer Seite) ab. ``sparklines`` (Batch 9
+    Punkt 1) kommt nur vom initialen Seitenaufbau (``schedules_page()``); der
+    2s-Self-Poll (``schedules_list_fragment()``) übergibt ``None``, analog zu
+    ``jobs_fragment()``/``jobs_board()``."""
     now = time.time() if now is None else now
     qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status))
                   if v and v != "alle")
@@ -578,19 +596,22 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
     attrs = (f'id="schedules" hx-get="{url}" '
             f'hx-trigger="{_POLL}" hx-swap="outerHTML"')
     active_html = (f'<div class="panel-card">'
-                  f'{_schedule_active_block(schedules, now, public_host=public_host)}</div>')
+                  f'{_schedule_active_block(schedules, now, public_host=public_host, sparklines=sparklines)}</div>')
     return f"<div {attrs}>{active_html}</div>"
 
 
 def archive_fragment(schedules: list[dict], now: float | None = None,
-                     *, public_host: str = "localhost") -> str:
+                     *, public_host: str = "localhost",
+                     sparklines: dict[str, list[int]] | None = None) -> str:
     """Self-pollender Archive-Screen-Kern (Host) — Bibi4-Iteration, User-Fund:
     "Archive wird verschoben auf einen eigenen Screen". Zeigt dieselben
     Archive-/Journal-Gruppen wie zuvor der untere Teil von ``/-/ui/schedules``
     (``_schedule_archive_block()``), jetzt eigenständig unter ``/-/ui/archive``.
-    Ziel = ``/-/ui/archive/list``."""
+    Ziel = ``/-/ui/archive/list``. ``sparklines`` (Batch 9 Punkt 1) nur vom
+    initialen Seitenaufbau (``archive_page()``), der 2s-Self-Poll
+    (``archive_list_fragment()``) übergibt ``None``."""
     now = time.time() if now is None else now
-    body = _schedule_archive_block(schedules, now, public_host=public_host)
+    body = _schedule_archive_block(schedules, now, public_host=public_host, sparklines=sparklines)
     if not body:
         body = '<p class="out-empty">— kein Archiv —</p>'
     attrs = f'id="archive" hx-get="/-/ui/archive/list" hx-trigger="{_POLL}" hx-swap="outerHTML"'
@@ -600,7 +621,8 @@ def archive_fragment(schedules: list[dict], now: float | None = None,
 def archive_page(schedules: list[dict], now: float | None = None,
                  *, daemon_status: dict | None = None, git_status: dict | None = None,
                  host_url: str | None = None, status_poll_interval_s: int = 30,
-                 job_status_poll_interval_s: int = 2, public_host: str = "localhost") -> str:
+                 job_status_poll_interval_s: int = 2, public_host: str = "localhost",
+                 sparklines: dict[str, list[int]] | None = None) -> str:
     """Archive-Screen (Host, Bibi4-Iteration) — eigene Seite für Archive/
     Journal, abgetrennt von der aktiven Schedule-Liste auf ``/-/ui/schedules``.
     Dieselben Nav/Ops-Bausteine wie jede andere Seite (``_header()``).
@@ -622,7 +644,7 @@ def archive_page(schedules: list[dict], now: float | None = None,
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Archive', daemon_status)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
-        f"{archive_fragment(schedules, now, public_host=public_host)}"
+        f"{archive_fragment(schedules, now, public_host=public_host, sparklines=sparklines)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
@@ -644,13 +666,19 @@ _CLIENTS_POLL = "every 10s [window.bibiFollow]"
 # Reihenfolge wie vom User vorgegeben: "Mit Scheduler, Controller,
 # Synchronizer, Connected, Worker." role-Werte (roher komma-getrennter
 # String, s. roles.Roles.active_names()) tragen "connect", nicht
-# "connected" — nur das Spalten-Label ist "Connected".
+# "connected" — nur das Spalten-Label war "Connected".
+#
+# Batch 9 Punkt 3 (Nodes-Screen), User-Fund: Spaltenkopf höchstens 3
+# Buchstaben (Sched/Ctrl/Sync/Work -> SCH/CTL/SYN/WRK), CONNECT-Spalte
+# entfällt — WorkerRegistry-Einträge sind per Konstruktion immer verbunden
+# (sie existieren nur, weil ein Heartbeat ankam), die Spalte trug also nie
+# Information, die nicht schon die Status-Spalte (connected/disconnected)
+# zeigt.
 _ROLE_COLUMNS = (
-    ("scheduler", "Sched", "Scheduler"),
-    ("controller", "Ctrl", "Controller"),
-    ("synchronizer", "Sync", "Synchronizer"),
-    ("connect", "Conn", "Connected"),
-    ("worker", "Work", "Worker"),
+    ("scheduler", "SCH", "Scheduler"),
+    ("controller", "CTL", "Controller"),
+    ("synchronizer", "SYN", "Synchronizer"),
+    ("worker", "WRK", "Worker"),
 )
 
 
@@ -672,7 +700,7 @@ def _role_matrix_cells(role: str | None) -> str:
 
 def _clients_table(workers: list[dict], now: float) -> str:
     if not workers:
-        return '<p class="out-empty">— keine verbundenen Clients —</p>'
+        return '<p class="out-empty">— keine Knoten —</p>'
     rows = []
     for w in sorted(workers, key=lambda w: w.get("worker") or ""):
         stale = w.get("stale", False)
@@ -705,7 +733,7 @@ def clients_fragment(workers: list[dict], now: float | None = None) -> str:
     return (
         f'<div id="clientsboard" hx-get="/-/ui/clients/board" '
         f'hx-trigger="{_CLIENTS_POLL}" hx-swap="outerHTML">'
-        '<div class="panel-card"><h2>Clients</h2>'
+        '<div class="panel-card"><h2>Nodes</h2>'
         f"{_clients_table(workers, now)}</div>"
         "</div>"
     )
@@ -715,23 +743,26 @@ def clients_page(workers: list[dict], now: float | None = None, *,
                  daemon_status: dict | None = None, git_status: dict | None = None,
                  host_url: str | None = None, status_poll_interval_s: int = 30,
                  job_status_poll_interval_s: int = 2) -> str:
-    """Connected-Clients-Screen — nur für die ``scheduler``-Rolle im Nav
-    verlinkt (``_screen_nav()``), die Route selbst ist trotzdem rollenfrei
-    erreichbar (analog zu Archive/Jobs — ein direkter Aufruf 404t nicht,
-    zeigt bei fehlender Rolle nur eine leere Tabelle, da ``workers`` dann
-    leer ist: ``WorkerRegistry`` existiert nur mit ``scheduler``-Rolle,
-    s. ``app.py``)."""
+    """Nodes-Screen (Batch 9 Punkt 3: umbenannt von "Clients" — Nav-Label +
+    Tabellen-Überschrift, Route/interne Namen bewusst unverändert, analog zur
+    Host/Client-Jobs-Umbenennung weiter oben) — nur für die ``scheduler``-
+    Rolle im Nav verlinkt (``_screen_nav()``), die Route selbst ist trotzdem
+    rollenfrei erreichbar (analog zu Archive/Jobs — ein direkter Aufruf 404t
+    nicht). ``workers`` trägt seit Batch 9 Punkt 3 zusätzlich eine synthetische
+    Zeile für den Host selbst (``controller._host_worker_entry()``, ``__init__.py``)
+    — ``WorkerRegistry`` kennt nur Knoten, die sich per Heartbeat gemeldet
+    haben, der Host meldet sich nie bei sich selbst."""
     now = time.time() if now is None else now
     daemon_status = daemon_status or {}
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>bibi · Clients</title>"
+        "<title>bibi · Nodes</title>"
         f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Clients', daemon_status)}"
+        f"{_header('Nodes', daemon_status)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
         f"{clients_fragment(workers, now)}"
         f"<script>{_CLOCK_JS}</script>"
@@ -1057,7 +1088,7 @@ def _screen_nav(active: str, roles: list[str] | None = None) -> str:
     if "scheduler" in roles:
         tabs.append(("Jobs", "/-/ui/schedules"))
         tabs.append(("Archive", "/-/ui/archive"))
-        tabs.append(("Clients", "/-/ui/clients"))
+        tabs.append(("Nodes", "/-/ui/clients"))
     if "connect" in roles:
         tabs.append(("Jobs", "/-/ui/jobs"))
         tabs.append(("Archive", "/-/ui/jobs/archive"))
@@ -1202,7 +1233,8 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
                    git_status: dict | None = None, host_url: str | None = None,
                    status_poll_interval_s: int = 30, job_status_poll_interval_s: int = 2,
                    bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES,
-                   public_host: str = "localhost") -> str:
+                   public_host: str = "localhost",
+                   sparklines: dict[str, list[int]] | None = None) -> str:
     """Der Schedules-Screen: Nav + Ops-Handles (RESCAN/MAINT, User-Feedback
     2026-07-03) + Status-Kacheln (Host/Mode/Git/Job-Status, User-Fund: "diesen
     Header möchte ich auch im /-/ui/schedules haben" — dieselbe
@@ -1231,7 +1263,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
         f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now, bucket_minutes=bucket_minutes)}"
         f"{_filter_bar(typ, status)}"
-        f"{schedules_fragment(schedules, now, typ=typ, status=status, public_host=public_host)}"
+        f"{schedules_fragment(schedules, now, typ=typ, status=status, public_host=public_host, sparklines=sparklines)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
@@ -3298,7 +3330,7 @@ def live_fragment(
     now = time.time() if now is None else now
     s = schedule or {}
     name = _e(s.get("slug") or slug)
-    kind = _e(s.get("kind") or (runs[0].get("kind") if runs else ""))
+    kind = _jobs_type_cell(s, public_host)
     trigger = _e(s.get("trigger"))
     # schedule_view.last_status gewinnt, wenn er TERMINAL ist — dann ist er das korrekte
     # Lauf-Ergebnis auch wenn der Journal-MAX-Eintrag (Dedup-Skip) veraltet ist.

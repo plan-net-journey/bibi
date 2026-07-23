@@ -17,12 +17,12 @@ from bibi.daemon.app import create_app
 
 def _sched(slug: str, *, kind="job", last_status="complete", row_status=None,
            next_fire_at=None, last_run_at=100.0, trigger="now", oneshot=False,
-           payload="echo hi", app_port=None, active=True) -> dict:
+           payload="echo hi", app_port=None, active=True, schedule_ref=None) -> dict:
     return {"slug": slug, "kind": kind, "trigger": trigger,
             "next_fire_at": next_fire_at, "last_status": last_status,
             "last_run_at": last_run_at, "row_status": row_status or last_status,
             "oneshot": oneshot, "payload": payload, "app_port": app_port,
-            "active": active}
+            "active": active, "schedule_ref": schedule_ref}
 
 
 # ── PLAN-14 Stufe 14.6 — Registrierungs-Drei-Gruppen (Aktiv/Inaktiv/Journal) ──
@@ -672,3 +672,52 @@ def test_ui_schedules_screen_survives_landings_fetch_failure(team_repo: Path):
         r = c.get("/-/ui/schedules")
         assert r.status_code == 200
         assert "daily" in r.text
+
+
+# ── Host-Sparkline-Spalte (Batch 9 Punkt 1) ──────────────────────────────────
+
+
+def _seed_schedule_ref(root: Path, slug: str) -> str:
+    d = root / "vault" / "case" / slug
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "README.md").write_text('---\nschedule: "now"\njob: "echo hi"\n---\n',
+                                 encoding="utf-8")
+    return f"{slug}/README.md"
+
+
+def test_ui_schedules_screen_renders_eager_sparkline_cell(team_repo: Path):
+    # Analog zu jobs_screen(): der initiale Seitenaufbau rechnet die Serie
+    # synchron (schedule_ref -> repo_path -> _job_sparkline_series()), kein
+    # separater Lazy-Request pro Zeile.
+    ref = _seed_schedule_ref(team_repo, "hitl-test-app")
+    client = FakeClient([_sched("hitl-test-app", schedule_ref=ref)])
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/schedules")
+        assert r.status_code == 200
+        assert 'id="spark-hitl-test-app" hx-preserve="true">' in r.text
+
+
+def test_ui_schedules_list_fragment_omits_sparkline_data(team_repo: Path):
+    # Self-Poll-Ziel (schedules_list_fragment(), 2s-Tick) übergibt bewusst
+    # keine Sparkline-Daten — htmx behält dank hx-preserve die vom initialen
+    # Seitenaufbau gerenderte Zelle (s. render._sparkline_cell()-Docstring),
+    # der Poll selbst löst keine erneute git-log-Berechnung aus.
+    ref = _seed_schedule_ref(team_repo, "hitl-test-app")
+    client = FakeClient([_sched("hitl-test-app", schedule_ref=ref)])
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/schedules/list")
+        assert r.status_code == 200
+        assert 'id="spark-hitl-test-app" hx-preserve="true"></span>' in r.text
+
+
+def test_ui_schedules_screen_sparkline_cell_empty_without_schedule_ref(team_repo: Path):
+    # Journal-only-Phantom-Slugs (job_db.list_schedules()) tragen keinen
+    # schedule_ref -> keine Sparkline-Berechnung, aber auch kein Crash.
+    client = FakeClient([_sched("phantom", schedule_ref=None)])
+    app = create_app(roles.resolve({"controller"}), controller_client=client)
+    with TestClient(app) as c:
+        r = c.get("/-/ui/schedules")
+        assert r.status_code == 200
+        assert 'id="spark-phantom" hx-preserve="true"></span>' in r.text

@@ -76,16 +76,19 @@ def _reset_dispatch_count():
 
 @pytest.fixture(autouse=True)
 def _reset_sparkline_cache():
-    """``controller._sparkline_cache`` ist bewusst Modul-Level statt Closure-
-    lokal (ein Cache über alle Requests EINES Prozesses, s. dortiger
-    Kommentar) — das ist in Produktion korrekt (ein Repo pro Prozess), leakt
-    aber zwischen Tests: ``repo_path`` ist repo-WURZEL-relativ, zwei
-    verschiedene ``team_repo``-Fixtures mit demselben Slug-Namen (z. B.
-    "mein-testjob") ergeben denselben Cache-Key, obwohl es unterschiedliche
-    physische Repos sind — ein späterer Test bekäme sonst das Ergebnis eines
-    früheren zurück, ohne dass ``git log`` überhaupt läuft."""
+    """``controller._sparkline_caches`` ist bewusst Modul-Level statt Closure-
+    lokal (ein Cache-Slot je Namespace über alle Requests EINES Prozesses, s.
+    dortiger Kommentar) — das ist in Produktion korrekt (ein Repo pro
+    Prozess), leakt aber zwischen Tests: ``repo_path`` ist repo-WURZEL-
+    relativ, zwei verschiedene ``team_repo``-Fixtures mit demselben Slug-Namen
+    (z. B. "mein-testjob") ergeben denselben Cache-Key, obwohl es
+    unterschiedliche physische Repos sind — ein späterer Test bekäme sonst das
+    Ergebnis eines früheren zurück, ohne dass ``git log`` überhaupt läuft.
+    Batch 9 Punkt 1 (Host-Sparkline-Spalte): ein Slot pro Namespace
+    ("jobs"/"schedules") statt eines einzigen Dicts — reset räumt deshalb alle
+    bisher angelegten Slots, nicht nur einen fest benannten."""
     from bibi import controller
-    controller._sparkline_cache = {"result": None, "computed_at": 0.0, "slugs": frozenset()}
+    controller._sparkline_caches = {}
     yield
 
 

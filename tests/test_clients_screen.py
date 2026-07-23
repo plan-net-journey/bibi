@@ -17,7 +17,7 @@ from bibi.daemon.app import create_app
 
 def test_clients_table_empty_state():
     html = render._clients_table([], now=100)
-    assert "keine verbundenen Clients" in html
+    assert "keine Knoten" in html
 
 
 def test_clients_table_renders_worker_row():
@@ -53,13 +53,15 @@ def test_clients_table_shows_role():
     # Client" — derselbe Präzedenzfall wie git_user/node_id. Zweite
     # Iteration (User-Fund: "vielleicht als Spalten mit leerem oder
     # gefülltem Rechteck") ersetzt den rohen Komma-Text durch eine
-    # Spalten-Matrix, ein Kästchen pro bekannter Rolle.
+    # Spalten-Matrix, ein Kästchen pro bekannter Rolle. Batch 9 Punkt 3:
+    # CONNECT-Spalte entfällt, vier statt fünf Rollen-Spalten.
     workers = [{"worker": "air2024", "host": "mac", "role": "synchronizer,controller",
                "stale": False, "connected_at": 0, "last_heartbeat": 0}]
     html = render._clients_table(workers, now=0)
     assert html.count('role-box on"') == 2
-    assert html.count('role-box off"') == 3
+    assert html.count('role-box off"') == 2
     assert '<abbr title="Synchronizer">' in html
+    assert '<abbr title="Connected">' not in html  # Batch 9 Punkt 3: CONNECT gestrichen
 
 
 def test_clients_table_handles_missing_role_gracefully():
@@ -68,7 +70,7 @@ def test_clients_table_handles_missing_role_gracefully():
     html = render._clients_table(workers, now=0)
     assert "<td>—</td>" in html
     assert html.count('role-box on"') == 0
-    assert html.count('role-box off"') == 5
+    assert html.count('role-box off"') == 4
 
 
 def test_clients_fragment_has_self_poll_attrs():
@@ -82,7 +84,7 @@ def test_clients_page_includes_header_and_table():
                                 "connected_at": 0, "last_heartbeat": 0}], now=0)
     assert "<header>" in html
     assert "w1" in html
-    assert "bibi · Clients" in html
+    assert "bibi · Nodes" in html  # Batch 9 Punkt 3: umbenannt von "Clients"
 
 
 # ── Controller-Route /-/ui/clients (+/board) ────────────────────────────────
@@ -131,9 +133,17 @@ def test_clients_board_fragment_route(team_repo: Path):
     assert 'id="clientsboard"' in r.text
 
 
-def test_clients_screen_route_empty_without_any_registered_worker(team_repo: Path):
+def test_clients_screen_route_shows_host_itself_without_any_registered_worker(team_repo: Path):
+    # Batch 9 Punkt 3, User-Fund: "wir können aber doch den Host ... mit in
+    # die Liste aufnehmen". WorkerRegistry kennt nur per Heartbeat gemeldete
+    # Knoten — der Host meldet sich nie bei sich selbst. Die Route zeigt ihn
+    # trotzdem als synthetische Zeile (_host_worker_entry()), auch ganz ohne
+    # verbundene Clients — die alte "keine verbundenen Clients"-Leermeldung
+    # ist für diesen Fall jetzt unerreichbar.
     app = create_app(roles.resolve({"controller"}), controller_client=_FakeClient())
     with TestClient(app) as c:
         r = c.get("/-/ui/clients")
     assert r.status_code == 200
-    assert "keine verbundenen Clients" in r.text
+    assert "keine Knoten" not in r.text
+    assert '<span class="chip clean">connected</span>' in r.text
+    assert r.text.count('role-box on"') == 1  # nur "controller" ist aktiv

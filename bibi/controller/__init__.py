@@ -97,7 +97,21 @@ def _scheduler_url() -> str | None:
 #: Cache über alle Requests dieses Prozesses hinweg gilt, unabhängig davon,
 #: wie oft add_controller_routes() aufgerufen wird.
 _SPARKLINE_CACHE_TTL = 3600
-_sparkline_cache: dict = {"result": None, "computed_at": 0.0, "slugs": frozenset()}
+#: Ein Cache-Slot je Zeilen-Domäne (Bibi4-Iteration, Batch 9 Punkt 1: die
+#: Host-Schedules-Liste bekommt dieselbe Sparkline-Spalte wie die Client-
+#: Jobs-Liste, ruft dazu dieselbe _job_sparkline_series() auf). Ein einziger
+#: gemeinsamer Cache-Slot würde auf einem Knoten mit beiden Rollen
+#: (scheduler+connect) bei jedem Wechsel zwischen Schedules- und Jobs-Screen
+#: das jeweils andere Slug-Set invalidieren (unterschiedliche Domänen,
+#: zufällig derselbe Cache-Key) — separate Slots pro Namespace vermeiden das.
+_sparkline_caches: dict[str, dict] = {}
+
+
+def _sparkline_cache_slot(namespace: str) -> dict:
+    return _sparkline_caches.setdefault(
+        namespace, {"result": None, "computed_at": 0.0, "slugs": frozenset()})
+
+
 #: Schützt die Cache-Befüllung (Bibi4-Iteration, Sparkline-Entkopplung):
 #: mehrere gleichzeitige Pro-Slug-Requests (eine je Zeile, s. render.
 #: _sparkline_cell_lazy()) dürfen bei kaltem Cache nicht je einen eigenen
@@ -284,13 +298,19 @@ def add_controller_routes(
         from bibi import config
         eff_typ, eff_status = _effective_filter(request, typ, status)
         eff_res = _effective_resolution(request, res)
-        items = render.filter_schedules(_schedules(), typ=eff_typ, status=eff_status)
+        all_scheds = _schedules()
+        items = render.filter_schedules(all_scheds, typ=eff_typ, status=eff_status)
+        # Batch 9 Punkt 1: eager über ALLE Schedules (nicht nur die gefilterte
+        # Auswahl) berechnet — hält den Cache-Key (Slug-Set) stabil über
+        # Filterwechsel hinweg, analog zu jobs_screen() (dort gibt es keine
+        # Filterleiste, die Frage stellt sich dort nicht).
+        sparklines = _sched_sparkline_series(all_scheds)
         resp = HTMLResponse(render.schedules_page(
             items, typ=eff_typ, status=eff_status, daemon_status=_status(),
             landings=_landings(), git_status=_feed_git_status(), host_url=_scheduler_url(),
             status_poll_interval_s=config.status_poll_interval(),
             job_status_poll_interval_s=config.job_status_poll_interval(), bucket_minutes=eff_res,
-            public_host=config.public_host()))
+            public_host=config.public_host(), sparklines=sparklines))
         _set_filter_cookies(resp, eff_typ, eff_status)
         _set_resolution_cookie(resp, eff_res)
         return resp
@@ -316,11 +336,13 @@ def add_controller_routes(
         # Status-Kacheln wie jeder andere Screen (User-Fund: "Header ist in
         # Feed, Jobs, Archive (!), Live-Log sichtbar" — fehlten hier bisher).
         from bibi import config
+        all_scheds = _schedules()
         return HTMLResponse(render.archive_page(
-            _schedules(), daemon_status=_status(), git_status=_feed_git_status(),
+            all_scheds, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
             job_status_poll_interval_s=config.job_status_poll_interval(),
-            public_host=config.public_host()))
+            public_host=config.public_host(),
+            sparklines=_sched_sparkline_series(all_scheds)))
 
     @app.get("/-/ui/archive/list", include_in_schema=False)
     def archive_list_fragment():
@@ -329,22 +351,59 @@ def add_controller_routes(
         from bibi import config
         return HTMLResponse(render.archive_fragment(_schedules(), public_host=config.public_host()))
 
+    def _host_worker_entry() -> dict:
+        """Synthetische Node-Zeile für den Host selbst (Batch 9 Punkt 3,
+        User-Fund: "wir können aber doch den Host, auf dem der Client Screen
+        dargestellt wird, mit in die Liste aufnehmen"). ``WorkerRegistry``
+        kennt nur Knoten, die sich per Heartbeat *gemeldet* haben — der Host
+        meldet sich nie bei sich selbst (dieselbe ``scheduler``+``connect``-
+        Ausschluss-Invariante wie beim "warum sehe ich den Worker nicht"-Fund,
+        ``daemon/roles.py``). ``git_status`` folgt demselben Format wie
+        ``Heartbeat._git_status()`` (``daemon/heartbeat.py``), damit die Zelle
+        neben echten (Heartbeat-gemeldeten) Zeilen nicht anders aussieht."""
+        import socket
+        from bibi import config, git_ops, repo as repo_mod
+        from bibi.git_status import working_tree_status
+        git_user = git_status = "—"
+        try:
+            root = repo_mod.root()
+            git_user = git_ops.git_user_name(root) or "—"
+            s = working_tree_status(root)
+            if s is not None:
+                git_status = f"{s.branch or '(detached)'} · {s.tree} · {s.sync}"
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        return {
+            "worker": config.read_env().get("BIBI_WORKER_NAME") or socket.gethostname(),
+            "host": socket.gethostname(),
+            "role": ",".join(roles.active_names()),
+            "node_id": config.node_id(),
+            "git_user": git_user,
+            "git_status": git_status,
+            "stale": False,
+            "connected_at": None,
+            "last_heartbeat": None,
+        }
+
     @app.get("/-/ui/clients", include_in_schema=False)
     def clients_screen():
-        # Connected-Clients-Screen (Host, Bibi4-Iteration) — Backend
-        # (WorkerRegistry, /-/worker) existierte schon lange, hier nur die
-        # erste Darstellung. status["workers"] kommt schon über _status()
-        # (/-/status), keine neue Datenquelle nötig.
+        # Nodes-Screen (Host, Bibi4-Iteration, Batch 9 Punkt 3 umbenannt von
+        # "Clients") — Backend (WorkerRegistry, /-/worker) existierte schon
+        # lange, hier nur die Darstellung. status["workers"] kommt schon über
+        # _status() (/-/status); der Host selbst wird separat als
+        # synthetische Zeile vorangestellt (_host_worker_entry()).
         from bibi import config
         status = _status()
+        workers = [_host_worker_entry(), *(status.get("workers") or [])]
         return HTMLResponse(render.clients_page(
-            status.get("workers") or [], daemon_status=status, git_status=_feed_git_status(),
+            workers, daemon_status=status, git_status=_feed_git_status(),
             host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
             job_status_poll_interval_s=config.job_status_poll_interval()))
 
     @app.get("/-/ui/clients/board", include_in_schema=False)
     def clients_board_fragment():
-        return HTMLResponse(render.clients_fragment(_status().get("workers") or []))
+        workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+        return HTMLResponse(render.clients_fragment(workers))
 
     @app.get("/-/ui/schedules/timeseries", include_in_schema=False)
     def schedules_timeseries_fragment(request: Request, res: int | None = None):
@@ -428,7 +487,7 @@ def add_controller_routes(
 
     _SPARKLINE_SINCE_DAYS = 30
 
-    def _job_sparkline_series(rows: list[dict]) -> dict[str, list[int]]:
+    def _job_sparkline_series(rows: list[dict], *, namespace: str = "jobs") -> dict[str, list[int]]:
         """Sparkline-Zähl-Buckets je Job (Bibi4-Iteration, User-Fund: "eine
         Sparkline, die die durch den Agenten verursachten git Änderungen
         repräsentiert"). Ein einziges ``git log``-Paar (Änderungen +
@@ -436,8 +495,15 @@ def add_controller_routes(
         einmal, kein Aufruf je Zeile — Präfix ist der Case-Ordner des Jobs
         (``repo_path``s Verzeichnis), nicht nur die job.md-Datei selbst, damit
         z. B. begleitende Notizen im selben Case-Ordner mitzählen. Nur vom
-        initialen Seitenaufbau aufgerufen (``jobs_screen()``), bewusst nicht
-        vom 2s-Self-Poll (s. ``render._sparkline_cell()``-Docstring).
+        initialen Seitenaufbau aufgerufen (``jobs_screen()``/``schedules_screen()``/
+        ``archive_screen()``), bewusst nicht vom 2s-Self-Poll (s.
+        ``render._sparkline_cell()``-Docstring).
+
+        ``namespace`` (Batch 9 Punkt 1: dieselbe Funktion jetzt auch für die
+        Host-Schedules-Liste, nicht mehr nur die Client-Jobs-Liste) wählt den
+        Cache-Slot (``_sparkline_cache_slot()``) — Jobs und Schedules sind
+        unabhängige Slug-Domänen, ein gemeinsamer Slot würde sich auf einem
+        Knoten mit beiden Rollen gegenseitig laufend invalidieren.
 
         ``own_paths`` (Bugfix, User-Fund: "warum haben alle Runner die
         gleiche Sparkline" — mehrere Jobs im selben Case-Ordner, z. B.
@@ -479,11 +545,12 @@ def add_controller_routes(
                     and now - cached["computed_at"] < _SPARKLINE_CACHE_TTL)
 
         now = time.time()
-        if _fresh(_sparkline_cache, now):
-            return _sparkline_cache["result"]
+        cached = _sparkline_cache_slot(namespace)
+        if _fresh(cached, now):
+            return cached["result"]
         with _sparkline_lock:
             now = time.time()
-            cached = _sparkline_cache
+            cached = _sparkline_cache_slot(namespace)
             if _fresh(cached, now):  # ein anderer Thread hat inzwischen befüllt
                 return cached["result"]
             own_paths = {row["slug"]: row["repo_path"] for row in rows if row.get("repo_path")}
@@ -495,6 +562,32 @@ def add_controller_routes(
                 own_paths=own_paths)
             cached["result"], cached["computed_at"], cached["slugs"] = result, now, slugs
             return result
+
+    def _sched_sparkline_series(schedules: list[dict]) -> dict[str, list[int]]:
+        """Batch 9 Punkt 1 (Host-Sparkline-Spalte): dieselbe Aggregation wie
+        ``_job_sparkline_series()``, nur für Host-Schedules statt Client-Jobs
+        — eigener Cache-Slot (``namespace="schedules"``, s. dortiger
+        Docstring). ``schedule_view()`` liefert ``schedule_ref`` case-dir-
+        relativ (wie ``pr.schedule_ref`` bei ``_local_schedules()``), hier zu
+        repo-root-relativem ``repo_path`` aufgelöst, damit
+        ``_job_sparkline_series()`` dieselbe Präfix-Ableitung
+        (``Path(repo_path).parent``) wie beim Client verwenden kann."""
+        from bibi import repo as repo_mod
+        try:
+            case_dir, root = repo_mod.case_dir(), repo_mod.root()
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return {}
+        rows = []
+        for s in schedules:
+            ref = s.get("schedule_ref")
+            if not ref:
+                continue
+            try:
+                repo_path = (case_dir / ref).relative_to(root).as_posix()
+            except Exception:  # noqa: BLE001 — defensiv (§2.7)
+                continue
+            rows.append({"slug": s["slug"], "repo_path": repo_path})
+        return _job_sparkline_series(rows, namespace="schedules")
 
     def _jobs_archive_runs() -> list:
         # Flache Journal-Liste über alle lokalen Jobs (Bibi4-Iteration,
@@ -764,6 +857,13 @@ def add_controller_routes(
             # nach (GET .../runs?offset=N, render.journal_runs_fragment).
             runs = client.journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=0)
             job = next((j for j in client.jobs() if j.get("slug") == slug), None)
+            # Batch 9 Punkt 2: job["app_port"] fehlte hier komplett (anders als
+            # bei _local_schedules()/jobs_data() beim Client) — _live_panel()s
+            # "Zur App →"-Link (app_link, render.py) blieb dadurch auf der Host-
+            # Detailseite für jeden App-Job unsichtbar, obwohl der Schedule
+            # selbst app_port längst trägt (schedule_view()).
+            if job is not None:
+                job["app_port"] = schedule.get("app_port") if schedule else None
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             schedule, runs, job = None, [], None
         return schedule, runs, job

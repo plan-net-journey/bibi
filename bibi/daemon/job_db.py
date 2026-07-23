@@ -661,6 +661,12 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
         # PLAN-24 Befund 5: der Controller braucht das, um die REBUILD-Aktion
         # nur bei Container-Jobs anzuzeigen (render._action_bar()).
         "exec_mode": row["exec_mode"],
+        # Batch 9 Punkt 1 (Host-Sparkline-Spalte): case-dir-relativer Pfad der
+        # Schedule-MD, Grundlage für den repo-root-relativen "repo_path", den
+        # controller._sched_sparkline_series() für _job_sparkline_series()
+        # baut — dieselbe Ableitung wie schon lange bei job_full_view()
+        # (Zeile oben), hier nur zusätzlich in der schlankeren Listen-Sicht.
+        "schedule_ref": row["schedule_ref"],
     }
 
 
