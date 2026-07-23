@@ -238,3 +238,91 @@ def node_id() -> str:
     existing["BIBI_NODE_ID"] = new_id
     write_env(existing)
     return new_id
+
+
+# ── PLAN-32 Stufe 32.2/32.3: Credential-Distribution (Host → Client) ────────
+#
+# Allowlist ist eine Namenskonvention, kein zweites Verzeichnis (Entscheidung
+# 3): jeder ``BIBI_JOB_ENV_*``-Wert im eigenen ``env`` ist automatisch
+# verteilbar — dieselbe Menge, die ``worker.py::_exec_config()`` für
+# Job-Injection bereits liest. Auf dem Client landen empfangene Werte in
+# einer ZWEITEN, dem eigentlichen ``env`` vorgelagerten Datei (Entscheidung
+# 4) — Herkunft bleibt sichtbar, ein lokal in ``env`` gesetzter gleichnamiger
+# Wert gewinnt immer (dortiges Merge in ``worker.py::_exec_config()``).
+
+_JOB_ENV_PREFIX = "BIBI_JOB_ENV_"
+#: Interner Marker in der Distributed-Datei, kein Job-Credential — beginnt
+#: bewusst nicht mit _JOB_ENV_PREFIX, damit der Präfix-Scan ihn nie injiziert.
+_DISTRIBUTED_VERSION_KEY = "__bibi_config_version__"
+
+
+def distributable_config(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Host-Seite: alle ``BIBI_JOB_ENV_*``-Werte aus ``env`` (Default:
+    ``read_env()`` gemergt mit ``os.environ``, Prozess-Env gewinnt bei
+    Kollision — dieselbe Präzedenz wie ``worker.py::_exec_config()``s
+    Job-Injection) — die komplette Distribution-Allowlist, eine reine
+    Namens-Prüfung, keine zweite Liste. Beide Quellen zu berücksichtigen ist
+    hier bewusst: verteilbar soll exakt sein, was der Präfix-Scan für die
+    eigene Job-Injection ohnehin schon nutzt, nicht nur der Datei-Anteil davon."""
+    env = {**read_env(), **os.environ} if env is None else env
+    return {k: v for k, v in env.items() if k.startswith(_JOB_ENV_PREFIX) and v}
+
+
+def config_version(bundle: dict[str, str]) -> str:
+    """Kurzer, stabiler Hash über die verteilbare Config (Entscheidung 2:
+    Hash statt Timestamp — ändert sich genau dann, wenn sich ein Wert
+    tatsächlich ändert, immun gegen Uhrzeit-Drift/„berührt-aber-unverändert")."""
+    import hashlib
+    canonical = "\n".join(f"{k}={bundle[k]}" for k in sorted(bundle))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def distributed_env_path() -> Path:
+    """Client-Seite: die zweite, ``env`` vorgelagerte Datei (Entscheidung 4)
+    — neben der Haupt-``env`` desselben Knotens (erbt so automatisch
+    ``BIBI_CONFIG_PATH``s Mehrfach-Instanz-Trennung, s. ``env_path()``)."""
+    return env_path().parent / "distributed-env"
+
+
+def read_distributed_env(path: Path | None = None) -> dict[str, str]:
+    """Client-Seite: zuletzt vom Host empfangenes Bundle + Versionsmarker
+    lesen. Fehlt die Datei (noch nie ein Bundle empfangen): leeres Dict —
+    dieselbe Robustheit wie ``read_env()``."""
+    p = path or distributed_env_path()
+    if not p.exists():
+        return {}
+    out: dict[str, str] = {}
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        out[key.strip()] = value.strip()
+    return out
+
+
+def distributed_config_version(path: Path | None = None) -> str | None:
+    """Client-Seite: die zuletzt angewandte Version, fürs nächste
+    Heartbeat-``client_config_version``-Feld. ``None`` = noch nie empfangen."""
+    return read_distributed_env(path).get(_DISTRIBUTED_VERSION_KEY)
+
+
+def write_distributed_env(bundle: dict[str, str], *, version: str,
+                          path: Path | None = None) -> Path:
+    """Client-Seite: neues Bundle atomar schreiben (analog ``write_env()``,
+    Mode 0600) — komplett ersetzt, nicht gemergt (das Bundle selbst ist schon
+    die vollständige, aktuelle Sicht vom Host)."""
+    p = path or distributed_env_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["# bibi — vom Host verteilte Job-Credentials (PLAN-32 Stufe 32.2).",
+             "# Automatisch geschrieben bei jedem Heartbeat mit neuer Version —",
+             "# manuelle Änderungen gehen beim nächsten Fetch verloren. Ein lokal",
+             "# in ~/.config/bibi/env gesetzter gleichnamiger Wert gewinnt immer.", ""]
+    for key in sorted(bundle):
+        lines.append(f"{key}={bundle[key]}")
+    lines.append(f"{_DISTRIBUTED_VERSION_KEY}={version}")
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(p)
+    return p

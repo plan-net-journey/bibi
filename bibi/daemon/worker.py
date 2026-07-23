@@ -102,16 +102,21 @@ def _exec_config() -> dict[str, str]:
     Stufe 32.0 genau dasselbe Präfix (``BIBI_JOB_ENV_ANTHROPIC_API_KEY`` etc.)
     — der bare Name ohne Präfix bleibt als Fallback gültig (Migration, s.
     ``hygiene.check_legacy_job_env_names()`` für die zugehörige doctor-Warnung),
-    wird aber nicht mehr aktiv beworben."""
+    wird aber nicht mehr aktiv beworben. Seit Stufe 32.2 fließen zusätzlich
+    vom Host verteilte Werte ein (``config.read_distributed_env()``) — mit
+    niedrigster Präzedenz: ein lokal in ``env`` gesetzter oder im
+    Prozess-Environment vorhandener gleichnamiger Wert gewinnt immer
+    (Entscheidung 4, „lokal gewinnt")."""
     cfg = config.read_env()
     out: dict[str, str] = {}
     for key in ("BIBI_EXEC_MODE", "BIBI_JOB_IMAGE", "BIBI_DOCKER_BIN"):
         val = os.environ.get(key) or cfg.get(key)
         if val:
             out[key] = val
-    # Dynamische Job-Env-Vars: BIBI_JOB_ENV_FOO → FOO im Container
+    # Dynamische Job-Env-Vars: BIBI_JOB_ENV_FOO → FOO im Container. Reihenfolge
+    # (verteilt < lokale env < Prozess-Env) setzt "lokal gewinnt immer" um.
     prefix = "BIBI_JOB_ENV_"
-    merged = {**cfg, **os.environ}
+    merged = {**config.read_distributed_env(), **cfg, **os.environ}
     for raw_key, val in merged.items():
         if raw_key.startswith(prefix) and val:
             out[raw_key[len(prefix):]] = val

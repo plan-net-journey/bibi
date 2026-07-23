@@ -164,7 +164,11 @@ class WorkerHeartbeat(BaseModel):
     ``port`` (Batch 9 Punkt 3, User-Fund: "Name+Host zu einem Link
     kombinieren") ist der tatsächliche Bind-Port des sendenden Knotens,
     gelesen aus ``BIBI_DAEMON_PORT`` (``Heartbeat._beat()``) — derselbe
-    Env-Var-Wert, den auch der Wrapper für seinen Merge-back-Trigger nutzt."""
+    Env-Var-Wert, den auch der Wrapper für seinen Merge-back-Trigger nutzt.
+    ``client_config_version`` (PLAN-32 Stufe 32.2) ist die zuletzt vom
+    Client angewandte Config-Bundle-Version (``config.distributed_config_version()``)
+    — der Host hängt das Bundle in der Antwort nur an, wenn sie von seiner
+    aktuellen Version abweicht."""
 
     worker: str
     host: str
@@ -173,6 +177,7 @@ class WorkerHeartbeat(BaseModel):
     git_user: str | None = None
     role: str | None = None
     port: int | None = None
+    client_config_version: str | None = None
 
 
 class WorkerView(BaseModel):

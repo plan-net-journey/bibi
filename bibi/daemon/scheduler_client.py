@@ -62,8 +62,9 @@ class LocalScheduler:
 
     def register(self, worker: str, host: str, git_status: str | None = None, *,
                  node_id: str | None = None, git_user: str | None = None,
-                 role: str | None = None, port: int | None = None) -> None:
-        pass  # Single-Node: keine Anmeldung nötig
+                 role: str | None = None, port: int | None = None,
+                 client_config_version: str | None = None) -> dict | None:
+        return None  # Single-Node: keine Anmeldung, kein Bundle zu holen
 
 
 class RemoteScheduler:
@@ -104,10 +105,22 @@ class RemoteScheduler:
 
     def register(self, worker: str, host: str, git_status: str | None = None, *,
                  node_id: str | None = None, git_user: str | None = None,
-                 role: str | None = None, port: int | None = None) -> None:
-        self._post("/-/worker", {"worker": worker, "host": host, "git_status": git_status,
-                                 "node_id": node_id, "git_user": git_user, "role": role,
-                                 "port": port})
+                 role: str | None = None, port: int | None = None,
+                 client_config_version: str | None = None) -> dict | None:
+        # PLAN-32 Stufe 32.1/32.2: liefert jetzt die volle Host-Antwort zurück
+        # (approval_status-Nebeneffekte + config_version/config_bundle) —
+        # vorher wurde die Antwort verworfen. Ein non-200 (z. B. 401 bei
+        # "blocked") muss als Fehler beim Aufrufer ankommen (Heartbeat._beat()s
+        # bestehendes try/except erkennt das dann korrekt als fehlgeschlagenen
+        # Heartbeat), nicht still verschluckt werden.
+        code, body = self._post("/-/worker", {
+            "worker": worker, "host": host, "git_status": git_status,
+            "node_id": node_id, "git_user": git_user, "role": role, "port": port,
+            "client_config_version": client_config_version,
+        })
+        if code != 200:
+            raise RuntimeError(f"heartbeat rejected: HTTP {code}")
+        return body if isinstance(body, dict) else None
 
     def _get(self, path: str) -> object:
         headers = {"Accept": "application/json"}

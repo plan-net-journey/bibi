@@ -55,6 +55,29 @@ def test_exec_config_prefixed_credential_wins_over_bare_fallback(monkeypatch, te
     assert cfg["ANTHROPIC_API_KEY"] == "sk-prefixed"
 
 
+def test_exec_config_includes_distributed_job_env_value(monkeypatch, team_repo):
+    # PLAN-32 Stufe 32.2: vom Host verteilte BIBI_JOB_ENV_*-Werte fließen in
+    # die Job-Injection ein, niedrigste Präzedenz.
+    monkeypatch.setattr("bibi.daemon.worker.config.read_env", lambda: {})
+    monkeypatch.setattr("bibi.daemon.worker.config.read_distributed_env",
+                        lambda: {"BIBI_JOB_ENV_TEAM_KEY": "sk-distributed"})
+    monkeypatch.delenv("BIBI_JOB_ENV_TEAM_KEY", raising=False)
+    cfg = worker._exec_config()
+    assert cfg["TEAM_KEY"] == "sk-distributed"
+
+
+def test_exec_config_local_env_wins_over_distributed(monkeypatch, team_repo):
+    # Entscheidung 4 (PLAN-32): lokal gewinnt immer — derselbe Key sowohl
+    # verteilt als auch lokal in ~/.config/bibi/env gesetzt.
+    monkeypatch.setattr("bibi.daemon.worker.config.read_env",
+                        lambda: {"BIBI_JOB_ENV_TEAM_KEY": "sk-local"})
+    monkeypatch.setattr("bibi.daemon.worker.config.read_distributed_env",
+                        lambda: {"BIBI_JOB_ENV_TEAM_KEY": "sk-distributed"})
+    monkeypatch.delenv("BIBI_JOB_ENV_TEAM_KEY", raising=False)
+    cfg = worker._exec_config()
+    assert cfg["TEAM_KEY"] == "sk-local"
+
+
 def test_is_container_default_host(monkeypatch, team_repo):
     monkeypatch.setattr("bibi.daemon.worker.config.read_env", lambda: {})
     monkeypatch.delenv("BIBI_EXEC_MODE", raising=False)

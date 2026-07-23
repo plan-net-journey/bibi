@@ -44,10 +44,13 @@ class _FakeClient:
 
     def register(self, worker: str, host: str, git_status: str | None = None, *,
                  node_id: str | None = None, git_user: str | None = None,
-                 role: str | None = None, port: int | None = None) -> None:
-        self.calls.append((worker, host, git_status, node_id, git_user, role, port))
+                 role: str | None = None, port: int | None = None,
+                 client_config_version: str | None = None) -> dict | None:
+        self.calls.append((worker, host, git_status, node_id, git_user, role, port,
+                           client_config_version))
         if self.fail:
             raise ConnectionError("scheduler unreachable")
+        return None
 
 
 def test_git_status_reports_branch_tree_and_sync(gitrepo: Path):
@@ -73,12 +76,13 @@ def test_start_registers_immediately(gitrepo: Path):
     hb = Heartbeat(client=client, worker_name="w1", repo_root=gitrepo, interval=60)
     asyncio.run(hb.start())
     assert len(client.calls) == 1
-    worker, host, git_status, node_id, git_user, role, port = client.calls[0]
+    worker, host, git_status, node_id, git_user, role, port, cfg_version = client.calls[0]
     assert (worker, host, git_status) == ("w1", hb.host, "trunk · clean · synced")
     assert node_id == hb.node_id and len(node_id) == 32
     assert git_user == "t"  # gitrepo-Fixture: git config user.name = "t"
     assert role is None  # kein role= übergeben -> nichts zu senden
     assert port is None  # kein BIBI_DAEMON_PORT in der Test-Umgebung gesetzt
+    assert cfg_version is None  # noch nie ein Bundle empfangen
     assert hb.last_ok is True
     assert hb.last_at is not None
     asyncio.run(hb.stop())
@@ -158,3 +162,46 @@ def test_stop_cancels_loop_cleanly(gitrepo: Path):
 
     n_at_stop = asyncio.run(run())
     assert len(client.calls) == n_at_stop
+
+
+# ── Config-Bundle-Distribution (PLAN-32 Stufe 32.2) ─────────────────────────
+
+
+class _BundleClient:
+    """Liefert bei register() dieselbe Antwortform wie RemoteScheduler.register()
+    (dict mit config_version + optionalem config_bundle)."""
+
+    def __init__(self, resp: dict | None) -> None:
+        self._resp = resp
+
+    def register(self, *a, **kw) -> dict | None:
+        return self._resp
+
+
+def test_beat_writes_distributed_env_when_bundle_present(gitrepo: Path):
+    from bibi import config
+    client = _BundleClient({"config_version": "v1",
+                           "config_bundle": {"BIBI_JOB_ENV_FOO": "secret"}})
+    hb = Heartbeat(client=client, worker_name="w1", repo_root=gitrepo, interval=60)
+    asyncio.run(hb.start())
+    asyncio.run(hb.stop())
+    assert config.read_distributed_env()["BIBI_JOB_ENV_FOO"] == "secret"
+    assert config.distributed_config_version() == "v1"
+
+
+def test_beat_does_not_write_when_bundle_absent(gitrepo: Path):
+    from bibi import config
+    client = _BundleClient({"config_version": "v1"})  # kein config_bundle-Key
+    hb = Heartbeat(client=client, worker_name="w1", repo_root=gitrepo, interval=60)
+    asyncio.run(hb.start())
+    asyncio.run(hb.stop())
+    assert config.read_distributed_env() == {}
+
+
+def test_beat_does_not_write_when_response_is_none(gitrepo: Path):
+    from bibi import config
+    client = _BundleClient(None)
+    hb = Heartbeat(client=client, worker_name="w1", repo_root=gitrepo, interval=60)
+    asyncio.run(hb.start())
+    asyncio.run(hb.stop())
+    assert config.read_distributed_env() == {}

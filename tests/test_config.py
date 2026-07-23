@@ -104,3 +104,60 @@ def test_read_env_ignores_comments_and_blanks(cfg_home: Path):
     env = config.read_env()
     assert env["BIBI_ROLE"] == "worker"
     assert env["BIBI_REMOTE"] == "x"  # getrimmt
+
+
+# ── PLAN-32 Stufe 32.2/32.3: Credential-Distribution ─────────────────────────
+
+
+def test_distributable_config_filters_by_prefix():
+    env = {"BIBI_JOB_ENV_ANTHROPIC_API_KEY": "sk-x", "BIBI_SCHEDULER_URL": "http://h",
+          "BIBI_JOB_ENV_FOO": "bar"}
+    assert config.distributable_config(env) == {
+        "BIBI_JOB_ENV_ANTHROPIC_API_KEY": "sk-x", "BIBI_JOB_ENV_FOO": "bar"}
+
+
+def test_distributable_config_excludes_empty_values():
+    assert config.distributable_config({"BIBI_JOB_ENV_FOO": ""}) == {}
+
+
+def test_config_version_stable_and_order_independent():
+    v1 = config.config_version({"BIBI_JOB_ENV_A": "1", "BIBI_JOB_ENV_B": "2"})
+    v2 = config.config_version({"BIBI_JOB_ENV_B": "2", "BIBI_JOB_ENV_A": "1"})
+    assert v1 == v2
+
+
+def test_config_version_changes_when_value_changes():
+    v1 = config.config_version({"BIBI_JOB_ENV_A": "1"})
+    v2 = config.config_version({"BIBI_JOB_ENV_A": "2"})
+    assert v1 != v2
+
+
+def test_read_distributed_env_empty_when_no_file(cfg_home: Path):
+    assert config.read_distributed_env() == {}
+    assert config.distributed_config_version() is None
+
+
+def test_write_then_read_distributed_env_roundtrip(cfg_home: Path):
+    config.write_distributed_env({"BIBI_JOB_ENV_ANTHROPIC_API_KEY": "sk-x"}, version="v1")
+    env = config.read_distributed_env()
+    assert env["BIBI_JOB_ENV_ANTHROPIC_API_KEY"] == "sk-x"
+    assert config.distributed_config_version() == "v1"
+
+
+def test_write_distributed_env_permissions_0600(cfg_home: Path):
+    p = config.write_distributed_env({"BIBI_JOB_ENV_X": "y"}, version="v1")
+    assert (p.stat().st_mode & 0o777) == 0o600
+
+
+def test_write_distributed_env_lives_next_to_main_env(cfg_home: Path):
+    # Entscheidung 4: zweite, env vorgelagerte Datei — erbt automatisch
+    # BIBI_CONFIG_PATHs Mehrfach-Instanz-Trennung (env_path().parent).
+    p = config.write_distributed_env({"BIBI_JOB_ENV_X": "y"}, version="v1")
+    assert p.parent == config.env_path().parent
+
+
+def test_write_distributed_env_replaces_not_merges(cfg_home: Path):
+    config.write_distributed_env({"BIBI_JOB_ENV_A": "1", "BIBI_JOB_ENV_B": "2"}, version="v1")
+    config.write_distributed_env({"BIBI_JOB_ENV_A": "1"}, version="v2")
+    env = config.read_distributed_env()
+    assert "BIBI_JOB_ENV_B" not in env

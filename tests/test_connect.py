@@ -352,3 +352,58 @@ def test_remote_schedules_empty_on_bad_shape(monkeypatch):
     rs = RemoteScheduler("http://x")
     monkeypatch.setattr(rs, "_get", lambda p: None)
     assert rs.schedules() == []
+
+
+# ── RemoteScheduler.register() Rückgabewert (PLAN-32 Stufe 32.1/32.2) ───────
+
+
+def test_remote_register_returns_response_body(monkeypatch):
+    rs = RemoteScheduler("http://x")
+    monkeypatch.setattr(rs, "_post", lambda p, pl: (200, {"config_version": "v1"}))
+    assert rs.register("w", "h") == {"config_version": "v1"}
+
+
+def test_remote_register_raises_on_non_200(monkeypatch):
+    # Ein "blocked"-Knoten (401) darf nicht still als Erfolg durchgehen —
+    # Heartbeat._beat()s try/except muss das als Fehlschlag erkennen.
+    rs = RemoteScheduler("http://x")
+    monkeypatch.setattr(rs, "_post", lambda p, pl: (401, {"detail": "blocked"}))
+    with pytest.raises(RuntimeError):
+        rs.register("w", "h")
+
+
+# ── Config-Bundle-Distribution über den Heartbeat (PLAN-32 Stufe 32.2) ─────
+
+
+def test_worker_heartbeat_response_always_carries_config_version(sched):
+    r = sched.post("/-/worker", json={"worker": "w", "host": "h"})
+    assert r.status_code == 200
+    assert "config_version" in r.json()
+
+
+def test_worker_heartbeat_omits_bundle_when_version_unchanged(sched):
+    sched.post("/-/worker", json={"worker": "w", "host": "h", "node_id": "n1"})
+    sched.post("/-/worker/n1/approve")
+    v1 = sched.post("/-/worker", json={"worker": "w", "host": "h", "node_id": "n1"}).json()
+    r = sched.post("/-/worker", json={
+        "worker": "w", "host": "h", "node_id": "n1",
+        "client_config_version": v1["config_version"]})
+    assert "config_bundle" not in r.json()
+
+
+def test_worker_heartbeat_omits_bundle_when_pending_not_approved(sched, monkeypatch):
+    # Ein pending-Knoten (noch nicht freigeschaltet, erster Heartbeat) bekommt
+    # nie ein Bundle, selbst bei abweichender Version.
+    monkeypatch.setenv("BIBI_JOB_ENV_FOO", "secret")
+    r = sched.post("/-/worker", json={
+        "worker": "w", "host": "h", "node_id": "n-pending", "client_config_version": "stale"})
+    assert "config_bundle" not in r.json()
+
+
+def test_worker_heartbeat_includes_bundle_when_approved_and_version_differs(sched, monkeypatch):
+    monkeypatch.setenv("BIBI_JOB_ENV_FOO", "secret")
+    sched.post("/-/worker", json={"worker": "w", "host": "h", "node_id": "n2"})
+    sched.post("/-/worker/n2/approve")
+    r = sched.post("/-/worker", json={
+        "worker": "w", "host": "h", "node_id": "n2", "client_config_version": "stale"})
+    assert r.json()["config_bundle"] == {"BIBI_JOB_ENV_FOO": "secret"}

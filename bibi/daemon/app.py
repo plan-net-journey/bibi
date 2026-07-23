@@ -361,6 +361,7 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
     # Sicherheitsverlust (galt vorher ohnehin fail-open, s. PLAN-32).
     @app.post("/-/worker", tags=["worker"])
     def worker_heartbeat(hb: WorkerHeartbeat):
+        status = "approved"  # kein node_id (älterer Client) -> Rückwärtskompatibilität
         if hb.node_id:
             conn = job_db.connect()
             try:
@@ -369,9 +370,20 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                 conn.close()
             if status == "blocked":
                 raise HTTPException(status_code=401, detail="node blocked by host operator")
-        return registry.heartbeat(hb.worker, hb.host, hb.git_status,
-                                  node_id=hb.node_id, git_user=hb.git_user, role=hb.role,
-                                  port=hb.port)
+        result = registry.heartbeat(hb.worker, hb.host, hb.git_status,
+                                    node_id=hb.node_id, git_user=hb.git_user, role=hb.role,
+                                    port=hb.port)
+        # PLAN-32 Stufe 32.2: Config-Bundle-Distribution huckepack auf
+        # demselben Heartbeat-Roundtrip. config_version reist bei JEDEM
+        # Heartbeat mit (paar Bytes, kein Secret) — config_bundle nur, wenn
+        # sich die Version geändert hat UND der Knoten approved ist (ein
+        # pending/blocked-Knoten bekommt nie ein Bundle).
+        bundle = config.distributable_config()
+        host_version = config.config_version(bundle)
+        result["config_version"] = host_version
+        if status == "approved" and hb.client_config_version != host_version:
+            result["config_bundle"] = bundle
+        return result
 
     @app.post("/-/worker/{node_id}/approve", tags=["worker"])
     def worker_approve(node_id: str):

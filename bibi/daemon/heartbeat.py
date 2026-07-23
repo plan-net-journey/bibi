@@ -79,12 +79,28 @@ class Heartbeat:
         raw = os.environ.get("BIBI_DAEMON_PORT")
         return int(raw) if raw and raw.isdigit() else None
 
+    def _apply_config_bundle(self, resp: dict) -> None:
+        """PLAN-32 Stufe 32.2: Host hängt ``config_bundle`` nur an, wenn sich
+        seine Version von der zuletzt hier angewandten unterscheidet (und der
+        Knoten ``approved`` ist, s. ``app.py::worker_heartbeat()``) — die
+        meisten Heartbeats tragen also nur die paar Bytes ``config_version``,
+        kein Bundle. Komplettes Ersetzen (nicht mergen): das Bundle ist schon
+        die vollständige aktuelle Sicht des Hosts."""
+        bundle = resp.get("config_bundle")
+        version = resp.get("config_version")
+        if bundle is not None and version:
+            config.write_distributed_env(bundle, version=version)
+
     def _beat(self) -> None:
         try:
-            self.client.register(self.worker_name, self.host, self._git_status(),
-                                 node_id=self.node_id,
-                                 git_user=git_ops.git_user_name(self.repo_root or repo.root()),
-                                 role=self.role, port=self._port())
+            resp = self.client.register(
+                self.worker_name, self.host, self._git_status(),
+                node_id=self.node_id,
+                git_user=git_ops.git_user_name(self.repo_root or repo.root()),
+                role=self.role, port=self._port(),
+                client_config_version=config.distributed_config_version())
+            if resp:
+                self._apply_config_bundle(resp)
             self.last_ok = True
             activity.emit(log, logging.DEBUG, "connect.heartbeat", role="connect",
                           worker=self.worker_name)
