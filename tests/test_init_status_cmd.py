@@ -73,6 +73,79 @@ def test_init_force_skips_confirmation(cfg_home: Path, monkeypatch):
     assert config.read_env()["BIBI_SCHEDULER_URL"] == "http://new"
 
 
+# --- PLAN-33 Stufe 33.3: `bibi-ctrl init --non-interactive` -------------------
+
+
+def _forbid_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*_a, **_kw):
+        raise AssertionError("input() darf im --non-interactive-Modus nie aufgerufen werden")
+    monkeypatch.setattr("builtins.input", _boom)
+
+
+def test_init_non_interactive_writes_explicit_flags(cfg_home: Path, monkeypatch):
+    _forbid_input(monkeypatch)
+    rc = main([
+        "init", "--non-interactive",
+        "--scheduler-url", "http://sarasate:8769",
+        "--role", "connect,synchronizer",
+        "--remote", "git@x/r.git",
+        "--claude-bin", "/opt/bin/claude",
+        "--node-name", "m.mustertest-container",
+        "--public-host", "sarasate.tail9f9173.ts.net",
+        "--status-poll-interval", "60",
+        "--job-status-poll-interval", "1",
+    ])
+    assert rc == 0
+    env = config.read_env()
+    assert env["BIBI_SCHEDULER_URL"] == "http://sarasate:8769"
+    assert env["BIBI_ROLE"] == "connect,synchronizer"
+    assert env["BIBI_REMOTE"] == "git@x/r.git"
+    assert env["BIBI_CLAUDE_BIN"] == "/opt/bin/claude"
+    assert env["BIBI_NODE_NAME"] == "m.mustertest-container"
+    assert env["BIBI_PUBLIC_HOST"] == "sarasate.tail9f9173.ts.net"
+    assert env["BIBI_STATUS_POLL_INTERVAL"] == "60"
+    assert env["BIBI_JOB_STATUS_POLL_INTERVAL"] == "1"
+    assert env["BIBI_NODE_ID"]  # weiterhin self-healing generiert, kein Flag dafür
+
+
+def test_init_non_interactive_missing_flags_use_engine_defaults(cfg_home: Path, monkeypatch):
+    _forbid_input(monkeypatch)
+    rc = main(["init", "--non-interactive", "--scheduler-url", "http://sarasate:8769"])
+    assert rc == 0
+    env = config.read_env()
+    assert env["BIBI_SCHEDULER_URL"] == "http://sarasate:8769"
+    assert env["BIBI_ROLE"] == config.KEYS["BIBI_ROLE"]
+    assert env["BIBI_CLAUDE_BIN"] == config.KEYS["BIBI_CLAUDE_BIN"]
+    assert env["BIBI_PUBLIC_HOST"] == config.KEYS["BIBI_PUBLIC_HOST"]
+
+
+def test_init_non_interactive_missing_flags_preserve_existing_values(
+    cfg_home: Path, monkeypatch
+):
+    config.write_env({"BIBI_ROLE": "worker", "BIBI_CLAUDE_BIN": "/custom/claude"})
+    _forbid_input(monkeypatch)
+    rc = main(["init", "--non-interactive", "--scheduler-url", "http://new:8769"])
+    assert rc == 0
+    env = config.read_env()
+    assert env["BIBI_SCHEDULER_URL"] == "http://new:8769"
+    assert env["BIBI_ROLE"] == "worker"  # unveraendert, kein --role uebergeben
+    assert env["BIBI_CLAUDE_BIN"] == "/custom/claude"  # ebenso unveraendert
+
+
+def test_init_non_interactive_skips_overwrite_confirmation(cfg_home: Path, monkeypatch):
+    config.write_env({"BIBI_SCHEDULER_URL": "http://old:8769"})
+    _forbid_input(monkeypatch)  # keine --force noetig, --non-interactive fragt nie
+    rc = main(["init", "--non-interactive", "--scheduler-url", "http://new:8769"])
+    assert rc == 0
+    assert config.read_env()["BIBI_SCHEDULER_URL"] == "http://new:8769"
+
+
+def test_init_flags_without_non_interactive_are_rejected(cfg_home: Path, capsys):
+    rc = main(["init", "--scheduler-url", "http://sarasate:8769"])
+    assert rc == 2
+    assert "--non-interactive" in capsys.readouterr().err
+
+
 def test_status_shows_values(cfg_home: Path, capsys):
     config.write_env({
         "BIBI_SCHEDULER_URL": "http://sarasate:8769",
