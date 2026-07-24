@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -111,3 +112,92 @@ def test_install_unsupported_platform(team_repo, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(install.sys, "platform", "sunos5")
     assert "unsupported" in install.install()
     assert "unsupported" in install.uninstall()
+
+
+# ── install() Linux-Dispatch: echte Seiteneffekte gemockt (Nebenbefund PLAN-33 33.4) ─
+
+#: echtes subprocess.run, VOR jedem Monkeypatch gesichert -- install.subprocess IST
+#: dasselbe Modulobjekt wie ueberall sonst importiert (z. B. bibi/repo.py fuer den
+#: eigenen "git rev-parse"-Aufruf in repo.root(), den install() zu Beginn ausloest) --
+#: ein Mock auf install.subprocess.run faengt also auch diesen unbeteiligten Aufruf ab,
+#: nicht nur die sudo/systemctl-Kommandos, die dieser Test eigentlich beobachten will.
+_REAL_RUN = subprocess.run
+
+
+def _mock_linux(monkeypatch: pytest.MonkeyPatch, *, has_systemctl: bool = True) -> None:
+    monkeypatch.setattr(install.sys, "platform", "linux")
+    monkeypatch.setattr(install, "_nonsnap_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(install.shutil, "which",
+                        lambda name: "/usr/bin/systemctl" if (has_systemctl and name == "systemctl") else None)
+
+
+def test_install_linux_without_systemctl_fails_clearly(team_repo, monkeypatch: pytest.MonkeyPatch):
+    _mock_linux(monkeypatch, has_systemctl=False)
+
+    def _run(cmd, **kw):
+        if cmd and cmd[0] == "sudo":
+            raise AssertionError("sudo/systemctl darf ohne systemctl gar nicht erst versucht werden")
+        return _REAL_RUN(cmd, **kw)
+    monkeypatch.setattr(install.subprocess, "run", _run)
+
+    result = install.install()
+    assert "FAILED" in result
+    assert "systemctl" in result
+    assert "installed" not in result
+
+
+def test_install_linux_daemon_reload_failure_is_reported(team_repo, monkeypatch: pytest.MonkeyPatch):
+    _mock_linux(monkeypatch)
+    calls = []
+
+    def _run(cmd, **kw):
+        if not (cmd and cmd[0] == "sudo"):
+            return _REAL_RUN(cmd, **kw)
+        calls.append(cmd)
+        if cmd[:2] == ["sudo", "tee"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[1:3] == ["systemctl", "daemon-reload"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Failed to reload daemon")
+        raise AssertionError(f"unerwarteter sudo-Aufruf: {cmd}")
+    monkeypatch.setattr(install.subprocess, "run", _run)
+
+    result = install.install()
+    assert "FAILED" in result and "daemon-reload" in result
+    assert "Failed to reload daemon" in result
+    assert "installed" not in result
+    # enable --now darf nach einem gescheiterten daemon-reload nicht mehr laufen.
+    assert not any(c[1:3] == ["systemctl", "enable"] for c in calls)
+
+
+def test_install_linux_enable_failure_is_reported(team_repo, monkeypatch: pytest.MonkeyPatch):
+    _mock_linux(monkeypatch)
+
+    def _run(cmd, **kw):
+        if not (cmd and cmd[0] == "sudo"):
+            return _REAL_RUN(cmd, **kw)
+        if cmd[:2] == ["sudo", "tee"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[1:3] == ["systemctl", "daemon-reload"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[1:3] == ["systemctl", "enable"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Access denied")
+        raise AssertionError(f"unerwarteter sudo-Aufruf: {cmd}")
+    monkeypatch.setattr(install.subprocess, "run", _run)
+
+    result = install.install()
+    assert "FAILED" in result and "enable" in result
+    assert "Access denied" in result
+    assert "installed" not in result
+
+
+def test_install_linux_full_success(team_repo, monkeypatch: pytest.MonkeyPatch):
+    _mock_linux(monkeypatch)
+
+    def _run(cmd, **kw):
+        if not (cmd and cmd[0] == "sudo"):
+            return _REAL_RUN(cmd, **kw)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    monkeypatch.setattr(install.subprocess, "run", _run)
+
+    result = install.install(role="synchronizer,controller", connect=True)
+    assert result.startswith("installed (systemd): ")

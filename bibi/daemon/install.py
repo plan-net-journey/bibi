@@ -168,6 +168,14 @@ def install(role: str | None = None, connect: bool = False) -> str:
         subprocess.run(["launchctl", "load", str(plist)], check=False)
         return f"installed (launchd): {plist}"
     if sys.platform.startswith("linux"):
+        # Nebenbefund PLAN-33 Stufe 33.4: vor diesem Check meldete install() auf
+        # einem systemd-losen Host (z. B. einem Container, live gesehen: "sudo:
+        # systemctl: command not found") trotzdem "installed (systemd): …" —
+        # die beiden systemctl-Aufrufe unten liefen mit check=False, ihr
+        # Rückgabewert wurde nie geprüft. Früh und eindeutig ablehnen statt
+        # einen Fehlschlag als Erfolg zu melden.
+        if shutil.which("systemctl") is None:
+            return "install FAILED: systemctl nicht gefunden (kein systemd, z. B. in einem Container)"
         unit = _systemd_unit_name(root)
         unit_path = _systemd_unit_path(root)
         text = systemd_unit_text(root=root, uv=uv, port=port,
@@ -176,8 +184,14 @@ def install(role: str | None = None, connect: bool = False) -> str:
                            input=text, capture_output=True, text=True)
         if w.returncode != 0:
             return f"install FAILED: {w.stderr.strip() or 'sudo/permission'}"
-        subprocess.run(["sudo", "systemctl", "daemon-reload"], check=False)
-        subprocess.run(["sudo", "systemctl", "enable", "--now", unit], check=False)
+        reload_ = subprocess.run(["sudo", "systemctl", "daemon-reload"],
+                                 capture_output=True, text=True)
+        if reload_.returncode != 0:
+            return f"install FAILED (daemon-reload): {reload_.stderr.strip() or 'sudo/permission'}"
+        enable = subprocess.run(["sudo", "systemctl", "enable", "--now", unit],
+                                capture_output=True, text=True)
+        if enable.returncode != 0:
+            return f"install FAILED (enable --now): {enable.stderr.strip() or 'sudo/permission'}"
         return f"installed (systemd): {unit_path}"
     return f"unsupported platform: {sys.platform}"
 
