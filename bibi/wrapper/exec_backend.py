@@ -9,6 +9,7 @@ Reine Funktion (``build_exec``) — testbar ohne Docker.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -214,7 +215,13 @@ def build_exec(child_argv: list[str], env: dict[str, str]) -> ExecSpec:
     - ``container`` + ``app``-Typ: zusätzlich ``--network bibi-net`` + statisches
       App-Content-Traefik-Label, falls ``app_port``/``app_prefix`` beim Spawn schon
       feststehen (PLAN-9 §2, Slice 9.0; bereinigt PLAN-11.5 — kein Wrapper-Routing
-      mehr, der Wrapper hat keinen HTTP-Server)."""
+      mehr, der Wrapper hat keinen HTTP-Server).
+    - ``docker_args`` (§7.6a): rohe, unvalidierte zusätzliche ``docker run``-
+      Argumente aus dem Job-MD, ganz am Ende der Optionen angehängt (kann
+      Vorheriges gezielt überschreiben — Docker nimmt den letzten von
+      doppelten Flags). Generischer Escape-Hatch, kein Sicherheitsnetz
+      (``--privileged``, zusätzliche Host-Mounts etc. möglich) — s.
+      ``vault/CONVENTIONS.md``-Warnung."""
     mode = (env.get("BIBI_EXEC_MODE") or "host").strip().lower()
     if mode != "container":
         cwd = env.get("BIBI_JOB_CWD") or env.get("BIBI_WORKTREE") or None
@@ -276,6 +283,17 @@ def build_exec(child_argv: list[str], env: dict[str, str]) -> ExecSpec:
     for key in sorted(pass_keys):
         if env.get(key):
             argv += ["-e", key]   # ohne =Wert ⇒ Host-Wert (run_env) wird verwendet
+
+    # Generischer, UNVALIDIERTER Escape-Hatch (§7.6a, Job-MD `docker_args:`) —
+    # rohe zusätzliche `docker run`-Argumente, roh durchgereicht. Bewusst ZULETZT
+    # eingefuegt (nach allen oben gesetzten Optionen), damit ein Job-Autor bei
+    # Bedarf auch etwas oben Gesetztes gezielt uebersteuern kann (Docker nimmt
+    # bei doppelten Flags den letzten). Kein Schutz gegen `--privileged`,
+    # zusaetzliche Host-Mounts o. Ae. — siehe CONVENTIONS.md-Warnung.
+    docker_args_raw = env.get("BIBI_DOCKER_ARGS")
+    if docker_args_raw:
+        argv += json.loads(docker_args_raw)
+
     argv += [image, *child_argv]
 
     # PATH um das docker-bin-Dir ergänzen, sonst findet docker den Cred-Helper

@@ -207,3 +207,25 @@ def test_silence_timeout_default_48h_for_app_prefix_payload():
 def test_silence_timeout_explicit_overrides_kind_default():
     r = _parse('---\nschedule: now\njob: "claude: x"\nsilence_timeout: 120\n---\n')
     assert r.spec.silence_timeout == 120
+
+
+def test_docker_args_parses_string_list():
+    r = _parse('---\nschedule: now\njob: "echo hi"\ndocker_args:\n  - "--network"\n'
+                '  - "gitea_default"\n---\n')
+    assert r.is_ok
+    assert r.spec.docker_args == ["--network", "gitea_default"]
+
+
+def test_docker_args_absent_by_default():
+    r = _parse('---\nschedule: now\njob: "echo hi"\n---\n')
+    assert r.spec.docker_args is None
+
+
+def test_docker_args_rejects_non_list():
+    r = _parse('---\nschedule: now\njob: "echo hi"\ndocker_args: "--privileged"\n---\n')
+    assert r.error is not None and "docker_args" in r.error
+
+
+def test_docker_args_rejects_non_string_entries():
+    r = _parse('---\nschedule: now\njob: "echo hi"\ndocker_args:\n  - 8780\n---\n')
+    assert r.error is not None and "docker_args" in r.error

@@ -232,6 +232,13 @@ def parse_text(
         error_time, e = _coerce_int(fm, "error_time", 0); errors += [e] if e else []
     if "app_port" in fm:
         app_port, e = _coerce_int(fm, "app_port", 0); errors += [e] if e else []
+    docker_args = None
+    if "docker_args" in fm:
+        raw = fm["docker_args"]
+        if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+            errors.append("docker_args: muss eine Liste von Strings sein")
+        else:
+            docker_args = raw
     if errors:
         return ParseResult(schedule_ref=schedule_ref, error="; ".join(errors))
 
@@ -262,6 +269,7 @@ def parse_text(
         silence_timeout=silence_timeout, wall_time=wall_time,
         defer_time=defer_time, defer_max=defer_max, error_time=error_time,
         app_port=app_port, app_prefix=app_prefix, exec_mode=exec_mode, image=image,
+        docker_args=docker_args,
     )
     return ParseResult(
         schedule_ref=schedule_ref, spec=spec, slug_explicit=slug_explicit, mtime=mtime

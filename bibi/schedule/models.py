@@ -167,6 +167,13 @@ class ScheduleSpec:
     # Optionales Override-Image (§7.6).
     image: str | None = None
 
+    # Generischer, UNVALIDIERTER Escape-Hatch für zusätzliche `docker run`-
+    # Argumente (§7.6a) — nur in exec_mode: container relevant, sonst No-op.
+    # Rohe Strings, ungeprüft an die Docker-CLI durchgereicht: kann bestehende
+    # Sicherheits-Annahmen (arbitrary-UID, feste Mounts) unterlaufen, z. B.
+    # `--privileged` oder `-v /:/host`. Siehe CONVENTIONS.md-Warnung.
+    docker_args: list[str] | None = None
+
 
 @dataclass(frozen=True)
 class JobRow:

@@ -133,8 +133,8 @@ def test_reservation_view_shape(conn):
     assert set(r) == {
         "id", "slug", "kind", "payload", "model", "soul", "session",
         "fire", "attempt", "attempts", "backoff", "wall_time", "silence_timeout",
-        "app_port", "app_prefix", "exec_mode", "image", "defer_time", "error_time",
-        "schedule_ref", "env",
+        "app_port", "app_prefix", "exec_mode", "image", "docker_args",
+        "defer_time", "error_time", "schedule_ref", "env",
     }
     assert r["kind"] == "job" and r["payload"] == "echo hi"
 
@@ -153,6 +153,23 @@ def test_reservation_image_is_none_without_override(conn):
     _insert(conn, "a", 0, time.time())
     r = job_db.reserve_next(conn)
     assert r["image"] is None
+
+
+def test_reservation_includes_docker_args_as_decoded_list(conn):
+    # §7.6a: in der DB als JSON-TEXT gespeichert, reservation_view() gibt eine
+    # dekodierte Python-Liste zurück (Worker/exec_backend brauchen kein JSON-
+    # Parsing an dieser Stelle nochmal selbst zu kennen).
+    jid = _insert(conn, "a", 0, time.time())
+    conn.execute("UPDATE jobs SET docker_args=? WHERE id=?",
+                 ('["--network", "gitea_default"]', jid))
+    r = job_db.reserve_next(conn)
+    assert r["docker_args"] == ["--network", "gitea_default"]
+
+
+def test_reservation_docker_args_is_none_without_override(conn):
+    _insert(conn, "a", 0, time.time())
+    r = job_db.reserve_next(conn)
+    assert r["docker_args"] is None
 
 
 def test_reservation_includes_claude_fields(conn):

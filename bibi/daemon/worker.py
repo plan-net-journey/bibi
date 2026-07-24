@@ -361,6 +361,7 @@ def _run_wrapper(
     wall_time: int | None = None, silence_timeout: int | None = None,
     app_port: int | None = None, app_prefix: str | None = None,
     exec_mode: str | None = None, image: str | None = None,
+    docker_args: list[str] | None = None,
     defer_time: int | None = None, error_time: int | None = None,
     repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
     in_place: bool = False,
@@ -517,6 +518,11 @@ def _run_wrapper(
     # darüber — vorher komplett totes Feld (nur in der DB, nie hier gelesen).
     if image:
         env["BIBI_JOB_IMAGE"] = image
+    # Generischer, unvalidierter `docker run`-Escape-Hatch (§7.6a) — nur
+    # exec_backend.build_exec() interpretiert das (container-Modus), hier nur
+    # transportiert (JSON, damit der env-Wert ein flacher String bleibt).
+    if docker_args:
+        env["BIBI_DOCKER_ARGS"] = json.dumps(docker_args)
     # PLAN-22 Befund 3: _is_container() liest _exec_config() (Knoten-Config)
     # frisch neu und würde einen gerade gesetzten Schedule-Override (Zeile
     # zuvor) ignorieren — hier stattdessen den bereits aufgelösten env-Wert
@@ -668,6 +674,7 @@ def execute_reservation(
             app_prefix=reservation.get("app_prefix"),
             exec_mode=reservation.get("exec_mode"),
             image=reservation.get("image"),
+            docker_args=reservation.get("docker_args"),
             defer_time=reservation.get("defer_time"),
             error_time=reservation.get("error_time"),
             repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=ephemeral,

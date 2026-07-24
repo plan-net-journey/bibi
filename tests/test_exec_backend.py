@@ -59,6 +59,32 @@ def test_container_mode_wraps_in_docker_run(monkeypatch, tmp_path: Path):
     assert data_home.is_dir()
 
 
+def test_container_mode_appends_docker_args_before_image(monkeypatch, tmp_path: Path):
+    # §7.6a: generischer Escape-Hatch, roh am Ende der Optionen angehaengt —
+    # noch VOR image/child_argv, damit Docker doppelte Flags zugunsten des
+    # zuletzt gesetzten (hier: docker_args) aufloest.
+    monkeypatch.setattr(exec_backend, "_host_uid", lambda: 1000)
+    data_home = tmp_path / "data-home"
+    env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
+           "BIBI_JOB_ID": "abc123", "BIBI_DOCKER_BIN": "/d/docker",
+           "BIBI_JOB_IMAGE": "img:1", "PATH": "/usr/bin",
+           "BIBI_DATA_HOME": str(data_home),
+           "BIBI_DOCKER_ARGS": '["--network", "gitea_default"]'}
+    spec = exec_backend.build_exec(["claude", "-p", "x"], env)
+    assert spec.argv[-6:] == ["--network", "gitea_default", "img:1", "claude", "-p", "x"]
+
+
+def test_container_mode_without_docker_args_is_unaffected(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(exec_backend, "_host_uid", lambda: 1000)
+    data_home = tmp_path / "data-home"
+    env = {"BIBI_EXEC_MODE": "container", "BIBI_WORKTREE": "/wt",
+           "BIBI_JOB_ID": "abc123", "BIBI_DOCKER_BIN": "/d/docker",
+           "BIBI_JOB_IMAGE": "img:1", "PATH": "/usr/bin",
+           "BIBI_DATA_HOME": str(data_home)}
+    spec = exec_backend.build_exec(["claude", "-p", "x"], env)
+    assert spec.argv[-4:] == ["img:1", "claude", "-p", "x"]
+
+
 def test_container_mode_uses_job_cwd_as_workdir_subpath(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(exec_backend, "_host_uid", lambda: 1000)
     data_home = tmp_path / "data-home"

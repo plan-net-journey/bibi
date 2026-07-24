@@ -27,7 +27,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status, display_kind
 from bibi.schedule.parser import ParseResult
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -178,6 +178,13 @@ def _mig_approved_nodes(conn: sqlite3.Connection) -> None:  # v17 → v18
     )
 
 
+def _mig_jobs_docker_args(conn: sqlite3.Connection) -> None:  # v18 → v19
+    # Generischer, unvalidierter `docker run`-Escape-Hatch (§7.6a) — JSON-Liste
+    # roher CLI-Argumente, nur in exec_mode: container relevant.
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "docker_args"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN docker_args TEXT")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -199,6 +206,7 @@ _MIGRATIONS: dict[int, list] = {
     15: [_mig_journal_pinned_host],
     16: [_mig_jobs_error_time],
     17: [_mig_approved_nodes],
+    18: [_mig_jobs_docker_args],
 }
 
 
@@ -332,6 +340,7 @@ def _spec_columns(pr: ParseResult, now: float) -> dict:
         "app_prefix": s.app_prefix,
         "exec_mode": s.exec_mode,
         "image": s.image,
+        "docker_args": json.dumps(s.docker_args) if s.docker_args else None,
         "attempts": s.attempts,
         "backoff": s.backoff,
         "silence_timeout": s.silence_timeout,
@@ -606,6 +615,7 @@ def job_full_view(row: sqlite3.Row) -> dict:
         "app_prefix": row["app_prefix"],
         "exec_mode": row["exec_mode"],
         "image": row["image"],
+        "docker_args": row["docker_args"],
         "at_iso": row["at_iso"],
         "fire": row["fire"],
         "deferred_at": row["deferred_at"],
@@ -766,6 +776,7 @@ def reservation_view(row: sqlite3.Row) -> dict:
         # nie an den Worker durch — dasselbe Bug-Muster wie app_port/exec_mode
         # vor PLAN-22 und oneshot vor PLAN-23.
         "image": row["image"],
+        "docker_args": json.loads(row["docker_args"]) if row["docker_args"] else None,
         "defer_time": row["defer_time"],
         "error_time": row["error_time"],
         # Vault-relativer Pfad der Schedule-MD (unter case_dir) — der Worker

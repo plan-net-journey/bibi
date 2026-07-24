@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     app_prefix      TEXT,
     exec_mode       TEXT,
     image           TEXT,
+    docker_args     TEXT,                      -- JSON-Liste, roher `docker run`-Escape-Hatch (§7.6a)
 
     -- Lifecycle-Stellschrauben (§5.5) — vom Worker ausgewertet (Stufe 3.5)
     attempts        INTEGER NOT NULL DEFAULT 1,
