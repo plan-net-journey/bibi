@@ -132,8 +132,10 @@ Already running → skip straight to step 6. Otherwise:
 if command -v systemctl >/dev/null 2>&1 || command -v launchctl >/dev/null 2>&1; then
     <bibi-ctrl> daemon install --connect
 else
-    # foreground, blocks -- see the tmux note below before running this
-    <bibi-ctrl> daemon run --connect --host 0.0.0.0
+    mkdir -p data
+    setsid <bibi-ctrl> daemon run --connect --host 0.0.0.0 \
+        > data/daemon.out.log 2>&1 < /dev/null &
+    disown
 fi
 ```
 
@@ -146,16 +148,24 @@ fi
   happens to be published: the flag's own default is `127.0.0.1`, which
   stays unreachable through a published container port regardless (Docker
   forwards to the container's own address, not to its loopback interface).
-- The foreground branch **blocks** — don't run it as a plain Bash-tool call
-  and wait on it, that leaves the skill stuck mid-conversation. Inside a
-  `tmux` session (the ttyd-onboarding case), start it in its own window
-  (`tmux new-window -n daemon '<bibi-ctrl> daemon run --connect --host
-  0.0.0.0'`) so it keeps running independent of this one; outside `tmux`,
-  use the Bash tool's own background-execution option instead of shell-level
-  `&` (a `&`'d child isn't guaranteed to outlive the tool call that spawned
-  it). Report what you did either way — don't leave the human wondering
-  whether it's running in the background or about to disappear when this
-  pane/call ends.
+- The foreground branch must run fully **detached**, not merely
+  backgrounded in the current shell — a `tmux` session here is the human's
+  interactive `claude` UI, nothing else should show up in it or be
+  reachable by switching windows. `setsid` (the same detachment `bibi`'s
+  own job wrapper already relies on, `bibi/daemon/worker.py`'s
+  `start_new_session=True`) starts it in its own session, immune to this
+  shell's own lifecycle; `disown` additionally drops it from this shell's
+  job table so it won't print a stray "Done" later. Don't use a `tmux`
+  window for this — that's still one keystroke away from the human
+  stumbling into raw daemon output; don't run it as a plain foregrounded
+  Bash-tool call either, that blocks the conversation. stdout/stderr go to
+  `data/daemon.out.log`, not the terminal — the daemon already keeps its
+  own structured activity log too (`<bibi-ctrl> daemon logs -f`), point the
+  human there if they ever want to look, but by default they shouldn't
+  need to.
+- Confirm it actually started (`<bibi-ctrl> daemon status`, same as step 6
+  below) before reporting success — `setsid …&` returns immediately
+  regardless of whether the daemon itself then failed to bind.
 - If `daemon install` reports `install FAILED: …` (missing `systemctl`
   despite the check above, a permission error, …) — don't silently fall
   back to the foreground path; show the human the exact failure and ask how
