@@ -50,7 +50,7 @@ def test_write_then_read_roundtrip(cfg_home: Path):
         "BIBI_ROLE": "worker,synchronizer",
         "BIBI_REMOTE": "https://example/repo.git",
         "BIBI_CLAUDE_BIN": "/home/u/.local/bin/claude",
-        "BIBI_WORKER_NAME": "sarasate-client",
+        "BIBI_NODE_NAME": "sarasate-client",
         "BIBI_PUBLIC_HOST": "sarasate.tail9f9173.ts.net",
         "BIBI_STATUS_POLL_INTERVAL": "30",
         "BIBI_JOB_STATUS_POLL_INTERVAL": "2",
@@ -76,11 +76,11 @@ def test_node_id_stable_across_calls(cfg_home: Path):
 
 
 def test_node_id_preserves_other_existing_keys(cfg_home: Path):
-    config.write_env({"BIBI_ROLE": "worker", "BIBI_WORKER_NAME": "sarasate-client"})
+    config.write_env({"BIBI_ROLE": "worker", "BIBI_NODE_NAME": "sarasate-client"})
     config.node_id()
     env = config.read_env()
     assert env["BIBI_ROLE"] == "worker"
-    assert env["BIBI_WORKER_NAME"] == "sarasate-client"
+    assert env["BIBI_NODE_NAME"] == "sarasate-client"
 
 
 def test_write_env_only_known_keys(cfg_home: Path):

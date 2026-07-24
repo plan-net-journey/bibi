@@ -123,6 +123,7 @@ def run(args: argparse.Namespace) -> int:
         + hygiene.check_missing_public_host(
             has_apps=has_apps, public_host_set=public_host_set)
         + hygiene.check_legacy_job_env_names(cfg_and_env)
+        + hygiene.check_legacy_worker_name(cfg_and_env)
     )
     if not findings:
         print("doctor: keine Hygiene-Probleme ✓")

@@ -60,14 +60,20 @@ def _apply_auto_sync_default(r: R.Roles) -> None:
 
 
 def _resolve_worker_name() -> str | None:
-    """Explizite Knoten-Identität für Worker/Heartbeat: ``BIBI_WORKER_NAME``
-    env > Config-Datei > ``None`` (⇒ Aufrufer fällt auf ``socket.gethostname()``
-    zurück). Getrennt von ``run()`` gehalten, damit ohne echten uvicorn-Start
-    testbar (wie ``_apply_auto_sync_default``). Nötig, sobald mehrere Instanzen
-    (Host + Client) unter demselben Hostnamen laufen — sonst kollidieren ihre
-    Team-Registry-Einträge auf demselben Dict-Key."""
-    name = (os.environ.get("BIBI_WORKER_NAME", "").strip()
-            or config.read_env().get("BIBI_WORKER_NAME", "").strip())
+    """Explizite Knoten-Identität für Worker/Heartbeat: ``BIBI_NODE_NAME`` env >
+    Config-Datei (``BIBI_NODE_NAME``, mit ``BIBI_WORKER_NAME`` als Fallback für
+    noch nicht migrierte Knoten, PLAN-34) > ``None`` (⇒ Aufrufer fällt auf
+    ``socket.gethostname()`` zurück). Getrennt von ``run()`` gehalten, damit
+    ohne echten uvicorn-Start testbar (wie ``_apply_auto_sync_default``).
+    Funktionsname bleibt bewusst ``_resolve_worker_name`` — sie liefert weiter
+    den internen ``worker_name``-Parameter für ``Worker``/``Heartbeat``, nur
+    die Config-Quelle wurde umbenannt (PLAN-34 Entscheidung 1: nur die nach
+    außen sichtbare Ebene, nicht die Worker-Rollen-interne)."""
+    env = config.read_env()
+    name = (os.environ.get("BIBI_NODE_NAME", "").strip()
+            or env.get("BIBI_NODE_NAME", "").strip()
+            or os.environ.get("BIBI_WORKER_NAME", "").strip()
+            or env.get("BIBI_WORKER_NAME", "").strip())
     return name or None
 
 

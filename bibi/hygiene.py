@@ -25,6 +25,7 @@ class Finding:
                  # | "html-placeholder-tag" | "markdown-hardwrap" (PLAN-15)
                  # | "claude-auth-missing" | "public-host-missing"
                  # | "legacy-job-env-name" (PLAN-32 Stufe 32.0)
+                 # | "legacy-node-name" (PLAN-34)
     path: str    # betroffener Pfad ("" = global)
     detail: str
 
@@ -159,6 +160,23 @@ def check_legacy_job_env_names(cfg_and_env: dict[str, str]) -> list[Finding]:
                 "legacy-job-env-name", legacy,
                 f"veraltet ohne BIBI_JOB_ENV_-Präfix gesetzt — auf {prefixed} umbenennen"))
     return out
+
+
+def check_legacy_worker_name(cfg_and_env: dict[str, str]) -> list[Finding]:
+    """PLAN-34: ``BIBI_WORKER_NAME`` wandert zu ``BIBI_NODE_NAME`` — der alte
+    Name war irreführend (galt schon immer für jeden ``--connect``-Knoten, nicht
+    nur die Worker-Rolle) und passte nicht zu ``BIBI_NODE_ID``. Alter Name
+    bleibt als Fallback funktional (``daemon_cmd.py::_resolve_worker_name()``),
+    ist aber veraltet — nur ein Fund, wenn er gesetzt ist UND der neue Name
+    fehlt (sonst wurde schon migriert). ``cfg_and_env``: zusammengeführte Sicht
+    aus ``os.environ`` + ``~/.config/bibi/env``, dieselbe Präzedenz wie
+    ``check_legacy_job_env_names()``."""
+    if cfg_and_env.get("BIBI_WORKER_NAME") and not cfg_and_env.get("BIBI_NODE_NAME"):
+        return [Finding(
+            "legacy-node-name", "BIBI_WORKER_NAME",
+            "veraltet — auf BIBI_NODE_NAME umbenennen (gilt für jeden --connect-Knoten, "
+            "nicht nur Worker-Rolle)")]
+    return []
 
 
 # ── PLAN-15: Markdown-Hygiene (kaputte Platzhalter-Tags, Hartumbruch) ────────

@@ -47,7 +47,7 @@ def run(args: argparse.Namespace) -> int:
         "BIBI_ROLE": "Rollen (kommagetrennt)",
         "BIBI_REMOTE": "Git-Remote",
         "BIBI_CLAUDE_BIN": "claude-Binary (Pfad/Name)",
-        "BIBI_WORKER_NAME": "Knoten-Name (leer = Hostname)",
+        "BIBI_NODE_NAME": "Knoten-Name (leer = Hostname)",
         "BIBI_PUBLIC_HOST": "Von außen erreichbarer Hostname (leer = localhost, "
                             "falsch für Remote-Zugriff und App-Links)",
         "BIBI_STATUS_POLL_INTERVAL": "Feed-Status-Poll-Intervall (Sekunden)",

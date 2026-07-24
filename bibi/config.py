@@ -20,11 +20,18 @@ KEYS: dict[str, str] = {
     # Pfad/Name des claude-Binaries (claude-Jobs). Default "claude" = via PATH;
     # absoluter Pfad nötig, wenn claude nicht auf dem (Service-)PATH liegt.
     "BIBI_CLAUDE_BIN": "claude",
-    # Knoten-Identität für Worker/Heartbeat (Team-Registry, §4.2/A12) — Default
-    # leer = socket.gethostname(). Explizit nötig, sobald mehrere Instanzen
-    # (Host + Client) unter demselben Hostnamen laufen, sonst überschreiben sich
-    # ihre Registry-Einträge gegenseitig (gleicher Dict-Key).
-    "BIBI_WORKER_NAME": "",
+    # Menschlich gewählter Anzeigename für den Connected-Clients/Nodes-Screen
+    # (Team-Registry, §4.2/A12) — Default leer = socket.gethostname(). Gilt für
+    # JEDEN --connect-Knoten (Client oder Worker), nicht nur die Worker-Rolle,
+    # trotz des historischen Namens (PLAN-34: BIBI_WORKER_NAME war irreführend,
+    # BIBI_NODE_NAME passt zu BIBI_NODE_ID unten). Registry-Kollisionsschutz ist
+    # NICHT mehr der Grund, ihn zu setzen — das übernimmt seit dem node_id-Fix
+    # (Bibi4-Iteration) node_id als Registry-Schlüssel; Grund heute: ein
+    # sprechendes Label statt eines rohen/opaken Hostnamens (z. B. im Docker-
+    # Container). Für die Worker-Rolle bleibt derselbe Wert zusätzlich die
+    # Job-Claim-Identität (``jobs.worker``-Spalte, ``worker.py``) — dort weiter
+    # unter dem internen Namen ``worker_name`` geführt, s. PLAN-34 Entscheidung 1.
+    "BIBI_NODE_NAME": "",
     # Von außen erreichbarer Hostname für App-Adressen (PLAN-22 Befund 6) —
     # Default leer = Ableitung über public_host() (BIBI_SCHEDULER_URL-Hostname,
     # sonst localhost). Nötig für jeden Knoten, der App-Typ-Jobs (app_port)
@@ -45,7 +52,7 @@ KEYS: dict[str, str] = {
     "BIBI_JOB_STATUS_POLL_INTERVAL": "2",
     # Stabile, generierte Knoten-Identität für den Connected-Clients-Screen
     # (Bibi4-Iteration, User-Fund: derselbe physische Client tauchte je nach
-    # Netzwerk mit unterschiedlichem BIBI_WORKER_NAME/Hostname auf, alte
+    # Netzwerk mit unterschiedlichem BIBI_NODE_NAME/Hostname auf, alte
     # Registry-Einträge blieben stale liegen) — unabhängig von IP/Hostname,
     # einmalig generiert (node_id() unten), danach nie mehr geändert. Anders
     # als jeder andere Wert hier NIE interaktiv abgefragt (init_cmd.py

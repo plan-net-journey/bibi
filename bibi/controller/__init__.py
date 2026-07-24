@@ -375,8 +375,9 @@ def add_controller_routes(
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
         raw_port = os.environ.get("BIBI_DAEMON_PORT")
+        _env = config.read_env()
         return {
-            "worker": config.read_env().get("BIBI_WORKER_NAME") or socket.gethostname(),
+            "worker": _env.get("BIBI_NODE_NAME") or _env.get("BIBI_WORKER_NAME") or socket.gethostname(),
             "host": socket.gethostname(),
             "role": ",".join(roles.active_names()),
             "node_id": config.node_id(),

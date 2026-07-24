@@ -38,7 +38,7 @@ def test_init_writes_env(cfg_home: Path, monkeypatch, capsys):
     assert env["BIBI_ROLE"] == "worker,synchronizer"
     assert env["BIBI_REMOTE"] == "git@x/r.git"
     assert env["BIBI_CLAUDE_BIN"] == "/opt/bin/claude"
-    assert env["BIBI_WORKER_NAME"] == "sarasate-client"
+    assert env["BIBI_NODE_NAME"] == "sarasate-client"
     assert env["BIBI_PUBLIC_HOST"] == "sarasate.tail9f9173.ts.net"
     assert env["BIBI_STATUS_POLL_INTERVAL"] == "60"
     assert env["BIBI_JOB_STATUS_POLL_INTERVAL"] == "1"
@@ -51,7 +51,7 @@ def test_init_empty_input_uses_defaults(cfg_home: Path, monkeypatch):
     assert env["BIBI_SCHEDULER_URL"] == config.KEYS["BIBI_SCHEDULER_URL"]
     assert env["BIBI_ROLE"] == config.KEYS["BIBI_ROLE"]
     assert env["BIBI_CLAUDE_BIN"] == config.KEYS["BIBI_CLAUDE_BIN"]
-    assert env["BIBI_WORKER_NAME"] == config.KEYS["BIBI_WORKER_NAME"]
+    assert env["BIBI_NODE_NAME"] == config.KEYS["BIBI_NODE_NAME"]
     assert env["BIBI_PUBLIC_HOST"] == config.KEYS["BIBI_PUBLIC_HOST"]
     assert env["BIBI_STATUS_POLL_INTERVAL"] == config.KEYS["BIBI_STATUS_POLL_INTERVAL"]
     assert env["BIBI_JOB_STATUS_POLL_INTERVAL"] == config.KEYS["BIBI_JOB_STATUS_POLL_INTERVAL"]

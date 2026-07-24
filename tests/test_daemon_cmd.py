@@ -15,6 +15,7 @@ def env_iso(team_repo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # ~/.config/bibi/env isolieren, damit kein echtes BIBI_ROLE durchsickert.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("BIBI_NODE_NAME", raising=False)
     monkeypatch.delenv("BIBI_WORKER_NAME", raising=False)
     return team_repo
 
@@ -99,13 +100,13 @@ def test_resolve_worker_name_none_by_default(env_iso):
 
 
 def test_resolve_worker_name_from_env(env_iso, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("BIBI_WORKER_NAME", "sarasate-client")
+    monkeypatch.setenv("BIBI_NODE_NAME", "sarasate-client")
     assert daemon_cmd._resolve_worker_name() == "sarasate-client"
 
 
 def test_resolve_worker_name_from_config_file(env_iso):
     from bibi import config
-    config.write_env({"BIBI_WORKER_NAME": "sarasate-client"})
+    config.write_env({"BIBI_NODE_NAME": "sarasate-client"})
     assert daemon_cmd._resolve_worker_name() == "sarasate-client"
 
 
@@ -113,16 +114,46 @@ def test_resolve_worker_name_env_takes_precedence_over_file(
     env_iso, monkeypatch: pytest.MonkeyPatch
 ):
     from bibi import config
-    config.write_env({"BIBI_WORKER_NAME": "from-file"})
-    monkeypatch.setenv("BIBI_WORKER_NAME", "from-env")
+    config.write_env({"BIBI_NODE_NAME": "from-file"})
+    monkeypatch.setenv("BIBI_NODE_NAME", "from-env")
     assert daemon_cmd._resolve_worker_name() == "from-env"
 
 
 def test_resolve_worker_name_blank_falls_back_to_none(
     env_iso, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setenv("BIBI_WORKER_NAME", "  ")
+    monkeypatch.setenv("BIBI_NODE_NAME", "  ")
     assert daemon_cmd._resolve_worker_name() is None
+
+
+# --- PLAN-34: BIBI_WORKER_NAME als Legacy-Fallback (Migration, kein Primärname mehr) ---
+
+
+def test_resolve_worker_name_legacy_env_fallback(env_iso, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("BIBI_WORKER_NAME", "legacy-name")
+    assert daemon_cmd._resolve_worker_name() == "legacy-name"
+
+
+def test_resolve_worker_name_legacy_config_file_fallback(env_iso):
+    # config.write_env() filtert auf bekannte KEYS (BIBI_WORKER_NAME ist keiner
+    # mehr) — eine schon migrierte Datei kann den alten Namen so nicht mehr
+    # simulieren. Reale Alt-Dateien wurden aber von der Datei-Ebene selbst nie
+    # gefiltert (read_env() parst jede Zeile ungefiltert) — direkt schreiben,
+    # um genau diesen (noch nicht migrierten) Bestandsfall nachzustellen.
+    from bibi import config
+    p = config.env_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("BIBI_WORKER_NAME=legacy-name\n", encoding="utf-8")
+    assert daemon_cmd._resolve_worker_name() == "legacy-name"
+
+
+def test_resolve_worker_name_new_name_file_wins_over_legacy_env(
+    env_iso, monkeypatch: pytest.MonkeyPatch
+):
+    from bibi import config
+    config.write_env({"BIBI_NODE_NAME": "new-name"})
+    monkeypatch.setenv("BIBI_WORKER_NAME", "legacy-env-name")
+    assert daemon_cmd._resolve_worker_name() == "new-name"
 
 
 def test_run_returns_2_on_validation_error(env_iso):

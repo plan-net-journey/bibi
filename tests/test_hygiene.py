@@ -529,3 +529,43 @@ def test_doctor_ignores_legacy_job_env_name_when_prefixed_form_set(gitrepo: Path
     out = capsys.readouterr().out
     assert rc == 0
     assert "legacy-job-env-name" not in out
+
+
+# ── Legacy-Node-Name-Check (PLAN-34) ───────────────────────────────────────────
+
+
+def test_legacy_worker_name_flags_old_name_without_new_name():
+    findings = hygiene.check_legacy_worker_name({"BIBI_WORKER_NAME": "sarasate-client"})
+    assert len(findings) == 1
+    assert findings[0].kind == "legacy-node-name"
+    assert findings[0].path == "BIBI_WORKER_NAME"
+
+
+def test_legacy_worker_name_no_finding_when_new_name_present():
+    assert hygiene.check_legacy_worker_name({
+        "BIBI_WORKER_NAME": "sarasate-client", "BIBI_NODE_NAME": "sarasate-client",
+    }) == []
+
+
+def test_legacy_worker_name_no_finding_when_neither_set():
+    assert hygiene.check_legacy_worker_name({}) == []
+
+
+def test_doctor_flags_legacy_worker_name(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.setenv("BIBI_WORKER_NAME", "sarasate-client")
+    monkeypatch.delenv("BIBI_NODE_NAME", raising=False)
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "legacy-node-name" in out
+
+
+def test_doctor_ignores_legacy_worker_name_when_new_name_set(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.setenv("BIBI_WORKER_NAME", "sarasate-client")
+    monkeypatch.setenv("BIBI_NODE_NAME", "sarasate-client")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "legacy-node-name" not in out
