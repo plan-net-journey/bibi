@@ -11,8 +11,9 @@ from pathlib import Path
 import pytest
 
 from bibi import repo
-from bibi.ctrl.run_cmd import run
+from bibi.ctrl.run_cmd import run, run_kill, run_list, run_reset
 from bibi.daemon import job_db
+from bibi.daemon.worker import run_pinned
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -110,3 +111,66 @@ def test_run_cmd_returns_1_on_nonzero_exit(gitrepo, monkeypatch, capsys):
     finally:
         conn.close()
     assert row["attempts"] == 0
+
+
+# ── PLAN-32 Stufe 32.3 — pinned-Job-Verwaltung (list/kill/reset) ────────────
+
+
+class _IdArgs:
+    def __init__(self, id):  # noqa: A002
+        self.id = id
+
+
+def _pinned_row(gitrepo, monkeypatch, *, host="mac"):
+    import bibi.daemon.worker as W
+    monkeypatch.setattr(W, "_run_wrapper", _fake_run_wrapper(gitrepo, exit_code=0))
+    # exit_code=0 dispatcht den Fake sofort in "complete" -- fuer kill/reset-
+    # Tests unerheblich (die pruefen nur Zeilen-/Daten-Verwaltung, nicht den
+    # Lifecycle-Uebergang selbst), reale gepinnte Jobs bleiben "running" bis
+    # ihr echter Wrapper sie beendet.
+    return run_pinned(cmd="echo hi", repo_root=gitrepo, host=host)
+
+
+def test_run_list_shows_only_pinned_rows_for_this_host(gitrepo, monkeypatch, capsys):
+    import bibi.ctrl.run_cmd as RC
+    monkeypatch.setattr(RC.socket, "gethostname", lambda: "mac")
+    res = _pinned_row(gitrepo, monkeypatch)
+    rc = run_list(_IdArgs(None))
+    assert rc == 0
+    assert res["id"] in capsys.readouterr().out
+
+
+def test_run_list_empty_message_when_none(gitrepo, capsys):
+    rc = run_list(_IdArgs(None))
+    assert rc == 0
+    assert "keine" in capsys.readouterr().out
+
+
+def test_run_kill_unknown_id_returns_1(gitrepo, capsys):
+    assert run_kill(_IdArgs("nope")) == 1
+    assert "nope" in capsys.readouterr().err
+
+
+def test_run_kill_refuses_non_pinned_row(gitrepo, capsys):
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status) "
+        "VALUES ('x1','s1','r1','job','echo hi','running')")
+    conn.close()
+    assert run_kill(_IdArgs("x1")) == 1
+    assert "nicht lokal gepinnt" in capsys.readouterr().err
+
+
+def test_run_reset_wipes_and_deletes_pinned_row(gitrepo, monkeypatch):
+    res = _pinned_row(gitrepo, monkeypatch)
+    rc = run_reset(_IdArgs(res["id"]))
+    assert rc == 0
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    row = conn.execute("SELECT 1 FROM jobs WHERE id=?", (res["id"],)).fetchone()
+    conn.close()
+    assert row is None
+
+
+def test_run_reset_unknown_id_returns_1(gitrepo, capsys):
+    assert run_reset(_IdArgs("nope")) == 1
+    assert "nope" in capsys.readouterr().err

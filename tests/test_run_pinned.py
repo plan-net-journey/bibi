@@ -89,6 +89,61 @@ def test_run_pinned_without_slug_or_cmd_raises_value_error(gitrepo):
         run_pinned(repo_root=gitrepo, host="mac")
 
 
+# ── PLAN-32 Stufe 32.3 — Verwaltung gepinnter Jobs (User-Fund: /run-Jobs sind
+# der Scheduler-HTTP-API auf einem reinen Client-Knoten unerreichbar) ────────
+
+
+def test_list_pinned_returns_only_this_hosts_rows(gitrepo, monkeypatch):
+    import bibi.daemon.worker as W
+    monkeypatch.setattr(W, "_run_wrapper", _fake_run_wrapper(gitrepo))
+    res_mac = run_pinned(cmd="echo a", repo_root=gitrepo, host="mac")
+    run_pinned(cmd="echo b", repo_root=gitrepo, host="other-host")
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    rows = job_db.list_pinned(conn, "mac")
+    conn.close()
+    assert [r["id"] for r in rows] == [res_mac["id"]]
+
+
+def test_list_pinned_empty_when_no_pinned_rows(gitrepo):
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    assert job_db.list_pinned(conn, "mac") == []
+    conn.close()
+
+
+def test_delete_pinned_job_removes_row(gitrepo, monkeypatch):
+    import bibi.daemon.worker as W
+    monkeypatch.setattr(W, "_run_wrapper", _fake_run_wrapper(gitrepo))
+    res = run_pinned(cmd="echo a", repo_root=gitrepo, host="mac")
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    outcome = job_db.delete_pinned_job(conn, res["id"])
+    row = conn.execute("SELECT * FROM jobs WHERE id=?", (res["id"],)).fetchone()
+    conn.close()
+    assert outcome == "ok"
+    assert row is None
+
+
+def test_delete_pinned_job_not_found(gitrepo):
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    outcome = job_db.delete_pinned_job(conn, "does-not-exist")
+    conn.close()
+    assert outcome == "not_found"
+
+
+def test_delete_pinned_job_refuses_scheduler_owned_row(gitrepo):
+    # Sicherheitsnetz: eine normale (nicht gepinnte) Zeile darf dieser Pfad
+    # nicht loeschen -- das waere Datenverlust, den nur der reguläre
+    # Reconcile-Pfad (inactive/rescan) verantworten darf.
+    _seed(gitrepo, "myjob/README.md", '---\nschedule: never\njob: "echo hi"\n---\n')
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    job_db.rescan(conn, vault_root=gitrepo / "vault" / "case")
+    row = conn.execute("SELECT id FROM jobs WHERE slug='myjob'").fetchone()
+    outcome = job_db.delete_pinned_job(conn, row["id"])
+    still_there = conn.execute("SELECT 1 FROM jobs WHERE id=?", (row["id"],)).fetchone()
+    conn.close()
+    assert outcome == "not_pinned"
+    assert still_there is not None
+
+
 def test_run_pinned_generates_unique_slug_per_call(gitrepo, monkeypatch):
     import bibi.daemon.worker as W
     monkeypatch.setattr(W, "_run_wrapper", _fake_run_wrapper(gitrepo))

@@ -1107,6 +1107,38 @@ def wipe_job_data(job_id: str) -> None:
             shutil.rmtree(d, ignore_errors=True)
 
 
+def list_pinned(conn: sqlite3.Connection, host: str) -> list[dict]:
+    """``bibi-ctrl run list`` (PLAN-32 Stufe 32.3, User-Fund): ``/run``-gepinnte
+    Jobs sind der Scheduler-HTTP-API (``/-/job*``, Scheduler-Rolle-gated)
+    unerreichbar — ein reiner Client-Knoten (z. B. dieser Mac, kein
+    ``--scheduler``) hat also gar keinen API-Weg, sie zu sehen/verwalten.
+    Direkter, rollen-unabhängiger DB-Zugriff auf genau diesen Host schließt
+    die Lücke, ohne den Scheduler-HTTP-Pfad anzufassen."""
+    rows = conn.execute(
+        "SELECT id, slug, status, kind, payload FROM jobs "
+        "WHERE pinned_host=? ORDER BY enqueued_at DESC", (host,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_pinned_job(conn: sqlite3.Connection, job_id: str) -> str:
+    """Entfernt eine ``/run``-gepinnte Job-Zeile vollständig (§ oben) — anders
+    als ``reset``/``start`` gibt es dafür keinen sinnvollen ``pending``-
+    Zustand: eine gepinnte Zeile hat einen einmaligen, zufallssuffigierten
+    Slug (``run_pinned()``s ``unique_slug``) und wird nie erneut disponiert.
+    Nur für ``pinned_host IS NOT NULL``-Zeilen — eine vom Scheduler verwaltete
+    Zeile hier zu löschen wäre ein Datenverlust, den nur der reguläre
+    Reconcile-Pfad (inactive/rescan) verantworten darf. ``ok`` | ``not_found``
+    | ``not_pinned``."""
+    row = conn.execute("SELECT pinned_host FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if row is None:
+        return "not_found"
+    if row["pinned_host"] is None:
+        return "not_pinned"
+    conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+    return "ok"
+
+
 #: Terminalzustände, die ``start`` archiviert (= report_status→pending) statt
 #: nur fällig zu machen (PLAN-14 Stufe 14.2). failed/deferred bewusst nicht
 #: dabei — die bleiben in ihrem Status und werden nur sofort fällig gemacht

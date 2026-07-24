@@ -47,6 +47,30 @@ bibi-ctrl job list               # NOTE: /run does not appear here (it is not qu
 # the run shows up in your own local journal: GET /-/run/journal
 ```
 
+`bibi-ctrl job list`/`kill`/`show` talk to the **scheduler** (`BIBI_SCHEDULER_URL`,
+gated on the scheduler role) — on a pure Client node (no `--scheduler`), or
+whenever `BIBI_SCHEDULER_URL` points at a remote host, they can never see a
+`/run`-pinned row at all, since it was never registered there.
+
+## Manage a pinned job (kill/reset/list)
+
+Long-running `/run` jobs (an App with `app_port`, e.g.) don't exit on their
+own — `bibi-ctrl run` itself just blocks polling for a terminal status that
+never comes. Manage them directly, no daemon/scheduler-role needed
+(PLAN-32 Stufe 32.3, User-Fund: a `/run`-created container kept running after
+the normal Jobs-Screen KILL had no effect on it):
+
+```bash
+bibi-ctrl pinned list             # this host's /run-pinned jobs
+bibi-ctrl pinned kill <id>        # stop it (container/process), mark killed
+bibi-ctrl pinned reset <id>       # kill (best-effort) + wipe job data + delete the row
+```
+
+`reset` deletes the row outright rather than resetting it to `pending` — a
+pinned job has a unique, randomly-suffixed slug (`run_pinned()`'s
+`unique_slug`) and is never re-dispatched, so there's no meaningful "pending"
+state for it the way there is for a scheduler-owned job.
+
 ## Refuse
 
 No refuse — `/run` is always available.
