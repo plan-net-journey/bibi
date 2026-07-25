@@ -177,8 +177,7 @@ def _run_sync_preview() -> int:
                   f"erst nach diesem dran)")
 
     branch = git_ops.current_branch()
-    ok, kind = git_ops.integrate(branch, keep_conflict=True, guard_live_paths=True,
-                                 dry_run=True)
+    ok, kind, ahead, behind = git_ops.integrate_preview(branch, guard_live_paths=True)
     if not ok:
         if kind == "conflict":
             print("Pull würde konfligieren — Marker müssten aufgelöst werden.")
@@ -188,14 +187,16 @@ def _run_sync_preview() -> int:
         else:
             print(f"Pull würde fehlschlagen: {kind}")
             noteworthy = True
+    elif ahead is None or behind is None:
+        print("Pull: würde sauber integrieren (Stand nicht ermittelbar)")
+    elif behind and ahead:
+        print(f"Pull: würde sauber integrieren, danach {ahead} Commit(s) pushen")
+    elif behind:
+        print(f"Pull: würde sauber integrieren ({behind} Commit(s), nichts zu pushen danach)")
+    elif ahead:
+        print(f"Pull: nichts zu tun, danach {ahead} Commit(s) pushen")
     else:
-        n = git_ops.ahead_count(branch)
-        if n is None:
-            print("Pull: würde sauber integrieren (Push-Stand nicht ermittelbar)")
-        elif n > 0:
-            print(f"Pull: würde sauber integrieren, danach {n} Commit(s) pushen")
-        else:
-            print("Pull: nichts zu tun")
+        print("Pull: nichts zu tun")
 
     active_case_rel = state.get_path()
     other_cases, caseless, active_dirty = git_ops.cluster_dirty_paths(

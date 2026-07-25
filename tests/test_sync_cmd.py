@@ -439,6 +439,20 @@ def test_sync_preview_reports_clean_state_as_nothing_to_do(repo_with_origin, cap
     assert "nichts zu tun" in capsys.readouterr().out.lower()
 
 
+def test_sync_preview_reports_pure_pull_backlog(repo_with_origin, tmp_path, capsys):
+    # Sync-Preview-Pull-Bug (2026-07-25, live in bibi-notes reproduziert): ein
+    # reiner Pull-Rückstand ohne eigene Commits obendrauf wurde bisher als
+    # "Pull: nichts zu tun" gemeldet — genau das darf nicht mehr passieren.
+    root, origin = repo_with_origin
+    _remote_ahead(origin, tmp_path)
+    out = capsys.readouterr().out  # Fixture-Setup-Output verwerfen
+    rc = main(["sync"])
+    out = capsys.readouterr().out.lower()
+    assert "pull: nichts zu tun" not in out
+    assert "würde sauber integrieren" in out
+    assert not (root / "remote.txt").exists()  # Vorschau mutiert nicht
+
+
 def test_sync_preview_predicts_clean_merge_without_mutating(repo_with_origin):
     # Ein unmergter Branch, der TATSÄCHLICH sauber mergen würde (kein
     # Inhaltskonflikt) — Vorschau sagt das korrekt vorher, führt den Merge

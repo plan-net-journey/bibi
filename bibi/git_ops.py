@@ -143,21 +143,6 @@ def current_branch() -> str:
     return _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
 
 
-def ahead_count(branch: str) -> int | None:
-    """Wie viele lokale Commits stehen auf ``branch`` vor ``origin/<branch>``
-    — für ``/sync``s Vorschau (Nachtrag 2026-07-16), rein lesend. ``None``,
-    wenn ``origin/<branch>`` (noch) nicht existiert (z. B. ein Branch, der
-    noch nie gepusht wurde) — nicht 0, damit ein Aufrufer "nichts zu pushen"
-    von "kann nicht ermittelt werden" unterscheiden kann."""
-    proc = _git(["rev-list", "--count", f"origin/{branch}..HEAD"], check=False)
-    if proc.returncode != 0:
-        return None
-    try:
-        return int(proc.stdout.strip())
-    except ValueError:
-        return None
-
-
 def auto_commit_message() -> str:
     """Message für transiente Hintergrund-Commits (A9): ``auto: ts | user | host``."""
     ts = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -409,6 +394,81 @@ def _pull_merge_tree(fetch_head: str) -> tuple[str, set[str]]:
     return tree_oid, conflicted
 
 
+def _integrate_impl(branch: str, keep_conflict: bool = False,
+                    strategy: str = "rebase", guard_live_paths: bool = False,
+                    now: float | None = None, dry_run: bool = False
+                    ) -> tuple[bool, str | None, int | None, int | None]:
+    """Interne Implementierung — liefert zusätzlich ``(ahead, behind)``,
+    berechnet aus DENSELBEN ``local``/``remote``-SHAs, die auch ``ok``/``kind``
+    bewerten, nie aus einem später erneut aufgelösten ``origin/<branch>``
+    (Race-sicher gegen einen zwischenzeitlichen Fetch durch einen Dritten,
+    z. B. den Daemon-Synchronizer oder ein zweites ``/sync`` — Sync-Preview-
+    Pull-Bug, 2026-07-25). Nur bei ``dry_run`` befüllt (kostet zwei zusätzliche
+    ``rev-list``-Aufrufe); die echten Ausführungspfade brauchen die Zahlen nie
+    — ``integrate()`` selbst verwirft sie ohnehin. Siehe :func:`integrate` für
+    den vollen Docstring der Semantik, :func:`integrate_preview` für den
+    Vorschau-Aufrufer."""
+    if is_conflict_resolution_pending():
+        return False, "repo_busy", None, None
+
+    fetch = _git(["fetch", "origin", branch], check=False, timeout=GIT_NET_TIMEOUT)
+    if fetch.returncode != 0:
+        return False, _classify_failure(fetch.stderr.strip()), None, None
+
+    local = _git(["rev-parse", "HEAD"]).stdout.strip()
+    remote = _git(["rev-parse", "FETCH_HEAD"]).stdout.strip()
+
+    def _counts() -> tuple[int, int]:
+        a = _git(["rev-list", "--count", f"{remote}..{local}"])
+        b = _git(["rev-list", "--count", f"{local}..{remote}"])
+        return int(a.stdout.strip()), int(b.stdout.strip())
+
+    if local == remote:
+        return (True, None, 0, 0) if dry_run else (True, None, None, None)
+    if _git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], check=False).returncode == 0:
+        # lokal voraus — Push erledigt den Rest
+        if dry_run:
+            ahead, _ = _counts()
+            return True, None, ahead, 0
+        return True, None, None, None
+
+    if guard_live_paths and _pull_live_overlap(remote, now=now):
+        return False, "live_edit", None, None
+
+    if _git(["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"], check=False).returncode == 0:
+        if dry_run:
+            # würde sauber fast-forwarden, kein Konflikt möglich
+            _, behind = _counts()
+            return True, None, 0, behind
+        ff = _git(["merge", "--ff-only", "FETCH_HEAD"], check=False)
+        return (True, None, None, None) if ff.returncode == 0 else (False, "conflict", None, None)
+
+    if dry_run:
+        _, conflicted = _pull_merge_tree(remote)
+        if conflicted:
+            return False, "conflict", None, None
+        ahead, behind = _counts()
+        return True, None, ahead, behind
+
+    # echte Divergenz → rebase (Default) oder merge (bot-robust)
+    if strategy == "merge":
+        mg = _git(["merge", "--no-edit", "FETCH_HEAD"], check=False, timeout=GIT_NET_TIMEOUT)
+        if mg.returncode != 0:
+            kind = _classify_failure(mg.stderr.strip())
+            _git(["merge", "--abort"], check=False)
+            return False, kind, None, None
+        return True, None, None, None
+
+    rb = _git(["rebase", "FETCH_HEAD"], check=False, timeout=GIT_NET_TIMEOUT)
+    if rb.returncode != 0:
+        kind = _classify_failure(rb.stderr.strip())
+        if kind == "conflict" and keep_conflict:
+            return False, "conflict", None, None  # im Tree stehen lassen — KI-Auflösung folgt
+        _git(["rebase", "--abort"], check=False)
+        return False, kind, None, None
+    return True, None, None, None
+
+
 def integrate(branch: str, keep_conflict: bool = False,
              strategy: str = "rebase", guard_live_paths: bool = False,
              now: float | None = None, dry_run: bool = False) -> tuple[bool, str | None]:
@@ -461,51 +521,33 @@ def integrate(branch: str, keep_conflict: bool = False,
     möglicher Fast-Forward wird als solcher erkannt, aber NICHT ausgeführt;
     bei echter Divergenz liefert derselbe ``_pull_merge_tree()``-Dry-Run, den
     der Idle-Guard ohnehin schon nutzt, die Vorhersage statt eines echten
-    ``rebase``/``merge``."""
-    if is_conflict_resolution_pending():
-        return False, "repo_busy"
+    ``rebase``/``merge``. Für die ``/sync``-Vorschau selbst lieber
+    :func:`integrate_preview` nutzen — liefert zusätzlich ahead/behind, ohne
+    ein zweites, potenziell abweichendes Race-Fenster gegen ``origin/<branch>``
+    zu öffnen."""
+    ok, kind, _ahead, _behind = _integrate_impl(
+        branch, keep_conflict=keep_conflict, strategy=strategy,
+        guard_live_paths=guard_live_paths, now=now, dry_run=dry_run)
+    return ok, kind
 
-    fetch = _git(["fetch", "origin", branch], check=False, timeout=GIT_NET_TIMEOUT)
-    if fetch.returncode != 0:
-        return False, _classify_failure(fetch.stderr.strip())
 
-    local = _git(["rev-parse", "HEAD"]).stdout.strip()
-    remote = _git(["rev-parse", "FETCH_HEAD"]).stdout.strip()
-    if local == remote:
-        return True, None
-    if _git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], check=False).returncode == 0:
-        return True, None  # lokal voraus — Push erledigt den Rest
-
-    if guard_live_paths and _pull_live_overlap(remote, now=now):
-        return False, "live_edit"
-
-    if _git(["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"], check=False).returncode == 0:
-        if dry_run:
-            return True, None  # würde sauber fast-forwarden, kein Konflikt möglich
-        ff = _git(["merge", "--ff-only", "FETCH_HEAD"], check=False)
-        return (True, None) if ff.returncode == 0 else (False, "conflict")
-
-    if dry_run:
-        _, conflicted = _pull_merge_tree(remote)
-        return (False, "conflict") if conflicted else (True, None)
-
-    # echte Divergenz → rebase (Default) oder merge (bot-robust)
-    if strategy == "merge":
-        mg = _git(["merge", "--no-edit", "FETCH_HEAD"], check=False, timeout=GIT_NET_TIMEOUT)
-        if mg.returncode != 0:
-            kind = _classify_failure(mg.stderr.strip())
-            _git(["merge", "--abort"], check=False)
-            return False, kind
-        return True, None
-
-    rb = _git(["rebase", "FETCH_HEAD"], check=False, timeout=GIT_NET_TIMEOUT)
-    if rb.returncode != 0:
-        kind = _classify_failure(rb.stderr.strip())
-        if kind == "conflict" and keep_conflict:
-            return False, "conflict"  # im Tree stehen lassen — KI-Auflösung folgt
-        _git(["rebase", "--abort"], check=False)
-        return False, kind
-    return True, None
+def integrate_preview(branch: str, *, guard_live_paths: bool = True,
+                      now: float | None = None
+                      ) -> tuple[bool, str | None, int | None, int | None]:
+    """``/sync``s Vorschau: wie ``integrate(dry_run=True)``, liefert aber
+    zusätzlich ``(ahead, behind)`` — beide aus demselben Fetch berechnet, den
+    auch ``ok``/``kind`` bewerten. Ersetzt den früheren Zwei-Schritt-Aufruf
+    (erst ``integrate(dry_run=True)``, danach separat ``ahead_count()``):
+    dazwischen lag ein Race-Fenster — ein zwischenzeitlicher Fetch durch einen
+    Dritten (Daemon-Synchronizer, ein zweites ``/sync``) hätte
+    ``origin/<branch>`` weiterbewegen können, sodass die Zählung einen anderen
+    Stand beschrieben hätte als den, den ``ok``/``kind`` tatsächlich bewertet
+    haben (Sync-Preview-Pull-Bug, 2026-07-25). ``ahead``/``behind`` sind
+    ``None`` nur, wenn schon ``ok`` selbst nichts zu zählen hat (Fetch schlug
+    fehl, ein Rebase/Merge war schon offen, o. Ä.) — bei ``ok=True`` immer
+    zwei echte Zahlen, nie ``None``."""
+    return _integrate_impl(branch, keep_conflict=True, guard_live_paths=guard_live_paths,
+                           now=now, dry_run=True)
 
 
 def abort_rebase() -> None:

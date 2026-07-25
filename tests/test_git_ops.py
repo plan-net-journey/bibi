@@ -221,6 +221,70 @@ def test_integrate_merge_conflict_aborts_and_signals(repo_with_origin, tmp_path)
     assert not (root / ".git" / "MERGE_HEAD").exists()
 
 
+# --- integrate_preview: ahead/behind (Sync-Preview-Pull-Bug, 2026-07-25) ---
+
+def test_integrate_preview_up_to_date(repo_with_origin):
+    root, _origin = repo_with_origin
+    ok, kind, ahead, behind = git_ops.integrate_preview("trunk")
+    assert ok and kind is None
+    assert (ahead, behind) == (0, 0)
+
+
+def test_integrate_preview_local_ahead_only(repo_with_origin):
+    root, _origin = repo_with_origin
+    (root / "a.txt").write_text("a", encoding="utf-8")
+    git_ops.stage_and_commit(None, "local change")
+    head_before = _sh(root, "rev-parse", "HEAD").strip()
+    ok, kind, ahead, behind = git_ops.integrate_preview("trunk")
+    assert ok and kind is None
+    assert (ahead, behind) == (1, 0)
+    assert _sh(root, "rev-parse", "HEAD").strip() == head_before  # dry_run: keine Mutation
+
+
+def test_integrate_preview_pure_pull_behind(repo_with_origin, tmp_path):
+    # Der ursprüngliche Live-Fund: reiner Pull-Rückstand, keine eigenen Commits
+    # obendrauf — die Vorschau darf das NICHT als "nichts zu tun" verwechseln.
+    root, origin = repo_with_origin
+    other = clone(origin, tmp_path / "other")
+    (other / "remote.txt").write_text("r", encoding="utf-8")
+    _sh(other, "add", "-A"); _sh(other, "commit", "-q", "-m", "remote change")
+    _sh(other, "push", "-q", "origin", "trunk")
+
+    head_before = _sh(root, "rev-parse", "HEAD").strip()
+    ok, kind, ahead, behind = git_ops.integrate_preview("trunk")
+    assert ok and kind is None
+    assert (ahead, behind) == (0, 1)
+    assert not (root / "remote.txt").exists()  # dry_run: kein echter Fast-Forward
+    assert _sh(root, "rev-parse", "HEAD").strip() == head_before
+
+
+def test_integrate_preview_diverged_but_mergeable(repo_with_origin, tmp_path):
+    root, origin = repo_with_origin
+    other = clone(origin, tmp_path / "other")
+    (other / "remote.txt").write_text("r", encoding="utf-8")
+    _sh(other, "add", "-A"); _sh(other, "commit", "-q", "-m", "remote"); _sh(other, "push", "-q", "origin", "trunk")
+
+    (root / "local.txt").write_text("l", encoding="utf-8")  # andere Datei → kein Konflikt
+    git_ops.stage_and_commit(None, "local")
+    ok, kind, ahead, behind = git_ops.integrate_preview("trunk")
+    assert ok and kind is None
+    assert (ahead, behind) == (1, 1)
+    assert not (root / "remote.txt").exists()  # dry_run: kein echter Merge
+
+
+def test_integrate_preview_conflict_has_no_counts(repo_with_origin, tmp_path):
+    root, origin = repo_with_origin
+    other = clone(origin, tmp_path / "other")
+    (other / "pyproject.toml").write_text("REMOTE\n", encoding="utf-8")
+    _sh(other, "add", "-A"); _sh(other, "commit", "-q", "-m", "remote edit"); _sh(other, "push", "-q", "origin", "trunk")
+
+    (root / "pyproject.toml").write_text("LOCAL\n", encoding="utf-8")  # gleiche Datei
+    git_ops.stage_and_commit(None, "local edit")
+    ok, kind, ahead, behind = git_ops.integrate_preview("trunk")
+    assert ok is False and kind == "conflict"
+    assert (ahead, behind) == (None, None)
+
+
 # --- orchestration: commit_and_push ---
 
 def test_commit_and_push_pushes_when_enabled(repo_with_origin):
