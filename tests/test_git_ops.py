@@ -280,7 +280,11 @@ def test_integrate_preview_conflict_has_no_counts(repo_with_origin, tmp_path):
 
     (root / "pyproject.toml").write_text("LOCAL\n", encoding="utf-8")  # gleiche Datei
     git_ops.stage_and_commit(None, "local edit")
-    ok, kind, ahead, behind = git_ops.integrate_preview("trunk")
+    # now=FAR_FUTURE_TS: integrate_preview()s guard_live_paths=True-Default
+    # würde die gerade committete Datei sonst als "live_edit" werten (s.
+    # gleiches Muster bei merge_back(..., now=FAR_FUTURE_TS) oben) — dieser
+    # Test prüft die Konflikt-Klassifikation, nicht den Live-Edit-Guard.
+    ok, kind, ahead, behind = git_ops.integrate_preview("trunk", now=FAR_FUTURE_TS)
     assert ok is False and kind == "conflict"
     assert (ahead, behind) == (None, None)
 
