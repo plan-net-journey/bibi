@@ -19,7 +19,7 @@ import socket
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from bibi import config, repo, state
@@ -124,6 +124,56 @@ def _auth_dependency():
     return _auth
 
 
+_LOCAL_CLIENT_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
+#: "testclient" ist Starlettes ASGI-Test-Transport-Default (TestClient(app) ohne
+#: expliziten ``client=``-Override, s. starlette.testclient) — kein echter
+#: Netzwerk-Peer kann diesen Hostnamen liefern, ohne diesen Eintrag müsste jeder
+#: bestehende Job-Route-Test einen approvten Knoten simulieren, obwohl er
+#: technisch dieselbe In-Prozess-Anfrage wie ein lokaler Aufruf ist.
+
+
+def _require_approved_or_local(request: Request,
+                               x_bibi_node_id: str | None = Header(default=None)) -> None:
+    """Sperrt Job-Control-Routen (``/-/job*``-Aktionen, ``/-/run``, ``/-/test``)
+    für nicht freigeschaltete Knoten — Live-Fund 2026-07-25 (Job-Control-
+    Approval-Bug): das Open-Trust-Freischalt-Modell (PLAN-32, ``approved_nodes``)
+    war bisher nur an Heartbeat/Config-Distribution verdrahtet, nicht hier — ein
+    ``pending``- oder sogar ``blocked``-Knoten konnte trotzdem uneingeschränkt
+    Jobs auflisten/starten/killen.
+
+    Lokale Aufrufe (Loopback — der Knoten spricht mit seinem eigenen Daemon,
+    genau der Weg, den ``bibi-ctrl job``/``run``/``test`` ohne einen entfernten
+    ``BIBI_SCHEDULER_URL``-Override nehmen) sind immer erlaubt; für den eigenen
+    Daemon gibt es kein Node-Konzept. Ein entfernter Aufruf muss seine
+    ``node_id`` über den ``X-Bibi-Node-Id``-Header mitschicken UND ``approved``
+    sein — bewusst fail-closed bei fehlendem Header oder ``pending``/
+    ``blocked``-Status, anders als die Rückwärtskompatibilität am Heartbeat
+    (``/-/worker``): dort ist ein fehlender node_id ein Altlast-Client von vor
+    PLAN-32, hier ist ein fehlender Header exakt der reproduzierte Bug.
+
+    Bewusst NICHT an die rein lesenden Job-Status/Output-Routen gehängt
+    (``/-/job/{id}/status|log|output|out|err|stream``, ``/-/run/live*``,
+    ``/-/run/journal*`` GET) — die trägt render.py per ``EventSource`` direkt
+    aus dem Browser gegen den jeweiligen Knoten (Nodes-Screen verlinkt jeden
+    Knoten mit seiner eigenen Dashboard-URL, PLAN-32-unabhängig), ein Gate hier
+    würde die bestehende Cross-Node-Live-Output-Ansicht brechen, für die es noch
+    keinen anderen Auth-Mechanismus gibt. Eigener, bewusst offener Folgepunkt,
+    kein Teil dieses Fixes."""
+    host = request.client.host if request.client else None
+    if host in _LOCAL_CLIENT_HOSTS:
+        return
+    if not x_bibi_node_id:
+        raise HTTPException(status_code=403,
+                            detail="node approval required (missing X-Bibi-Node-Id header)")
+    conn = job_db.connect()
+    try:
+        status = job_db.node_approval_status(conn, x_bibi_node_id)
+    finally:
+        conn.close()
+    if status != "approved":
+        raise HTTPException(status_code=403, detail=f"node not approved (status: {status})")
+
+
 def _add_status_route(app: FastAPI, *, sync_lock=None, synchronizer=None) -> None:
     """``/-/scheduler/status/{id}`` — bewusst **rollenunabhängig** registriert,
     herausgelöst aus ``_add_scheduler_routes()`` (PLAN-30 Ebene 1 v2, Fund
@@ -209,7 +259,8 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
             return JSONResponse(status_code=404, content={"error": "not found", "slug": slug})
         return data
 
-    @app.get("/-/job", response_model=list[JobView], tags=["job"])
+    @app.get("/-/job", response_model=list[JobView], tags=["job"],
+            dependencies=[Depends(_require_approved_or_local)])
     def job_list(status: str | None = None):
         conn = job_db.connect()
         try:
@@ -217,7 +268,8 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
         finally:
             conn.close()
 
-    @app.get("/-/job/{id}", response_model=JobView, tags=["job"])
+    @app.get("/-/job/{id}", response_model=JobView, tags=["job"],
+            dependencies=[Depends(_require_approved_or_local)])
     def job_get(id: str):  # noqa: A002
         conn = job_db.connect()
         try:
@@ -446,7 +498,8 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
             return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
         return job
 
-    @app.post("/-/job/{id}/ping", tags=["job"])
+    @app.post("/-/job/{id}/ping", tags=["job"],
+             dependencies=[Depends(_require_approved_or_local)])
     def job_ping(id: str):  # noqa: A002
         # last_ping_at in der DB statt In-Memory-Timer im Wrapper (§2.5/PLAN-11.4) —
         # der Job meldet sich selbst lebendig, der Worker liest es fürs Zombie-Timeout.
@@ -562,7 +615,8 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
     def job_stream(id: str, from_: int = Query(0, alias="from")):  # noqa: A002
         return _sse(id, None, from_)
 
-    @app.post("/-/job/{id}/kill", tags=["job"])
+    @app.post("/-/job/{id}/kill", tags=["job"],
+             dependencies=[Depends(_require_approved_or_local)])
     def job_kill(id: str, req: KillRequest | None = None):  # noqa: A002
         signaled = worker.kill(id)
         conn = job_db.connect(worker.db_path)
@@ -576,7 +630,8 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
             return JSONResponse(status_code=409, content={"error": "job not running", "id": id})
         return {"id": id, "status": "killed", "signaled": signaled}
 
-    @app.post("/-/job/{id}/reset", tags=["job"])
+    @app.post("/-/job/{id}/reset", tags=["job"],
+             dependencies=[Depends(_require_approved_or_local)])
     def job_reset(id: str):  # noqa: A002  — §5.6 Verb: Terminalzustand → pending
         conn = job_db.connect(worker.db_path)
         try:
@@ -593,7 +648,8 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
         job_db.wipe_job_data(id)
         return {"id": id, "status": "pending"}
 
-    @app.post("/-/job/{id}/start", tags=["job"])
+    @app.post("/-/job/{id}/start", tags=["job"],
+             dependencies=[Depends(_require_approved_or_local)])
     def job_start(id: str):  # noqa: A002  — §5.6 Verb: pending sofort fällig machen
         conn = job_db.connect(worker.db_path)
         try:
@@ -606,7 +662,8 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
             return JSONResponse(status_code=409, content={"error": "not pending", "id": id})
         return {"id": id, "status": "started"}
 
-    @app.post("/-/job/{id}/rebuild", tags=["job"])
+    @app.post("/-/job/{id}/rebuild", tags=["job"],
+             dependencies=[Depends(_require_approved_or_local)])
     def job_rebuild_image(id: str):  # noqa: A002
         # PLAN-24 Befund 5: per-Job-Image verwerfen — eigenständige Aktion,
         # bewusst getrennt von START/RESET (die das Image nie antasten).
@@ -817,7 +874,8 @@ def create_app(
     # selbst über repo.root() auflöst. Ein reiner Client (kein --worker) konnte
     # /run dadurch nur per CLI nutzen, nie über den Browser/die API — dieselbe
     # Art Lücke wie beim Heartbeat (PLAN-17 Stufe 17.0).
-    @app.post("/-/run", tags=["job"])
+    @app.post("/-/run", tags=["job"],
+             dependencies=[Depends(_require_approved_or_local)])
     def run(req: RunRequest):
         # PLAN-28: run_pinned() (Nachfolger des früheren, rein synchronen
         # run_local()) gibt dem Lauf jetzt eine echte jobs-Zeile
@@ -861,7 +919,8 @@ def create_app(
     # läuft direkt gegen repo_root (dirty erlaubt), committet nie danach.
     # Gleiches RunRequest-Schema, gleiche Rollen-Unabhängigkeit wie /-/run
     # (dieselbe Begründung: der Dispatch selbst braucht kein Worker-Objekt).
-    @app.post("/-/test", tags=["job"])
+    @app.post("/-/test", tags=["job"],
+             dependencies=[Depends(_require_approved_or_local)])
     def test(req: RunRequest):
         if not req.slug and not req.cmd:
             return JSONResponse(status_code=400, content={"error": "slug oder cmd nötig"})
@@ -932,7 +991,8 @@ def create_app(
     # Refactor B: nutzt jetzt denselben pinned_worker.kill() wie der
     # Scheduler-Pfad (container-aware, DB-PID-Fallback nach Neustart), statt
     # einer eigenen, schmaleren Kill-Implementierung.
-    @app.post("/-/run/live/{slug}/kill", tags=["job"])
+    @app.post("/-/run/live/{slug}/kill", tags=["job"],
+             dependencies=[Depends(_require_approved_or_local)])
     def run_live_kill(slug: str):
         live = worker_mod.local_run_live(slug)
         if live is None:
@@ -982,7 +1042,8 @@ def create_app(
     # eine Zeile als running/awaiting registriert ist. Best-effort-Signal
     # zuerst (falls doch noch etwas lebt, wird es sauber beendet), aber der
     # DB-Write hängt nicht am Erfolg des Signals.
-    @app.post("/-/run/live/{slug}/reset", tags=["job"])
+    @app.post("/-/run/live/{slug}/reset", tags=["job"],
+             dependencies=[Depends(_require_approved_or_local)])
     def run_live_reset(slug: str):
         live = worker_mod.local_run_live(slug)
         if live is None:
@@ -1022,7 +1083,8 @@ def create_app(
     # rebuild oben), auf dem Client bisher komplett vergessen. Anders als
     # KILL/RESET hängt REBUILD an keiner Live-Zeile — der Lookup geht direkt
     # über die Schedule-MD (local_schedule_exec_mode()), nicht über die DB.
-    @app.post("/-/run/live/{slug}/rebuild", tags=["job"])
+    @app.post("/-/run/live/{slug}/rebuild", tags=["job"],
+             dependencies=[Depends(_require_approved_or_local)])
     def run_live_rebuild(slug: str):
         try:
             exec_mode = worker_mod.local_schedule_exec_mode(slug)
@@ -1083,7 +1145,8 @@ def create_app(
     # Läufe, symmetrisch zu DELETE /-/journal/{jid} (§1.4) aber rollenunab-
     # hängig und domain="local"-gated wie die beiden Routen oben — sonst
     # könnte ein reiner Client seine eigene Lauf-Historie nie aufräumen.
-    @app.delete("/-/run/journal/{jid}", tags=["job"])
+    @app.delete("/-/run/journal/{jid}", tags=["job"],
+               dependencies=[Depends(_require_approved_or_local)])
     def run_journal_delete(jid: int):
         conn = job_db.connect()
         try:

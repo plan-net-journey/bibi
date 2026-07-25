@@ -29,7 +29,14 @@ def _base(args: argparse.Namespace) -> str:
 
 
 def _req(url: str, method: str = "GET") -> tuple[int, object]:
-    req = urllib.request.Request(url, method=method)
+    # X-Bibi-Node-Id: seit dem Job-Control-Approval-Bug-Fix (2026-07-25) prüft
+    # der Host jede /-/job*-Route gegen approved_nodes, sobald der Aufruf nicht
+    # vom Host selbst (Loopback) kommt — ohne diesen Header liefe ein bereits
+    # approvter entfernter Knoten (Mac, sarasate-client) hier sonst auch ins
+    # Leere. Harmlos immer mitgeschickt: bei einem lokalen Ziel ignoriert der
+    # Host ihn ohnehin (Loopback-Bypass).
+    headers = {"X-Bibi-Node-Id": config.node_id()}
+    req = urllib.request.Request(url, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310 (localhost)
             return resp.status, json.loads(resp.read() or "null")
