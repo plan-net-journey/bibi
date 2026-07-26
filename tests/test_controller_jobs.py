@@ -628,6 +628,18 @@ def test_jobs_detail_page_has_breadcrumb_meta_and_journal():
     assert 'hx-delete="/-/ui/jobs/detail/a/run/7"' in html
 
 
+def test_jobs_detail_page_live_run_shows_journal_placeholder():
+    # Job-Lifecycle-Redesign (leichte Variante statt PLAN-35, Case
+    # 20260621.Bibi4-870bd9db, 2026-07-27): ein laufender lokaler Job ohne
+    # echte Journal-Zeilen zeigt jetzt eine Platzhalterzeile, verlinkt auf
+    # #jobsdetail-live (Client-Anker, nicht der Host-Default #live).
+    live = {"id": "jid1", "status": "running", "started_at": 100.0}
+    html = render.jobs_detail_page("a", _row("a", live=live), None, [], now=105.0,
+                                   live=live)
+    assert "noch keine Läufe" not in html
+    assert '<a class="back" href="#jobsdetail-live">↑ live</a>' in html
+
+
 def test_jobs_detail_page_has_no_back_link():
     # Zweite Bibi4-Iteration, User-Fund: derselbe Seitenabgleich, der
     # schedule_detail_page() den "← zurück"-Link genommen hat, gilt explizit

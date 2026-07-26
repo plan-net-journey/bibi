@@ -551,7 +551,11 @@ def test_detail_live_panel_for_running_job():
     job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0}
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
     assert 'class="live"' in html and 'class="st running">running' in html
-    assert "noch keine Läufe" in html                    # Journal noch leer
+    # Job-Lifecycle-Redesign (leichte Variante, 2026-07-27): ein laufender Job
+    # ohne echte Journal-Zeilen zeigt jetzt eine reine Anzeige-Platzhalterzeile
+    # statt "noch keine Läufe" — verlinkt zurück auf die Live-Region (#live).
+    assert "noch keine Läufe" not in html
+    assert '<a class="back" href="#live">↑ live</a>' in html
 
 
 def test_detail_live_panel_deferred_shows_wartet_auf_retry():
@@ -743,6 +747,57 @@ def test_journal_fragment_omits_sentinel_when_batch_short():
 def test_journal_fragment_oob_swap_attribute():
     html = render.journal_fragment([], "x", now=100.0, oob=True)
     assert 'id="journal" hx-swap-oob="true"' in html
+
+
+# ── Live-Platzhalterzeile (Job-Lifecycle-Redesign, leichte Variante statt
+# PLAN-35, Case 20260621.Bibi4-870bd9db, 2026-07-27) ─────────────────────────
+
+
+@pytest.mark.parametrize("status", ["running", "awaiting", "deferred"])
+def test_journal_fragment_shows_live_placeholder_for_in_progress_job(status):
+    job = {"id": "j", "slug": "a", "status": status, "started_at": 1.0}
+    html = render.journal_fragment([], "a", now=5.0, live_job=job)
+    assert "noch keine Läufe" not in html
+    assert f'<td class="st {status}">{status}</td>' in html
+    assert '<a class="back" href="#live">↑ live</a>' in html
+
+
+@pytest.mark.parametrize("status", ["pending", "complete", "error", "inactive",
+                                    "zombie", "killed", "failed"])
+def test_journal_fragment_omits_live_placeholder_for_non_active_job(status):
+    job = {"id": "j", "slug": "a", "status": status, "started_at": 1.0}
+    html = render.journal_fragment([], "a", now=5.0, live_job=job)
+    assert "noch keine Läufe" in html  # kein Platzhalter, echte Läufe fehlen weiterhin
+
+
+def test_journal_fragment_omits_live_placeholder_without_job():
+    html = render.journal_fragment([], "a", now=5.0, live_job=None)
+    assert "noch keine Läufe" in html
+
+
+def test_journal_fragment_live_placeholder_sits_above_real_runs():
+    runs = [_run(1)]
+    job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0}
+    html = render.journal_fragment(runs, "a", now=5.0, live_job=job)
+    placeholder_idx = html.index("↑ live")
+    real_row_idx = html.index("→ Detail")
+    assert placeholder_idx < real_row_idx
+
+
+def test_journal_fragment_live_placeholder_custom_anchor():
+    # Client-Seite nutzt #jobsdetail-live statt des Host-Defaults #live.
+    job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0}
+    html = render.journal_fragment([], "a", now=5.0, live_job=job,
+                                   live_anchor="#jobsdetail-live")
+    assert '<a class="back" href="#jobsdetail-live">↑ live</a>' in html
+
+
+def test_journal_fragment_live_placeholder_defaults_missing_status_to_running():
+    # Client-live-Dicts trugen historisch nicht immer ein explizites status-Feld
+    # — dieselbe Default-Regel wie _local_job_view() (Block 1).
+    job = {"id": "j", "slug": "a", "started_at": 1.0}
+    html = render.journal_fragment([], "a", now=5.0, live_job=job)
+    assert '<td class="st running">running</td>' in html
 
 
 def test_journal_runs_route_returns_next_batch_and_sentinel(app_with):

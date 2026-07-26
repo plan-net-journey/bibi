@@ -2459,7 +2459,8 @@ def jobs_detail_inner(slug: str, local: dict, last_run: dict | None,
         jobs_detail_live_fragment(slug, live, local, last_run,
                                   last_run_output=last_run_output,
                                   public_host=public_host, now=now)
-        + journal_fragment(runs, slug, now, base="/-/ui/jobs/detail")
+        + journal_fragment(runs, slug, now, base="/-/ui/jobs/detail",
+                          live_job=live, live_anchor="#jobsdetail-live")
     )
 
 
@@ -3142,11 +3143,56 @@ def _journal_sentinel_row(slug: str, offset: int, *, base: str = _JOURNAL_BASE) 
     )
 
 
+def _live_placeholder_row(job: dict | None, now: float, *, anchor: str) -> str:
+    """Rein zur Anzeige eingeblendete oberste Journal-Zeile für einen noch
+    nicht abgeschlossenen Lauf — kein echter Journal-Eintrag (``_write_journal()``
+    schreibt unverändert erst beim Terminal-Übergang, Job-Lifecycle-Redesign,
+    leichte Variante statt [[PLAN-35]], Case 20260621.Bibi4-870bd9db, 2026-07-27:
+    dort die volle Herleitung, warum die schwerere Variante — Journal-Zeile
+    schon bei Dispatch anlegen — zurückgestellt wurde).
+
+    Dasselbe "zeig einen aktiven Lauf"-Kriterium wie ``_live_panel()``s
+    eigener ``out``-Zweig weiter unten (NICHT dessen breiteres
+    ``is_terminal``, das dort einem anderen Zweck dient — der Meta-Zeilen-
+    Formatierung, nicht der Frage "aktiver Lauf ja/nein"): nur
+    ``running``/``awaiting``/``deferred`` gelten als aktiv, ``pending``
+    explizit NICHT (wartet nur auf den Start, kein Lauf im Gange) — sonst
+    zeigte diese Zeile "läuft" für einen Job, der noch gar nicht losgelaufen
+    ist. Kachel und diese Zeile dürfen nie auseinanderlaufen, sonst zeigt die
+    eine "läuft noch", während die andere schon den letzten abgeschlossenen
+    Lauf zeigt. ``anchor`` verlinkt zurück auf die Live-Region (``#live``
+    Host, ``#jobsdetail-live`` Client) — ein reiner In-Page-Sprung, keine neue
+    Route nötig.
+
+    ``status or "running"`` (nicht bloß ``status``): das Client-``live``-Dict
+    (``worker.local_run_live()``) trug historisch nicht immer ein explizites
+    ``status``-Feld — ``_local_job_view()`` (die Quelle von Block 1 auf der
+    Client-Seite) fängt genau das mit demselben Default ab. Ohne diesen
+    Default hier könnte diese Zeile ausbleiben, während die Kachel oben
+    trotzdem "running" zeigt — der Host-``job``-Dict hat ``status`` dagegen
+    immer gesetzt (NOT NULL-Spalte), dort ist der Default ein No-op."""
+    if not job:
+        return ""
+    status = job.get("status") or "running"
+    if status not in ("running", "awaiting", "deferred"):
+        return ""
+    st = _e(status)
+    t_abs = _abs_datetime(job.get("started_at"), now)
+    return (
+        "<tr>"
+        f"<td>{t_abs}</td>"
+        f'<td class="st {st}">{st}</td>'
+        "<td>—</td><td>—</td><td>—</td><td>—</td>"
+        f'<td><a class="back" href="{anchor}">↑ live</a></td>'
+        "</tr>"
+    )
+
+
 def _journal_table_html(runs: list[dict], slug: str, now: float, *, offset: int = 0,
-                        base: str = _JOURNAL_BASE) -> str:
-    if not runs:
+                        base: str = _JOURNAL_BASE, live_row: str = "") -> str:
+    if not runs and not live_row:
         return '<p class="out-empty">— noch keine Läufe —</p>'
-    rows = _run_rows(runs, slug, now, base=base)
+    rows = live_row + _run_rows(runs, slug, now, base=base)
     if len(runs) == _JOURNAL_PAGE_SIZE:
         rows += _journal_sentinel_row(slug, offset + _JOURNAL_PAGE_SIZE, base=base)
     return (
@@ -3157,19 +3203,31 @@ def _journal_table_html(runs: list[dict], slug: str, now: float, *, offset: int 
 
 
 def journal_fragment(runs: list[dict], slug: str, now: float, *, oob: bool = False,
-                     base: str = _JOURNAL_BASE) -> str:
+                     base: str = _JOURNAL_BASE, live_job: dict | None = None,
+                     live_anchor: str = "#live") -> str:
     """Eigenständige, nicht selbst-pollende Region (``#journal``) — wächst nur
     durch nutzergetriggertes Infinite-Scroll-Nachladen (kein 2s-Poll, der die
     nachgeladenen Zeilen sonst wieder plattmachen würde). ``.panel-card``-Rahmen
     (Bibi4-Iteration, User-Fund) sitzt auf diesem äußeren Div, nicht auf der
     Tabelle selbst — wächst automatisch mit, weil hier normale Dokumentfluss-
     Höhe gilt (kein fixer/scrollender Innenbereich, das Nachladen hängt neue
-    Zeilen einfach ans bestehende ``<tbody>``)."""
+    Zeilen einfach ans bestehende ``<tbody>``).
+
+    ``live_job`` (Job-Lifecycle-Redesign, leichte Variante, 2026-07-27):
+    Host ``job``-Dict oder Client ``live``-Dict des aktuellen Laufs, ``None``
+    wenn keiner läuft/wartet — bewusst nur beim initialen Seitenaufbau
+    durchgereicht (``schedule_detail_inner()``/``jobs_detail_inner()``), NICHT
+    bei den ``.../journal``-Refresh-Routen: die feuern laut
+    ``_JOURNAL_AUTOREFRESH_JS``/``_JOBS_LIVE_AUTOREFRESH_JS`` erst, wenn
+    ``finished_at`` sich ändert — in genau dem Moment ist der Lauf schon
+    terminal, kein Platzhalter mehr nötig, der echte Journal-Eintrag existiert
+    dann bereits in ``runs``."""
     oob_attr = ' hx-swap-oob="true"' if oob else ""
+    live_row = _live_placeholder_row(live_job, now, anchor=live_anchor)
     return (
         f'<div id="journal"{oob_attr} class="panel-card">'
         "<h2>Journal</h2>"
-        f"{_journal_table_html(runs, slug, now, base=base)}"
+        f"{_journal_table_html(runs, slug, now, base=base, live_row=live_row)}"
         "</div>"
     )
 
@@ -3457,7 +3515,7 @@ def schedule_detail_inner(
     return (
         live_fragment(schedule, runs, job, slug, now, live_output=live_output,
                       public_host=public_host)
-        + journal_fragment(runs, slug, now)
+        + journal_fragment(runs, slug, now, live_job=job)
     )
 
 
