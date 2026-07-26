@@ -99,16 +99,23 @@ def run(args: argparse.Namespace) -> int:
     has_claude_jobs = any(
         is_claude_payload(r.spec.payload) for r in discovered.found.values()
     )
-    token_present = bool(
-        os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
-    )
     has_apps = any(r.spec.app_port for r in discovered.found.values())
     public_host_set = bool(
         os.environ.get("BIBI_PUBLIC_HOST", "").strip()
         or config.read_env().get("BIBI_PUBLIC_HOST", "").strip()
     )
-    # PLAN-32 Stufe 32.0: dieselbe Env>Config-Präzedenz wie worker.py::_exec_config().
-    cfg_and_env = {**config.read_env(), **os.environ}
+    # PLAN-32 Stufe 32.0: dieselbe Verteilt<Config<Env-Präzedenz wie
+    # worker.py::_exec_config() — vorher las token_present nur os.environ,
+    # nie ~/.config/bibi/env, und kannte nie die BIBI_JOB_ENV_-präfigierten
+    # Varianten (Doctor-ClaudeAuth-Bug, Case 20260621.Bibi4-870bd9db,
+    # live gefunden 2026-07-24: ein korrekt in ~/.config/bibi/env gesetztes
+    # BIBI_JOB_ENV_CLAUDE_CODE_OAUTH_TOKEN blieb für diesen Check unsichtbar,
+    # obwohl der echte Job-Exec-Pfad es längst korrekt nutzte).
+    cfg_and_env = {**config.read_distributed_env(), **config.read_env(), **os.environ}
+    token_present = any(
+        cfg_and_env.get(key) or cfg_and_env.get(f"BIBI_JOB_ENV_{key}")
+        for key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+    )
 
     findings = (
         hygiene.git_lfs_finding(hygiene.git_lfs_installed())
