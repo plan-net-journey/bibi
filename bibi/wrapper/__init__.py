@@ -284,25 +284,47 @@ def _commit_worktree(env: dict[str, str]) -> tuple[str | None, str | None]:
     wie in einer früheren Version: ``_finish()`` unten liest dieselbe Variable
     für ``output_ref`` (ein ganz anderer Zweck), ein gemeinsames Gate hätte
     also auch den Output-Verweis für in-place-Läufe stumm auf ``None`` gelassen
-    (leeres Journal-Transkript, dauerhaft) statt nur den Commit zu unterdrücken."""
+    (leeres Journal-Transkript, dauerhaft) statt nur den Commit zu unterdrücken.
+
+    Zwei getrennte ``try``-Blöcke statt einem gemeinsamen (Fund im Rahmen von
+    Worktree-Cleanup-Bug, Case 20260621.Bibi4-870bd9db, 2026-07-26): ein
+    Fehler beim ``BIBI_EPHEMERAL``-Cleanup darf einen bereits erfolgreichen
+    Commit nicht mit wegwerfen — sonst verliert die Terminal-Meldung
+    ``branch``/``commit_sha`` und damit den serverseitigen Merge-back-Trigger
+    für eine tatsächlich erfolgreiche Änderung (``_finish()`` unten), obwohl
+    der Commit längst sicher auf der ``agent/<slug>``-Branch liegt. Beide
+    Fehlerfälle werden geloggt statt stillschweigend verschluckt — vorher gab
+    es keine Spur, warum ein ephemerer Worktree liegen blieb. Ein liegen
+    gebliebener ephemerer Worktree ist trotzdem kein Daten-Notfall: der
+    periodische ``Synchronizer._worktree_sweep()`` (selbe Datei-Historie, s.
+    ``job_db.active_worktree_slugs()``) räumt ihn nach, sobald er nicht mehr
+    unmerged voraus ist, und der unabhängige Merge-back-Sweep
+    (``mergeback.unmerged_agent_branches()``) findet die Branch so oder so —
+    beide fragen nie den hier zurückgegebenen Report ab."""
     if env.get("BIBI_IN_PLACE") == "1":
         return None, None
     repo_root_str = env.get("BIBI_REPO_ROOT")
     if not repo_root_str:
         return None, None
+    from bibi.daemon import worktree as _wt
+    repo_root = Path(repo_root_str)
+    wt_path = Path(env["BIBI_WORKTREE"])
+    slug = env.get("BIBI_JOB_SLUG", "")
+    run_id = env.get("BIBI_RUN_ID", env.get("BIBI_JOB_ID", ""))
     try:
-        from bibi.daemon import worktree as _wt
-        repo_root = Path(repo_root_str)
-        wt_path = Path(env["BIBI_WORKTREE"])
-        slug = env.get("BIBI_JOB_SLUG", "")
-        run_id = env.get("BIBI_RUN_ID", env.get("BIBI_JOB_ID", ""))
         commit_sha = _wt.commit(worktree=wt_path, message=f"{slug}: run {run_id}", slug=slug)
         branch = _wt.branch_name(slug) if commit_sha else None
-        if env.get("BIBI_EPHEMERAL") == "1":
-            _wt.remove(repo_root=repo_root, worktree=wt_path)
-        return commit_sha or None, branch
     except Exception:
+        log.warning("bibi.wrapper.commit_failed job_id=%s slug=%s worktree=%s",
+                   env.get("BIBI_JOB_ID"), slug, wt_path, exc_info=True)
         return None, None
+    if env.get("BIBI_EPHEMERAL") == "1":
+        try:
+            _wt.remove(repo_root=repo_root, worktree=wt_path)
+        except Exception:
+            log.warning("bibi.wrapper.ephemeral_remove_failed job_id=%s slug=%s worktree=%s",
+                       env.get("BIBI_JOB_ID"), slug, wt_path, exc_info=True)
+    return commit_sha or None, branch
 
 
 def _post_status(url_base: str, job_id: str, *, status: str, reason: str | None,

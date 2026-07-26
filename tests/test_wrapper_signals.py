@@ -394,6 +394,64 @@ def test_commit_worktree_skips_commit_when_in_place(tmp_path):
     assert _wrapper._commit_worktree(env) == (None, None)
 
 
+# ── _commit_worktree: getrennte Fehlerbehandlung Commit/Remove ──────────────
+# Worktree-Cleanup-Bug (Case 20260621.Bibi4-870bd9db, 2026-07-26): ein
+# gemeinsamer try/except verschluckte JEDEN Fehler stillschweigend (kein Log)
+# UND warf bei einem Remove-Fehler auch einen bereits erfolgreichen Commit weg.
+
+
+def test_commit_worktree_logs_and_returns_none_on_commit_failure(tmp_path, monkeypatch, caplog):
+    from bibi.daemon import worktree as _wt
+
+    def _boom(**_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(_wt, "commit", _boom)
+    env = {"BIBI_REPO_ROOT": str(tmp_path), "BIBI_WORKTREE": str(tmp_path / "wt"),
+           "BIBI_JOB_SLUG": "s", "BIBI_JOB_ID": "j1"}
+    with caplog.at_level("WARNING"):
+        result = _wrapper._commit_worktree(env)
+    assert result == (None, None)
+    assert "commit_failed" in caplog.text
+
+
+def test_commit_worktree_ephemeral_remove_failure_keeps_commit_result(tmp_path, monkeypatch, caplog):
+    # Der entscheidende Fund: ein Fehler beim ephemeren Cleanup darf den
+    # bereits erfolgreichen Commit/Branch nicht mit wegwerfen (vorher wurde
+    # daraus (None, None) — der Merge-back-Trigger für eine tatsächlich
+    # erfolgreiche Änderung wäre stillschweigend verloren gegangen).
+    from bibi.daemon import worktree as _wt
+
+    monkeypatch.setattr(_wt, "commit", lambda **_k: "deadbeef" * 5)
+    monkeypatch.setattr(_wt, "branch_name", lambda slug: f"agent/{slug}")
+
+    def _boom(**_k):
+        raise RuntimeError("remove boom")
+
+    monkeypatch.setattr(_wt, "remove", _boom)
+    env = {"BIBI_REPO_ROOT": str(tmp_path), "BIBI_WORKTREE": str(tmp_path / "wt"),
+           "BIBI_JOB_SLUG": "s", "BIBI_JOB_ID": "j1", "BIBI_EPHEMERAL": "1"}
+    with caplog.at_level("WARNING"):
+        commit_sha, branch = _wrapper._commit_worktree(env)
+    assert commit_sha == "deadbeef" * 5
+    assert branch == "agent/s"
+    assert "ephemeral_remove_failed" in caplog.text
+
+
+def test_commit_worktree_ephemeral_success_calls_remove(tmp_path, monkeypatch):
+    from bibi.daemon import worktree as _wt
+
+    monkeypatch.setattr(_wt, "commit", lambda **_k: "abc123")
+    monkeypatch.setattr(_wt, "branch_name", lambda slug: f"agent/{slug}")
+    removed = []
+    monkeypatch.setattr(_wt, "remove", lambda **k: removed.append(k))
+    env = {"BIBI_REPO_ROOT": str(tmp_path), "BIBI_WORKTREE": str(tmp_path / "wt"),
+           "BIBI_JOB_SLUG": "s", "BIBI_JOB_ID": "j1", "BIBI_EPHEMERAL": "1"}
+    commit_sha, branch = _wrapper._commit_worktree(env)
+    assert commit_sha == "abc123" and branch == "agent/s"
+    assert len(removed) == 1
+
+
 def test_finish_in_place_skips_commit_but_still_sets_output_ref(tmp_path):
     # Regressionstest für den im Plan-Review gefundenen Bug: eine frühere
     # Fassung unterdrückte den Commit, indem sie BIBI_REPO_ROOT wegließ — das
