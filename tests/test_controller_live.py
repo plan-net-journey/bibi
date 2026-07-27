@@ -132,6 +132,17 @@ def test_events_js_handles_collective_targets_with_query_selector_all():
     assert "querySelectorAll(sel)" in render._EVENTS_JS
 
 
+def test_events_js_refetch_uses_per_element_source_queue():
+    # User-Fund 2026-07-27 ("Liste aktualisiert erst nach Reload", live im
+    # Browser reproduziert): htmx.ajax ohne source haengt JEDEN Request an
+    # document.body, dessen Sync-Queue nur EINEN wartenden Request haelt —
+    # im Event-Batch (jobs+feedstatus+chart pro Collector-Tick) verdraengte
+    # jeder weitere Call den gequeuten Schedules-Refetch, die Liste
+    # verhungerte still (nur die im DOM fruehere Status-Kachel gewann).
+    # source: el gibt jeder Region ihre eigene Queue.
+    assert "{source: el, target: el, swap: 'outerHTML'}" in render._EVENTS_JS
+
+
 def test_events_js_dedupes_appends_against_seed_offset():
     # Ein Bus-Refetch trägt frischen Seed + neuen data-from — nachlaufende
     # Appends mit off <= data-from müssen still verworfen werden (E2/E5).

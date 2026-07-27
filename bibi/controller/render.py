@@ -2956,7 +2956,14 @@ _EVENTS_JS = """
       const sel = '[data-bus="' + (window.CSS && CSS.escape ? CSS.escape(ev.target) : ev.target) + '"]';
       document.querySelectorAll(sel).forEach((el) => {
         const url = el.getAttribute('data-bus-refetch');
-        if (url && window.htmx) htmx.ajax('GET', url, {target: el, swap: 'outerHTML'});
+        // source: el ist essenziell (User-Fund 2026-07-27, "Liste aktualisiert
+        // erst nach Reload"): ohne source ordnet htmx JEDEN ajax-Request
+        // document.body zu, und dessen Sync-Queue haelt nur EINEN wartenden
+        // Request ("last") — bei einem Event-Batch (jobs+feedstatus+chart im
+        // selben Collector-Tick) verdraengte jeder weitere Call den gequeuten
+        // Refetch der Schedules-Liste, sie verhungerte still. Mit source: el
+        // hat jede Region ihre eigene Queue, alle Refetches laufen parallel.
+        if (url && window.htmx) htmx.ajax('GET', url, {source: el, target: el, swap: 'outerHTML'});
       });
     } else if (ev.t === 'append') {
       const jid = (ev.target || '').slice(4);  // "out:<job_id>"
