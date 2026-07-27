@@ -661,7 +661,12 @@ def test_jobs_detail_page_with_live_shows_running_and_autorefresh_js():
         live={"id": "jid1", "kind": "job", "events": [{"t": 1.0, "s": "out", "line": "hi"}]})
     assert 'data-running="1"' in html
     assert "hi" in html  # Live-Output gerendert
-    assert render._JOBS_LIVE_AUTOREFRESH_JS in html
+    # PLAN-36 Stufe 36.2: der Fingerprint-Autorefresh ist durch den globalen
+    # Event-Strom ersetzt — die Client-Seite bindet jetzt dieselben Skripte
+    # wie der Host ein und traegt die data-bus-Adressen fuer den Refetch.
+    assert render._EVENTS_JS in html and render._SCROLL_JS in html
+    assert 'data-bus="live:a"' in html
+    assert 'data-bus-refetch="/-/ui/jobs/detail/a/live"' in html
 
 
 # ── Route (gefakter Client + echtes Vault-Discovery + echtes Git-Repo) ───────

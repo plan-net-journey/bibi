@@ -1,9 +1,10 @@
-"""Stufe 5 — SSE-Live-Output im Schedule-Detail (Frontend-Plan §C.5).
+"""Stufe 5 — Live-Output im Schedule-Detail (Frontend-Plan §C.5).
 
-Der laufende Output strömt per ``/-/job/{id}/stream`` (~0.2 s) statt im 2 s-Sprung.
-Die Box wird server-seitig mit dem aktuellen Output **geseedet** (no-JS-Paint +
-Offset) und per EventSource ab ``?from=N`` weitergestreamt; ``hx-preserve`` hält sie
-samt EventSource über den 2 s-``#detail``-Poll am Leben."""
+Seit PLAN-36 Stufe 36.2: die Box wird server-seitig mit dem aktuellen Output
+**geseedet** (no-JS-Paint + Offset), neue Zeilen kommen als ``append``-Events
+über den EINEN globalen Event-Strom (``GET /-/events``, ``_EVENTS_JS``) —
+keine per-Box-EventSource mehr, kein ``hx-preserve`` (die Box wird nur noch
+bei echten Zustands-Refetches ersetzt, nicht pro Poll-Tick)."""
 
 from __future__ import annotations
 
@@ -17,8 +18,12 @@ def test_live_output_box_markup():
     html = render.live_output_box("j7", [], kind="job")
     assert 'class="term liveterm"' in html
     assert 'data-job="j7"' in html
-    assert 'data-from="0"' in html       # kein Seed → Stream ab 0
-    assert 'hx-preserve="true"' in html  # überlebt den #detail-Poll
+    assert 'data-from="0"' in html       # kein Seed → Appends ab off 1
+    # PLAN-36 Stufe 36.2: kein hx-preserve mehr — die Box wird nur noch bei
+    # echten Zustands-Refetches ersetzt (frischer Seed + data-from = Heilung),
+    # das Attribut schützte zuletzt nichts und blockierte auf Client-Seiten
+    # den einzigen Update-Weg (FE-Live-Update-Briefing Befund 1).
+    assert "hx-preserve" not in html
 
 
 def test_live_output_box_seeds_events_and_offset():
@@ -86,78 +91,80 @@ def test_live_panel_seeds_box_with_current_output():
 
 
 def test_schedule_detail_page_wires_live_stream():
+    # PLAN-36 Stufe 36.2: die Seite verbindet sich mit dem EINEN globalen
+    # Strom (/-/events) — nicht mehr mit einer per-Box-Stream-Route.
     job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0}
     html = render.schedule_detail_page({"slug": "a", "kind": "job"}, [], job, slug="a")
-    assert "EventSource" in html and "/-/job/" in html and "/stream" in html
+    assert "EventSource('/-/events')" in html
+    assert render._EVENTS_JS in html and render._SCROLL_JS in html
 
 
-def test_live_js_connects_to_formatted_output_stream_not_raw_stream():
-    # Follow-up zu PLAN-14: die Live-Box hing an /stream (roh) — für Claude-Jobs
-    # sah man dort rohes stream-json statt formatiertem Text. Jetzt /output/stream
-    # (formatiert, gleiche Offset-Einheit wie der /output-Seed).
-    assert "/output/stream?from=" in render._LIVE_JS
-    assert "'/stream?from='" not in render._LIVE_JS
+def test_events_js_connects_to_global_stream_only():
+    # PLAN-36 Stufe 36.2: EINE EventSource auf /-/events pro Seite — keine
+    # per-Box-Streams mehr (die Route existierte auf Client-Knoten ohnehin
+    # nicht, FE-Live-Update-Briefing Befund 1).
+    assert "EventSource('/-/events')" in render._EVENTS_JS
+    assert "/output/stream" not in render._EVENTS_JS
 
 
-def test_live_js_appends_delta_events_to_last_span():
+def test_events_js_appends_delta_events_to_last_span():
     # o.delta === true ⇒ an die zuletzt gerenderte Zeile anhängen statt neue
-    # Timestamp-Zeile zu erzeugen (Token-Level-Deltas).
-    assert "o.delta" in render._LIVE_JS
-    assert "_bibiLastSpan" in render._LIVE_JS
+    # Timestamp-Zeile zu erzeugen (Token-Level-Deltas) — Logik unverändert aus
+    # dem früheren _LIVE_JS übernommen.
+    assert "o.delta" in render._EVENTS_JS
+    assert "_bibiLastSpan" in render._EVENTS_JS
 
 
-def test_live_js_marks_thinking_stream_with_own_class():
-    assert "'thinking'" in render._LIVE_JS
+def test_events_js_marks_thinking_stream_with_own_class():
+    assert "'thinking'" in render._EVENTS_JS
 
 
-def test_live_js_closes_on_explicit_done_event():
-    # User-Fund 2026-07-20: der Server schickt jetzt ein explizites
-    # `event: done` kurz vor dem beabsichtigten Schliessen -- nur DAS soll
-    # den Client zum Schliessen bringen, nicht mehr jedes onerror.
-    assert "addEventListener('done'" in render._LIVE_JS
+def test_events_js_dedupes_appends_against_seed_offset():
+    # Ein Bus-Refetch trägt frischen Seed + neuen data-from — nachlaufende
+    # Appends mit off <= data-from müssen still verworfen werden (E2/E5).
+    assert "ev.off <= from" in render._EVENTS_JS
+    assert "data-bus-refetch" in render._EVENTS_JS
 
 
-def test_live_js_onerror_no_longer_closes_stream():
-    # Vorher: es.onerror = () => es.close() -- schloss auch bei einem simplen
-    # Verbindungsabriss dauerhaft, ununterscheidbar vom beabsichtigten Ende
-    # (kein Reconnect mehr moeglich, Box fror fuer immer ein). Jetzt kein
-    # eigener onerror-Handler mehr -- der automatische Browser-Reconnect greift.
-    assert "es.onerror" not in render._LIVE_JS
+def test_events_js_never_closes_the_stream():
+    # 2026-07-20-Lektion, unter dem Bus noch einfacher: der Strom lebt so
+    # lange wie die Seite — kein done-Handling, kein close, kein eigener
+    # onerror (der automatische Browser-Reconnect greift, der Server schickt
+    # beim Reconnect den Resync aller aktiven Elemente, E5).
+    assert "es.close" not in render._EVENTS_JS
+    assert "es.onerror" not in render._EVENTS_JS
 
 
-def test_live_js_scrolls_to_bottom_on_initial_bind():
-    # PLAN-19 Befund 2, live reproduziert 2026-07-06: eine Box mit bereits
-    # überfüllendem Seed-Inhalt hat scrollTop=0 beim ersten attach() — atBottom()
-    # liefert dann von Anfang an "false" und FOLLOW greift für den Rest der
-    # Seiten-Lebenszeit nie mehr, egal wie viel neuer Output ankommt. Fix: sofort
-    # ans Ende springen, bevor der erste EventSource-Event überhaupt eintrifft.
-    js = render._LIVE_JS
-    bind_section = js.split("bound.add(box);")[1].split("const id = box.dataset.job")[0]
-    assert "box.scrollTop = box.scrollHeight;" in bind_section
+def test_events_js_scrolls_to_bottom_on_initial_bind():
+    # PLAN-19 Befund 2 (2026-07-06-Lektion), unverändert gültig: eine Box mit
+    # überfüllendem Seed hat scrollTop=0 — ohne initiales Ans-Ende-Springen
+    # liefert atBottom() ab dem ersten Check false und FOLLOW bleibt dauerhaft
+    # wirkungslos. Jetzt in initBoxes() (_EVENTS_JS).
+    js = render._EVENTS_JS
+    init_section = js.split("_bibiInit = true;")[1].split("appendLine")[0]
+    assert "box.scrollTop = box.scrollHeight;" in init_section
 
 
-def test_live_js_preserves_liveclamp_scroll_across_poll():
-    # User-Feedback: .liveclamp (awaiting/terminal-Output) hat kein hx-preserve
-    # wie .liveterm — der 2s-#live-Poll ersetzt es per outerHTML, ein frisches
-    # Element hat scrollTop=0 und "springt" sichtbar nach oben. Scroll muss vor
-    # dem Swap gemerkt und danach am neuen Element wiederhergestellt werden.
-    js = render._LIVE_JS
+def test_scroll_js_preserves_liveclamp_scroll_across_swap():
+    # Swaps kommen jetzt vom Bus-Refetch + Sicherheitsnetz-Poll — das Problem
+    # (frisches Element hat scrollTop=0) bleibt dasselbe; beide Regionen
+    # (#live Host, #jobsdetail-live Client) sind abgedeckt.
+    js = render._SCROLL_JS
     assert "htmx:beforeSwap" in js and "htmx:afterSettle" in js
     assert ".liveclamp" in js
     assert "box.scrollTop = saved" in js
+    assert "jobsdetail-live" in js
 
 
-def test_live_js_resticks_liveterm_to_bottom_across_poll():
-    # User-Feedback 2026-07-07 ("ich muss manuell herunterscrollen"), live im DOM
-    # gemessen: trotz hx-preserve setzt der 2s-#live-Poll scrollTop einer laufenden
-    # .liveterm-Box auf 0 zurück (Browser-Nebeneffekt beim Re-Attach desselben
-    # Elements) — Inhalt + EventSource überleben, der Scroll-Zustand nicht.
-    # PLAN-36 Stufe 36.0 (Befund 5, FE-Live-Update-Briefing): beide Fälle —
-    # war die Box unten (FOLLOW), folgt sie dem NEUEN Ende (scrollHeight);
-    # war sie hochgescrollt (User liest alte Zeilen), wird die absolute
-    # Position (savedTop) restauriert — vorher fehlte dieser else-Zweig, der
-    # browserseitige Reset auf 0 blieb stehen (live doppelt reproduziert).
-    js = render._LIVE_JS
+def test_scroll_js_resticks_liveterm_across_swap():
+    # PLAN-36 Stufe 36.0 (Befund 5, FE-Live-Update-Briefing, live doppelt
+    # reproduziert): beide Fälle — war die Box unten (FOLLOW), folgt sie dem
+    # NEUEN Ende (scrollHeight); war sie hochgescrollt (User liest alte
+    # Zeilen), wird die absolute Position (savedTop) restauriert — vorher
+    # fehlte dieser else-Zweig, der browserseitige Reset auf 0 blieb stehen.
+    # Seit 36.2 lebt der Mechanismus in _SCROLL_JS (Swaps kommen jetzt vom
+    # Bus-Refetch + Sicherheitsnetz-Poll statt vom 2s-Poll).
+    js = render._SCROLL_JS
     assert js.count("htmx:beforeSwap") == 2 and js.count("htmx:afterSettle") == 2
     liveterm_section = js.split(".liveclamp'")[-1]
     assert "'.liveterm[data-job]'" in liveterm_section

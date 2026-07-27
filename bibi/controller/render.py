@@ -21,6 +21,11 @@ _HTMX = "/-/static/htmx-1.9.12.min.js"
 #: Poll-Trigger der self-aktualisierenden Fragmente — 2s, gated durch FOLLOW
 #: (``window.bibiFollow``). Zentral, damit das Intervall an einer Stelle hängt.
 _POLL = "every 2s [window.bibiFollow]"
+#: PLAN-36 Stufe 36.2: gestrecktes Sicherheitsnetz für Regionen, deren primärer
+#: Update-Weg jetzt der Event-Bus ist (data-bus/-refetch, s. _EVENTS_JS) —
+#: fängt einen still gestorbenen Strom ab, ohne die alte 2s-Dauerlast. Wird
+#: nach der Live-Verifikation von 36.2 zurückgebaut (PLAN-36 36.3).
+_POLL_NET = "every 30s [window.bibiFollow]"
 
 #: Eigener, langsamerer Poll fürs Lauf-Historie-Chart (PLAN-21 Befund 11,
 #: User-Fund 2026-07-08 "wackelt"): der generische 2s-Takt (für Live-Output/
@@ -2352,32 +2357,11 @@ def _local_job_view(local: dict, last_run: dict | None, live: dict | None) -> di
     return None
 
 
-#: Erkennt den running→(nicht mehr live)-Übergang auf der lokalen Job-
-#: Detailseite und lädt #journal dann automatisch nach (PLAN-21 Befund 10,
-#: 2. Nachtrag) — Analogon zu _JOURNAL_AUTOREFRESH_JS (Host), aber gegen
-#: data-running statt data-finished-at, weil "läuft gerade?" hier ein
-#: Boolean aus der In-Memory-Registry ist, keine Zeitstempel-Differenz.
-_JOBS_LIVE_AUTOREFRESH_JS = """
-(function(){
-  let wasRunning = null;
-  function el(){ return document.getElementById('jobsdetail-live'); }
-  function baseline(){
-    const e = el();
-    wasRunning = e ? e.dataset.running === '1' : null;
-  }
-  document.addEventListener('DOMContentLoaded', baseline);
-  document.body.addEventListener('htmx:afterSettle', () => {
-    const e = el();
-    if (!e) return;
-    const running = e.dataset.running === '1';
-    if (wasRunning === null) { wasRunning = running; return; }
-    if (wasRunning && !running && window.htmx) {
-      htmx.ajax('GET', e.dataset.journalUrl, {target: '#journal', swap: 'outerHTML'});
-    }
-    wasRunning = running;
-  });
-})();
-"""
+#: (PLAN-36 Stufe 36.2: das frühere ``_JOBS_LIVE_AUTOREFRESH_JS`` — der
+#: running→terminal-Fingerprint-Vergleich, der ``#journal`` nachlud — ist
+#: durch die ``journal:``-Zustands-Events des Bus ersetzt, s. ``_EVENTS_JS``.
+#: ``data-running``/``data-journal-url`` an ``#jobsdetail-live`` bleiben als
+#: Diagnose-Attribute erhalten.)
 
 
 def _local_job_meta_line(local: dict, *, public_host: str = "localhost",
@@ -2447,9 +2431,16 @@ def jobs_detail_live_fragment(slug: str, live: dict | None, local: dict | None,
         + _live_panel(job, now, live_output, slug=slug, public_host=public_host,
                      raw_stream_base=None)
     )
+    # PLAN-36 Stufe 36.2: primärer Update-Weg ist der Bus (data-bus/-refetch),
+    # der frühere 2s-Poll bleibt nur als gestrecktes Sicherheitsnetz — bis auf
+    # awaiting (HITL-Formular, unbedingt 2s, Parität zum Host-live_fragment()).
+    _is_awaiting = bool(job) and job.get("status") == "awaiting"
+    _poll = "every 2s" if _is_awaiting else _POLL_NET
     attrs = (f'id="jobsdetail-live" data-running="{running_flag}" '
             f'data-journal-url="{journal_url}" '
-            f'hx-get="/-/ui/jobs/detail/{s}/live" hx-trigger="{_POLL}" hx-swap="outerHTML"')
+            f'data-bus="live:{s}" '
+            f'data-bus-refetch="/-/ui/jobs/detail/{s}/live" '
+            f'hx-get="/-/ui/jobs/detail/{s}/live" hx-trigger="{_poll}" hx-swap="outerHTML"')
     return f"<div {attrs}>{body}</div>"
 
 
@@ -2505,7 +2496,8 @@ def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
         f"{inner}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
-        f"<script>{_JOBS_LIVE_AUTOREFRESH_JS}</script>"
+        f"<script>{_EVENTS_JS}</script>"
+        f"<script>{_SCROLL_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
@@ -2918,152 +2910,142 @@ def output_block(events: list[dict], kind: str) -> str:
 
 def live_output_box(job_id: str, events: list[dict] | None = None,
                     *, kind: str = "job") -> str:
-    """Eine **streamende** stdout/stderr-Box für einen laufenden Job. Server-seitig
-    mit dem aktuellen (bereits formatierten) Output geseedet (no-JS-Paint), per
-    ``_LIVE_JS`` ab ``data-from`` weitergestreamt (``/-/job/{id}/output/stream?from=N``
-    — formatiert, zählt in denselben Einheiten wie der Seed, kein Offset-Mismatch;
-    Follow-up zu PLAN-14). ``hx-preserve`` hält die Box + EventSource über den
-    2 s-``#detail``-Poll am Leben."""
+    """Die Live-Output-Box eines laufenden Jobs. Server-seitig mit dem
+    aktuellen (bereits formatierten) Output geseedet (no-JS-Paint); ab
+    ``data-from`` hängen die ``append``-Events des globalen Event-Stroms an
+    (``_EVENTS_JS``, PLAN-36 Stufe 36.2 — vorher eine eigene EventSource pro
+    Box gegen ``/-/job/{id}/output/stream``, die es auf Client-Knoten gar
+    nicht gab, s. FE-Live-Update-Briefing Befund 1). Offsets zählen in
+    denselben formatierten Einheiten wie der Seed — kein Offset-Mismatch.
+    Kein ``hx-preserve`` mehr: die Box wird nur noch bei echten Zustands-
+    Refetches ersetzt (frischer Seed + neuer data-from = Resync-Heilung),
+    nicht mehr pro Poll-Tick — das Attribut schützte zuletzt nichts und
+    blockierte auf Client-Seiten den einzigen Update-Weg."""
     evs = events or []
     seed = "\n".join(_event_line(e) for e in _merge_deltas(evs))
     jid = _e(job_id)
     return (f'<pre class="term liveterm" id="livebox-{jid}" data-job="{jid}" '
-            f'data-from="{len(evs)}" hx-preserve="true">{seed}</pre>')
+            f'data-from="{len(evs)}">{seed}</pre>')
 
 
-#: Hängt an jede ``.liveterm[data-job]`` eine EventSource (ab ``data-from``), hängt
-#: out/err-Zeilen unten an (err rot), Autoscroll am Ende. Erneut nach htmx-Swaps
-#: (neue Boxen); ``hx-preserve`` sorgt dafür, dass bestehende Boxen + Streams bleiben
-#: (WeakSet verhindert Doppel-Abos). Der Server schickt kurz vor dem beabsichtigten
-#: Schließen (Job terminal) ein explizites ``event: done`` — NUR darauf schließt der
-#: Client selbst (User-Fund 2026-07-20: ``onerror`` feuert identisch bei einem
-#: einfachen Verbindungsabriss UND beim beabsichtigten Server-Ende, ein früheres
-#: ``es.close()`` in ``onerror`` fror deshalb auch noch laufende Jobs nach jedem
-#: Netzwerk-Hänger dauerhaft ein). ``onerror`` schließt jetzt nicht mehr — der
-#: automatische Browser-Reconnect greift, inkl. selbstständig mitgeschicktem
-#: ``Last-Event-ID`` (aus der ``id:``-Zeile jedes Events, s. ``_formatted_sse()``
-#: in ``app.py``), kein Duplikat-Risiko.
-#: ``hx-preserve`` hält Inhalt + EventSource über den 2s-#live-Poll am Leben, aber
-#: NICHT den Scroll-Zustand — das erneute Einhängen des (unveränderten) Elements in
-#: den DOM-Baum setzt ``scrollTop`` browserseitig auf 0 zurück. Live gemessen
-#: 2026-07-07: derselbe Node (gleiche id, offene EventSource, wachsender Inhalt)
-#: sprang trotzdem alle ~2s auf ``scrollTop=0`` zurück; die ``onmessage``-Stick-Logik
-#: unten korrigiert das nur reaktiv bei der nächsten SSE-Nachricht — dazwischen bleibt
-#: die Box oben hängen, obwohl FOLLOW an ist (User-Feedback: "ich muss manuell
-#: herunterscrollen"). Fix analog zum ``.liveclamp``-Mechanismus weiter unten, siehe
-#: dort.
-_LIVE_JS = """
+#: PLAN-36 Stufe 36.2: EIN globaler Event-Strom pro Seite statt per-Box-
+#: EventSources und Fingerprint-Poll-Vergleichen. Zwei Event-Klassen (E2):
+#: **state** — leere Dirty-Meldung, das Ziel-Element (``[data-bus=…]``)
+#: refetcht seine eigene Fragment-Route (``data-bus-refetch``) per htmx-Swap;
+#: **append** — eine formatierte Output-Zeile fuer ``.liveterm[data-job]``,
+#: dedupliziert ueber ``data-from`` (derselbe Offset-Zaehler, mit dem der
+#: server-seitige Seed die Box vorbefuellt — ein Bus-Refetch traegt frischen
+#: Seed + neuen data-from, nachlaufende Appends mit off <= data-from sind
+#: dadurch harmlos). ``onerror`` schliesst bewusst NICht (2026-07-20-Lektion:
+#: Abriss und Serverende sind clientseitig ununterscheidbar) — EventSource
+#: reconnected selbst, und der Server schickt beim (Re-)Connect den Resync
+#: aller aktiven Elemente (E5), der jede Luecke heilt. Das FOLLOW-Gate
+#: (window.bibiFollow) pausiert Anwendung der Events, nicht den Strom.
+_EVENTS_JS = """
 (function(){
-  const bound = new WeakSet();
-  function attach(){
+  if (!window.EventSource) return;
+  function initBoxes(){
     document.querySelectorAll('.liveterm[data-job]').forEach(box => {
-      if (bound.has(box)) return;
-      bound.add(box);
-      // Seed-Inhalt (server-seitig gerendert) kann die Box bereits vor dem
-      // ersten Event überfüllen — ohne dies bleibt scrollTop bei 0 und
-      // atBottom() liefert ab dem allerersten Check "false" (Follow-up-Bug,
-      // live reproduziert 2026-07-06: FOLLOW bleibt danach dauerhaft wirkungslos).
+      if (box._bibiInit) return;
+      box._bibiInit = true;
+      // Seed ans Ende (2026-07-06-Lektion: sonst liefert atBottom() ab dem
+      // allerersten Check false und FOLLOW bleibt dauerhaft wirkungslos).
       box.scrollTop = box.scrollHeight;
-      const id = box.dataset.job, from = box.dataset.from || '0';
-      const es = new EventSource('/-/job/'+encodeURIComponent(id)+'/output/stream?from='+from);
-      box._bibiEs = es;
-      const atBottom = () => box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
-      es.onmessage = (e) => {
-        if (window.bibiFollow === false) return;
-        let o; try { o = JSON.parse(e.data); } catch(_) { return; }
-        const stick = atBottom();
-        // Token-Delta (Follow-up PLAN-14): an die zuletzt gerenderte Zeile
-        // anhängen statt eine neue Timestamp-Zeile zu erzeugen.
-        if (o.delta && box._bibiLastSpan) {
-          box._bibiLastSpan.textContent += (o.line || '');
-          if (stick) box.scrollTop = box.scrollHeight;
-          return;
-        }
-        if (box.childNodes.length) box.appendChild(document.createTextNode('\\n'));
-        const tsSpan = document.createElement('span');
-        tsSpan.className = 'lts';
-        tsSpan.textContent = o.t
-          ? new Date(o.t*1000).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
-          : '--:--:--';
-        box.appendChild(tsSpan);
-        box.appendChild(document.createTextNode(' '));
-        const span = document.createElement('span');
-        if (o.s === 'err') span.className = 'err';
-        else if (o.s === 'thinking') span.className = 'thinking';
-        else if (o.s === 'phase') span.className = 'phase';
-        span.textContent = o.line || '';
-        box.appendChild(span);
-        box._bibiLastSpan = span;
-        if (stick) box.scrollTop = box.scrollHeight;
-      };
-      // User-Fund 2026-07-20: 'done' (server schickt es explizit kurz vor dem
-      // beabsichtigten Schliessen, s. _formatted_sse()) ist jetzt das einzige
-      // Signal fuer "Job wirklich fertig" -- der Client schliesst SELBST,
-      // bevor die Verbindung natuerlich endet.
-      es.addEventListener('done', () => {
-        if (box._bibiEs) { box._bibiEs.close(); box._bibiEs = null; }
-      });
-      // onerror schliesst absichtlich NICHT mehr (frueher: es.close() fuer
-      // JEDEN Verbindungsabriss, ununterscheidbar vom obigen 'done'-Fall --
-      // ein Job, der noch lief, aber dessen Verbindung kurz haengt, fror in
-      // der Box fuer immer ein, "Erst ein manuelles Reload gibt mehr Output").
-      // Ohne eigenen Handler reconnectet EventSource automatisch (Browser-
-      // Standardverhalten) und schickt dabei von selbst Last-Event-ID mit --
-      // kein Duplikat-Risiko, kein eigenes Zaehl-JS noetig.
     });
   }
-  // EventSources schließen bevor HTMX das Element entfernt (verhindert Leak).
-  document.addEventListener('htmx:beforeCleanupElement', (ev) => {
-    const el = ev.detail && ev.detail.elt ? ev.detail.elt : ev.target;
-    if (!el || !el.querySelectorAll) return;
-    el.querySelectorAll('.liveterm[data-job]').forEach(box => {
-      if (box._bibiEs) { box._bibiEs.close(); box._bibiEs = null; }
-    });
-    if (el.classList && el.classList.contains('liveterm') && el._bibiEs) {
-      el._bibiEs.close(); el._bibiEs = null;
+  document.addEventListener('DOMContentLoaded', initBoxes);
+  document.body.addEventListener('htmx:afterSettle', initBoxes);
+
+  function appendLine(box, o){
+    const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+    // Token-Delta (PLAN-14): an die zuletzt gerenderte Zeile anhaengen statt
+    // eine neue Timestamp-Zeile zu erzeugen.
+    if (o.delta && box._bibiLastSpan) {
+      box._bibiLastSpan.textContent += (o.line || '');
+      if (stick) box.scrollTop = box.scrollHeight;
+      return;
     }
-  });
-  document.addEventListener('DOMContentLoaded', attach);
-  document.addEventListener('htmx:afterSwap', attach);
+    if (box.childNodes.length) box.appendChild(document.createTextNode('\n'));
+    const tsSpan = document.createElement('span');
+    tsSpan.className = 'lts';
+    tsSpan.textContent = o.t
+      ? new Date(o.t*1000).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
+      : '--:--:--';
+    box.appendChild(tsSpan);
+    box.appendChild(document.createTextNode(' '));
+    const span = document.createElement('span');
+    if (o.s === 'err') span.className = 'err';
+    else if (o.s === 'thinking') span.className = 'thinking';
+    else if (o.s === 'phase') span.className = 'phase';
+    span.textContent = o.line || '';
+    box.appendChild(span);
+    box._bibiLastSpan = span;
+    if (stick) box.scrollTop = box.scrollHeight;
+  }
+
+  const es = new EventSource('/-/events');
+  window._bibiEvents = es;
+  es.onmessage = (e) => {
+    if (window.bibiFollow === false) return;
+    let ev; try { ev = JSON.parse(e.data); } catch(_) { return; }
+    if (ev.t === 'state') {
+      const sel = '[data-bus="' + (window.CSS && CSS.escape ? CSS.escape(ev.target) : ev.target) + '"]';
+      const el = document.querySelector(sel);
+      if (!el) return;
+      const url = el.getAttribute('data-bus-refetch');
+      if (url && window.htmx) htmx.ajax('GET', url, {target: el, swap: 'outerHTML'});
+    } else if (ev.t === 'append') {
+      const jid = (ev.target || '').slice(4);  // "out:<job_id>"
+      const box = document.querySelector('.liveterm[data-job="' + jid + '"]');
+      if (!box || !ev.e) return;
+      const from = parseInt(box.dataset.from || '0', 10);
+      if (ev.off <= from) return;  // Dedup gegen Seed/Refetch
+      box.dataset.from = String(ev.off);
+      appendLine(box, ev.e);
+    }
+  };
 })();
-// Scroll-Erhalt für .liveclamp (awaiting/terminal-Output — kein SSE-Append wie
-// .liveterm, das über hx-preserve ohnehin nie neu gerendert wird): der 2s-
-// #live-Poll ersetzt bei jedem Tick das ganze outerHTML, ein frisches Element
-// hat scrollTop=0 — die Box "springt" sonst sichtbar nach oben, sobald man
-// runtergescrollt hat (User-Feedback). Scroll-Position vor dem Swap merken,
-// danach am neuen Element wiederherstellen.
+"""
+
+#: Scroll-Erhalt fuer die Live-Region-Swaps (extrahiert aus dem frueheren
+#: _LIVE_JS, PLAN-36 Stufe 36.2) — Swaps kommen jetzt vom Bus-Refetch und dem
+#: gestreckten Sicherheitsnetz-Poll, das Problem bleibt dasselbe: ein frisch
+#: eingehaengtes Element hat scrollTop=0. Beide Regionen abgedeckt (#live Host,
+#: #jobsdetail-live Client — letzterer bekommt durch den Bus erstmals lebende
+#: Output-Boxen, s. FE-Live-Update-Briefing Befund 1).
+_SCROLL_JS = """
 (function(){
+  const isLiveRegion = (t) => t && (t.id === 'live' || t.id === 'jobsdetail-live');
+  const region = () => document.getElementById('live') || document.getElementById('jobsdetail-live');
+  // .liveclamp (awaiting/terminal): absolute Position wiederherstellen.
   let saved = null;
   document.body.addEventListener('htmx:beforeSwap', (ev) => {
     const t = ev.detail && ev.detail.target;
-    if (t && t.id === 'live') {
+    if (isLiveRegion(t)) {
       const box = t.querySelector('.liveclamp');
       saved = box ? box.scrollTop : null;
     }
   });
   document.body.addEventListener('htmx:afterSettle', () => {
     if (saved == null) return;
-    const live = document.getElementById('live');
-    const box = live && live.querySelector('.liveclamp');
+    const r = region();
+    const box = r && r.querySelector('.liveclamp');
     if (box) box.scrollTop = saved;
     saved = null;
   });
 })();
-// Scroll-Erhalt für .liveterm (running, SSE via hx-preserve — Inhalt + EventSource
-// überleben den 2s-#live-Poll, scrollTop aber nicht, s. Kommentar oben bei _LIVE_JS).
-// Zwei Fälle (PLAN-36 Stufe 36.0, Befund 5 in FE-Live-Update-Briefing — live
-// doppelt reproduziert: scrollTop 50→0 bzw. 300→0 binnen Sekunden): war die Box
-// vor dem Swap unten (FOLLOW), soll sie dem NEUEN Ende folgen, nicht zur alten
-// Pixel-Position zurück; war sie dagegen HOCHGESCROLLT (User liest alte Zeilen),
-// muss die absolute Position wiederhergestellt werden — vorher fehlte dieser
-// else-Zweig komplett, der browserseitige scrollTop-Reset auf 0 beim
-// hx-preserve-Wiedereinhängen blieb stehen und warf den Leser alle ~2s an den
-// Anfang. Gleiches Muster wie der .liveclamp-Block direkt darüber.
+// .liveterm (running): zwei Faelle (PLAN-36 Stufe 36.0, Befund 5 — live doppelt
+// reproduziert): war die Box unten (FOLLOW), folgt sie dem NEUEN Ende; war sie
+// hochgescrollt (User liest alte Zeilen), wird die absolute Position (savedTop)
+// restauriert — vorher fehlte dieser else-Zweig, der browserseitige Reset auf 0
+// beim Wiedereinhaengen blieb stehen.
 (function(){
+  const isLiveRegion = (t) => t && (t.id === 'live' || t.id === 'jobsdetail-live');
+  const region = () => document.getElementById('live') || document.getElementById('jobsdetail-live');
   let wasAtBottom = null, savedTop = null;
   document.body.addEventListener('htmx:beforeSwap', (ev) => {
     const t = ev.detail && ev.detail.target;
-    if (t && t.id === 'live') {
+    if (isLiveRegion(t)) {
       const box = t.querySelector('.liveterm[data-job]');
       wasAtBottom = box ? (box.scrollTop + box.clientHeight >= box.scrollHeight - 24) : null;
       savedTop = box ? box.scrollTop : null;
@@ -3071,43 +3053,10 @@ _LIVE_JS = """
   });
   document.body.addEventListener('htmx:afterSettle', () => {
     if (wasAtBottom == null) { savedTop = null; return; }
-    const live = document.getElementById('live');
-    const box = live && live.querySelector('.liveterm[data-job]');
+    const r = region();
+    const box = r && r.querySelector('.liveterm[data-job]');
     if (box) box.scrollTop = wasAtBottom ? box.scrollHeight : (savedTop ?? box.scrollTop);
     wasAtBottom = null; savedTop = null;
-  });
-})();
-"""
-
-#: User-Feedback 2026-07-03: "wenn ein RUNNING Lauf terminal endet ... wird er
-#: erst bei manuellem Reload in der Historie angezeigt". #journal pollt bewusst
-#: nicht mit (§6, Infinite Scroll), reagiert also nicht von selbst, wenn ein Lauf
-#: OHNE Button-Klick fertig wird. Fingerabdruck ist `data-finished-at` an #live
-#: (ändert sich nur bei einem neuen Terminal-Übergang, egal ob complete/error/…);
-#: ändert er sich zwischen zwei Polls, wird #journal einmalig auf Seite 1
-#: zurückgesetzt — derselbe Effekt wie beim Button-Klick (schedule_action), nur
-#: automatisch statt nutzergetriggert.
-_JOURNAL_AUTOREFRESH_JS = """
-(function(){
-  let lastFinished = null;
-  function baseline(){
-    const live = document.getElementById('live');
-    lastFinished = live ? (live.dataset.finishedAt || '') : null;
-  }
-  document.addEventListener('DOMContentLoaded', baseline);
-  document.body.addEventListener('htmx:afterSettle', () => {
-    const live = document.getElementById('live');
-    if (!live) return;
-    const finished = live.dataset.finishedAt || '';
-    if (lastFinished === null) { lastFinished = finished; return; }
-    if (finished && finished !== lastFinished && window.htmx) {
-      const slug = live.dataset.slug;
-      if (slug) {
-        htmx.ajax('GET', '/-/ui/schedule/' + encodeURIComponent(slug) + '/journal',
-                  {target: '#journal', swap: 'outerHTML'});
-      }
-    }
-    lastFinished = finished;
   });
 })();
 """
@@ -3225,17 +3174,23 @@ def journal_fragment(runs: list[dict], slug: str, now: float, *, oob: bool = Fal
 
     ``live_job`` (Job-Lifecycle-Redesign, leichte Variante, 2026-07-27):
     Host ``job``-Dict oder Client ``live``-Dict des aktuellen Laufs, ``None``
-    wenn keiner läuft/wartet — bewusst nur beim initialen Seitenaufbau
-    durchgereicht (``schedule_detail_inner()``/``jobs_detail_inner()``), NICHT
-    bei den ``.../journal``-Refresh-Routen: die feuern laut
-    ``_JOURNAL_AUTOREFRESH_JS``/``_JOBS_LIVE_AUTOREFRESH_JS`` erst, wenn
-    ``finished_at`` sich ändert — in genau dem Moment ist der Lauf schon
-    terminal, kein Platzhalter mehr nötig, der echte Journal-Eintrag existiert
-    dann bereits in ``runs``."""
+    wenn keiner läuft/wartet. Seit PLAN-36 Stufe 36.2 reichen AUCH die
+    ``.../journal``-Refresh-Routen ihn durch (nicht mehr nur der initiale
+    Seitenaufbau): der Bus meldet ``journal:``-dirty jetzt bei jedem
+    Statuswechsel (Collector), nicht erst beim Terminal-Übergang — ein
+    Refetch während des Laufs muss die Platzhalterzeile also erhalten,
+    sonst verschwände sie beim ersten Bus-Refresh.
+
+    ``data-bus``/``data-bus-refetch`` (PLAN-36 Stufe 36.2): ein
+    ``journal:<slug>``-Zustands-Event des globalen Stroms refetcht diese
+    Region über ihre eigene Refresh-Route — ersetzt beide früheren
+    Fingerprint-Autorefresh-Skripte."""
     oob_attr = ' hx-swap-oob="true"' if oob else ""
     live_row = _live_placeholder_row(live_job, now, anchor=live_anchor)
+    s = _e(slug)
     return (
-        f'<div id="journal"{oob_attr} class="panel-card">'
+        f'<div id="journal"{oob_attr} class="panel-card" '
+        f'data-bus="journal:{s}" data-bus-refetch="{base}/{s}/journal">'
         "<h2>Journal</h2>"
         f"{_journal_table_html(runs, slug, now, base=base, live_row=live_row)}"
         "</div>"
@@ -3491,17 +3446,20 @@ def live_fragment(
     nxt = _until(s.get("next_fire_at"), now)
     meta = (f"Typ <b>{kind}</b> · Trigger <code>{trigger}</code> · "
             f"letzter Lauf <b>{last_run}</b> · nächster Lauf {nxt}")
-    # #live self-pollt: awaiting immer (unbedingt), sonst FOLLOW-gated.
-    # Wenn awaiting: HITL-Formular darf nie durch bibiFollow=false einfrieren.
+    # PLAN-36 Stufe 36.2: primärer Update-Weg ist der Bus (data-bus/-refetch,
+    # s. _EVENTS_JS — ein live:-Zustands-Event refetcht diese Region); der
+    # frühere 2s-Self-Poll bleibt nur als gestrecktes Sicherheitsnetz (_POLL_NET,
+    # Rückbau nach Live-Verifikation, s. PLAN-36 36.2). awaiting pollt weiterhin
+    # unbedingt alle 2s: das HITL-Formular darf weder am FOLLOW-Gate noch an
+    # einem verpassten Event hängen.
     _is_awaiting = job.get("status") == "awaiting" if job else False
-    _poll = "every 2s" if _is_awaiting else _POLL
-    # data-finished-at: Fingerabdruck des aktuellen/letzten Laufs für
-    # _JOURNAL_AUTOREFRESH_JS (User-Feedback 2026-07-03) — ändert er sich
-    # zwischen zwei Polls, ist gerade ein Lauf terminal geworden (egal ob
-    # complete/error/…) und #journal wird automatisch neu geladen, statt nur
-    # bei einem Button-Klick oder vollem Seiten-Reload.
+    _poll = "every 2s" if _is_awaiting else _POLL_NET
+    # data-finished-at: früher der Fingerabdruck für den Journal-Autorefresh
+    # (jetzt Bus-Events) — bleibt als Diagnose-Attribut erhalten.
     _finished = _e(job.get("finished_at")) if job and job.get("finished_at") else ""
     attrs = (f'id="live" data-slug="{_e(slug)}" data-finished-at="{_finished}" '
+             f'data-bus="live:{_e(slug)}" '
+             f'data-bus-refetch="/-/ui/schedule/{_e(slug)}/live" '
              f'hx-get="/-/ui/schedule/{_e(slug)}/live" '
              f'hx-trigger="{_poll}" hx-swap="outerHTML"')
     return (
@@ -3555,8 +3513,8 @@ def schedule_detail_page(
         f'</div>'
         f"{schedule_detail_inner(schedule, runs, job, slug, now, live_output=live_output, public_host=public_host)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"<script>{_LIVE_JS}</script>"
-        f"<script>{_JOURNAL_AUTOREFRESH_JS}</script>"
+        f"<script>{_EVENTS_JS}</script>"
+        f"<script>{_SCROLL_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"

@@ -624,9 +624,32 @@ def test_detail_shows_live_panel_for_last_terminal_run():
 
 
 def test_detail_self_polls_under_follow():
+    # PLAN-36 Stufe 36.2: primaerer Update-Weg ist der Bus (data-bus/-refetch);
+    # der Poll bleibt nur als gestrecktes 30s-Sicherheitsnetz (_POLL_NET).
     html = render.schedule_detail_inner({"slug": "a"}, [], None, slug="a", now=1.0)
     assert 'hx-get="/-/ui/schedule/a/live"' in html
-    assert "every 2s [window.bibiFollow]" in html
+    assert "every 30s [window.bibiFollow]" in html
+    assert 'data-bus="live:a"' in html
+    assert 'data-bus-refetch="/-/ui/schedule/a/live"' in html
+
+
+def test_detail_awaiting_still_polls_unconditionally_every_2s():
+    # awaiting (HITL-Formular) pollt weiterhin unbedingt alle 2s — darf weder
+    # am FOLLOW-Gate noch an einem verpassten Bus-Event haengen.
+    job = {"id": "j", "slug": "a", "status": "awaiting", "started_at": 1.0}
+    html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0)
+    assert 'hx-trigger="every 2s"' in html
+
+
+def test_journal_fragment_carries_bus_address():
+    # PLAN-36 Stufe 36.2: ein journal:-Zustands-Event refetcht die Region
+    # ueber ihre eigene Refresh-Route — Host- und Client-Basis unterscheiden
+    # sich, deshalb traegt jedes Fragment seine eigene Refetch-URL.
+    host = render.journal_fragment([], "a", now=1.0)
+    assert 'data-bus="journal:a"' in host
+    assert 'data-bus-refetch="/-/ui/schedule/a/journal"' in host
+    local = render.journal_fragment([], "a", now=1.0, base="/-/ui/jobs/detail")
+    assert 'data-bus-refetch="/-/ui/jobs/detail/a/journal"' in local
 
 
 def test_live_panel_shows_output_expanded():
@@ -841,11 +864,13 @@ def test_live_fragment_finished_at_empty_while_running():
     assert 'data-finished-at=""' in html
 
 
-def test_journal_autorefresh_js_watches_finished_at_fingerprint():
-    js = render._JOURNAL_AUTOREFRESH_JS
-    assert "data-finished-at" not in js  # liest über .dataset.finishedAt, kein Attribut-String
-    assert "dataset.finishedAt" in js
-    assert "htmx.ajax" in js and "'#journal'" in js
+def test_events_js_refetches_state_targets_via_htmx():
+    # PLAN-36 Stufe 36.2 (ersetzt den frueheren finished-at-Fingerprint-
+    # Autorefresh): ein state-Event sucht sein [data-bus=…]-Element und
+    # refetcht dessen eigene Fragment-Route per htmx-Swap.
+    js = render._EVENTS_JS
+    assert "data-bus" in js and "data-bus-refetch" in js
+    assert "htmx.ajax" in js and "outerHTML" in js
 
 
 def test_schedule_journal_route_returns_fresh_page_one(app_with):

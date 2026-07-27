@@ -211,6 +211,12 @@ class Collector:
                        and self._jobs.get(jid, (None,))[:2] != seen[jid][:2])
             if changed:
                 self._publish_live(slug, r["pinned_host"])
+                # Journal bei JEDEM Statuswechsel mit-dirty (nicht nur beim
+                # Journal-INSERT unten): die Journal-Liste zeigt für laufende
+                # Jobs eine Live-Platzhalterzeile (journal_fragment(),
+                # live_job-Parameter) — ohne dieses Event erschiene sie auf
+                # einer bereits offenen Seite erst beim nächsten Reload.
+                self._publish_journal(slug, r["pinned_host"])
                 stats["state"] += 1
             self._track_tail(root, r, freshly_started=changed)
         # Verschwundene Zeilen (deactivate/Löschung): Tail final leeren und die

@@ -866,18 +866,18 @@ def add_controller_routes(
 
     @app.get("/-/ui/jobs/detail/{slug}/journal", include_in_schema=False)
     def jobs_detail_journal_fragment(slug: str):
-        # Ziel von _JOBS_LIVE_AUTOREFRESH_JS (PLAN-21 Befund 10, 2. Nachtrag,
-        # Live-Streaming) — Analogon zu schedule_journal_fragment(): ein
-        # RUNNING-Lauf, der terminal endet, lädt #journal automatisch auf
-        # Seite 1 neu. War beim ersten Cut vergessen (journal_url zeigte ins
-        # Leere, 404, still von htmx verworfen) — beim Live-Test aufgefallen:
-        # die Journal-Tabelle blieb nach Lauf-Ende veraltet, bis zum nächsten
-        # manuellen Reload.
+        # Refetch-Ziel der journal:-Zustands-Events des Bus (PLAN-36 Stufe
+        # 36.2; vorher Ziel des Fingerprint-Autorefresh-Skripts). live=…
+        # mitgeben: der Bus meldet journal:-dirty jetzt bei JEDEM Status-
+        # wechsel — ein Refetch während des Laufs muss die Live-Platzhalter-
+        # zeile erhalten, sonst verschwände sie beim ersten Bus-Refresh.
         try:
             runs = client.run_journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=0)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             runs = []
-        return HTMLResponse(render.journal_fragment(runs, slug, time.time(), base="/-/ui/jobs/detail"))
+        return HTMLResponse(render.journal_fragment(
+            runs, slug, time.time(), base="/-/ui/jobs/detail",
+            live_job=_job_live(slug), live_anchor="#jobsdetail-live"))
 
     @app.delete("/-/ui/jobs/detail/{slug}/run/{jid}", include_in_schema=False)
     def jobs_detail_run_delete(slug: str, jid: int):
@@ -889,7 +889,8 @@ def add_controller_routes(
             pass
         _, _, runs = _job_detail_data(slug)
         return HTMLResponse(render.journal_fragment(
-            runs, slug, time.time(), base="/-/ui/jobs/detail"))
+            runs, slug, time.time(), base="/-/ui/jobs/detail",
+            live_job=_job_live(slug), live_anchor="#jobsdetail-live"))
 
     def _detail_data(slug: str):
         try:
@@ -963,14 +964,14 @@ def add_controller_routes(
 
     @app.get("/-/ui/schedule/{slug}/journal", include_in_schema=False)
     def schedule_journal_fragment(slug: str):
-        # Ziel von _JOURNAL_AUTOREFRESH_JS (User-Feedback 2026-07-03): ein
-        # RUNNING-Lauf, der ohne Button-Klick terminal endet, lädt #journal
-        # jetzt automatisch auf Seite 1 neu, statt erst beim nächsten Reload.
-        try:
-            runs = client.journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=0)
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            runs = []
-        return HTMLResponse(render.journal_fragment(runs, slug, time.time()))
+        # Refetch-Ziel der journal:-Zustands-Events des Bus (PLAN-36 Stufe
+        # 36.2; vorher Ziel des Fingerprint-Autorefresh-Skripts). live_job
+        # mitgeben — der Bus meldet journal:-dirty bei JEDEM Statuswechsel,
+        # ein Refetch während des Laufs muss die Live-Platzhalterzeile
+        # erhalten (s. journal_fragment()-Docstring).
+        _, runs, job = _detail_data(slug)
+        return HTMLResponse(render.journal_fragment(runs, slug, time.time(),
+                                                    live_job=job))
 
     @app.get("/-/ui/schedule/{slug}/attrs", include_in_schema=False)
     def schedule_attrs(slug: str):
@@ -1045,7 +1046,7 @@ def add_controller_routes(
         return HTMLResponse(
             render.live_fragment(schedule, runs, job, slug=slug, now=now,
                                  public_host=config.public_host())
-            + render.journal_fragment(runs, slug, now, oob=True)
+            + render.journal_fragment(runs, slug, now, oob=True, live_job=job)
         )
 
     @app.delete("/-/ui/schedule/{slug}/run/{jid}", include_in_schema=False)
@@ -1054,5 +1055,6 @@ def add_controller_routes(
             client.delete_journal(jid)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
-        _, runs, _ = _detail_data(slug)
-        return HTMLResponse(render.journal_fragment(runs, slug, time.time()))
+        _, runs, job = _detail_data(slug)
+        return HTMLResponse(render.journal_fragment(runs, slug, time.time(),
+                                                    live_job=job))
