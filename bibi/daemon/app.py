@@ -39,6 +39,10 @@ from bibi.wrapper import output
 
 log = logging.getLogger("bibi.daemon")
 
+#: Ping-Intervall des /-/events-Stroms (PLAN-36 Stufe 36.1) — Kommentarzeilen
+#: gegen Verbindungsabrisse bei Sendepausen (s. Route-Kommentar dort).
+EVENTS_PING_S = 15.0
+
 
 def _merge_back(branch: str, *, sync_lock=None, synchronizer=None) -> None:
     """``agent/<slug>`` nach trunk mergen (PLAN-6) und — bei Zustimmung — pushen.
@@ -687,8 +691,18 @@ def create_app(
     roles: Roles, synchronizer=None, worker: Worker | None = None, sweeper=None,
     rescanner=None, controller_client=None, controller_base_url: str | None = None,
     sync_lock=None, heartbeat=None, pinned_worker: Worker | None = None,
+    bus=None, collector=None,
 ) -> FastAPI:
     started_at = time.time()
+    # FE-Event-Bus (PLAN-36 Stufe 36.1): rollenunabhängig wie pinned_worker —
+    # jeder Knoten publiziert seine eigene Sicht (E1), der Collector ist der
+    # eine Poller des Knotens (E4). Injektion für Tests (autorun=False).
+    if bus is None:
+        from bibi.daemon.bus import Bus
+        bus = Bus()
+    if collector is None:
+        from bibi.daemon.bus import Collector
+        collector = Collector(bus)
     if worker is None and roles.worker:
         worker = Worker(worker_name="local")
     # PLAN-28: rollenunabhängig — jeder Knoten hat seine eigene lokale
@@ -759,9 +773,11 @@ def create_app(
         if worker is not None:
             await worker.start()
         await pinned_worker.start()
+        await collector.start()
         try:
             yield
         finally:
+            await collector.stop()
             await pinned_worker.stop()
             if worker is not None:
                 await worker.stop()
@@ -1212,6 +1228,71 @@ def create_app(
     @app.get("/-/run/journal/{jid}/stream", tags=["job"])
     def run_journal_stream(jid: int):
         return _own_run_sse(jid, None)
+
+    # ── /events: der globale FE-Event-Strom (PLAN-36 Stufe 36.1) ──────────────
+    # Rollenunabhängig (E1): EIN Strom pro Daemon, identisch für jeden Tab und
+    # jeden maschinellen Konsumenten — kein Screen-/Slug-Filter; ein Event
+    # trägt seine Ziel-ID, wer das Element nicht zeigt, ignoriert es. Reine
+    # Lese-Route: EventSource kann keine Header setzen, dieselbe bewusste
+    # Tailnet-Offenheit wie die bestehenden Status-/Output-Lese-Routen
+    # (Case-Doku Job-Control-Approval-Bug, „Bewusst NICHT gegatet").
+    # Beim Connect: einmalige Dirty-Meldungen für alle aktiven Läufe (E5) —
+    # direkt nach dem Seitenaufbau ein No-op (Zustands-Events sind idempotent),
+    # nach einem Reconnect die vollständige Heilung. Ping-Kommentarzeilen bei
+    # >=EVENTS_PING_S Sendepause (dasselbe Tailscale-Abriss-Argument wie
+    # _formatted_sse(); Modul-Konstante statt Literal — Tests takten sie
+    # runter, sonst hängt jedes Stream-Schließen bis zum nächsten yield,
+    # weil erst der fehlschlagende Write auf die geschlossene Verbindung
+    # den Generator beendet).
+    # ``limit``: Strom endet nach N data-Events (None = endlos, der Normalfall).
+    # Für Diagnose (`curl /-/events?limit=10`) und Tests — der TestClient-
+    # ASGI-Transport kennt keinen echten Client-Disconnect, ein endloser
+    # Generator liefe dort ewig weiter.
+    @app.get("/-/events", tags=["daemon"])
+    async def events(limit: int | None = None):
+        sub = bus.subscribe()
+        conn = job_db.connect()
+        try:
+            active = conn.execute(
+                "SELECT slug, pinned_host FROM jobs WHERE active=1 "
+                "AND status IN ('running','awaiting','deferred')").fetchall()
+        finally:
+            conn.close()
+        from bibi.daemon.bus import bucket_slug
+        resync = []
+        for r in active:
+            targets = [r["slug"]]
+            b = bucket_slug(r["slug"], r["pinned_host"])
+            if b:
+                targets.append(b)  # gepinnte Läufe: Client-Seite adressiert per Bucket
+            for t in targets:
+                resync.append({"t": "state", "target": f"live:{t}"})
+                resync.append({"t": "state", "target": f"journal:{t}"})
+        async def gen():
+            seq = 0
+            try:
+                yield 'data: {"t":"hello"}\n\n'
+                seq += 1
+                if limit is not None and seq >= limit:
+                    return
+                for ev in resync:
+                    seq += 1
+                    yield f"id: {seq}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                    if limit is not None and seq >= limit:
+                        return
+                while True:
+                    batch = await bus.wait(sub, timeout=EVENTS_PING_S)
+                    if not batch:
+                        yield ": ping\n\n"
+                        continue
+                    for ev in batch:
+                        seq += 1
+                        yield f"id: {seq}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                        if limit is not None and seq >= limit:
+                            return
+            finally:
+                bus.unsubscribe(sub)
+        return StreamingResponse(gen(), media_type="text/event-stream")
 
     # ── /feed: Git-Historie zu Entitäten + Heatmap (PLAN-18) — rollenunabhängig ─
     # Reine Git-/Filesystem-Introspektion (bibi/feed.py), kein job_db-Zugriff —
