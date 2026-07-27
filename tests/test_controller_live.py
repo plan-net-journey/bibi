@@ -171,3 +171,15 @@ def test_scroll_js_resticks_liveterm_across_swap():
     assert "wasAtBottom" in liveterm_section
     assert "savedTop" in liveterm_section
     assert "wasAtBottom ? box.scrollHeight : (savedTop ?? box.scrollTop)" in liveterm_section
+
+
+def test_events_js_newline_literal_survives_python_escaping():
+    # Live-Fund 2026-07-27 (Browser-Verifikation 36.2): im Python-Source stand
+    # '\n' nur einfach escaped — Python machte daraus beim Modul-Load ein
+    # ECHTES Newline mitten im JS-String-Literal, das gesamte _EVENTS_JS starb
+    # mit SyntaxError und die EventSource wurde nie erzeugt (Box fror wieder
+    # ein, exakt das Symptom, das 36.2 behebt). Das gerenderte JS muss den
+    # ZWEI-Zeichen-Escape Backslash+n tragen, nie ein rohes Newline in Quotes.
+    js = render._EVENTS_JS
+    assert "createTextNode('\\n')" in js          # Backslash+n als Literal
+    assert "createTextNode('\n')" not in js.replace("\\n", "")  # kein rohes Newline

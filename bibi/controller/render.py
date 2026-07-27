@@ -2965,7 +2965,7 @@ _EVENTS_JS = """
       if (stick) box.scrollTop = box.scrollHeight;
       return;
     }
-    if (box.childNodes.length) box.appendChild(document.createTextNode('\n'));
+    if (box.childNodes.length) box.appendChild(document.createTextNode('\\n'));
     const tsSpan = document.createElement('span');
     tsSpan.className = 'lts';
     tsSpan.textContent = o.t
