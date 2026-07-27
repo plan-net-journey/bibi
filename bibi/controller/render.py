@@ -501,10 +501,26 @@ def _sched_row(s: dict, now: float, *, public_host: str = "localhost",
     # Status/letzter-seit -> Lauf-Details (die konkrete Ausführung); Schedule/
     # nächster -> Job-Details (der Schedule selbst) — User-Feedback 2026-07-01.
     # Ohne abgeschlossenen Lauf (run_id None) gibt es keine Lauf-Details zum Verlinken.
-    status_cell = (f'<a class="st {st}" href="/-/ui/run/{run_id}">{st}</a>'
-                   if run_id is not None else f'<span class="st {st}">{st}</span>')
-    ago_cell = (f'<a class="rowlink" href="/-/ui/run/{run_id}">{ago}</a>'
-                if run_id is not None else ago)
+    #
+    # User-Fund 2026-07-27 ("running verlinkt auf den falschen Job"): bei
+    # nicht-terminalem Status (running/awaiting/deferred/pending) beschreibt
+    # die Zeile den AKTUELLEN Lauf — der hat noch gar keine Journal-Zeile
+    # (die entsteht erst terminal, Job-Lifecycle-Redesign light), last_run_id
+    # zeigt also auf einen ÄLTEREN Lauf. Status/letzter-seit führen dann auf
+    # die Schedule-Detailseite (dort lebt der Lauf samt Output) statt auf
+    # /-/ui/run/<alter-Lauf> — dieselbe Semantik, die die Client-Tabelle
+    # (_jobs_row(), live-Zweig) längst hat. "failed" zählt zur Journal-Seite:
+    # der letzte Journal-Eintrag IST der angezeigte fehlgeschlagene Lauf.
+    _run_linked = st in _TERMINAL_VIEW or st == "failed"
+    if st and not _run_linked:
+        status_cell = f'<a class="st {st}" href="/-/ui/schedule/{slug}">{st}</a>'
+        ago_cell = f'<a class="rowlink" href="/-/ui/schedule/{slug}">{ago}</a>'
+    elif run_id is not None:
+        status_cell = f'<a class="st {st}" href="/-/ui/run/{run_id}">{st}</a>'
+        ago_cell = f'<a class="rowlink" href="/-/ui/run/{run_id}">{ago}</a>'
+    else:
+        status_cell = f'<span class="st {st}">{st}</span>'
+        ago_cell = ago
     # Batch 9 Punkt 1 (Host-Sparkline-Spalte): dieselbe hx-preserve-Zelle wie
     # die Jobs-Tabelle (_jobs_row()) — sparklines kommt nur vom initialen
     # Seitenaufbau (schedules_screen()/archive_screen()), der Bus-Refetch

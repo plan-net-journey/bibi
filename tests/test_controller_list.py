@@ -168,11 +168,32 @@ def test_sched_row_status_and_ago_link_to_run_detail():
 
 
 def test_sched_row_status_and_ago_plain_without_run_id():
-    # Ohne abgeschlossenen Lauf (last_run_id=None) gibt es nichts zum Verlinken.
-    items = [_sched("fresh", last_status="pending")]
+    # Ohne jeden Lauf und ohne Status-Text bleibt die Zelle ein reiner Span.
+    items = [_sched("fresh", last_status="")]
     html = render.schedule_list(items, now=300.0)
     assert '/-/ui/run/' not in html
-    assert 'class="st pending">pending<' in html
+    assert 'class="st ">' in html
+
+
+def test_sched_row_nonterminal_status_links_to_schedule_not_stale_run():
+    # User-Fund 2026-07-27 ("running verlinkt auf den falschen Job"): bei
+    # nicht-terminalem Status beschreibt die Zeile den AKTUELLEN Lauf, der
+    # noch keine Journal-Zeile hat — last_run_id zeigt auf einen ÄLTEREN
+    # Lauf. Status/letzter-seit müssen dann auf die Schedule-Detailseite
+    # führen (dort lebt der Lauf), nie auf /-/ui/run/<alter-Lauf>.
+    for st in ("running", "awaiting", "deferred", "pending"):
+        items = [_sched("ttyd", last_status=st, last_run_at=100.0, last_run_id=21832)]
+        html = render.schedule_list(items, now=300.0)
+        assert "/-/ui/run/21832" not in html, st
+        assert f'href="/-/ui/schedule/ttyd">{st}<' in html, st
+
+
+def test_sched_row_failed_still_links_to_its_journal_run():
+    # failed IST der letzte Journal-Eintrag (Terminal-Report schreibt die
+    # Zeile) — der Lauf-Detail-Link bleibt hier korrekt.
+    items = [_sched("x", last_status="failed", last_run_at=100.0, last_run_id=7)]
+    html = render.schedule_list(items, now=300.0)
+    assert 'href="/-/ui/run/7">failed<' in html
 
 
 def test_schedules_fragment_is_bus_driven():
