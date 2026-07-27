@@ -91,6 +91,46 @@ def test_local_loopback_unaffected(gated):
     assert local.post(f"/-/job/{jid}/start").status_code == 200
 
 
+# ── Befund 4 (Live-Test PLAN-37, 2026-07-27): co-located fremder Knoten ─────
+# Auf sarasate teilen sich Host (8780), Client (8781) und der Testknoten (8782)
+# eine Maschine — Loopback heißt dort gerade NICHT "derselbe Knoten". Live
+# reproduziert: `mmu` (Status pending) bekam über 127.0.0.1 die volle Job-Liste,
+# über die Tailscale-Adresse korrekt 403.
+
+
+def test_loopback_with_foreign_pending_node_id_is_blocked(gated):
+    local, _, jid = gated
+    h = {"X-Bibi-Node-Id": "co-located-mustertest"}  # nie approved
+    assert local.get("/-/job", headers=h).status_code == 403
+    assert local.post(f"/-/job/{jid}/start", headers=h).status_code == 403
+    assert local.post("/-/run", json={"cmd": "echo hi"}, headers=h).status_code == 403
+
+
+def test_loopback_with_foreign_approved_node_id_passes(gated):
+    local, _, _ = gated
+    local.post("/-/worker/co-located-client/approve")
+    r = local.get("/-/job", headers={"X-Bibi-Node-Id": "co-located-client"})
+    assert r.status_code == 200  # der sarasate-Client (8781→8780) darf weiterhin
+
+
+def test_loopback_with_own_node_id_is_free(gated):
+    """Echtes Selbstgespräch: die CLI dieses Knotens schickt die eigene node_id
+    (``job_cmd.py``) — die darf nie an der eigenen Freischaltung scheitern, sonst
+    sperrt sich ein frisch initialisierter Host selbst aus."""
+    from bibi import config
+    local, _, jid = gated
+    h = {"X-Bibi-Node-Id": config.node_id()}
+    assert local.get("/-/job", headers=h).status_code == 200
+    assert local.post(f"/-/job/{jid}/start", headers=h).status_code == 200
+
+
+def test_loopback_without_header_stays_free(gated):
+    """Bewusste Grenze des Fixes: der eigene Controller/das FE (DaemonClient
+    schickt keine node_id) muss weiter durchkommen."""
+    local, _, _ = gated
+    assert local.get("/-/job").status_code == 200
+
+
 # ── Bewusst NICHT gegatete Lese-Routen (render.py-EventSource-Abhängigkeit) ─
 
 

@@ -164,10 +164,33 @@ def _require_approved_or_local(request: Request,
     Knoten mit seiner eigenen Dashboard-URL, PLAN-32-unabhängig), ein Gate hier
     würde die bestehende Cross-Node-Live-Output-Ansicht brechen, für die es noch
     keinen anderen Auth-Mechanismus gibt. Eigener, bewusst offener Folgepunkt,
-    kein Teil dieses Fixes."""
+    kein Teil dieses Fixes.
+
+    **Nachtrag Befund 4 (Live-Test PLAN-37, 2026-07-27):** die Loopback-Freigabe
+    setzte *Loopback* mit *derselbe Knoten* gleich — das gilt nur, solange auf
+    einer Maschine genau ein Knoten läuft. Auf sarasate teilen sich Host (8780),
+    Client (8781) und der Testknoten (8782) eine Maschine; ein frisch
+    onboardeter, in ``approved_nodes`` als ``pending`` geführter Knoten konnte
+    darüber die volle Job-Kontrolle des Hosts ausüben (live reproduziert: über
+    ``127.0.0.1`` 200, über die Tailscale-Adresse 403). Die CLI schickt ihre
+    Identität längst mit (``job_cmd.py``: ``X-Bibi-Node-Id``) — der Host hat nur
+    nie hingesehen, weil die Adressprüfung davor kurzschloss. Darum jetzt: ein
+    Loopback-Aufruf, der eine **fremde** node_id trägt, durchläuft die reguläre
+    Approval-Prüfung; frei bleibt nur echtes Selbstgespräch (kein Header, oder
+    die eigene node_id dieses Daemons).
+
+    Bewusst **nicht** gelöst: ein lokaler Aufruf ohne Header bleibt frei. Das ist
+    der Weg, den der eigene Controller/das FE dieses Knotens nimmt
+    (``DaemonClient`` schickt keine node_id), und ein lokaler Nutzer könnte den
+    Header ohnehin weglassen — gegen einen bewusst handelnden lokalen Angreifer
+    schützt diese Ebene nicht (er könnte auch ``bibi-ctrl`` direkt aufrufen oder
+    die SQLite lesen). Der Fix schließt den realen Fall: ein ehrlicher, noch
+    nicht freigeschalteter Knoten auf derselben Maschine."""
     host = request.client.host if request.client else None
     if host in _LOCAL_CLIENT_HOSTS:
-        return
+        if not x_bibi_node_id or x_bibi_node_id == config.node_id():
+            return
+        # fremde node_id über Loopback ⇒ regulär prüfen (s. Nachtrag oben)
     if not x_bibi_node_id:
         raise HTTPException(status_code=403,
                             detail="node approval required (missing X-Bibi-Node-Id header)")
