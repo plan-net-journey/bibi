@@ -894,8 +894,12 @@ _RESOLUTION_LABEL = {1440: "24h/1m", 480: "8h/1w", 180: "3h/3d", 120: "2h/2d",
                      15: "15min/24h", 5: "5min/8h", 1: "1min/2h"}
 _DEFAULT_RESOLUTION_MINUTES = 15
 
-#: Chart.js UMD-Bundle (CDN, wie htmx per <script>-Tag — kein Build-Step nötig).
-_CHARTJS = "https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"
+#: Chart.js UMD-Bundle — lokal ausgeliefert wie htmx (PLAN-36-Nachtrag,
+#: 2026-07-27): nach der htmx-Lokalisierung in 36.0 war das die letzte externe
+#: Abhängigkeit einer Seite; im Tailnet-only-/Offline-Setup starb damit das
+#: Chart auf /-/ui/schedules. Versionierter Pfad = Cache-Busting, s.
+#: controller/__init__.py::chartjs_asset().
+_CHARTJS = "/-/static/chartjs-4.4.4.min.js"
 
 
 def _landings_buckets(landings: list[dict], *, now: float,

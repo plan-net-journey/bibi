@@ -155,6 +155,18 @@ def add_controller_routes(
         return _Response(content=_htmx_bytes, media_type="text/javascript",
                          headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
+    # Chart.js analog (PLAN-36-Nachtrag, 2026-07-27): nach der htmx-
+    # Lokalisierung war das jsdelivr-CDN die letzte externe Seiten-
+    # Abhängigkeit — offline blieb das Chart auf /-/ui/schedules leer.
+    # Gleiche Mechanik: einmal gelesen (~200 KiB im Closure), versionierter
+    # Pfad, aggressives immutable-Caching.
+    _chartjs_bytes = (_Path(__file__).parent / "static" / "chart.umd.min.js").read_bytes()
+
+    @app.get("/-/static/chartjs-4.4.4.min.js", include_in_schema=False)
+    def chartjs_asset():
+        return _Response(content=_chartjs_bytes, media_type="text/javascript",
+                         headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
     def _status() -> dict:
         try:
             return client.status()
