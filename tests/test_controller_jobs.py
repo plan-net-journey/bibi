@@ -214,9 +214,13 @@ def test_jobs_fragment_has_no_remote_or_hostlink_text():
     assert "hostlink" not in html
 
 
-def test_jobs_fragment_self_polls():
+def test_jobs_fragment_is_bus_driven():
+    # PLAN-36 Stufe 36.3: Board haengt am kollektiven Bus-Target "jobs".
     html = render.jobs_fragment([], {}, now=100.0)
-    assert 'id="jobsboard"' in html and 'hx-get="/-/ui/jobs/board"' in html
+    assert 'id="jobsboard"' in html
+    assert 'data-bus="jobs"' in html
+    assert 'data-bus-refetch="/-/ui/jobs/board"' in html
+    assert "hx-trigger" not in html.split(">")[0]
 
 
 def test_jobs_fragment_has_no_explanatory_note():
@@ -351,11 +355,12 @@ def test_client_archive_table_empty_shows_placeholder():
     assert "keine lokalen Läufe" in render._client_archive_table([], now=100.0)
 
 
-def test_jobs_archive_fragment_self_polls_under_follow():
+def test_jobs_archive_fragment_is_bus_driven():
     frag = render.jobs_archive_fragment([{"id": 1, "slug": "a", "status": "complete"}], now=1.0)
     assert 'id="archive"' in frag
-    assert 'hx-get="/-/ui/jobs/archive/list"' in frag
-    assert "every 2s [window.bibiFollow]" in frag
+    assert 'data-bus="jobs"' in frag
+    assert 'data-bus-refetch="/-/ui/jobs/archive/list"' in frag
+    assert "window.bibiFollow" not in frag
     assert "Archive (1)" in frag
 
 
@@ -605,7 +610,10 @@ def test_jobs_detail_live_fragment_data_attrs_reflect_running_state():
         "a", {"id": "jid1", "events": []}, _row("a"), None)
     assert 'data-running="1"' in running
     assert 'data-journal-url="/-/ui/jobs/detail/a/journal"' in running
-    assert 'hx-get="/-/ui/jobs/detail/a/live"' in running
+    # PLAN-36 Stufe 36.3: Update-Weg ist der Bus, kein hx-get/Poll mehr.
+    assert 'data-bus="live:a"' in running
+    assert 'data-bus-refetch="/-/ui/jobs/detail/a/live"' in running
+    assert "hx-get" not in running.split(">")[0]
 
 
 def test_journal_fragment_base_param_targets_local_job_detail():

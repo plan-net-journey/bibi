@@ -29,8 +29,16 @@ def _insert_job(conn, job_id="j1", slug="a", status="running"):
 
 
 def _data_events(body: str) -> list[dict]:
-    return [json.loads(ln[len("data: "):])
+    # Pings rausfiltern (seit 36.3 echte data-Events statt SSE-Kommentare,
+    # damit der Client-Watchdog sie sieht) — dieselbe Behandlung wie im
+    # Browser-Client: nur Lebenszeichen, kein Inhalt.
+    evts = [json.loads(ln[len("data: "):])
             for ln in body.splitlines() if ln.startswith("data: ")]
+    return [e for e in evts if e.get("t") != "ping"]
+
+
+def _ping_count(body: str) -> int:
+    return body.count('data: {"t": "ping"}') + body.count('data: {"t":"ping"}')
 
 
 @pytest.fixture
@@ -95,3 +103,25 @@ def test_events_delivers_collector_findings_after_connect(app_env):
         finally:
             t.join()
     assert events == [{"t": "hello"}, {"t": "state", "target": "live:a"}]
+
+
+def test_events_idle_stream_sends_data_pings_not_counting_limit(app_env):
+    # PLAN-36 Stufe 36.3: der Leerlauf-Ping ist ein ECHTES data-Event
+    # ({"t":"ping"}) — SSE-Kommentarzeilen erreichen die EventSource-API nie,
+    # der Client-Watchdog braeuchte sonst blind zu bleiben. Pings zaehlen
+    # nicht gegen ``limit`` (ein Diagnose-Stream endete sonst im Leerlauf).
+    app, bus, _ = app_env
+
+    def publish_late():
+        bus.publish_state("jobs")
+
+    with TestClient(app) as c:
+        t = threading.Timer(0.35, publish_late)
+        t.start()
+        try:
+            body = c.get("/-/events", params={"limit": 2}).text
+        finally:
+            t.join()
+    # 0.35s Leerlauf bei EVENTS_PING_S=0.1 → mehrere Pings VOR dem State-Event.
+    assert _ping_count(body) >= 1
+    assert _data_events(body) == [{"t": "hello"}, {"t": "state", "target": "jobs"}]

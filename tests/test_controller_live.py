@@ -119,6 +119,19 @@ def test_events_js_marks_thinking_stream_with_own_class():
     assert "'thinking'" in render._EVENTS_JS
 
 
+def test_events_js_has_no_follow_gate():
+    # PLAN-36 Stufe 36.3 (E8): Events werden immer angewendet — das fruehere
+    # FOLLOW-Gate (window.bibiFollow) existiert nicht mehr; Lesbarkeit beim
+    # Hochscrollen sichert allein die stick-Logik in appendLine().
+    assert "bibiFollow" not in render._EVENTS_JS
+
+
+def test_events_js_handles_collective_targets_with_query_selector_all():
+    # Kollektive Targets ("jobs", "nodes", ...) duerfen mehrere Regionen auf
+    # einer Seite treffen — querySelectorAll statt querySelector (36.3).
+    assert "querySelectorAll(sel)" in render._EVENTS_JS
+
+
 def test_events_js_dedupes_appends_against_seed_offset():
     # Ein Bus-Refetch trägt frischen Seed + neuen data-from — nachlaufende
     # Appends mit off <= data-from müssen still verworfen werden (E2/E5).
@@ -126,27 +139,34 @@ def test_events_js_dedupes_appends_against_seed_offset():
     assert "data-bus-refetch" in render._EVENTS_JS
 
 
-def test_events_js_never_closes_the_stream():
-    # 2026-07-20-Lektion, unter dem Bus noch einfacher: der Strom lebt so
-    # lange wie die Seite — kein done-Handling, kein close, kein eigener
-    # onerror (der automatische Browser-Reconnect greift, der Server schickt
-    # beim Reconnect den Resync aller aktiven Elemente, E5).
-    assert "es.close" not in render._EVENTS_JS
-    assert "es.onerror" not in render._EVENTS_JS
+def test_events_js_watchdog_rebuilds_only_on_silence():
+    # 2026-07-20-Lektion bleibt: kein done-Handling, kein eigener onerror
+    # (der automatische Browser-Reconnect greift, der Server schickt beim
+    # Reconnect den Resync aller aktiven Elemente, E5). Seit Stufe 36.3
+    # zusaetzlich der Ping-Watchdog: NUR er darf den Strom schliessen — und
+    # nur, wenn >45s kein Event (auch kein {"t":"ping"}, alle 15s faellig)
+    # ankam, d.h. die Verbindung still gestorben ist; danach sofort neu
+    # verbinden (connect() → Server-Resync heilt alle Regionen).
+    js = render._EVENTS_JS
+    assert "es.onerror" not in js
+    watchdog = js.split("setInterval(")[-1]
+    assert "es.close(); connect();" in watchdog
+    assert js.count("es.close") == 1  # ausserhalb des Watchdogs schliesst nichts
+    assert "45000" in watchdog and "10000" in watchdog
 
 
 def test_events_js_scrolls_to_bottom_on_initial_bind():
     # PLAN-19 Befund 2 (2026-07-06-Lektion), unverändert gültig: eine Box mit
     # überfüllendem Seed hat scrollTop=0 — ohne initiales Ans-Ende-Springen
-    # liefert atBottom() ab dem ersten Check false und FOLLOW bleibt dauerhaft
-    # wirkungslos. Jetzt in initBoxes() (_EVENTS_JS).
+    # liefert der stick-Check (appendLine) ab dem ersten Append false und die
+    # Box folgt nie. Jetzt in initBoxes() (_EVENTS_JS).
     js = render._EVENTS_JS
     init_section = js.split("_bibiInit = true;")[1].split("appendLine")[0]
     assert "box.scrollTop = box.scrollHeight;" in init_section
 
 
 def test_scroll_js_preserves_liveclamp_scroll_across_swap():
-    # Swaps kommen jetzt vom Bus-Refetch + Sicherheitsnetz-Poll — das Problem
+    # Swaps kommen jetzt ausschliesslich vom Bus-Refetch (36.3) — das Problem
     # (frisches Element hat scrollTop=0) bleibt dasselbe; beide Regionen
     # (#live Host, #jobsdetail-live Client) sind abgedeckt.
     js = render._SCROLL_JS
@@ -162,8 +182,8 @@ def test_scroll_js_resticks_liveterm_across_swap():
     # NEUEN Ende (scrollHeight); war sie hochgescrollt (User liest alte
     # Zeilen), wird die absolute Position (savedTop) restauriert — vorher
     # fehlte dieser else-Zweig, der browserseitige Reset auf 0 blieb stehen.
-    # Seit 36.2 lebt der Mechanismus in _SCROLL_JS (Swaps kommen jetzt vom
-    # Bus-Refetch + Sicherheitsnetz-Poll statt vom 2s-Poll).
+    # Seit 36.2 lebt der Mechanismus in _SCROLL_JS (Swaps kommen seit 36.3
+    # ausschliesslich vom Bus-Refetch).
     js = render._SCROLL_JS
     assert js.count("htmx:beforeSwap") == 2 and js.count("htmx:afterSettle") == 2
     liveterm_section = js.split(".liveclamp'")[-1]

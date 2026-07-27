@@ -18,23 +18,11 @@ from bibi.schedule import models
 # Datei: controller/static/htmx.min.js, versionierter Pfad = Cache-Busting.
 _HTMX = "/-/static/htmx-1.9.12.min.js"
 
-#: Poll-Trigger der self-aktualisierenden Fragmente — 2s, gated durch FOLLOW
-#: (``window.bibiFollow``). Zentral, damit das Intervall an einer Stelle hängt.
-_POLL = "every 2s [window.bibiFollow]"
-#: PLAN-36 Stufe 36.2: gestrecktes Sicherheitsnetz für Regionen, deren primärer
-#: Update-Weg jetzt der Event-Bus ist (data-bus/-refetch, s. _EVENTS_JS) —
-#: fängt einen still gestorbenen Strom ab, ohne die alte 2s-Dauerlast. Wird
-#: nach der Live-Verifikation von 36.2 zurückgebaut (PLAN-36 36.3).
-_POLL_NET = "every 30s [window.bibiFollow]"
-
-#: Eigener, langsamerer Poll fürs Lauf-Historie-Chart (PLAN-21 Befund 11,
-#: User-Fund 2026-07-08 "wackelt"): der generische 2s-Takt (für Live-Output/
-#: Job-Listen gedacht) hat das Chart bei JEDEM Tick komplett neu instanziiert
-#: (Canvas weg, Chart.js neu, Achsenbeschriftung neu berechnet) — sichtbares
-#: Flackern, obwohl sich "wie viele Läufe sind terminal gelandet" in der
-#: Praxis nicht alle 2s ändert. 20s behebt die Ursache (unnötig häufige
-#: Neuerstellung), nicht nur das Symptom.
-_CHART_POLL = "every 20s [window.bibiFollow]"
+# PLAN-36 Stufe 36.3: die Poll-Trigger-Konstanten (_POLL 2s, _POLL_NET 30s,
+# _CHART_POLL 20s, _CLIENTS_POLL 10s) sind vollständig zurückgebaut — JEDE
+# Region aktualisiert sich jetzt ausschließlich über den Event-Bus
+# (data-bus/data-bus-refetch, s. _EVENTS_JS); den Still-gestorbener-Strom-Fall
+# fängt der Ping-Watchdog in _EVENTS_JS ab, nicht mehr ein Poll-Netz.
 
 _CSS = """
 :root { color-scheme: light dark; }
@@ -519,7 +507,7 @@ def _sched_row(s: dict, now: float, *, public_host: str = "localhost",
                 if run_id is not None else ago)
     # Batch 9 Punkt 1 (Host-Sparkline-Spalte): dieselbe hx-preserve-Zelle wie
     # die Jobs-Tabelle (_jobs_row()) — sparklines kommt nur vom initialen
-    # Seitenaufbau (schedules_screen()/archive_screen()), der 2s-Self-Poll
+    # Seitenaufbau (schedules_screen()/archive_screen()), der Bus-Refetch
     # übergibt None (s. _sparkline_cell()-Docstring).
     spark_cell = _sparkline_cell(raw_slug, sparklines)
     return (
@@ -581,7 +569,7 @@ def schedule_list(schedules: list[dict], now: float | None = None,
     """Die volle Liste, gruppiert nach Registrierungs-Zustand (PLAN-14 Stufe
     14.6, erweitert PLAN-23 Befund 2): Aktiv (MD entdeckt) / Archive (MD
     entfernt ODER abgeschlossener oneshot) / Journal (nur Journal-Historie).
-    Flach + immer sichtbar, kein Klapp mehr — überlebt so den 2s-Poll ohne
+    Flach + immer sichtbar, kein Klapp mehr — überlebt so jeden Swap ohne
     Expand-Verlust."""
     now = time.time() if now is None else now
     return (_schedule_active_block(schedules, now, public_host=public_host, sparklines=sparklines)
@@ -592,23 +580,22 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
                        *, typ: str | None = None, status: str | None = None,
                        public_host: str = "localhost",
                        sparklines: dict[str, list[int]] | None = None) -> str:
-    """Self-pollender Wrapper um die (bereits gefilterte) aktive Schedule-
-    Liste. Der Self-Poll trägt den aktiven Filter in der URL, damit er ihn
-    über den 2s-Tick bewahrt. Ziel = ``/-/ui/schedules/list`` (das Fragment;
+    """Bus-getriebener Wrapper (Target ``jobs``) um die (bereits gefilterte)
+    aktive Schedule-Liste. Der Refetch-Link trägt den aktiven Filter in der
+    URL, damit er den Swap überlebt. Ziel = ``/-/ui/schedules/list`` (das Fragment;
     die Seite liegt auf ``/-/ui/schedules``). Archive/Journal sitzen seit der
     Bibi4-Iteration nicht mehr hier, sondern auf einem eigenen Screen
     (``archive_fragment()``/``archive_page()``, User-Fund: "Archive wird
     verschoben auf einen eigenen Screen") — löst PLAN-25 Befund 6 (3 Rahmen
     Chart/Schedules/Archive auf einer Seite) ab. ``sparklines`` (Batch 9
     Punkt 1) kommt nur vom initialen Seitenaufbau (``schedules_page()``); der
-    2s-Self-Poll (``schedules_list_fragment()``) übergibt ``None``, analog zu
+    Bus-Refetch (``schedules_list_fragment()``) übergibt ``None``, analog zu
     ``jobs_fragment()``/``jobs_board()``."""
     now = time.time() if now is None else now
     qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status))
                   if v and v != "alle")
     url = "/-/ui/schedules/list" + (f"?{qs}" if qs else "")
-    attrs = (f'id="schedules" hx-get="{url}" '
-            f'hx-trigger="{_POLL}" hx-swap="outerHTML"')
+    attrs = (f'id="schedules" data-bus="jobs" data-bus-refetch="{url}"')
     active_html = (f'<div class="panel-card">'
                   f'{_schedule_active_block(schedules, now, public_host=public_host, sparklines=sparklines)}</div>')
     return f"<div {attrs}>{active_html}</div>"
@@ -617,25 +604,24 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
 def archive_fragment(schedules: list[dict], now: float | None = None,
                      *, public_host: str = "localhost",
                      sparklines: dict[str, list[int]] | None = None) -> str:
-    """Self-pollender Archive-Screen-Kern (Host) — Bibi4-Iteration, User-Fund:
+    """Bus-getriebener Archive-Screen-Kern (Host) — Bibi4-Iteration, User-Fund:
     "Archive wird verschoben auf einen eigenen Screen". Zeigt dieselben
     Archive-/Journal-Gruppen wie zuvor der untere Teil von ``/-/ui/schedules``
     (``_schedule_archive_block()``), jetzt eigenständig unter ``/-/ui/archive``.
     Ziel = ``/-/ui/archive/list``. ``sparklines`` (Batch 9 Punkt 1) nur vom
-    initialen Seitenaufbau (``archive_page()``), der 2s-Self-Poll
+    initialen Seitenaufbau (``archive_page()``), der Bus-Refetch
     (``archive_list_fragment()``) übergibt ``None``."""
     now = time.time() if now is None else now
     body = _schedule_archive_block(schedules, now, public_host=public_host, sparklines=sparklines)
     if not body:
         body = '<p class="out-empty">— kein Archiv —</p>'
-    attrs = f'id="archive" hx-get="/-/ui/archive/list" hx-trigger="{_POLL}" hx-swap="outerHTML"'
+    attrs = 'id="archive" data-bus="jobs" data-bus-refetch="/-/ui/archive/list"'
     return f'<div {attrs}><div class="panel-card">{body}</div></div>'
 
 
 def archive_page(schedules: list[dict], now: float | None = None,
                  *, daemon_status: dict | None = None, git_status: dict | None = None,
-                 host_url: str | None = None, status_poll_interval_s: int = 30,
-                 job_status_poll_interval_s: int = 2, public_host: str = "localhost",
+                 host_url: str | None = None, public_host: str = "localhost",
                  sparklines: dict[str, list[int]] | None = None) -> str:
     """Archive-Screen (Host, Bibi4-Iteration) — eigene Seite für Archive/
     Journal, abgetrennt von der aktiven Schedule-Liste auf ``/-/ui/schedules``.
@@ -653,12 +639,12 @@ def archive_page(schedules: list[dict], now: float | None = None,
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Archive</title>"
-        f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Archive', daemon_status)}"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now)}"
         f"{archive_fragment(schedules, now, public_host=public_host, sparklines=sparklines)}"
+        f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
@@ -674,8 +660,6 @@ def archive_page(schedules: list[dict], now: float | None = None,
 # hinterlegten gitea/git Nutzernamen") reisen seit dem Heartbeat-Ausbau mit.
 # role (zweite Bibi4-Iteration, User-Fund: "Client Übersicht braucht die
 # Rollen je Client") denselben Weg: Heartbeat -> WorkerRegistry -> hier.
-
-_CLIENTS_POLL = "every 10s [window.bibiFollow]"
 
 # Reihenfolge wie vom User vorgegeben: "Mit Scheduler, Controller,
 # Synchronizer, Connected, Worker." role-Werte (roher komma-getrennter
@@ -818,8 +802,7 @@ def _clients_table(workers: list[dict], now: float) -> str:
 def clients_fragment(workers: list[dict], now: float | None = None) -> str:
     now = time.time() if now is None else now
     return (
-        f'<div id="clientsboard" hx-get="/-/ui/clients/board" '
-        f'hx-trigger="{_CLIENTS_POLL}" hx-swap="outerHTML">'
+        '<div id="clientsboard" data-bus="nodes" data-bus-refetch="/-/ui/clients/board">'
         '<div class="panel-card"><h2>Nodes</h2>'
         f"{_clients_table(workers, now)}</div>"
         "</div>"
@@ -828,8 +811,7 @@ def clients_fragment(workers: list[dict], now: float | None = None) -> str:
 
 def clients_page(workers: list[dict], now: float | None = None, *,
                  daemon_status: dict | None = None, git_status: dict | None = None,
-                 host_url: str | None = None, status_poll_interval_s: int = 30,
-                 job_status_poll_interval_s: int = 2) -> str:
+                 host_url: str | None = None) -> str:
     """Nodes-Screen (Batch 9 Punkt 3: umbenannt von "Clients" — Nav-Label +
     Tabellen-Überschrift, Route/interne Namen bewusst unverändert, analog zur
     Host/Client-Jobs-Umbenennung weiter oben) — nur für die ``scheduler``-
@@ -846,12 +828,12 @@ def clients_page(workers: list[dict], now: float | None = None, *,
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Nodes</title>"
-        f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Nodes', daemon_status)}"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now)}"
         f"{clients_fragment(workers, now)}"
+        f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
@@ -1029,16 +1011,17 @@ def _resolution_links(bucket_minutes: int) -> str:
 def timeseries_fragment(landings: list[dict], job_stats: dict | None = None,
                         now: float | None = None, *,
                         bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES) -> str:
-    """Self-pollender Wrapper um Chart-Kopf (Titel + Auflösung) + Zustands-
+    """Bus-getriebener Wrapper um Chart-Kopf (Titel + Auflösung) + Zustands-
     Chips + Landungs-Histogramm, in einer Karte über die volle Breite (User-
     Fund 2026-07-08, Variante C: "vereinigt", kein separates Stat-Grid, keine
     Chart-Legende mehr, Chart deutlich größer). Ziel =
-    ``/-/ui/schedules/timeseries`` — eigener Poll, getrennt von der Schedule-
-    Liste (``schedules_fragment``): andere Datenquelle (``journal_landings``/
-    ``job_stats`` statt ``/-/schedule``), eigener (langsamerer) Takt
-    ``_CHART_POLL`` statt ``_POLL`` (s. dort — das "wackelt"-Fund 2026-07-08).
-    Der Self-Poll trägt die aktuelle Auflösung in der URL, damit sie den Tick
-    überlebt (dieselbe Idee wie ``schedules_fragment``s Filter-Querystring)."""
+    ``/-/ui/schedules/timeseries`` — eigenes Bus-Target ``chart``, getrennt
+    von der Schedule-Liste (``jobs``): der Collector feuert es nur bei neuen
+    Journal-Einträgen, d.h. das Chart wird seltener neu instanziiert als die
+    Job-Listen — dieselbe Absicht wie der frühere langsamere ``_CHART_POLL``
+    (das "wackelt"-Fund 2026-07-08), jetzt ereignisgenau statt zeitgestreckt.
+    Der Refetch-Link trägt die aktuelle Auflösung in der URL, damit sie den
+    Swap überlebt (dieselbe Idee wie ``schedules_fragment``s Filter-QS)."""
     now = time.time() if now is None else now
     job_stats = job_stats or {}
     counts = job_stats.get("counts") or {}
@@ -1050,8 +1033,8 @@ def timeseries_fragment(landings: list[dict], job_stats: dict | None = None,
         + _landings_chart_html(labels, bucket_counts)
     )
     url = f"/-/ui/schedules/timeseries?res={bucket_minutes}"
-    attrs = (f'id="timeseries" class="panel-card" hx-get="{url}" '
-            f'hx-trigger="{_CHART_POLL}" hx-swap="outerHTML"')
+    attrs = (f'id="timeseries" class="panel-card" data-bus="chart" '
+             f'data-bus-refetch="{url}"')
     return f"<div {attrs}>{body}</div>"
 
 
@@ -1211,16 +1194,12 @@ _CLOCK_JS = """
 """
 
 
-def _follow_toggle() -> str:
-    """FOLLOW-Button (pausiert Live-Updates, ``window.bibiFollow``) — Teil der
-    rechten Nav-Gruppe (Bibi4-Iteration: Toggles rechts, revidiert PLAN-21
-    Befund 1). Als Text-Link gestylt, kein Button-Look (PLAN-19 Befund 7).
-    Icon statt Text (Bibi4-Iteration, User-Fund: "Toggles über Icons") — ⏵
-    (an, folgt live) / ⏸ (aus, pausiert), analog zum ☾/☀-Symbolwechsel von
-    ``_theme_toggle()``. ``title`` trägt die textuelle Erklärung fürs Hover,
-    da der Button sonst kein sichtbares Label mehr hat."""
-    return ('<button id="follow" class="toggle on" onclick="bibiToggleFollow()" '
-           'title="Follow: an (live folgen)">⏵</button>')
+# PLAN-36 Stufe 36.3 (E8): FOLLOW-Toggle + _FOLLOW_JS komplett entfernt.
+# Der Toggle existierte, weil die frueheren 2s-Volltausch-Polls jede manuelle
+# Scroll-Position zerstoerten ("die ersten Logzeilen auch LESEN MUESSEN") —
+# unter dem Bus stickt appendLine() nur, wenn die Box unten steht, und
+# _SCROLL_JS restauriert Positionen ueber Swaps; ein globaler Pausenschalter
+# schuetzt nichts mehr und hielt nur veraltete Zustaende auf dem Schirm.
 
 
 def _theme_toggle() -> str:
@@ -1234,7 +1213,7 @@ def _theme_toggle() -> str:
 
 #: DARK/LIGHT-Toggle: überschreibt ``color-scheme`` explizit via ``data-theme``
 #: auf <html> (s. _CSS), Default = System-Präferenz (``prefers-color-scheme``),
-#: persistiert in localStorage — analog zu _FOLLOW_JS. Symbol statt Text
+#: persistiert in localStorage — analog zu _TIME_JS. Symbol statt Text
 #: (PLAN-21 Befund 1): ☀ (hell → Klick wechselt zu dunkel) / ☾ (dunkel →
 #: Klick wechselt zu hell), zeigt also das jeweils erreichbare Ziel-Theme.
 _THEME_JS = """
@@ -1307,7 +1286,7 @@ def _header(active: str, status: dict | None = None) -> str:
     (``/-/status``), keine neue Datenquelle nötig."""
     roles = (status or {}).get("roles")
     left = f'<h1>bibi</h1>{_screen_nav(active, roles)}'
-    right = (f'{_follow_toggle()}{_ops_handles(status)}{_time_toggle()}'
+    right = (f'{_ops_handles(status)}{_time_toggle()}'
             f'{_live_clock()}{_theme_toggle()}')
     return (f'<header><div class="nav-left">{left}</div>'
             f'<div class="nav-right">{right}</div></header>')
@@ -1318,7 +1297,6 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
                    *, daemon_status: dict | None = None,
                    landings: list[dict] | None = None,
                    git_status: dict | None = None, host_url: str | None = None,
-                   status_poll_interval_s: int = 30, job_status_poll_interval_s: int = 2,
                    bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES,
                    public_host: str = "localhost",
                    sparklines: dict[str, list[int]] | None = None) -> str:
@@ -1334,7 +1312,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
     ``daemon_status["job_stats"]``). ``bucket_minutes`` ist die initiale Chart-
     Auflösung beim ersten Laden (User-Fund: "warum wird die Auflösung ...
     nicht gespeichert?") — der Aufrufer (``controller/__init__.py``) ermittelt
-    sie aus Query-Param/Cookie, bevor der Self-Poll die URL selbst trägt."""
+    sie aus Query-Param/Cookie, bevor der Refetch-Link die URL selbst trägt."""
     now = time.time() if now is None else now
     daemon_status = daemon_status or {}
     return (
@@ -1342,53 +1320,21 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Schedules</title>"
-        f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f'<script src="{_CHARTJS}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Jobs', daemon_status)}"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now)}"
         f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now, bucket_minutes=bucket_minutes)}"
         f"{_filter_bar(typ, status)}"
         f"{schedules_fragment(schedules, now, typ=typ, status=status, public_host=public_host, sparklines=sparklines)}"
+        f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
-
-
-#: FOLLOW-Toggle: steuert ``window.bibiFollow`` (Trigger-Filter der Poll-Fragmente).
-#: Vor htmx-Init gesetzt (im <head>), damit die Trigger den Startzustand sehen.
-_FOLLOW_JS = """
-window.bibiFollow = (localStorage.getItem('bibiFollow') ?? '1') === '1';
-function bibiFollowIcon(on){ return on ? '⏵' : '⏸'; }
-function bibiFollowTitle(on){ return on ? 'Follow: an (live folgen)' : 'Follow: aus (pausiert)'; }
-function bibiToggleFollow(){
-  window.bibiFollow = !window.bibiFollow;
-  localStorage.setItem('bibiFollow', window.bibiFollow ? '1' : '0');
-  const b = document.getElementById('follow');
-  b.textContent = bibiFollowIcon(window.bibiFollow);
-  b.title = bibiFollowTitle(window.bibiFollow);
-  b.className = 'toggle ' + (window.bibiFollow ? 'on' : '');
-  // Wieder-Einschalten muss sofort ans Ende springen — sonst bleibt die Box
-  // bis zum nächsten Append "stick=false" (atBottom() prüft die aktuelle
-  // Scroll-Position, die während FOLLOW=aus eingefroren war) und folgt nie
-  // wieder, obwohl der Nutzer genau das mit dem Klick angefordert hat.
-  if (window.bibiFollow){
-    document.querySelectorAll('.liveterm').forEach(box => {
-      box.scrollTop = box.scrollHeight;
-    });
-  }
-}
-document.addEventListener('DOMContentLoaded', () => {
-  const b = document.getElementById('follow');
-  if (b && !window.bibiFollow){
-    b.textContent = bibiFollowIcon(false); b.title = bibiFollowTitle(false); b.className = 'toggle';
-  }
-});
-"""
 
 
 # ── Live-Log-Panel (§5.4 Slice C) — EventSource gegen /-/log/stream ──────────
@@ -1458,7 +1404,7 @@ def _log_panel() -> str:
     """Log-Filterleiste + Box + EventSource-Script — geteilter Baustein zwischen
     ``log_page()`` (Live-Log) und ``daemon_page()`` (PLAN-17 Stufe 17.0: dieselbe
     Quelle, jetzt zusätzlich neben den Status-Kacheln), damit beide Seiten
-    dasselbe Verhalten (Filter, FOLLOW-Autoscroll) ohne Duplikat-Pflege haben."""
+    dasselbe Verhalten (Filter, positionsbasiertes Autoscroll) ohne Duplikat-Pflege haben."""
     return (
         '<div class="logbar">'
         '<label>Level <select id="lvl">'
@@ -1475,13 +1421,14 @@ def _log_panel() -> str:
 
 def log_page(daemon_status: dict | None = None, *, git_status: dict | None = None,
              host_url: str | None = None, now: float | None = None,
-             status_poll_interval_s: int = 30, job_status_poll_interval_s: int = 2,
              client_rows: list[dict] | None = None) -> str:
     """Live-Log-Panel (§5.4 Slice C): EventSource gegen ``/-/log/stream``, mit
     Level- + Text-Filter (Rolle/Event/slug/msg). Reines FE; der Daemon liefert
-    die Events als SSE. Ops-Handles + funktionierendes FOLLOW seit User-Feedback
-    2026-07-04 (vorher fehlte ``_FOLLOW_JS`` hier komplett — der FOLLOW-Button
-    im Header war wirkungslos). Status-Kacheln (Host/Mode/Git/Job-Status,
+    die Events als SSE (der Log-Stream bleibt bewusst ein eigener Strom neben
+    ``/-/events`` — Log-Zeilen sind Diagnose-Volumen, kein UI-Zustand).
+    Autoscroll pausiert rein ueber die Scroll-Position (``paused`` in
+    ``_LOG_JS``) — der globale FOLLOW-Toggle ist seit PLAN-36 Stufe 36.3
+    entfernt (E8). Status-Kacheln (Host/Mode/Git/Job-Status,
     PLAN-27 Befund 2, User-Fund: "diesen Header auch im Live-Log anzeigen")
     seit demselben `feed_status_fragment()` wie auf ``/-/``/``/-/ui/schedules``
     — braucht dafür jetzt auch das htmx-Script-Tag (vorher unnötig, da der
@@ -1493,13 +1440,13 @@ def log_page(daemon_status: dict | None = None, *, git_status: dict | None = Non
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Live-Log</title>"
-        f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Live Log', status)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s, client_rows=client_rows)}"
+        f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows)}"
         f"{_log_panel()}"
+        f"<script>{_EVENTS_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
@@ -1769,23 +1716,20 @@ def _job_status_card(job_stats: dict, now: float) -> str:
     return f'<div class="card"><div class="jobstatus-grid">{header}{rows}</div></div>'
 
 
-def job_status_fragment(job_stats: dict | None, now: float, *, poll_interval_s: int = 2) -> str:
-    """Eigenständig pollende Job-Status-Kachel (Bibi4-Iteration, User-Fund:
-    "Job Status ändert sich oft, und eine häufigere Abfrage wäre gut ... da es
-    sich um eine sqlite db Abfrage handelt, sollte eine 1-2 Sekunden Abfrage
-    aber möglich sein") — löst sich aus dem bisherigen 30s-Bundle von
-    ``feed_status_fragment()``: anders als Host/Mode/Git (die am
-    ``git status``-Subprozess hängen) ist Job Status eine reine ``job_db``-
-    SQLite-Abfrage, dieselbe Kosten-Klasse wie die 2s-Polls der Schedules-/
-    Jobs-Tabelle (``_POLL``). Nur gerendert, wenn ``job_stats`` vorhanden ist
+def job_status_fragment(job_stats: dict | None, now: float) -> str:
+    """Eigenständige Job-Status-Kachel (Bibi4-Iteration, User-Fund: "Job
+    Status ändert sich oft, und eine häufigere Abfrage wäre gut") — eigenes
+    Element neben dem ``feed_status_fragment()``-Bundle, seit PLAN-36 Stufe
+    36.3 bus-getrieben statt 2s-Poll: das Target ``jobs`` feuert bei jeder
+    Job-Zustandsänderung, die Kachel refetcht dann ``/-/ui/feed/jobstatus``
+    (dieselbe billige ``job_db``-SQLite-Abfrage wie vorher, nur ereignisgenau
+    statt taktweise). Nur gerendert, wenn ``job_stats`` vorhanden ist
     (``scheduler``-Rolle, wie bisher PLAN-26 Befund 3) — sonst leerer String,
-    kein leerer Poll-Container. ``poll_interval_s`` kommt vom Aufrufer
-    (Default 2s, konfigurierbar über ``config.job_status_poll_interval()``/
-    ``BIBI_JOB_STATUS_POLL_INTERVAL``)."""
+    kein leerer Bus-Container."""
     if job_stats is None:
         return ""
-    attrs = (f'id="jobstatuscard" hx-get="/-/ui/feed/jobstatus" '
-            f'hx-trigger="every {poll_interval_s}s [window.bibiFollow]" hx-swap="outerHTML"')
+    attrs = ('id="jobstatuscard" data-bus="jobs" '
+             'data-bus-refetch="/-/ui/feed/jobstatus"')
     return f'<div {attrs}>{_job_status_card(job_stats, now)}</div>'
 
 
@@ -1831,8 +1775,7 @@ def _client_job_status_card(rows: list[dict]) -> str:
 
 def feed_status_fragment(
     status: dict, git_status: dict | None, host_url: str | None, now: float,
-    *, poll_interval_s: int = 30, job_status_poll_interval_s: int = 2,
-    client_rows: list[dict] | None = None,
+    *, client_rows: list[dict] | None = None,
 ) -> str:
     """Die Feed-Header-Kacheln (PLAN-19 Befund 4: Host-Connection, Mode,
     Git — löst die bisherigen 6 Kacheln von PLAN-18 Stufe 18.3 ab, u. a. fällt
@@ -1842,10 +1785,10 @@ def feed_status_fragment(
     Baustein bestehen, auch ohne eigene Route seit PLAN-18 Stufe 18.4).
 
     Optionale 4. Kachel (PLAN-26 Befund 3) lebt seit der Bibi4-Iteration in
-    ``job_status_fragment()`` — eigener, schnellerer Self-Poll statt Teil
-    dieses 30s-Bundles, s. dortiger Docstring. Hier nur noch als verschachtelter
+    ``job_status_fragment()`` — eigenes Bus-Target ``jobs`` statt Teil dieses
+    Bundles, s. dortiger Docstring. Hier nur noch als verschachtelter
     Baustein eingehängt (``.statuscards`` bleibt das Grid, der Job-Status-
-    Poll-Container ist einfach ein weiteres Grid-Kind).
+    Container ist einfach ein weiteres Grid-Kind).
 
     ``client_rows`` (Bibi4-Iteration, User-Brainstorm): Gegenstück für
     Knoten ohne ``scheduler``-Rolle — dieselbe Discovery-Liste wie
@@ -1854,22 +1797,20 @@ def feed_status_fragment(
     2s-Poll, DB-Query) bleibt das Teil dieses 30s-Bundles: die zugrunde
     liegende Discovery+Git-Status-Abfrage ist dieselbe Kostenklasse wie die
     Git-Karte selbst, ändert sich zudem selten (Repo-Struktur, nicht Live-
-    Scheduling) — kein eigener schneller Poll nötig. Wenn weder ``job_stats``
-    noch ``client_rows`` vorhanden sind (z. B. Job-/Run-Detailseiten), bleibt
-    die 4. Kachel schlicht weg, wie bisher.
+    Scheduling). Wenn weder ``job_stats`` noch ``client_rows`` vorhanden sind
+    (z. B. Job-/Run-Detailseiten), bleibt die 4. Kachel schlicht weg, wie
+    bisher.
 
-    Self-pollend seit PLAN-25 Befund 4 (User-Fund: "Header kontinuierlich
-    aktualisieren") — vorher nur beim initialen Seitenaufbau gerendert.
-    Bewusst **kein** festes 2s-Intervall wie ``#schedules`` für Host/Mode/Git:
-    die Git-Karte hängt an einem ``git status``-Subprozess, nicht billig genug
-    für Sekundentakt. ``poll_interval_s`` kommt vom Aufrufer (Default 30s,
-    konfigurierbar über ``config.status_poll_interval()``/
-    ``BIBI_STATUS_POLL_INTERVAL``), damit diese Funktion config-frei bleibt."""
+    Aktualisierung seit PLAN-36 Stufe 36.3 über das Bus-Target ``feedstatus``
+    (Collector: Flag-Diff auto_sync/sync_conflict/maintenance + jede Job-
+    Zustandsänderung) statt des früheren 30s-Polls — der existierte, weil die
+    Git-Karte an einem ``git status``-Subprozess hängt, der für Sekundentakt
+    zu teuer war; jetzt läuft er nur noch, wenn sich tatsächlich etwas
+    geändert hat (bzw. beim MAINT-Klick, s. u.)."""
     cards = [_host_card(status, host_url, now), _mode_card(status, now),
              _git_segment_card(git_status)]
     if status.get("job_stats") is not None:
-        job_card = job_status_fragment(status.get("job_stats"), now,
-                                       poll_interval_s=job_status_poll_interval_s)
+        job_card = job_status_fragment(status.get("job_stats"), now)
     elif client_rows is not None:
         job_card = _client_job_status_card(client_rows)
     else:
@@ -1879,9 +1820,10 @@ def feed_status_fragment(
     # Toggle (_OPS_HANDLES_JS) lebt im gemeinsamen Header, unabhängig davon, ob
     # diese Kachel auf der aktuellen Seite überhaupt existiert (z. B. Job-
     # Detail hat keine); ohne Treffer im DOM ist das Event einfach ein No-op.
-    attrs = (f'id="feedstatus" hx-get="/-/ui/feed/status" '
-            f'hx-trigger="every {poll_interval_s}s [window.bibiFollow], '
-            f'bibiMaintChanged from:body" hx-swap="outerHTML"')
+    attrs = ('id="feedstatus" data-bus="feedstatus" '
+             'data-bus-refetch="/-/ui/feed/status" '
+             'hx-get="/-/ui/feed/status" '
+             'hx-trigger="bibiMaintChanged from:body" hx-swap="outerHTML"')
     return f'<div {attrs}><div class="statuscards">{"".join(cards)}{job_card}</div></div>'
 
 
@@ -1896,7 +1838,6 @@ def daemon_page(daemon_status: dict | None = None, now: float | None = None) -> 
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Daemon</title>"
-        f"<script>{_FOLLOW_JS}</script>"
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Daemon', status)}"
         f"<script>{_CLOCK_JS}</script>"
@@ -1955,13 +1896,13 @@ def _sparkline_cell(slug: str, series_by_slug: dict[str, list[int]] | None) -> s
     die Box ... über den 2s-Poll am Leben"): die zugrunde liegende Aggregation
     (``feed.collect_commits()`` + ``agent_commit_shas()`` über 30 Tage) ist
     Git-Subprozess-lastig, dieselbe Kostenklasse wie die Git-Karte — zu teuer
-    für den 2s-Tabellen-Poll. ``series_by_slug`` kommt deshalb nur vom
-    initialen Seitenaufbau (``jobs_page()``); der 2s-Self-Poll
+    für jeden Tabellen-Refetch. ``series_by_slug`` kommt deshalb nur vom
+    initialen Seitenaufbau (``jobs_page()``); der Bus-Refetch
     (``jobs_board()``) übergibt ``None`` und rendert eine leere Zelle mit
     derselben ``id`` — htmx behält dank ``hx-preserve`` das schon vorhandene
     Sparkline-Element, statt es durch die leere Variante zu ersetzen.
     Aktualisiert sich dadurch bei Seitenaufruf/Reload, nicht bei jedem
-    Tabellen-Tick."""
+    Tabellen-Swap."""
     svg = _sparkline_svg((series_by_slug or {}).get(slug, []))
     return f'<span id="spark-{_e(slug)}" hx-preserve="true">{svg}</span>'
 
@@ -1993,12 +1934,12 @@ def _sparkline_cell_lazy(slug: str, index: int = 0) -> str:
 
     ``hx-preserve=\"true\"`` **hier auch schon im unaufgelösten Zustand**
     (Regression, User-Fund nach Deploy: "Sparklines erscheinen jetzt gar
-    nicht mehr") — ohne das riss der 2s-Self-Poll (``#jobsboard``,
+    nicht mehr") — ohne das riss der damalige 2s-Self-Poll (``#jobsboard``,
     ``jobs_board()``, rendert jede Zeile mit ``sparklines=None`` neu) diesen
     Platzhalter samt seines noch laufenden ``hx-get``s aus dem DOM, sobald
     der Poll vor dessen Auflösung feuerte (praktisch immer bei mehreren
-    Zeilen: der Poll tickt alle 2s, mehrere gleichzeitige Pro-Slug-Requests
-    konkurrieren um Browser-Verbindungen + den Cache-Lock). Die dadurch neu
+    Zeilen; heute swappt dieselbe Region bei jedem ``jobs``-Bus-Event, das
+    Schutzbedürfnis bleibt identisch). Die dadurch neu
     eingesetzte, leere ``_sparkline_cell(slug, None)``-Zelle hat zwar selbst
     ``hx-preserve``, aber das schützt nur VOR zukünftigen Swaps, nicht
     rückwirkend — die Zeile blieb ab dann für immer leer, ohne dass je
@@ -2129,8 +2070,8 @@ def jobs_fragment(
     die vorherige Lokal/Remote-Abgleich-Tabelle ab, kein Netzaufruf/Remote-
     Bezug mehr, dient ausschließlich dem Review der lokalen Repository-
     Realität; PLAN-28 User-Feedback: kein Start-CTA mehr hier, Start gibt es
-    nur noch auf der Job-Detailseite). Self-pollt wie die anderen Screens
-    (PLAN-17 Stufe 17.2), damit ein anderswo (Detailseite, CLI) gestarteter
+    nur noch auf der Job-Detailseite). Bus-getrieben wie die anderen Screens
+    (Target ``jobs``), damit ein anderswo (Detailseite, CLI) gestarteter
     Lauf ohne Warten sichtbar wird.
 
     "Lokale Läufe" (die frühere zweite Sektion hier) lebt seit der Bibi4-
@@ -2142,15 +2083,15 @@ def jobs_fragment(
 
     ``sparklines`` (Bibi4-Iteration, User-Fund: "eine Sparkline ... git
     Änderungen") kommt nur vom initialen Seitenaufbau (``jobs_page()``) — der
-    2s-Self-Poll hier übergibt bewusst ``None``, s. ``_sparkline_cell()``-
-    Docstring (hx-preserve, zu teuer für den Sekundentakt).
+    Bus-Refetch hier übergibt bewusst ``None``, s. ``_sparkline_cell()``-
+    Docstring (hx-preserve, zu teuer für jeden Tabellen-Refetch).
 
     ``lazy_sparklines`` (zweite Bibi4-Iteration, User-Fund: "Sparklines dauern
     beim Reload immer") — der initiale Seitenaufbau selbst rechnet die Serie
     nicht mehr, sondern rendert nur noch Platzhalter, s. ``_sparkline_cell_lazy()``."""
     now = time.time() if now is None else now
     return (
-        f'<div id="jobsboard" hx-get="/-/ui/jobs/board" hx-trigger="{_POLL}" hx-swap="outerHTML">'
+        '<div id="jobsboard" data-bus="jobs" data-bus-refetch="/-/ui/jobs/board">'
         '<div class="panel-card"><h2>Jobs</h2>'
         f"{_jobs_table(rows, local_runs, now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines)}</div>"
         "</div>"
@@ -2208,7 +2149,7 @@ def _client_archive_table(runs: list[dict], now: float) -> str:
 
 
 def jobs_archive_fragment(runs: list[dict], now: float | None = None) -> str:
-    """Self-pollender Archive-Screen-Kern (Client) — Bibi4-Iteration, User-Fund:
+    """Bus-getriebener Archive-Screen-Kern (Client) — Bibi4-Iteration, User-Fund:
     "der untere Abschnitt lokale Läufe wandert in den eigenen Screen Archive".
     ``runs`` ist dieselbe flache Journal-Liste wie zuvor für "Lokale Läufe"
     (``client.run_journal()``), jetzt ohne die frühere 20er-Deckelung und in
@@ -2217,15 +2158,14 @@ def jobs_archive_fragment(runs: list[dict], now: float | None = None) -> str:
     ``/-/ui/jobs/archive/list``."""
     now = time.time() if now is None else now
     body = f'<h2>Archive ({len(runs)})</h2>' + _client_archive_table(runs, now)
-    attrs = (f'id="archive" hx-get="/-/ui/jobs/archive/list" '
-            f'hx-trigger="{_POLL}" hx-swap="outerHTML"')
+    attrs = ('id="archive" data-bus="jobs" '
+             'data-bus-refetch="/-/ui/jobs/archive/list"')
     return f'<div {attrs}><div class="panel-card">{body}</div></div>'
 
 
 def jobs_archive_page(runs: list[dict], now: float | None = None,
                       *, daemon_status: dict | None = None, git_status: dict | None = None,
-                      host_url: str | None = None, status_poll_interval_s: int = 30,
-                      job_status_poll_interval_s: int = 2,
+                      host_url: str | None = None,
                       client_rows: list[dict] | None = None) -> str:
     """Archive-Screen (Client, Bibi4-Iteration) — eigene Seite für die lokale
     Lauf-Historie, abgetrennt von der Jobs-Liste auf ``/-/ui/jobs``. Dieselben
@@ -2239,12 +2179,12 @@ def jobs_archive_page(runs: list[dict], now: float | None = None,
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Archive</title>"
-        f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Archive', daemon_status)}"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s, client_rows=client_rows)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, client_rows=client_rows)}"
         f"{jobs_archive_fragment(runs, now)}"
+        f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
@@ -2256,8 +2196,7 @@ def jobs_archive_page(runs: list[dict], now: float | None = None,
 def jobs_page(
     rows: list[dict], local_runs: dict[str, dict],
     *, daemon_status: dict | None = None, git_status: dict | None = None,
-    host_url: str | None = None, status_poll_interval_s: int = 30,
-    job_status_poll_interval_s: int = 2,
+    host_url: str | None = None,
     now: float | None = None, public_host: str = "localhost",
     sparklines: dict[str, list[int]] | None = None,
     lazy_sparklines: bool = False,
@@ -2279,13 +2218,13 @@ def jobs_page(
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Jobs</title>"
-        f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Jobs', status)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s, client_rows=rows)}"
+        f"{feed_status_fragment(status, git_status, host_url, now, client_rows=rows)}"
         f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines)}"
+        f"<script>{_EVENTS_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
@@ -2405,7 +2344,7 @@ def jobs_detail_live_fragment(slug: str, live: dict | None, local: dict | None,
                               last_run_output: dict | None = None,
                               public_host: str = "localhost",
                               now: float | None = None) -> str:
-    """Self-pollende Region (``#jobsdetail-live``): Meta-Zeile + Aktions-
+    """Bus-getriebene Region (``#jobsdetail-live``): Meta-Zeile + Aktions-
     Leiste + Live-/letzter-Lauf-Block — seit PLAN-29 Befund 3+5 dieselben
     Bausteine wie beim Host (``_action_bar()``/``_live_panel()``, s. Modul-
     Kommentar), nur mit lokal gespeisten Daten. Ziel = ``/-/ui/jobs/detail/
@@ -2431,16 +2370,15 @@ def jobs_detail_live_fragment(slug: str, live: dict | None, local: dict | None,
         + _live_panel(job, now, live_output, slug=slug, public_host=public_host,
                      raw_stream_base=None)
     )
-    # PLAN-36 Stufe 36.2: primärer Update-Weg ist der Bus (data-bus/-refetch),
-    # der frühere 2s-Poll bleibt nur als gestrecktes Sicherheitsnetz — bis auf
-    # awaiting (HITL-Formular, unbedingt 2s, Parität zum Host-live_fragment()).
-    _is_awaiting = bool(job) and job.get("status") == "awaiting"
-    _poll = "every 2s" if _is_awaiting else _POLL_NET
+    # PLAN-36 Stufe 36.3: einziger Update-Weg ist der Bus (data-bus/-refetch)
+    # — das 36.2er-Sicherheitsnetz-Poll und der awaiting-2s-Sonderfall sind
+    # zurückgebaut (jeder awaiting-Übergang ist eine Job-Statusänderung, der
+    # Collector feuert das live:-Event ereignisgenau; den Still-gestorbener-
+    # Strom-Fall deckt der Ping-Watchdog in _EVENTS_JS).
     attrs = (f'id="jobsdetail-live" data-running="{running_flag}" '
             f'data-journal-url="{journal_url}" '
             f'data-bus="live:{s}" '
-            f'data-bus-refetch="/-/ui/jobs/detail/{s}/live" '
-            f'hx-get="/-/ui/jobs/detail/{s}/live" hx-trigger="{_poll}" hx-swap="outerHTML"')
+            f'data-bus-refetch="/-/ui/jobs/detail/{s}/live"')
     return f"<div {attrs}>{body}</div>"
 
 
@@ -2485,7 +2423,6 @@ def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>bibi · {s}</title>"
-        f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('', daemon_status)}"
@@ -2733,7 +2670,6 @@ def feed_page(
     feed_data: dict, *, git_status: dict | None = None, host_url: str | None = None,
     days: int | None = None, weeks: int | None = None,
     daemon_status: dict | None = None, now: float | None = None,
-    status_poll_interval_s: int = 30, job_status_poll_interval_s: int = 2,
     client_rows: list[dict] | None = None,
 ) -> str:
     """Feed-Screen — jetzt Home (``/-/``): fixierte Status-Kacheln (Host/Mode/
@@ -2746,13 +2682,13 @@ def feed_page(
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Feed</title>"
-        f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Feed', status)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"{feed_status_fragment(status, git_status, host_url, now, poll_interval_s=status_poll_interval_s, job_status_poll_interval_s=job_status_poll_interval_s, client_rows=client_rows)}"
+        f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows)}"
         f"{feed_fragment(feed_data, days=days, weeks=weeks, now=now)}"
+        f"<script>{_EVENTS_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
@@ -2764,8 +2700,7 @@ def _ops_handles(status: dict | None = None) -> str:
     """Ops-Bedienelemente: RESCAN, MAINT-Toggle (spiegelt ``status.maintenance``).
     Ursprünglich Feed-exklusiv, jetzt auch auf Schedules-Liste und Job-Detail
     (User-Feedback 2026-07-03: "brauchen den Rescan und Maintenance Button auf
-    Schedule Screen"). FOLLOW sitzt seit einem früheren Follow-up im gemeinsamen
-    ``_header()`` (jeder Screen) — hier nicht mehr doppelt. Plain-JS
+    Schedule Screen"). Plain-JS
     (``_OPS_HANDLES_JS``) statt htmx — funktioniert dadurch identisch auf jeder
     Seite, ohne pro Screen ein eigenes hx-target verdrahten zu müssen.
 
@@ -2788,7 +2723,7 @@ def _ops_handles(status: dict | None = None) -> str:
 
     Icons statt Text (Bibi4-Iteration, User-Fund: "Toggles über Icons") — ⟳
     für RESCAN (reine Aktion, kein eigener Zustand), ⚙/⚠ für MAINT aus/an
-    (analog FOLLOW/THEME: Glyph trägt den Zustand, ``title`` das Hover-Label)."""
+    (analog THEME: Glyph trägt den Zustand, ``title`` das Hover-Label)."""
     roles = (status or {}).get("roles") or []
     maint = bool((status or {}).get("maintenance"))
     if "scheduler" in roles:
@@ -2810,7 +2745,7 @@ def _ops_handles(status: dict | None = None) -> str:
 #: RESCAN + MAINT als plain-JS-Buttons gegen die JSON-API (§1.1). RESCAN → POST
 #: /-/rescan (kurze Quittung). MAINT → POST/DELETE /-/maintenance; der Button **und
 #: ein Banner** spiegeln die **echte Server-Antwort** (kein optimistisches Toggle —
-#: bei Fehler bleibt der Zustand). FOLLOW besorgt _FOLLOW_JS (window.bibiFollow).
+#: bei Fehler bleibt der Zustand).
 _OPS_HANDLES_JS = """
 (function(){
   const rescan = document.getElementById('rescan');
@@ -2936,11 +2871,17 @@ def live_output_box(job_id: str, events: list[dict] | None = None,
 #: dedupliziert ueber ``data-from`` (derselbe Offset-Zaehler, mit dem der
 #: server-seitige Seed die Box vorbefuellt — ein Bus-Refetch traegt frischen
 #: Seed + neuen data-from, nachlaufende Appends mit off <= data-from sind
-#: dadurch harmlos). ``onerror`` schliesst bewusst NICht (2026-07-20-Lektion:
-#: Abriss und Serverende sind clientseitig ununterscheidbar) — EventSource
-#: reconnected selbst, und der Server schickt beim (Re-)Connect den Resync
-#: aller aktiven Elemente (E5), der jede Luecke heilt. Das FOLLOW-Gate
-#: (window.bibiFollow) pausiert Anwendung der Events, nicht den Strom.
+#: dadurch harmlos). Kein ``onerror`` (2026-07-20-Lektion: Abriss und
+#: Serverende sind clientseitig ununterscheidbar) — EventSource reconnected
+#: selbst, und der Server schickt beim (Re-)Connect den Resync aller aktiven
+#: Elemente (E5), der jede Luecke heilt. Seit Stufe 36.3 zusaetzlich ein
+#: Ping-Watchdog: der Server sendet alle ``EVENTS_PING_S`` ein
+#: ``{"t":"ping"}``-data-Event; bleibt der Strom >45s stumm (still gestorbene
+#: Verbindung, die der Browser-Reconnect nie bemerkt), wird er verworfen und
+#: neu aufgebaut. Damit ersetzt der Watchdog die frueheren Sicherheitsnetz-
+#: Polls vollstaendig. Das FOLLOW-Gate ist weg (E8): Events werden immer
+#: angewendet, Lesbarkeit sichert allein die Scroll-Logik (appendLine stickt
+#: nur, wenn die Box unten steht; _SCROLL_JS erhaelt Positionen ueber Swaps).
 _EVENTS_JS = """
 (function(){
   if (!window.EventSource) return;
@@ -2983,17 +2924,20 @@ _EVENTS_JS = """
     if (stick) box.scrollTop = box.scrollHeight;
   }
 
-  const es = new EventSource('/-/events');
-  window._bibiEvents = es;
-  es.onmessage = (e) => {
-    if (window.bibiFollow === false) return;
+  let es = null;
+  let lastSeen = Date.now();
+  function handle(e){
+    lastSeen = Date.now();
     let ev; try { ev = JSON.parse(e.data); } catch(_) { return; }
     if (ev.t === 'state') {
+      // querySelectorAll statt querySelector (Stufe 36.3): kollektive
+      // Targets ("jobs", "nodes", ...) treffen auf einer Seite legitim
+      // mehrere Regionen (z.B. Board + Archiv-Liste).
       const sel = '[data-bus="' + (window.CSS && CSS.escape ? CSS.escape(ev.target) : ev.target) + '"]';
-      const el = document.querySelector(sel);
-      if (!el) return;
-      const url = el.getAttribute('data-bus-refetch');
-      if (url && window.htmx) htmx.ajax('GET', url, {target: el, swap: 'outerHTML'});
+      document.querySelectorAll(sel).forEach((el) => {
+        const url = el.getAttribute('data-bus-refetch');
+        if (url && window.htmx) htmx.ajax('GET', url, {target: el, swap: 'outerHTML'});
+      });
     } else if (ev.t === 'append') {
       const jid = (ev.target || '').slice(4);  // "out:<job_id>"
       const box = document.querySelector('.liveterm[data-job="' + jid + '"]');
@@ -3003,7 +2947,25 @@ _EVENTS_JS = """
       box.dataset.from = String(ev.off);
       appendLine(box, ev.e);
     }
-  };
+    // ev.t === 'ping': nichts zu tun — lastSeen ist schon aufgefrischt.
+  }
+  function connect(){
+    es = new EventSource('/-/events');
+    window._bibiEvents = es;
+    lastSeen = Date.now();
+    es.onmessage = handle;
+  }
+  connect();
+  // Watchdog (Stufe 36.3, ersetzt das Sicherheitsnetz-Poll-Netz komplett):
+  // der Server pingt alle 15s als data-Event; bleibt der Strom >45s stumm
+  // (3 verpasste Pings — Laptop-Sleep, Proxy-Abriss ohne TCP-RST, den die
+  // EventSource-Reconnect-Logik nie bemerkt), Strom verwerfen und neu
+  // aufbauen — der Connect-Resync des Servers heilt dann alle Regionen.
+  // Bewusst kein eigener onerror-Handler: echte Verbindungsfehler
+  // reconnected der Browser selbst, mit demselben Resync.
+  setInterval(() => {
+    if (Date.now() - lastSeen > 45000) { es.close(); connect(); }
+  }, 10000);
 })();
 """
 
@@ -3425,9 +3387,9 @@ def live_fragment(
 ) -> str:
     """Der austauschbare Live-Kern (``#live``): Meta + Aktions-Leiste
     (START/RESET/KILL) + Live-Block (aktiver Lauf, Output default expanded).
-    Self-pollt alle 2s — bleibt deshalb getrennt vom Journal (``#journal``),
-    das sonst durch nachgeladene Infinite-Scroll-Zeilen bei jedem Tick wieder
-    plattgemacht würde (Journal Infinite Scroll, §6)."""
+    Bus-getrieben (``live:``-Target) — bleibt getrennt vom Journal
+    (``#journal``), das sonst durch nachgeladene Infinite-Scroll-Zeilen bei
+    jedem Swap wieder plattgemacht würde (Journal Infinite Scroll, §6)."""
     now = time.time() if now is None else now
     s = schedule or {}
     name = _e(s.get("slug") or slug)
@@ -3446,22 +3408,18 @@ def live_fragment(
     nxt = _until(s.get("next_fire_at"), now)
     meta = (f"Typ <b>{kind}</b> · Trigger <code>{trigger}</code> · "
             f"letzter Lauf <b>{last_run}</b> · nächster Lauf {nxt}")
-    # PLAN-36 Stufe 36.2: primärer Update-Weg ist der Bus (data-bus/-refetch,
-    # s. _EVENTS_JS — ein live:-Zustands-Event refetcht diese Region); der
-    # frühere 2s-Self-Poll bleibt nur als gestrecktes Sicherheitsnetz (_POLL_NET,
-    # Rückbau nach Live-Verifikation, s. PLAN-36 36.2). awaiting pollt weiterhin
-    # unbedingt alle 2s: das HITL-Formular darf weder am FOLLOW-Gate noch an
-    # einem verpassten Event hängen.
-    _is_awaiting = job.get("status") == "awaiting" if job else False
-    _poll = "every 2s" if _is_awaiting else _POLL_NET
+    # PLAN-36 Stufe 36.3: einziger Update-Weg ist der Bus (data-bus/-refetch,
+    # s. _EVENTS_JS — ein live:-Zustands-Event refetcht diese Region). Das
+    # 36.2er-Sicherheitsnetz-Poll und der awaiting-2s-Sonderfall sind
+    # zurückgebaut: jeder awaiting-Übergang ist eine Job-Statusänderung, der
+    # Collector feuert das live:-Event ereignisgenau; den Still-gestorbener-
+    # Strom-Fall deckt der Ping-Watchdog in _EVENTS_JS.
     # data-finished-at: früher der Fingerabdruck für den Journal-Autorefresh
     # (jetzt Bus-Events) — bleibt als Diagnose-Attribut erhalten.
     _finished = _e(job.get("finished_at")) if job and job.get("finished_at") else ""
     attrs = (f'id="live" data-slug="{_e(slug)}" data-finished-at="{_finished}" '
              f'data-bus="live:{_e(slug)}" '
-             f'data-bus-refetch="/-/ui/schedule/{_e(slug)}/live" '
-             f'hx-get="/-/ui/schedule/{_e(slug)}/live" '
-             f'hx-trigger="{_poll}" hx-swap="outerHTML"')
+             f'data-bus-refetch="/-/ui/schedule/{_e(slug)}/live"')
     return (
         f"<div {attrs}>"
         f"<h1>{name}</h1>"
@@ -3477,8 +3435,8 @@ def schedule_detail_inner(
     slug: str = "", now: float | None = None,
     *, live_output: dict | None = None, public_host: str = "localhost",
 ) -> str:
-    """Voller Detail-Kern für den initialen Seitenaufbau: ``#live`` (self-
-    pollend) + ``#journal`` (einmalig, wächst nur per Infinite Scroll)."""
+    """Voller Detail-Kern für den initialen Seitenaufbau: ``#live`` (bus-
+    getrieben) + ``#journal`` (einmalig, wächst nur per Infinite Scroll)."""
     now = time.time() if now is None else now
     return (
         live_fragment(schedule, runs, job, slug, now, live_output=live_output,
@@ -3495,7 +3453,7 @@ def schedule_detail_page(
 ) -> str:
     """Schedule-zentrierte Detail-Sicht (§3 Ebene 3) als volle Seite. Ops-Handles
     (RESCAN/MAINT) seit User-Feedback 2026-07-03 auch hier — außerhalb von
-    ``#live``/``#journal``, damit sie nicht bei jedem 2s-Poll neu gerendert werden.
+    ``#live``/``#journal``, damit ein ``#live``-Swap sie nicht neu rendert.
     Kein "← zurück"-Link mehr (Bibi4-Iteration, User-Fund) — die Nav-Leiste
     trägt schon einen Jobs-Tab dorthin zurück, der Link war redundant."""
     name = _e((schedule or {}).get("slug") or slug)
@@ -3504,7 +3462,6 @@ def schedule_detail_page(
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>bibi · {name}</title>"
-        f"<script>{_FOLLOW_JS}</script>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('', daemon_status)}"
@@ -3682,7 +3639,6 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         '<html lang="de"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>bibi · {run_id}</title>"
-        f"<script>{_FOLLOW_JS}</script>"
         f"<style>{_CSS}"
         ".attrtable { width: auto; margin: .75rem 0; font-size: .85rem; }"
         ".attrtable td:first-child { padding-right: 1.5rem; white-space: nowrap; }"

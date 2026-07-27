@@ -94,10 +94,14 @@ def test_clients_table_handles_missing_role_gracefully():
     assert html.count('role-box off"') == 4
 
 
-def test_clients_fragment_has_self_poll_attrs():
+def test_clients_fragment_is_bus_driven():
+    # PLAN-36 Stufe 36.3: kein 10s-Self-Poll mehr — die Region haengt am
+    # kollektiven Bus-Target "nodes" (Collector: WorkerRegistry-Fingerprint).
     html = render.clients_fragment([], now=0)
     assert 'id="clientsboard"' in html
-    assert 'hx-get="/-/ui/clients/board"' in html
+    assert 'data-bus="nodes"' in html
+    assert 'data-bus-refetch="/-/ui/clients/board"' in html
+    assert "hx-trigger" not in html
 
 
 def test_clients_page_includes_header_and_table():

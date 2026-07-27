@@ -697,12 +697,11 @@ def create_app(
     # FE-Event-Bus (PLAN-36 Stufe 36.1): rollenunabhängig wie pinned_worker —
     # jeder Knoten publiziert seine eigene Sicht (E1), der Collector ist der
     # eine Poller des Knotens (E4). Injektion für Tests (autorun=False).
+    # Der Default-Collector wird erst weiter unten erzeugt (nach
+    # worker_registry — er braucht sie für das "nodes"-Sammel-Target, 36.3).
     if bus is None:
         from bibi.daemon.bus import Bus
         bus = Bus()
-    if collector is None:
-        from bibi.daemon.bus import Collector
-        collector = Collector(bus)
     if worker is None and roles.worker:
         worker = Worker(worker_name="local")
     # PLAN-28: rollenunabhängig — jeder Knoten hat seine eigene lokale
@@ -725,6 +724,9 @@ def create_app(
     # (rollenunabhängig registriert, s. u.) — das deckt beide Worker-Instanzen
     # symmetrisch ab, ohne Sonderfall für ``roles.scheduler``.
     worker_registry = WorkerRegistry() if roles.scheduler else None
+    if collector is None:
+        from bibi.daemon.bus import Collector
+        collector = Collector(bus, registry=worker_registry)
     # Bugfix (User-Fund: ein erschoepfter gepinnter Job blieb auf einem reinen
     # Client fuer immer in "failed" haengen): job_db.sweep() (failed+erschoepft
     # -> error, deferred+defer_max -> inactive) lief bisher nur unter
@@ -1283,7 +1285,16 @@ def create_app(
                 while True:
                     batch = await bus.wait(sub, timeout=EVENTS_PING_S)
                     if not batch:
-                        yield ": ping\n\n"
+                        # Echtes data-Event statt SSE-Kommentarzeile (PLAN-36
+                        # Stufe 36.3): Kommentare erreichen JS nie (die
+                        # EventSource-API liefert sie nicht aus) — der Client-
+                        # Watchdog in _EVENTS_JS braucht aber ein sichtbares
+                        # Lebenszeichen, um einen still gestorbenen Strom zu
+                        # erkennen und neu zu verbinden (ersetzt die früheren
+                        # Sicherheitsnetz-Polls vollständig). Zählt bewusst
+                        # nicht gegen ``limit`` (sonst endete ein Diagnose-
+                        # /Test-Stream mitten im Leerlauf).
+                        yield 'data: {"t":"ping"}\n\n'
                         continue
                     for ev in batch:
                         seq += 1

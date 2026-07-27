@@ -35,8 +35,6 @@ _FLAG_TO_KEY = {
     "claude_bin": "BIBI_CLAUDE_BIN",
     "node_name": "BIBI_NODE_NAME",
     "public_host": "BIBI_PUBLIC_HOST",
-    "status_poll_interval": "BIBI_STATUS_POLL_INTERVAL",
-    "job_status_poll_interval": "BIBI_JOB_STATUS_POLL_INTERVAL",
 }
 
 
@@ -52,8 +50,6 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--claude-bin")
     p.add_argument("--node-name")
     p.add_argument("--public-host")
-    p.add_argument("--status-poll-interval")
-    p.add_argument("--job-status-poll-interval")
     p.set_defaults(func=run)
 
 
@@ -102,7 +98,6 @@ def run(args: argparse.Namespace) -> int:
         "BIBI_NODE_NAME": "Knoten-Name (leer = Hostname)",
         "BIBI_PUBLIC_HOST": "Von außen erreichbarer Hostname (leer = localhost, "
                             "falsch für Remote-Zugriff und App-Links)",
-        "BIBI_STATUS_POLL_INTERVAL": "Feed-Status-Poll-Intervall (Sekunden)",
     }
     flag_values = {key: getattr(args, flag, None) for flag, key in _FLAG_TO_KEY.items()}
     for key, fallback in config.KEYS.items():

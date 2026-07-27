@@ -229,3 +229,78 @@ def test_collector_pinned_run_publishes_bucket_targets(collector):
     conn.close()
     assert "live:probe-742ab201" in bus.states
     assert "live:probe" in bus.states
+
+
+# ── Sammel-Targets + Diffs (PLAN-36 Stufe 36.3) ─────────────────────────────
+
+
+def test_collector_job_change_publishes_collective_targets(collector):
+    # Listen-Screens hören auf EIN Target: jede Job-Zustandsänderung macht
+    # "jobs" + "feedstatus" dreckig (Job-Status-Kachel hängt an "jobs").
+    col, bus, root = collector
+    conn = job_db.connect()
+    _insert_job(conn, status="pending")
+    col.tick_once()  # prime
+    conn.execute("UPDATE jobs SET status='running' WHERE id='j1'")
+    col.tick_once()
+    conn.close()
+    assert "jobs" in bus.states and "feedstatus" in bus.states
+    assert "chart" not in bus.states  # kein Journal-INSERT → Chart bleibt ruhig
+
+
+def test_collector_journal_insert_publishes_chart(collector):
+    # Das Chart zählt terminale Landungen — nur ein Journal-INSERT ändert es.
+    col, bus, root = collector
+    conn = job_db.connect()
+    _insert_job(conn, status="running")
+    col.tick_once()  # prime
+    job_db.report_status(conn, "j1", status="complete", exit_code=0)
+    col.tick_once()
+    conn.close()
+    assert "chart" in bus.states and "jobs" in bus.states
+
+
+def test_collector_quiet_tick_publishes_nothing_collective(collector):
+    col, bus, root = collector
+    conn = job_db.connect()
+    _insert_job(conn, status="running")
+    conn.close()
+    col.tick_once()  # prime
+    col.tick_once()  # nichts passiert
+    assert bus.states == []
+
+
+class _FakeRegistry:
+    def __init__(self):
+        self.rows: list[dict] = []
+
+    def list(self):
+        return self.rows
+
+
+def test_collector_nodes_diff_fires_on_registry_change(collector):
+    col, bus, root = collector
+    col.registry = _FakeRegistry()
+    col.tick_once()  # prime (leere Registry als Baseline)
+    col.registry.rows = [{"worker": "w1", "node_id": "n1", "last_beat": 1.0,
+                          "stale": False, "git_status": "trunk · clean · synced",
+                          "git_user": "m.rau"}]
+    col.tick_once()
+    assert bus.states.count("nodes") == 1
+    col.tick_once()  # unverändert → ruhig
+    assert bus.states.count("nodes") == 1
+    # stale-Übergang OHNE neuen Heartbeat (list() berechnet stale zeitbasiert)
+    col.registry.rows = [dict(col.registry.rows[0], stale=True)]
+    col.tick_once()
+    assert bus.states.count("nodes") == 2
+
+
+def test_collector_flags_diff_fires_feedstatus(collector, monkeypatch):
+    from bibi import state
+    col, bus, root = collector
+    col.tick_once()  # prime (Flags-Baseline)
+    assert "feedstatus" not in bus.states
+    state.set_maintenance(True)
+    col.tick_once()
+    assert "feedstatus" in bus.states
+    state.set_maintenance(False)

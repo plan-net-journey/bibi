@@ -170,15 +170,22 @@ class Collector:
 
     def __init__(self, bus: Bus, *, db_path: Path | None = None,
                  repo_root: Path | None = None, interval: float = 1.0,
-                 autorun: bool = True) -> None:
+                 autorun: bool = True, registry=None) -> None:
         self.bus = bus
         self.db_path = db_path
         self.repo_root = repo_root
         self.interval = interval
         self.autorun = autorun
+        # PLAN-36 Stufe 36.3: WorkerRegistry (nur Scheduler-Knoten) für das
+        # "nodes"-Sammel-Target — der Diff über registry.list() erkennt auch
+        # den stale-Übergang OHNE neuen Heartbeat (stale wird beim list()-
+        # Aufruf zeitbasiert berechnet, nicht gespeichert).
+        self.registry = registry
         self._jobs: dict[str, tuple] = {}    # job_id → (status, fire)
         self._journal_max: int | None = None
         self._tails: dict[str, dict] = {}    # job_id → {run_id, path, kind, sent}
+        self._nodes_snapshot: tuple | None = None
+        self._flags_snapshot: tuple | None = None
         self._primed = False
         self._task: asyncio.Task | None = None
         self._running = False
@@ -203,6 +210,7 @@ class Collector:
             conn.close()
 
         stats = {"state": 0, "append": 0}
+        any_job_change = False
         seen: dict[str, tuple] = {}
         for r in rows:
             jid, slug = r["id"], r["slug"]
@@ -210,6 +218,7 @@ class Collector:
             changed = (self._primed
                        and self._jobs.get(jid, (None,))[:2] != seen[jid][:2])
             if changed:
+                any_job_change = True
                 self._publish_live(slug, r["pinned_host"])
                 # Journal bei JEDEM Statuswechsel mit-dirty (nicht nur beim
                 # Journal-INSERT unten): die Journal-Liste zeigt für laufende
@@ -226,6 +235,7 @@ class Collector:
                 _, _, slug, pinned = self._jobs[jid]
                 self._drop_tail(jid, final_read=True)
                 self._publish_live(slug, pinned)
+                any_job_change = True
                 stats["state"] += 1
         self._jobs = seen
 
@@ -233,6 +243,22 @@ class Collector:
             self._publish_journal(r["slug"], r["pinned_host"])
             stats["state"] += 1
         self._journal_max = jmax
+
+        # Sammel-Targets (PLAN-36 Stufe 36.3) — die Listen-/Übersichts-Screens
+        # hören auf EIN Target statt auf jeden Slug einzeln: "jobs" (Schedules-/
+        # Jobs-/Archiv-Listen + Job-Status-Kachel), "chart" (Run-History,
+        # nur bei neuen Journal-Landungen), "feedstatus" (Status-Kacheln,
+        # zusätzlich vom Flags-Diff unten getriggert).
+        if any_job_change or new_journal:
+            self.bus.publish_state("jobs")
+            self.bus.publish_state("feedstatus")
+            stats["state"] += 1
+        if new_journal:
+            self.bus.publish_state("chart")
+            stats["state"] += 1
+
+        stats["state"] += self._diff_nodes()
+        stats["state"] += self._diff_flags()
 
         # Tails: Output-Zuwachs publizieren; Läufe, die nicht mehr aktiv
         # wachsen (Terminal/deferred), nach einem letzten Read entlassen.
@@ -243,6 +269,48 @@ class Collector:
 
         self._primed = True
         return stats
+
+    def _diff_nodes(self) -> int:
+        """"nodes"-Sammel-Target: Fingerprint über die WorkerRegistry —
+        jeder Heartbeat, jeder stale-Übergang, jede Git-Status-Änderung eines
+        Knotens macht den Nodes-Screen einmal dreckig (statt des früheren
+        10s-Polls pro Tab). Zeitstempel-Felder (last_beat …) bleiben bewusst
+        Teil des Fingerprints: ein Heartbeat alle ~10-30s je Knoten ist genau
+        die gewünschte Update-Frequenz der "vor Xs"-Anzeigen dort."""
+        if self.registry is None:
+            return 0
+        try:
+            snap = tuple(sorted(
+                (w.get("worker"), w.get("node_id"), w.get("last_beat"),
+                 w.get("stale"), w.get("git_status"), w.get("git_user"))
+                for w in self.registry.list()))
+        except Exception:
+            return 0
+        changed = self._primed and snap != self._nodes_snapshot
+        self._nodes_snapshot = snap
+        if changed:
+            self.bus.publish_state("nodes")
+            return 1
+        return 0
+
+    def _diff_flags(self) -> int:
+        """"feedstatus"-Zusatztrigger: auto_sync/sync_conflict/maintenance
+        (billige ``state``-Reads) — Kachel-Quellen, die der jobs-Diff nicht
+        sieht. Bewusst NICHT beobachtet (dokumentierte 36.3-Grenze): der
+        Synchronizer-Innenzustand (letzter Pull/Push) — dessen Relativzeiten
+        frieren zwischen echten Ereignissen ein; bei Bedarf eigener Nachtrag."""
+        try:
+            from bibi import state
+            snap = (state.get_auto_sync(), state.get_sync_conflict(),
+                    state.get_maintenance())
+        except Exception:
+            return 0
+        changed = self._primed and snap != self._flags_snapshot
+        self._flags_snapshot = snap
+        if changed:
+            self.bus.publish_state("feedstatus")
+            return 1
+        return 0
 
     # ── Innereien ───────────────────────────────────────────────────────────
 

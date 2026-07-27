@@ -175,11 +175,13 @@ def test_sched_row_status_and_ago_plain_without_run_id():
     assert 'class="st pending">pending<' in html
 
 
-def test_schedules_fragment_self_polls_under_follow():
+def test_schedules_fragment_is_bus_driven():
+    # PLAN-36 Stufe 36.3: Liste haengt am kollektiven Bus-Target "jobs".
     frag = render.schedules_fragment([_sched("a")], now=1.0)
     assert 'id="schedules"' in frag
-    assert 'hx-get="/-/ui/schedules/list"' in frag  # Fragment-Route (Stufe 3)
-    assert 'every 2s [window.bibiFollow]' in frag
+    assert 'data-bus="jobs"' in frag
+    assert 'data-bus-refetch="/-/ui/schedules/list"' in frag  # Fragment-Route
+    assert "window.bibiFollow" not in frag
 
 
 class FakeClient:

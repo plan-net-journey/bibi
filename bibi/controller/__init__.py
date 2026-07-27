@@ -238,8 +238,6 @@ def add_controller_routes(
                 _feed_data(eff_days, eff_weeks), git_status=_feed_git_status(),
                 host_url=_scheduler_url(), days=eff_days, weeks=eff_weeks,
                 daemon_status=_status(),
-                status_poll_interval_s=config.status_poll_interval(),
-                job_status_poll_interval_s=config.job_status_poll_interval(),
                 client_rows=_client_rows_for_status()))
         return JSONResponse(service_descriptor(roles))
 
@@ -252,25 +250,21 @@ def add_controller_routes(
 
     @app.get("/-/ui/feed/status", include_in_schema=False)
     def feed_status():
-        # Self-Poll-Ziel von #feedstatus (PLAN-25 Befund 4) — dieselben
-        # Datenquellen wie root(), nur ohne Heatmap/Änderungsliste.
-        from bibi import config
+        # Bus-Refetch-Ziel von #feedstatus (Target "feedstatus", PLAN-36
+        # Stufe 36.3; zusätzlich bibiMaintChanged-Trigger des MAINT-Toggles)
+        # — dieselben Datenquellen wie root(), nur ohne Heatmap/Änderungsliste.
         return HTMLResponse(render.feed_status_fragment(
             _status(), _feed_git_status(), _scheduler_url(), time.time(),
-            poll_interval_s=config.status_poll_interval(),
-            job_status_poll_interval_s=config.job_status_poll_interval(),
             client_rows=_client_rows_for_status()))
 
     @app.get("/-/ui/feed/jobstatus", include_in_schema=False)
     def feed_jobstatus():
-        # Self-Poll-Ziel von #jobstatuscard (Bibi4-Iteration) — eigener,
-        # schnellerer Takt als #feedstatus: _status() liefert job_stats aus
-        # einer reinen job_db-SQLite-Abfrage, ohne den git-status-Subprozess
+        # Bus-Refetch-Ziel von #jobstatuscard (Target "jobs") — eigenes
+        # Element neben #feedstatus: _status() liefert job_stats aus einer
+        # reinen job_db-SQLite-Abfrage, ohne den git-status-Subprozess
         # der anderen drei Karten (der bleibt bei _feed_git_status()/#feedstatus).
-        from bibi import config
         return HTMLResponse(render.job_status_fragment(
-            _status().get("job_stats"), time.time(),
-            poll_interval_s=config.job_status_poll_interval()))
+            _status().get("job_stats"), time.time()))
 
     _FILTER_COOKIE_MAX_AGE = 60 * 60 * 24 * 180  # 180 Tage — UI-Präferenz, kein Session-Cookie
 
@@ -327,8 +321,7 @@ def add_controller_routes(
         resp = HTMLResponse(render.schedules_page(
             items, typ=eff_typ, status=eff_status, daemon_status=_status(),
             landings=_landings(), git_status=_feed_git_status(), host_url=_scheduler_url(),
-            status_poll_interval_s=config.status_poll_interval(),
-            job_status_poll_interval_s=config.job_status_poll_interval(), bucket_minutes=eff_res,
+            bucket_minutes=eff_res,
             public_host=config.public_host(), sparklines=sparklines))
         _set_filter_cookies(resp, eff_typ, eff_status)
         _set_resolution_cookie(resp, eff_res)
@@ -358,15 +351,14 @@ def add_controller_routes(
         all_scheds = _schedules()
         return HTMLResponse(render.archive_page(
             all_scheds, daemon_status=_status(), git_status=_feed_git_status(),
-            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
-            job_status_poll_interval_s=config.job_status_poll_interval(),
+            host_url=_scheduler_url(),
             public_host=config.public_host(),
             sparklines=_sched_sparkline_series(all_scheds)))
 
     @app.get("/-/ui/archive/list", include_in_schema=False)
     def archive_list_fragment():
-        # Self-Poll-Ziel, kein Filter (die CR-Spec kennt hier keine Type/Status-
-        # Filterleiste, anders als /-/ui/schedules).
+        # Bus-Refetch-Ziel (Target "jobs"), kein Filter (die CR-Spec kennt hier
+        # keine Type/Status-Filterleiste, anders als /-/ui/schedules).
         from bibi import config
         return HTMLResponse(render.archive_fragment(_schedules(), public_host=config.public_host()))
 
@@ -420,13 +412,11 @@ def add_controller_routes(
         # lange, hier nur die Darstellung. status["workers"] kommt schon über
         # _status() (/-/status); der Host selbst wird separat als
         # synthetische Zeile vorangestellt (_host_worker_entry()).
-        from bibi import config
         status = _status()
         workers = [_host_worker_entry(), *(status.get("workers") or [])]
         return HTMLResponse(render.clients_page(
             workers, daemon_status=status, git_status=_feed_git_status(),
-            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
-            job_status_poll_interval_s=config.job_status_poll_interval()))
+            host_url=_scheduler_url()))
 
     @app.get("/-/ui/clients/board", include_in_schema=False)
     def clients_board_fragment():
@@ -437,7 +427,7 @@ def add_controller_routes(
     def clients_node_action(node_id: str, verb: str):
         # PLAN-32 Stufe 32.1: Approve-/Block-Buttons im Nodes-Screen — wirkt,
         # dann #clientsboard sofort neu rendern (analog schedule_action()s
-        # Sofort-Swap statt auf den nächsten 10s-Self-Poll zu warten).
+        # Sofort-Swap statt auf das nächste nodes-Bus-Event zu warten).
         if verb not in ("approve", "block"):
             return JSONResponse(status_code=404, content={"error": "unknown verb"})
         try:
@@ -449,12 +439,13 @@ def add_controller_routes(
 
     @app.get("/-/ui/schedules/timeseries", include_in_schema=False)
     def schedules_timeseries_fragment(request: Request, res: int | None = None):
-        # Self-Poll-Ziel des Stat-Grid/Charts — eigene Route, eigene
-        # Datenquelle (journal_landings/job_stats statt /-/schedule). ``res``
-        # trägt die vom User gewählte Auflösung (Bucket-Minuten) über den
-        # 2s-Poll hinweg (s. render.timeseries_fragment()'s Self-Poll-URL);
-        # fehlt er (frischer Seitenaufbau), auf das Cookie zurückfallen
-        # (User-Fund: "warum wird die Auflösung ... nicht gespeichert?").
+        # Bus-Refetch-Ziel des Stat-Grid/Charts (Target "chart") — eigene
+        # Route, eigene Datenquelle (journal_landings/job_stats statt
+        # /-/schedule). ``res`` trägt die vom User gewählte Auflösung
+        # (Bucket-Minuten) über den Swap hinweg (s. render.
+        # timeseries_fragment()'s Refetch-URL); fehlt er (frischer
+        # Seitenaufbau), auf das Cookie zurückfallen (User-Fund: "warum wird
+        # die Auflösung ... nicht gespeichert?").
         eff_res = _effective_resolution(request, res)
         resp = HTMLResponse(render.timeseries_fragment(
             _landings(), _status().get("job_stats"), bucket_minutes=eff_res))
@@ -463,11 +454,9 @@ def add_controller_routes(
 
     @app.get("/-/ui/logs", include_in_schema=False)
     def logs_page():
-        from bibi import config
         return HTMLResponse(render.log_page(
             daemon_status=_status(), git_status=_feed_git_status(),
-            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
-            job_status_poll_interval_s=config.job_status_poll_interval(),
+            host_url=_scheduler_url(),
             client_rows=_client_rows_for_status()))
 
     def _jobs_data() -> tuple[list, dict]:
@@ -656,8 +645,7 @@ def add_controller_routes(
         sparklines = _job_sparkline_series(rows)
         return HTMLResponse(render.jobs_page(
             rows, local_runs, daemon_status=_status(), git_status=_feed_git_status(),
-            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
-            job_status_poll_interval_s=config.job_status_poll_interval(),
+            host_url=_scheduler_url(),
             public_host=config.public_host(), sparklines=sparklines))
 
     @app.get("/-/ui/jobs/{slug}/sparkline", include_in_schema=False)
@@ -685,7 +673,7 @@ def add_controller_routes(
 
     @app.get("/-/ui/jobs/board", include_in_schema=False)
     def jobs_board():
-        # Self-Poll-Ziel von #jobsboard (wie #live/#journal bei Schedules).
+        # Bus-Refetch-Ziel von #jobsboard (Target "jobs").
         from bibi import config
         rows, local_runs = _jobs_data()
         return HTMLResponse(render.jobs_fragment(
@@ -698,11 +686,9 @@ def add_controller_routes(
         # /-/ui/jobs (User-Fund: "der untere Abschnitt lokale Läufe wandert
         # in den eigenen Screen Archive"). Status-Kacheln analog zum Host-
         # Archive-Screen (fehlten hier bisher ebenfalls).
-        from bibi import config
         return HTMLResponse(render.jobs_archive_page(
             _jobs_archive_runs(), daemon_status=_status(), git_status=_feed_git_status(),
-            host_url=_scheduler_url(), status_poll_interval_s=config.status_poll_interval(),
-            job_status_poll_interval_s=config.job_status_poll_interval(),
+            host_url=_scheduler_url(),
             client_rows=_client_rows_for_status()))
 
     @app.get("/-/ui/jobs/archive/list", include_in_schema=False)

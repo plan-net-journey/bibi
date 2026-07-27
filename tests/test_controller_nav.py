@@ -12,9 +12,12 @@ from __future__ import annotations
 from bibi.controller import render
 
 
-def test_header_includes_follow_toggle():
+def test_header_has_no_follow_toggle():
+    # PLAN-36 Stufe 36.3 (E8): FOLLOW komplett entfernt — Events werden immer
+    # angewendet, Lesbarkeit sichert allein die Scroll-Logik (_EVENTS_JS/
+    # _SCROLL_JS).
     html = render._header("Schedules")
-    assert 'id="follow"' in html and "bibiToggleFollow" in html
+    assert 'id="follow"' not in html and "bibiToggleFollow" not in html
 
 
 def test_header_includes_theme_toggle():
@@ -113,9 +116,10 @@ def test_header_splits_left_and_right_nav_groups():
     left = html.split('<div class="nav-left">')[1].split("</div>")[0]
     right = html.split('<div class="nav-right">')[1].split("</div>")[0]
     assert "bibi" in left
-    assert 'id="follow"' not in left and 'id="rescan"' not in left and 'id="theme"' not in left
-    assert ('id="follow"' in right and 'id="rescan"' in right
+    assert 'id="rescan"' not in left and 'id="theme"' not in left
+    assert ('id="rescan"' in right
            and 'id="liveclock"' in right and 'id="theme"' in right)
+    assert 'id="follow"' not in html  # PLAN-36 Stufe 36.3 (E8)
 
 
 def test_theme_toggle_uses_symbol_not_text_label():
@@ -165,13 +169,12 @@ def test_clock_js_renders_date_and_time():
 
 
 def test_toggles_styled_as_text_links_not_boxed_buttons():
-    # PLAN-19 Befund 7, User-Fund: FOLLOW/THEME/RESCAN/MAINT sollen wie die
+    # PLAN-19 Befund 7, User-Fund: THEME/RESCAN/MAINT sollen wie die
     # Nav-Tabs aussehen (reine Text-Links), keine Buttons mit Box/Rahmen mehr.
     # Bleiben funktional <button>-Elemente (JS-Handler), nur CSS-Klasse ändert
     # sich von "handle" auf "toggle" — kein "handle" mehr irgendwo im Markup.
     html = render._header("Schedules", {"maintenance": True, "roles": ["scheduler"]})
     assert 'class="handle"' not in html and 'class="handle ' not in html
-    assert 'class="toggle on"' in html  # FOLLOW startet an
     assert 'class="toggle"' in html  # THEME + RESCAN
     assert 'class="toggle warn"' in html  # MAINT an
     assert ".toggle {" in render._CSS
@@ -264,35 +267,23 @@ def test_screen_nav_active_tab_has_active_class():
     assert ".tab-active {" in render._CSS
 
 
-def test_ops_handles_no_longer_duplicates_follow_button():
-    # FOLLOW sitzt separat im gemeinsamen Header — _ops_handles() bleibt frei davon.
+def test_ops_handles_has_no_follow_button():
     html = render._ops_handles()
     assert 'id="follow"' not in html
 
 
-def test_schedules_page_has_exactly_one_follow_and_theme_button():
+def test_schedules_page_has_exactly_one_theme_button_and_no_follow():
     html = render.schedules_page([], now=1.0)
-    assert html.count('id="follow"') == 1
+    assert html.count('id="follow"') == 0  # PLAN-36 Stufe 36.3 (E8)
     assert html.count('id="theme"') == 1
 
 
-def test_follow_toggle_snaps_output_boxes_to_bottom_on_reenable():
-    # User-Feedback: FOLLOW wieder anschalten muss die Live-Boxen (.liveterm auf
-    # dem Job-Detail) sofort ans Ende scrollen — sonst bleibt "stick" auf false
-    # hängen (atBottom() sah die eingefrorene Scroll-Position) und die Box folgt
-    # trotz eingeschaltetem FOLLOW nie wieder.
-    js = render._FOLLOW_JS
-    on_branch = js.split("if (window.bibiFollow){")[1]
-    assert "querySelectorAll('.liveterm')" in on_branch
-    assert "box.scrollTop = box.scrollHeight" in on_branch
-
-
-def test_schedule_detail_page_has_header_nav_and_follow():
+def test_schedule_detail_page_has_header_nav_without_follow():
     job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0}
     html = render.schedule_detail_page({"slug": "a", "kind": "job"}, [], job, slug="a")
     assert 'href="/-/"' in html and 'href="/-/ui/logs"' in html
     assert 'id="liveclock"' in html
-    assert 'id="follow"' in html
+    assert 'id="follow"' not in html  # PLAN-36 Stufe 36.3 (E8)
 
 
 def test_schedule_detail_page_has_rescan_and_maint():
@@ -314,13 +305,13 @@ def test_schedules_page_has_rescan_and_maint():
     assert render._OPS_HANDLES_JS in html
 
 
-def test_execution_detail_page_has_header_nav_and_follow():
+def test_execution_detail_page_has_header_nav_without_follow():
     entry = {"id": 1, "run_id": "x:1", "slug": "x", "kind": "job", "status": "complete",
              "started_at": 1.0, "finished_at": 2.0, "domain": "scheduled"}
     html = render.execution_detail_page(entry, [], "job")
     assert 'href="/-/"' in html and 'href="/-/ui/logs"' in html
     assert 'id="liveclock"' in html
-    assert 'id="follow"' in html
+    assert 'id="follow"' not in html  # PLAN-36 Stufe 36.3 (E8)
 
 
 def test_execution_detail_page_has_rescan_and_maint():
@@ -334,12 +325,11 @@ def test_execution_detail_page_has_rescan_and_maint():
     assert 'id="maint" class="toggle warn"' in html
 
 
-def test_log_page_has_rescan_maint_and_follow():
-    # User-Feedback 2026-07-04: "Sie sind damit auch auf Live-Log sichtbar" —
-    # Live-Log hatte bisher weder Ops-Handles noch ein funktionierendes FOLLOW
-    # (_FOLLOW_JS fehlte).
+def test_log_page_has_rescan_and_maint_without_follow():
+    # User-Feedback 2026-07-04: "Sie sind damit auch auf Live-Log sichtbar".
+    # FOLLOW ist seit PLAN-36 Stufe 36.3 (E8) weg — Autoscroll pausiert im
+    # Log-Panel rein ueber die Scroll-Position (paused in _LOG_JS).
     html = render.log_page(daemon_status={"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
     assert 'id="maint" class="toggle warn"' in html
-    assert 'id="follow"' in html and "bibiToggleFollow" in html
-    assert render._FOLLOW_JS in html
+    assert 'id="follow"' not in html and "bibiToggleFollow" not in html

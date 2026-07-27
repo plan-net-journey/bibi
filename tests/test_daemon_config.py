@@ -18,7 +18,6 @@ def cfg_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("BIBI_DAEMON_PORT", raising=False)
     monkeypatch.delenv("BIBI_SCHEDULER_URL", raising=False)
     monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
-    monkeypatch.delenv("BIBI_STATUS_POLL_INTERVAL", raising=False)
     return tmp_path
 
 
@@ -154,68 +153,9 @@ def test_public_host_no_config_no_scheduler_url_is_localhost(cfg_home: Path):
     assert config.public_host() == "localhost"
 
 
-# ── config.status_poll_interval (PLAN-25 Befund 4) ──────────────────────────
-
-
-def test_status_poll_interval_default_30(cfg_home: Path):
-    assert config.status_poll_interval() == 30
-
-
-def test_status_poll_interval_from_env(cfg_home: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("BIBI_STATUS_POLL_INTERVAL", "60")
-    assert config.status_poll_interval() == 60
-
-
-def test_status_poll_interval_from_config_file(cfg_home: Path):
-    config.write_env({"BIBI_STATUS_POLL_INTERVAL": "45"})
-    assert config.status_poll_interval() == 45
-
-
-def test_status_poll_interval_env_takes_precedence_over_config_file(
-    cfg_home: Path, monkeypatch: pytest.MonkeyPatch
-):
-    config.write_env({"BIBI_STATUS_POLL_INTERVAL": "45"})
-    monkeypatch.setenv("BIBI_STATUS_POLL_INTERVAL", "60")
-    assert config.status_poll_interval() == 60
-
-
-def test_status_poll_interval_invalid_falls_back_to_default(
-    cfg_home: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setenv("BIBI_STATUS_POLL_INTERVAL", "not-a-number")
-    assert config.status_poll_interval() == 30
-
-
-# ── config.job_status_poll_interval (Bibi4-Iteration) ───────────────────────
-
-
-def test_job_status_poll_interval_default_2(cfg_home: Path):
-    assert config.job_status_poll_interval() == 2
-
-
-def test_job_status_poll_interval_from_env(cfg_home: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("BIBI_JOB_STATUS_POLL_INTERVAL", "1")
-    assert config.job_status_poll_interval() == 1
-
-
-def test_job_status_poll_interval_from_config_file(cfg_home: Path):
-    config.write_env({"BIBI_JOB_STATUS_POLL_INTERVAL": "3"})
-    assert config.job_status_poll_interval() == 3
-
-
-def test_job_status_poll_interval_env_takes_precedence_over_config_file(
-    cfg_home: Path, monkeypatch: pytest.MonkeyPatch
-):
-    config.write_env({"BIBI_JOB_STATUS_POLL_INTERVAL": "3"})
-    monkeypatch.setenv("BIBI_JOB_STATUS_POLL_INTERVAL", "1")
-    assert config.job_status_poll_interval() == 1
-
-
-def test_job_status_poll_interval_invalid_falls_back_to_default(
-    cfg_home: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setenv("BIBI_JOB_STATUS_POLL_INTERVAL", "not-a-number")
-    assert config.job_status_poll_interval() == 2
+# ── config.status_poll_interval / job_status_poll_interval: entfernt in
+# PLAN-36 Stufe 36.3 — das FE pollt nicht mehr (Event-Bus, /-/events); der
+# Collector-Takt ist ein Engine-Internum, kein Konfigurationswert.
 
 
 def test_maintenance_toggle(team_repo):

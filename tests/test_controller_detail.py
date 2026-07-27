@@ -623,22 +623,26 @@ def test_detail_shows_live_panel_for_last_terminal_run():
     assert "letzter Lauf" in html and "finished 3s ago" in html
 
 
-def test_detail_self_polls_under_follow():
-    # PLAN-36 Stufe 36.2: primaerer Update-Weg ist der Bus (data-bus/-refetch);
-    # der Poll bleibt nur als gestrecktes 30s-Sicherheitsnetz (_POLL_NET).
+def test_detail_live_region_is_bus_only():
+    # PLAN-36 Stufe 36.3: einziger Update-Weg ist der Bus (data-bus/-refetch)
+    # — kein Sicherheitsnetz-Poll mehr, kein hx-get/hx-trigger auf der Region
+    # (den Still-gestorbener-Strom-Fall deckt der Ping-Watchdog in _EVENTS_JS).
     html = render.schedule_detail_inner({"slug": "a"}, [], None, slug="a", now=1.0)
-    assert 'hx-get="/-/ui/schedule/a/live"' in html
-    assert "every 30s [window.bibiFollow]" in html
     assert 'data-bus="live:a"' in html
     assert 'data-bus-refetch="/-/ui/schedule/a/live"' in html
+    live_div = html.split('id="live"')[1].split(">")[0]
+    assert "hx-get" not in live_div and "hx-trigger" not in live_div
 
 
-def test_detail_awaiting_still_polls_unconditionally_every_2s():
-    # awaiting (HITL-Formular) pollt weiterhin unbedingt alle 2s — darf weder
-    # am FOLLOW-Gate noch an einem verpassten Bus-Event haengen.
+def test_detail_awaiting_needs_no_poll_special_case():
+    # Der fruehere unbedingte awaiting-2s-Poll ist zurueckgebaut: jeder
+    # awaiting-Uebergang ist eine (status, fire)-Aenderung, der Collector
+    # feuert das live:-Event ereignisgenau — dieselbe Latenzklasse (~1s Tick)
+    # wie der alte Poll, ohne Sonderpfad.
     job = {"id": "j", "slug": "a", "status": "awaiting", "started_at": 1.0}
     html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0)
-    assert 'hx-trigger="every 2s"' in html
+    assert "every 2s" not in html
+    assert 'data-bus="live:a"' in html
 
 
 def test_journal_fragment_carries_bus_address():
@@ -736,13 +740,15 @@ def test_hitl_panel_no_app_url_shows_fallback():
     assert "app_url nicht verfügbar" in html
 
 
-def test_hitl_panel_polls_ungated_when_awaiting():
-    """awaiting → #detail-Poll ohne bibiFollow-Gate."""
+def test_hitl_panel_region_carries_bus_address_when_awaiting():
+    """awaiting → Region hängt am Bus wie jeder andere Zustand (PLAN-36 36.3);
+    das HITL-Formular selbst rendert unverändert."""
     job = {"id": "j3", "slug": "a", "status": "awaiting",
            "app_url": "http://localhost:9100/input"}
     html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0)
-    assert "every 2s" in html
-    assert "[window.bibiFollow]" not in html.split("every 2s")[0].split("hx-trigger")[-1]
+    assert 'class="hitl"' in html
+    assert 'data-bus="live:a"' in html
+    assert "window.bibiFollow" not in html
 
 
 # ── Journal Infinite Scroll ───────────────────────────────────────────────────

@@ -77,7 +77,8 @@ def test_daemon_page_has_header_nav_status_and_log():
     html = render.daemon_page(
         {"roles": ["connect"], "connect": {"ok": True, "last_at": 90.0}}, now=100.0)
     assert 'href="/-/"' in html and 'href="/-/ui/logs"' in html
-    assert 'id="liveclock"' in html and 'id="follow"' in html
+    assert 'id="liveclock"' in html
+    assert 'id="follow"' not in html  # PLAN-36 Stufe 36.3 (E8): FOLLOW entfernt
     assert '<div class="statuscards">' in html
     assert 'id="log" class="logbox"' in html  # geteiltes Log-Panel
 

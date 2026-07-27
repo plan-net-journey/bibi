@@ -37,19 +37,10 @@ KEYS: dict[str, str] = {
     # sonst localhost). Nötig für jeden Knoten, der App-Typ-Jobs (app_port)
     # dispatcht und dessen Adresse einem Remote-Browser gemeldet werden soll.
     "BIBI_PUBLIC_HOST": "",
-    # Poll-Intervall (Sekunden) der Feed-Status-Kacheln (Host/Mode/Git,
-    # PLAN-25 Befund 4) — Default 30s, konfigurierbar, weil die zugrunde-
-    # liegenden /-/status-Daten nicht billig sind (git-status-Subprozess für
-    # die Git-Kachel). Job Status hat seit der Bibi4-Iteration ein eigenes,
-    # schnelleres Intervall, s. BIBI_JOB_STATUS_POLL_INTERVAL.
-    "BIBI_STATUS_POLL_INTERVAL": "30",
-    # Poll-Intervall (Sekunden) der Job-Status-Kachel allein (Bibi4-Iteration,
-    # User-Fund: "da es sich um eine sqlite db Abfrage handelt, sollte eine
-    # 1-2 Sekunden Abfrage aber möglich sein") — löst sich vom 30s-Bundle
-    # oben, weil Job Status (anders als Git) keinen Subprozess braucht,
-    # sondern dieselbe Kosten-Klasse wie die 2s-Polls der Schedules-/Jobs-
-    # Tabelle ist.
-    "BIBI_JOB_STATUS_POLL_INTERVAL": "2",
+    # BIBI_STATUS_POLL_INTERVAL / BIBI_JOB_STATUS_POLL_INTERVAL: entfernt in
+    # PLAN-36 Stufe 36.3 — das FE pollt nicht mehr, alle Regionen hängen am
+    # Event-Bus (/-/events); der Collector-Takt ist ein Engine-Internum
+    # (daemon/bus.py), kein Konfigurationswert. Pre-1.0, kein Backcompat.
     # Stabile, generierte Knoten-Identität für den Connected-Clients-Screen
     # (Bibi4-Iteration, User-Fund: derselbe physische Client tauchte je nach
     # Netzwerk mit unterschiedlichem BIBI_NODE_NAME/Hostname auf, alte
@@ -61,8 +52,6 @@ KEYS: dict[str, str] = {
 }
 
 DAEMON_PORT_DEFAULT = 8769
-STATUS_POLL_INTERVAL_DEFAULT = 30
-JOB_STATUS_POLL_INTERVAL_DEFAULT = 2
 
 
 def daemon_port() -> int:
@@ -147,38 +136,6 @@ def public_host() -> str:
         return explicit
 
     return "localhost"
-
-
-def status_poll_interval() -> int:
-    """Poll-Intervall (Sekunden) der Feed-Status-Kacheln: ``BIBI_STATUS_POLL_INTERVAL``
-    (env > ``~/.config/bibi/env``) > Default 30s (PLAN-25 Befund 4 — die Karten
-    wurden bisher nur beim initialen Seitenaufbau gerendert, kein Polling;
-    ein festes 2s-Intervall wie ``#schedules`` wäre hier zu teuer, s. Docstring
-    der Aufrufer in ``render.py``)."""
-    raw = (os.environ.get("BIBI_STATUS_POLL_INTERVAL", "").strip()
-           or read_env().get("BIBI_STATUS_POLL_INTERVAL", "").strip())
-    if raw:
-        try:
-            return int(raw)
-        except ValueError:
-            pass
-    return STATUS_POLL_INTERVAL_DEFAULT
-
-
-def job_status_poll_interval() -> int:
-    """Poll-Intervall (Sekunden) der Job-Status-Kachel allein:
-    ``BIBI_JOB_STATUS_POLL_INTERVAL`` (env > ``~/.config/bibi/env``) > Default
-    2s (Bibi4-Iteration — löst sich vom 30s-``status_poll_interval()``-Bundle,
-    weil Job Status keinen git-status-Subprozess braucht, nur eine
-    ``job_db``-SQLite-Abfrage, s. Docstring der Aufrufer in ``render.py``)."""
-    raw = (os.environ.get("BIBI_JOB_STATUS_POLL_INTERVAL", "").strip()
-           or read_env().get("BIBI_JOB_STATUS_POLL_INTERVAL", "").strip())
-    if raw:
-        try:
-            return int(raw)
-        except ValueError:
-            pass
-    return JOB_STATUS_POLL_INTERVAL_DEFAULT
 
 
 def env_path() -> Path:

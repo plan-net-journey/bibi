@@ -228,11 +228,12 @@ def test_archive_fragment_empty_shows_placeholder():
     assert "kein Archiv" in frag
 
 
-def test_archive_fragment_self_polls_under_follow():
+def test_archive_fragment_is_bus_driven():
     frag = render.archive_fragment([_sched("a", active=False)], now=1.0)
     assert 'id="archive"' in frag
-    assert 'hx-get="/-/ui/archive/list"' in frag
-    assert "every 2s [window.bibiFollow]" in frag
+    assert 'data-bus="jobs"' in frag
+    assert 'data-bus-refetch="/-/ui/archive/list"' in frag
+    assert "window.bibiFollow" not in frag
 
 
 def test_archive_page_has_header_and_archive_fragment():
@@ -255,9 +256,11 @@ def test_archive_page_includes_status_cards():
     assert 'id="feedstatus"' in html
 
 
-def test_schedules_fragment_polls_list_with_filter():
+def test_schedules_fragment_refetch_url_carries_filter():
+    # Der Bus-Refetch muss den aktiven Filter in der URL tragen, damit er
+    # den Swap ueberlebt (dieselbe Idee wie frueher beim Self-Poll).
     frag = render.schedules_fragment([_sched("a")], now=1.0, typ="job", status="problem")
-    assert 'hx-get="/-/ui/schedules/list?typ=job&status=problem"' in frag
+    assert 'data-bus-refetch="/-/ui/schedules/list?typ=job&status=problem"' in frag
 
 
 def test_sched_table_column_header_combined():
@@ -409,13 +412,15 @@ def test_current_state_chips_empty_state_is_minimal():
         assert s not in html
 
 
-def test_timeseries_fragment_is_self_polling_own_target():
-    # Eigener, langsamerer Takt als der generische _POLL (User-Fund
-    # 2026-07-08 "wackelt" — s. _CHART_POLL-Docstring).
+def test_timeseries_fragment_has_own_bus_target():
+    # Eigenes, selteneres Target "chart" (nur neue Journal-Eintraege) statt
+    # des generischen "jobs" — dieselbe Absicht wie der fruehere langsamere
+    # _CHART_POLL (User-Fund 2026-07-08 "wackelt"), jetzt ereignisgenau.
     frag = render.timeseries_fragment([], {"counts": {}, "running_since_uptime": 0}, now=1.0)
     assert 'id="timeseries"' in frag
-    assert 'hx-get="/-/ui/schedules/timeseries?res=15"' in frag
-    assert "every 20s" in frag
+    assert 'data-bus="chart"' in frag
+    assert 'data-bus-refetch="/-/ui/schedules/timeseries?res=15"' in frag
+    assert "every " not in frag
 
 
 def test_timeseries_fragment_has_resolution_links_not_dropdown():

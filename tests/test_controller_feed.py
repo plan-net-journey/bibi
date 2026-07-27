@@ -389,57 +389,49 @@ def test_feed_status_cards_has_three_cards_no_rollen():
     assert "Client" in html and "Mode" in html and "Git" in html
 
 
-def test_feed_status_fragment_self_polls_with_default_interval():
-    # PLAN-25 Befund 4, User-Fund: die Feed-Status-Kacheln wurden bisher nur
-    # beim initialen Seitenaufbau gerendert, kein Polling — jetzt self-pollend
-    # mit konfigurierbarem Intervall (Default 30s, BIBI_STATUS_POLL_INTERVAL).
+def test_feed_status_fragment_is_bus_driven_with_maint_trigger():
+    # PLAN-36 Stufe 36.3: kein 30s-Poll mehr — die Kacheln haengen am Bus-
+    # Target "feedstatus" (Collector: Flag-Diff + Job-Aenderungen). Der
+    # bibiMaintChanged-Trigger des MAINT-Toggles bleibt als htmx-Event
+    # bestehen (sofortiges Feedback auf den Klick, unabhaengig vom Collector-
+    # Tick).
     html = render.feed_status_fragment({}, None, None, now=100.0)
     assert 'id="feedstatus"' in html
+    assert 'data-bus="feedstatus"' in html
+    assert 'data-bus-refetch="/-/ui/feed/status"' in html
     assert 'hx-get="/-/ui/feed/status"' in html
-    assert 'hx-trigger="every 30s [window.bibiFollow], bibiMaintChanged from:body"' in html
+    assert 'hx-trigger="bibiMaintChanged from:body"' in html
     assert 'hx-swap="outerHTML"' in html
+    assert "every " not in html.split(">")[0]
 
 
-def test_feed_status_fragment_uses_explicit_poll_interval():
-    html = render.feed_status_fragment({}, None, None, now=100.0, poll_interval_s=60)
-    assert 'hx-trigger="every 60s [window.bibiFollow], bibiMaintChanged from:body"' in html
+# --- Job-Status-Kachel: eigenes Bus-Element (Bibi4-Iteration, seit PLAN-36
+# --- Stufe 36.3 ereignisgenau statt 2s-Poll) --------------------------------
 
 
-# --- Job-Status-Kachel: eigener, schnellerer Poll (Bibi4-Iteration, User-Fund:
-# --- "da es sich um eine sqlite db Abfrage handelt, sollte eine 1-2 Sekunden
-# --- Abfrage aber möglich sein") -------------------------------------------
-
-
-def test_job_status_fragment_self_polls_with_default_interval():
+def test_job_status_fragment_is_bus_driven():
     html = render.job_status_fragment(
         {"counts_by_kind": {}, "complete_since_uptime": 0, "next_due_at": None}, now=100.0)
     assert 'id="jobstatuscard"' in html
-    assert 'hx-get="/-/ui/feed/jobstatus"' in html
-    assert 'hx-trigger="every 2s [window.bibiFollow]"' in html
+    assert 'data-bus="jobs"' in html
+    assert 'data-bus-refetch="/-/ui/feed/jobstatus"' in html
+    assert "hx-trigger" not in html
     assert '<div class="jobstatus-grid">' in html
-
-
-def test_job_status_fragment_uses_explicit_poll_interval():
-    html = render.job_status_fragment(
-        {"counts_by_kind": {}, "complete_since_uptime": 0, "next_due_at": None},
-        now=100.0, poll_interval_s=1)
-    assert 'hx-trigger="every 1s [window.bibiFollow]"' in html
 
 
 def test_job_status_fragment_empty_without_job_stats():
     assert render.job_status_fragment(None, now=100.0) == ""
 
 
-def test_feed_status_fragment_nests_job_status_fragment_with_its_own_poll():
-    # Job Status pollt jetzt schneller als der Rest (Host/Mode/Git bleiben am
-    # 30s-Bundle, s. Docstring) — beide Poll-Container stehen verschachtelt
-    # im selben .statuscards-Grid.
+def test_feed_status_fragment_nests_job_status_fragment():
+    # Beide Bus-Container stehen verschachtelt im selben .statuscards-Grid —
+    # #feedstatus (Target "feedstatus") aussen, #jobstatuscard (Target "jobs")
+    # als weiteres Grid-Kind.
     html = render.feed_status_fragment(
         {"job_stats": {"counts_by_kind": {}, "complete_since_uptime": 5, "next_due_at": None}},
-        None, None, now=100.0, job_status_poll_interval_s=1)
-    assert 'id="feedstatus"' in html
-    assert 'hx-trigger="every 30s [window.bibiFollow], bibiMaintChanged from:body"' in html
-    assert 'id="jobstatuscard"' in html and 'hx-trigger="every 1s [window.bibiFollow]"' in html
+        None, None, now=100.0)
+    assert 'id="feedstatus"' in html and 'data-bus="feedstatus"' in html
+    assert 'id="jobstatuscard"' in html and 'data-bus="jobs"' in html
     assert html.count('<div class="card">') == 4
 
 
@@ -798,12 +790,11 @@ def test_feed_status_fragment_route_shows_escalated_merge_branches(app_with, tea
         assert '<div class="v sync-conflict">1</div>' in r.text
 
 
-def test_root_route_status_cards_use_configured_poll_interval(
-    app_with, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setenv("BIBI_STATUS_POLL_INTERVAL", "45")
+def test_root_route_status_cards_are_bus_driven(app_with):
+    # PLAN-36 Stufe 36.3: kein konfigurierbares Poll-Intervall mehr — die
+    # Kacheln kommen mit Bus-Adresse aus dem initialen Seitenaufbau.
     app = app_with(_FakeClient())
     with TestClient(app) as c:
         r = c.get("/-/", headers={"Accept": "text/html"})
-        assert 'hx-trigger="every 45s [window.bibiFollow], bibiMaintChanged from:body"' in r.text
+        assert 'data-bus="feedstatus"' in r.text
+        assert 'hx-trigger="bibiMaintChanged from:body"' in r.text
