@@ -281,6 +281,32 @@ def test_kill_running_job(client):
     assert client.get(f"/-/job/{jid}/status").json()["reason"] == "by_user"
 
 
+def test_kill_writes_output_ref_into_journal(client):
+    # User-Fund 2026-07-27 ("kein Output" auf /-/ui/run/… nach KILL): der
+    # daemon-seitige killed-Report macht die Zeile terminal und schreibt das
+    # Journal, der spätere Wrapper-Report MIT output_ref wird als
+    # idempotenter Wiederholungs-Report verworfen — job_kill() muss den
+    # Verweis deshalb selbst mitschreiben (dieselbe Verdrahtung wie
+    # run_live_kill()/-reset() für gepinnte Läufe seit 2026-07-13).
+    jid = _seed_status("running")
+    conn = job_db.connect()
+    try:
+        run_id = job_db.run_id_for("s", jid, 0)
+    finally:
+        conn.close()
+    r = client.post(f"/-/job/{jid}/kill")
+    assert r.status_code == 200
+    conn = job_db.connect()
+    try:
+        row = conn.execute(
+            "SELECT output_ref FROM journal WHERE run_id=? AND status='killed'",
+            (run_id,)).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["output_ref"] == f"data/job/{run_id}/output.jsonl"
+
+
 def test_kill_running_job_falls_back_to_db_pid_after_restart(client, monkeypatch):
     # Kein In-Memory-Popen (z. B. Job hat einen Daemon-Neustart überlebt, s. A.2) —
     # kill() muss die PID aus der DB reanimieren und SIGTERM senden.

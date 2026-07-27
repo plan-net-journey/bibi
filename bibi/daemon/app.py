@@ -18,6 +18,7 @@ import os
 import socket
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -220,6 +221,26 @@ def _add_status_route(app: FastAPI, *, sync_lock=None, synchronizer=None) -> Non
         return {"id": id, "status": str(report.status)}
 
 
+def _journal_output_path(entry: dict) -> Path:
+    """Output-Datei einer Journal-Zeile: ``output_ref``, sonst der
+    deterministische ``data/job/<run_id>/output.jsonl``-Pfad.
+
+    Fallback-Fix (User-Fund 2026-07-27, "kein Output" auf /-/ui/run/…
+    nach KILL): daemon-seitige Terminal-Reports (job_kill()s by_user,
+    Sweeper-Zombie) schreiben die Journal-Zeile, BEVOR der Wrapper seinen
+    output_ref melden kann — dessen Nachzügler-Report verwirft
+    report_status() als idempotenten Wiederholungs-Report, output_ref
+    blieb NULL, obwohl die Datei liegt. Der Pfad ist aber aus der run_id
+    ableitbar (dieselbe Konvention wie worker.output_path()/Collector);
+    das heilt auch alle ALT-Zeilen ohne Migration. run_live_kill()/-reset()
+    (gepinnte Läufe) hatten denselben Fix schreibseitig schon seit
+    2026-07-13 — job_kill() (Host) zog erst jetzt nach, s. dort."""
+    ref = entry.get("output_ref")
+    if ref:
+        return repo.root() / ref
+    return repo.root() / "data" / "job" / str(entry.get("run_id") or "") / "output.jsonl"
+
+
 def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                           *, sync_lock=None, synchronizer=None) -> None:
     """Echte DB-gestützte Scheduler-Routen (PLAN-3 §3.1) — nur bei aktiver
@@ -335,9 +356,9 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
             conn.close()
         if entry is None:
             return None, []
-        ref = entry.get("output_ref")
-        events = output.read_events(repo.root() / ref) if ref else []
-        return entry, events
+        # read_events() toleriert eine fehlende Datei (→ []) — der Fallback-
+        # Pfad darf also auch ins Leere zeigen (Lauf ohne jeden Output).
+        return entry, output.read_events(_journal_output_path(entry))
 
     @app.get("/-/journal/{jid}/output", tags=["journal"])
     def journal_output(jid: int):
@@ -623,9 +644,29 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
              dependencies=[Depends(_require_approved_or_local)])
     def job_kill(id: str, req: KillRequest | None = None):  # noqa: A002
         signaled = worker.kill(id)
+        # output_ref direkt mitschreiben (User-Fund 2026-07-27, "kein Output"
+        # auf /-/ui/run/… nach KILL) — exakt dieselbe Race-Klasse, die
+        # run_live_kill()/-reset() (gepinnte Läufe) schreibseitig schon seit
+        # 2026-07-13 fixen, s. dortiger Kommentar: unser Terminal-Write hier
+        # macht die Zeile terminal, der spätere Wrapper-Report MIT output_ref
+        # wird dann als idempotenter Wiederholungs-Report verworfen — die
+        # Journal-Zeile fror ohne Verweis ein. worker.output_path() kennt den
+        # Pfad des aktuellen Laufs (dieselbe Quelle wie die Live-Routen).
+        # NUR für einen tatsächlich aktiven Lauf: KILL auf complete (Lazy-
+        # Rearm-Stopper, User-Redesign 2026-07-20) archiviert die Zeile zu
+        # einem frischen, sofort toten Zyklus OHNE eigenen Output — der
+        # Verweis des alten Laufs gehört dessen Journal-Zeile, nicht diesem.
         conn = job_db.connect(worker.db_path)
         try:
-            outcome = job_db.report_status(conn, id, status="killed", reason="by_user")
+            row = conn.execute("SELECT status FROM jobs WHERE id=?", (id,)).fetchone()
+            out_ref: str | None = None
+            if row is not None and row["status"] in ("running", "awaiting", "deferred"):
+                try:
+                    out_ref = worker.output_path(id).relative_to(repo.root()).as_posix()
+                except Exception:  # noqa: BLE001 — defensiv (§2.7)
+                    pass
+            outcome = job_db.report_status(conn, id, status="killed",
+                                            reason="by_user", output_ref=out_ref)
         finally:
             conn.close()
         if outcome == "not_found":
@@ -1185,9 +1226,8 @@ def create_app(
             conn.close()
         if not _is_own_run(entry):
             return None, []
-        ref = entry.get("output_ref")
-        events = output.read_events(repo.root() / ref) if ref else []
-        return entry, events
+        # Derselbe run_id-Fallback wie _journal_events(), s. _journal_output_path().
+        return entry, output.read_events(_journal_output_path(entry))
 
     @app.get("/-/run/journal/{jid}/output", tags=["job"])
     def run_journal_output(jid: int):
