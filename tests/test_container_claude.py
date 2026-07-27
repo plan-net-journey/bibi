@@ -86,4 +86,10 @@ def test_claude_runs_in_container_output_captured(tmp_path: Path):
     events = output.read_events(out)
     assert events, "kein Output gefangen — Kette gebrochen"
     text = " ".join(e.get("line", "") for e in events).lower()
-    assert "api key" in text or "hallo" in text  # Dummy: Auth-Fehler; echt: Antwort
+    # Drei legitime Ausgänge, alle beweisen die Kette (darum geht es hier —
+    # nicht um die API-Antwort selbst): Dummy-Key → Auth-Fehler ("api key");
+    # echter Key → Antwort ("hallo"); API technisch unerreichbar → "api error:
+    # unable to connect …" (m.raus --slow-Lauf 2026-07-27: transienter Docker-
+    # Netz-Hiccup, ~3 min Connection-Retries — claude lief, Output kam an,
+    # nur der Assert kannte diesen dritten Fall nicht).
+    assert "api key" in text or "api error" in text or "hallo" in text
