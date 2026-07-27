@@ -30,11 +30,12 @@ def _base(args: argparse.Namespace) -> str:
 
 def _req(url: str, method: str = "GET") -> tuple[int, object]:
     # X-Bibi-Node-Id: seit dem Job-Control-Approval-Bug-Fix (2026-07-25) prüft
-    # der Host jede /-/job*-Route gegen approved_nodes, sobald der Aufruf nicht
-    # vom Host selbst (Loopback) kommt — ohne diesen Header liefe ein bereits
-    # approvter entfernter Knoten (Mac, sarasate-client) hier sonst auch ins
-    # Leere. Harmlos immer mitgeschickt: bei einem lokalen Ziel ignoriert der
-    # Host ihn ohnehin (Loopback-Bypass).
+    # der Host jede /-/job*-Route gegen approved_nodes — ohne diesen Header
+    # liefe ein bereits approvter Knoten (Mac, sarasate-client) hier ins Leere.
+    # Seit Befund 4 (Live-Test PLAN-37, 2026-07-27) gilt das auch über Loopback,
+    # sobald die node_id nicht die des angesprochenen Daemons selbst ist: auf
+    # sarasate teilen sich mehrere Knoten eine Maschine, "127.0.0.1" heißt dort
+    # gerade nicht "derselbe Knoten".
     headers = {"X-Bibi-Node-Id": config.node_id()}
     req = urllib.request.Request(url, method=method, headers=headers)
     try:
@@ -50,6 +51,29 @@ def _req(url: str, method: str = "GET") -> tuple[int, object]:
         return 0, None
 
 
+def _fail(code: int, body: object, what: str) -> int:
+    """Fehlschlag sichtbar machen statt stumm 1 zurückzugeben (Befund 5,
+    Live-Test PLAN-37, 2026-07-27).
+
+    Live beobachtet: `bibi-ctrl job list` auf einem nicht freigeschalteten
+    Knoten gab **gar nichts** aus und beendete sich mit 1 — von "keine Jobs
+    vorhanden" für den Menschen nicht zu unterscheiden. Gerade beim
+    Approval-Modell ist die Begründung aber der ganze Punkt: der Nutzer muss
+    erfahren, dass sein Knoten noch freizuschalten ist. FastAPIs
+    ``HTTPException`` liefert sie in ``detail`` gleich mit.
+    """
+    detail = body.get("detail") if isinstance(body, dict) else None
+    if code == 403:
+        print(f"{what}: vom Scheduler abgewiesen — {detail or 'nicht freigeschaltet'}. "
+              "Dieser Knoten muss am Host freigeschaltet werden (Nodes-Screen).",
+              file=sys.stderr)
+    elif code == 0:
+        pass  # _req() hat die Ursache schon gemeldet
+    else:
+        print(f"{what}: HTTP {code}{f' — {detail}' if detail else ''}", file=sys.stderr)
+    return 1
+
+
 def _list(args: argparse.Namespace) -> int:
     url = f"{_base(args)}/-/job" + (f"?status={args.status}" if args.status else "")
     code, body = _req(url)
@@ -57,7 +81,7 @@ def _list(args: argparse.Namespace) -> int:
         print("Scheduler-Rolle nicht aktiv (Daemon ohne --scheduler).", file=sys.stderr)
         return 1
     if code != 200 or not isinstance(body, list):
-        return 1
+        return _fail(code, body, "job list")
     if not body:
         print("(keine Jobs)")
         return 0
@@ -74,7 +98,7 @@ def _show(args: argparse.Namespace) -> int:
         print(f"kein Job mit id {args.id}", file=sys.stderr)
         return 1
     if code != 200 or not isinstance(body, dict):
-        return 1
+        return _fail(code, body, "job show")
     print(json.dumps(body, indent=2, ensure_ascii=False))
     return 0
 
@@ -86,7 +110,7 @@ def _start(args: argparse.Namespace) -> int:
     if code == 409:
         print(f"Job {args.id} ist nicht pending (nicht startbar)", file=sys.stderr); return 1
     if code != 200:
-        return 1
+        return _fail(code, None, "job start")
     print(f"{args.id} → jetzt fällig")
     return 0
 
@@ -98,7 +122,7 @@ def _kill(args: argparse.Namespace) -> int:
     if code == 409:
         print(f"Job {args.id} läuft nicht (nicht killbar)", file=sys.stderr); return 1
     if code != 200:
-        return 1
+        return _fail(code, body, "job kill")
     print(f"{args.id} killed")
     return 0
 
@@ -111,7 +135,7 @@ def _restart(args: argparse.Namespace) -> int:
     if code == 409:
         print(f"Job {args.id} ist nicht in einem Terminalzustand", file=sys.stderr); return 1
     if code != 200:
-        return 1
+        return _fail(code, body, "job restart")
     print(f"{args.id} → pending")
     return 0
 

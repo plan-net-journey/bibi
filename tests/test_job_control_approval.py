@@ -146,3 +146,37 @@ def test_remote_read_only_job_status_stays_open(gated):
 def test_remote_run_journal_read_stays_open(gated):
     _, remote, _ = gated
     assert remote.get("/-/run/journal").status_code == 200
+
+
+# ── Befund 5 (Live-Test PLAN-37): die CLI muss die Abweisung auch SAGEN ─────
+# Live beobachtet: `bibi-ctrl job list` auf dem pending-Knoten gab gar nichts
+# aus und beendete sich mit 1 — für den Menschen nicht von "keine Jobs" zu
+# unterscheiden, obwohl die Begründung beim Approval-Modell der ganze Punkt ist.
+
+
+def test_cli_meldet_abweisung_statt_stumm_zu_scheitern(capsys):
+    from bibi.ctrl.job_cmd import _fail
+
+    rc = _fail(403, {"detail": "node not approved (status: pending)"}, "job list")
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "abgewiesen" in err
+    assert "pending" in err        # der Grund steht drin
+    assert "freigeschaltet" in err  # und was zu tun ist
+
+
+def test_cli_meldet_auch_unerwartete_codes(capsys):
+    from bibi.ctrl.job_cmd import _fail
+
+    assert _fail(500, None, "job kill") == 1
+    assert "HTTP 500" in capsys.readouterr().err
+
+
+def test_cli_schweigt_wenn_req_schon_gemeldet_hat(capsys):
+    """code=0 heißt: _req() hat "daemon nicht erreichbar" bereits ausgegeben —
+    keine zweite, verwirrende Zeile hinterherschieben."""
+    from bibi.ctrl.job_cmd import _fail
+
+    assert _fail(0, None, "job list") == 1
+    assert capsys.readouterr().err == ""
