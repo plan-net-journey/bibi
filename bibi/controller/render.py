@@ -12,7 +12,11 @@ import time
 
 from bibi.schedule import models
 
-_HTMX = "https://unpkg.com/htmx.org@1.9.12"
+# PLAN-36 Stufe 36.0: htmx lokal statt unpkg.com-CDN (Tailnet-only-Setup —
+# die CDN-URL war die einzige externe Abhängigkeit jeder Seite; offline starb
+# damit das komplette FE). Route: controller/__init__.py::htmx_asset(),
+# Datei: controller/static/htmx.min.js, versionierter Pfad = Cache-Busting.
+_HTMX = "/-/static/htmx-1.9.12.min.js"
 
 #: Poll-Trigger der self-aktualisierenden Fragmente — 2s, gated durch FOLLOW
 #: (``window.bibiFollow``). Zentral, damit das Intervall an einer Stelle hängt.
@@ -3047,24 +3051,30 @@ _LIVE_JS = """
 })();
 // Scroll-Erhalt für .liveterm (running, SSE via hx-preserve — Inhalt + EventSource
 // überleben den 2s-#live-Poll, scrollTop aber nicht, s. Kommentar oben bei _LIVE_JS).
-// Anders als .liveclamp hier keine absolute Positions-Wiederherstellung: eine laufende
-// Live-Box soll dem NEUEN Ende folgen (falls man vor dem Swap unten war), nicht zur
-// alten Pixel-Position zurückspringen.
+// Zwei Fälle (PLAN-36 Stufe 36.0, Befund 5 in FE-Live-Update-Briefing — live
+// doppelt reproduziert: scrollTop 50→0 bzw. 300→0 binnen Sekunden): war die Box
+// vor dem Swap unten (FOLLOW), soll sie dem NEUEN Ende folgen, nicht zur alten
+// Pixel-Position zurück; war sie dagegen HOCHGESCROLLT (User liest alte Zeilen),
+// muss die absolute Position wiederhergestellt werden — vorher fehlte dieser
+// else-Zweig komplett, der browserseitige scrollTop-Reset auf 0 beim
+// hx-preserve-Wiedereinhängen blieb stehen und warf den Leser alle ~2s an den
+// Anfang. Gleiches Muster wie der .liveclamp-Block direkt darüber.
 (function(){
-  let wasAtBottom = null;
+  let wasAtBottom = null, savedTop = null;
   document.body.addEventListener('htmx:beforeSwap', (ev) => {
     const t = ev.detail && ev.detail.target;
     if (t && t.id === 'live') {
       const box = t.querySelector('.liveterm[data-job]');
       wasAtBottom = box ? (box.scrollTop + box.clientHeight >= box.scrollHeight - 24) : null;
+      savedTop = box ? box.scrollTop : null;
     }
   });
   document.body.addEventListener('htmx:afterSettle', () => {
-    if (wasAtBottom == null) return;
+    if (wasAtBottom == null) { savedTop = null; return; }
     const live = document.getElementById('live');
     const box = live && live.querySelector('.liveterm[data-job]');
-    if (box && wasAtBottom) box.scrollTop = box.scrollHeight;
-    wasAtBottom = null;
+    if (box) box.scrollTop = wasAtBottom ? box.scrollHeight : (savedTop ?? box.scrollTop);
+    wasAtBottom = null; savedTop = null;
   });
 })();
 """

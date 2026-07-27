@@ -138,3 +138,20 @@ def test_daemon_route_retired(app_with):
                     "auto_sync": True, "maintenance": False})
     with TestClient(app) as c:
         assert c.get("/-/ui/daemon").status_code == 404
+
+
+def test_htmx_served_locally(app_with):
+    # PLAN-36 Stufe 36.0 (Befund 3, FE-Live-Update-Briefing): htmx kommt vom
+    # eigenen Daemon statt von unpkg.com — Tailnet-only darf nie vom Internet
+    # abhängen. Versionierter Pfad => aggressives, immutables Caching erlaubt.
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        r = c.get("/-/static/htmx-1.9.12.min.js")
+        assert r.status_code == 200
+        assert "javascript" in r.headers["content-type"]
+        assert "immutable" in r.headers["cache-control"]
+        assert "htmx" in r.text[:2000]
+        # und die Seiten referenzieren den lokalen Pfad, nicht mehr das CDN
+        home = c.get("/-/", headers={"Accept": "text/html"})
+        assert "unpkg.com" not in home.text
+        assert "/-/static/htmx-1.9.12.min.js" in home.text

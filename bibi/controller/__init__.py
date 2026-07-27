@@ -136,6 +136,25 @@ def add_controller_routes(
 ) -> None:
     """Die ``/-/``-Wurzel + ``/-/ui/``-Fragmente registrieren."""
 
+    # htmx lokal ausliefern (PLAN-36 Stufe 36.0, Befund 3 in
+    # FE-Live-Update-Briefing): bisher kam htmx von unpkg.com — im
+    # Tailnet-only-Setup die einzige externe Abhängigkeit der Seiten; ohne
+    # Internet (oder bei CDN-Ausfall) starb damit das komplette FE-Polling.
+    # Versionierter Pfad statt generischem Namen: der Browser darf aggressiv
+    # cachen (immutable), ein htmx-Upgrade ändert die URL und bustet den
+    # Cache von selbst. Inhalt wird einmal gelesen und im Closure gehalten
+    # (48 KiB) — kein Datei-I/O pro Request.
+    from pathlib import Path as _Path
+
+    from fastapi.responses import Response as _Response
+
+    _htmx_bytes = (_Path(__file__).parent / "static" / "htmx.min.js").read_bytes()
+
+    @app.get("/-/static/htmx-1.9.12.min.js", include_in_schema=False)
+    def htmx_asset():
+        return _Response(content=_htmx_bytes, media_type="text/javascript",
+                         headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
     def _status() -> dict:
         try:
             return client.status()
