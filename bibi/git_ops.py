@@ -302,6 +302,46 @@ def stage_and_commit_paths(paths: list[str], message: str,
     return _commit_if_staged(message, identity)
 
 
+def snapshot_worktree() -> dict[str, object]:
+    """PLAN-38 Stufe 2: Schnappschuss des Arbeitsstands **vor** einem In-place-Lauf.
+
+    Zweck: hinterher genau die Pfade bestimmen können, die der Job selbst
+    angefasst hat — und nur die committen. Ein reiner „war vorher schon dirty"-
+    Vergleich reicht dafür nicht: die interessanteste Datei ist typischerweise
+    genau die, die der Mensch gerade editiert hat UND der Job zusätzlich ändert
+    (Anlassfall: eine Schedule-MD mit frisch geändertem Frontmatter, an die der
+    Job unten etwas anhängt). Darum inhaltsbasiert statt namensbasiert.
+
+    ``git stash create`` schreibt ein Commit-Objekt aus Index + Working Tree,
+    **ohne** Working Tree, Index oder die Stash-Liste anzufassen (verifiziert) —
+    der ideale Anker. Es erfasst nur getrackte Änderungen, deshalb wird die
+    Untracked-Liste separat mitgeführt. Bei sauberem Tree liefert es leer; dann
+    ist ``HEAD`` der richtige Anker (s. ``paths_changed_since()``).
+    """
+    tracked = _git(["stash", "create"], check=False).stdout.strip()
+    return {"tracked": tracked, "untracked": sorted(_untracked_paths())}
+
+
+def _untracked_paths() -> list[str]:
+    out = _git(["ls-files", "--others", "--exclude-standard"], check=False).stdout
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def paths_changed_since(snapshot: dict[str, object]) -> list[str]:
+    """Pfade, die sich seit ``snapshot_worktree()`` geändert haben (PLAN-38 Stufe 2).
+
+    Getrackt: Diff des Working Trees gegen den Schnappschuss-Anker (Löschungen
+    eingeschlossen — ``git add -A -- <pfad>`` staget sie korrekt). Untracked:
+    was jetzt da ist und vorher nicht. Gitignortes (``data/``) taucht in beiden
+    Quellen nie auf und kann darum auch nicht versehentlich mitcommittet werden.
+    """
+    base = str(snapshot.get("tracked") or "").strip() or "HEAD"
+    diff = _git(["diff", "--name-only", base], check=False)
+    changed = {line for line in diff.stdout.splitlines() if line.strip()}
+    before = set(snapshot.get("untracked") or [])  # type: ignore[arg-type]
+    return sorted(changed | (set(_untracked_paths()) - before))
+
+
 def _commit_if_staged(message: str, identity: tuple[str, str] | None) -> bool:
     if not _has_staged():
         return False

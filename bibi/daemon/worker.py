@@ -48,6 +48,31 @@ def _output_path(repo_root: Path, job_id: str) -> Path:
     return repo_root / "data" / "job" / job_id / "output.jsonl"
 
 
+def _write_inplace_seed(run_dir: Path) -> Path | None:
+    """PLAN-38 Stufe 2: Arbeitsstand-Schnappschuss vor einem In-place-Lauf ablegen.
+
+    Nur bei ``auto_sync: on``. Ist Auto-Sync aus, bleibt das Ergebnis ohnehin
+    als ``modified``/``untracked`` liegen (die Zusage von PLAN-38) — dann gibt
+    es nichts zu committen und der Schnappschuss wäre reine Arbeit. Rückgabe:
+    Pfad der Datei, die ``wrapper._commit_worktree()`` liest und wieder löscht,
+    sonst ``None``.
+
+    Ein Fehler hier darf einen Lauf nie verhindern (§2.7): ohne Schnappschuss
+    läuft der Job normal weiter, das Ergebnis nimmt dann wie bisher der
+    Auto-Sync-Debouncer mit (nur ohne Job-Provenienz im Commit).
+    """
+    try:
+        from bibi import git_ops
+        if not state.get_auto_sync():
+            return None
+        path = run_dir / "inplace-seed.json"
+        path.write_text(json.dumps(git_ops.snapshot_worktree()), encoding="utf-8")
+        return path
+    except Exception:  # noqa: BLE001 — nie den Lauf blockieren
+        log.warning("in-place-Seed konnte nicht geschrieben werden", exc_info=True)
+        return None
+
+
 def _last_activity(out_path: Path, default: float) -> float:
     """Zeitpunkt der jüngsten Output-Zeile (mtime), **nie vor Lauf-Start** (``default``).
 
@@ -397,9 +422,14 @@ def _run_wrapper(
     # (BIBI_WORKTREE, job_cwd-Ableitung unten, exec_backend.build_exec()s
     # Container-Mount über BIBI_WORKTREE) unverändert funktioniert — der
     # Unterschied ist nur, WAS wt_path ist, nicht wie es benutzt wird.
+    seed_ref: Path | None = None
     if in_place:
         wt_path = repo_root
-        output.append(out_path, "phase", "worktree: übersprungen (in-place, dirty trunk)")
+        output.append(out_path, "phase", "worktree: übersprungen (in-place, lokaler Stand)")
+        seed_ref = _write_inplace_seed(out_path.parent)
+        if seed_ref is not None:
+            output.append(out_path, "phase",
+                          "auto_sync: an — Ergebnis wird nach dem Lauf committet")
     else:
         output.append(out_path, "phase", "worktree: wird vorbereitet …")
         wt_path = worktree.prepare(repo_root=repo_root, work_dir=work_dir, slug=slug)
@@ -417,6 +447,11 @@ def _run_wrapper(
     env["BIBI_WORKTREE"] = str(wt_path)
     if in_place:
         env["BIBI_IN_PLACE"] = "1"
+        if seed_ref is not None:
+            # PLAN-38 Stufe 2: nur gesetzt, wenn auto_sync an ist — der Wrapper
+            # committet dann am Ende genau die Pfade, die sich gegenüber diesem
+            # Schnappschuss geändert haben (wrapper._commit_worktree()).
+            env["BIBI_INPLACE_SEED"] = str(seed_ref)
     # Job-cwd = Verzeichnis der Schedule-MD (User-Feedback 2026-07-05: ein Job
     # soll dort laufen, wo seine MD liegt, nicht im Worktree-Root — verhindert,
     # dass versehentliche relative Schreibzugriffe im ganzen Repo landen).

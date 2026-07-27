@@ -276,15 +276,79 @@ def _deferred_watcher(proc: subprocess.Popen, current_status: list[str],
 
 # ── Post-completion: Commit + Report ─────────────────────────────────────────
 
+def _commit_in_place(env: dict[str, str]) -> str | None:
+    """PLAN-38 Stufe 2: das Ergebnis eines In-place-Laufs selbst committen.
+
+    Nur wenn ``BIBI_INPLACE_SEED`` gesetzt ist — der Worker setzt das
+    ausschließlich bei ``auto_sync: on`` (``worker._write_inplace_seed()``).
+    Bei ausgeschaltetem Auto-Sync passiert hier nichts: das Ergebnis bleibt als
+    ``modified``/``untracked`` liegen, genau wie PLAN-38 es zusagt.
+
+    Warum überhaupt committen, wenn Auto-Sync das ohnehin täte: der
+    Push-Debouncer (``daemon/synchronizer.py``) committet nach ein paar Minuten
+    **alles** Dirty in einem anonymen ``auto:``-Commit — das Job-Ergebnis wäre
+    dann nicht mehr von der unfertigen Handarbeit daneben zu unterscheiden.
+    Hier committet stattdessen der Lauf selbst, mit Job-Provenienz im Betreff
+    und **nur** den Pfaden, die er gegenüber dem Schnappschuss verändert hat.
+    Der Rest bleibt liegen und geht später den normalen Auto-Sync-Weg.
+
+    Gibt den Commit-SHA zurück (oder ``None``) — der Rückgabewert ist rein
+    informativ, ``_commit_worktree()`` meldet für in-place bewusst weiterhin
+    ``(None, None)``: es gibt keine Branch, die ein Merge-back holen müsste.
+    Fehler werden geloggt, nie geworfen: ein misslungener Commit darf einen
+    fertigen Lauf nicht nachträglich zum Fehlschlag machen (§2.7).
+    """
+    seed_path = env.get("BIBI_INPLACE_SEED")
+    if not seed_path:
+        return None
+    out_path = Path(env["BIBI_OUTPUT_PATH"]) if env.get("BIBI_OUTPUT_PATH") else None
+    slug = env.get("BIBI_JOB_SLUG", "")
+    run_id = env.get("BIBI_RUN_ID", env.get("BIBI_JOB_ID", ""))
+    try:
+        from bibi import git_ops
+        from bibi.daemon.worktree import bot_identity
+        snapshot = json.loads(Path(seed_path).read_text(encoding="utf-8"))
+        paths = git_ops.paths_changed_since(snapshot)
+        if not paths:
+            if out_path:
+                output.append(out_path, "phase", "commit: nichts geändert")
+            return None
+        committed = git_ops.stage_and_commit_paths(
+            paths, f"{slug}: run {run_id}", identity=bot_identity(slug))
+        if not committed:
+            return None
+        sha = git_ops._git(["rev-parse", "HEAD"], check=False).stdout.strip()
+        if out_path:
+            output.append(out_path, "phase",
+                          f"commit: {sha[:8]} — {len(paths)} Pfad(e), auto_sync pusht")
+        return sha or None
+    except Exception:  # noqa: BLE001 — ein fertiger Lauf bleibt fertig
+        log.warning("bibi.wrapper.inplace_commit_failed slug=%s run_id=%s",
+                    slug, run_id, exc_info=True)
+        return None
+    finally:
+        try:
+            Path(seed_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _commit_worktree(env: dict[str, str]) -> tuple[str | None, str | None]:
     """Worktree committen und (commit_sha, branch) zurückgeben.
 
-    ``BIBI_IN_PLACE=1`` (``bibi-ctrl test``, User-Fund 2026-07-14) überspringt
-    den Commit bewusst — bewusst NICHT an ``BIBI_REPO_ROOT``s Präsenz gekoppelt
-    wie in einer früheren Version: ``_finish()`` unten liest dieselbe Variable
-    für ``output_ref`` (ein ganz anderer Zweck), ein gemeinsames Gate hätte
-    also auch den Output-Verweis für in-place-Läufe stumm auf ``None`` gelassen
-    (leeres Journal-Transkript, dauerhaft) statt nur den Commit zu unterdrücken.
+    ``BIBI_IN_PLACE=1`` (seit PLAN-38 der Normalfall jedes ``run``) committet
+    keinen Worktree — es gibt keinen. Bewusst NICHT an ``BIBI_REPO_ROOT``s
+    Präsenz gekoppelt wie in einer früheren Version: ``_finish()`` unten liest
+    dieselbe Variable für ``output_ref`` (ein ganz anderer Zweck), ein
+    gemeinsames Gate hätte also auch den Output-Verweis für in-place-Läufe
+    stumm auf ``None`` gelassen (leeres Journal-Transkript, dauerhaft) statt
+    nur den Commit zu unterdrücken.
+
+    **Rückgabe bei in-place ist immer ``(None, None)``** — auch wenn Stufe 2
+    unten committet hat: der Commit liegt direkt auf dem Branch des
+    Checkouts (typischerweise ``trunk``), es gibt keine ``agent/<slug>``-Branch
+    und damit nichts, was der Merge-back-Sweep holen müsste. Genau diese
+    Abwesenheit ist der Gewinn von PLAN-38 (kein hängender Branch mehr).
 
     Zwei getrennte ``try``-Blöcke statt einem gemeinsamen (Fund im Rahmen von
     Worktree-Cleanup-Bug, Case 20260621.Bibi4-870bd9db, 2026-07-26): ein
@@ -302,6 +366,7 @@ def _commit_worktree(env: dict[str, str]) -> tuple[str | None, str | None]:
     (``mergeback.unmerged_agent_branches()``) findet die Branch so oder so —
     beide fragen nie den hier zurückgegebenen Report ab."""
     if env.get("BIBI_IN_PLACE") == "1":
+        _commit_in_place(env)
         return None, None
     repo_root_str = env.get("BIBI_REPO_ROOT")
     if not repo_root_str:

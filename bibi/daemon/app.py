@@ -31,6 +31,7 @@ from bibi.daemon.openapi import (
     JobReservation, JobView, KillRequest, NextRequest, RunRequest, StatusReport,
     WorkerHeartbeat, WorkerView,
 )
+from bibi.daemon import roles as roles_mod  # Modul-Alias (der Parameter heißt `roles`)
 from bibi.daemon.roles import Roles
 from bibi.daemon.worker import Worker, run_pinned
 from bibi.daemon.worker_registry import WorkerRegistry
@@ -926,16 +927,27 @@ def create_app(
                       "Wartungsmodus aus — Job-Dispatch wieder aktiv", role="daemon")
         return {"maintenance": False}
 
-    # ── /run: lokale On-Demand-Ausführung (PLAN-3 §3.3b) — rollenunabhängig ────
+    # ── /run: lokale On-Demand-Ausführung (PLAN-3 §3.3b) — Client-only ────────
     # User-Feedback 2026-07-06: hing bisher an _add_worker_routes() (nur mit
     # --worker registriert), obwohl der Dispatch selbst kein Worker-Objekt
     # braucht — sich repo_root/work_dir/db_path genau wie die CLI (run_cmd.py)
     # selbst über repo.root() auflöst. Ein reiner Client (kein --worker) konnte
     # /run dadurch nur per CLI nutzen, nie über den Browser/die API — dieselbe
     # Art Lücke wie beim Heartbeat (PLAN-17 Stufe 17.0).
+    #
+    # PLAN-38 (2026-07-27): läuft jetzt in-place gegen den Live-Checkout und ist
+    # deshalb auf Knoten mit scheduler-/worker-Rolle gesperrt (409) — dieselbe
+    # Regel wie in der CLI, gemeinsam in roles.forbids_local_run(). Der reguläre
+    # Scheduler-Dispatch (execute_reservation()) ist davon unberührt und behält
+    # seine Worktree-Isolation.
     @app.post("/-/run", tags=["job"],
              dependencies=[Depends(_require_approved_or_local)])
     def run(req: RunRequest):
+        blocked = roles_mod.forbids_local_run(roles)
+        if blocked:
+            return JSONResponse(status_code=409,
+                                content={"error": roles_mod.local_run_denied_message(blocked),
+                                         "roles": blocked})
         # PLAN-28: run_pinned() (Nachfolger des früheren, rein synchronen
         # run_local()) gibt dem Lauf jetzt eine echte jobs-Zeile
         # (pinned_host=dieser Host) und läuft durch dieselbe Retry/Error/
@@ -961,8 +973,10 @@ def create_app(
             # als beim daemonlosen CLI-Pfad (bibi-ctrl run) darf/soll hier also
             # attempts/backoff/defer_time/error_time aus der Schedule-MD
             # gelten, statt immer sofort bei Fehlschlag zu exhaustieren.
+            # in_place=True (PLAN-38): lokaler Stand statt frischem trunk-Worktree.
             res = run_pinned(slug=req.slug, cmd=req.cmd, kind=req.kind,
-                             register=pinned_worker._register, use_schedule_retry=True)
+                             register=pinned_worker._register, use_schedule_retry=True,
+                             in_place=True)
         except LookupError as exc:
             return JSONResponse(status_code=404, content={"error": str(exc)})
         except Exception as exc:  # noqa: BLE001 — Route darf nie unbehandelt crashen
@@ -973,34 +987,13 @@ def create_app(
         return {"id": res["id"], "slug": slug, "status": "running",
                 "output_ref": res["output_ref"]}
 
-    # ── /test: wie /-/run, aber in-place gegen den Live-Checkout ──────────────
-    # User-Fund 2026-07-14 (bibi-ctrl test): kein frischer Worktree von trunk —
-    # läuft direkt gegen repo_root (dirty erlaubt), committet nie danach.
-    # Gleiches RunRequest-Schema, gleiche Rollen-Unabhängigkeit wie /-/run
-    # (dieselbe Begründung: der Dispatch selbst braucht kein Worker-Objekt).
-    @app.post("/-/test", tags=["job"],
-             dependencies=[Depends(_require_approved_or_local)])
-    def test(req: RunRequest):
-        if not req.slug and not req.cmd:
-            return JSONResponse(status_code=400, content={"error": "slug oder cmd nötig"})
-        slug = req.slug or "adhoc"
-        if worker_mod.local_run_live(slug) is not None:
-            return JSONResponse(status_code=409,
-                                content={"error": "already running", "slug": slug})
-
-        try:
-            res = run_pinned(slug=req.slug, cmd=req.cmd, kind=req.kind,
-                             register=pinned_worker._register, in_place=True,
-                             use_schedule_retry=True)
-        except LookupError as exc:
-            return JSONResponse(status_code=404, content={"error": str(exc)})
-        except Exception as exc:  # noqa: BLE001 — Route darf nie unbehandelt crashen
-            activity.emit(log, logging.ERROR, "test.pinned_error",
-                          "In-place /test-Lauf fehlgeschlagen", role="daemon",
-                          slug=slug, error=str(exc))
-            return JSONResponse(status_code=500, content={"error": str(exc)})
-        return {"id": res["id"], "slug": slug, "status": "running",
-                "output_ref": res["output_ref"]}
+    # ── /test: entfallen (PLAN-38, 2026-07-27) ────────────────────────────────
+    # Die Route war das HTTP-Gegenstück zu `bibi-ctrl test` (in-place gegen den
+    # Live-Checkout) und hatte weder eine Methode im DaemonClient noch einen
+    # Button im Frontend — sie war ausschließlich per CLI erreichbar. Seit
+    # /-/run selbst in-place läuft, ist sie ein exaktes Duplikat und darum
+    # ersatzlos entfernt; das CLI-Verb `test` bleibt für eine Übergangszeit als
+    # Deprecation-Alias auf `run` (ctrl/test_cmd.py).
 
     # ── /run/live: Zwischenstand laufender lokaler /run-Ausführungen ──────────
     # PLAN-21 Befund 10, 2. Nachtrag — s. Kommentar bei POST /-/run. Schlank

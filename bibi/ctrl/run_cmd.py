@@ -7,6 +7,18 @@ aber durch dieselbe Retry/Error/Deferred/Zombie-Maschine wie ein
 Scheduler-Job. In-Process: ruft ``worker.run_pinned`` direkt, kein HTTP,
 und pollt die ``jobs``-Zeile bis zu einem Terminalzustand.
 
+**PLAN-38 (Entscheidung m.rau, 2026-07-27) — zwei Änderungen gegenüber
+PLAN-28:** ``run`` läuft jetzt **in-place gegen den Live-Checkout** (der
+frühere frische Worktree aus ``trunk`` entfällt) und ist damit **Client-only**
+— auf einem Knoten mit ``scheduler``/``worker``-Rolle wird der Aufruf
+abgelehnt statt still umgedeutet (``roles.forbids_local_run()``). Begründung:
+wer lokal läuft, will den lokalen Stand laufen lassen und das Ergebnis als
+``modified``/``untracked`` im Vault sehen; die Worktree-Isolation versteckte
+auf dem eigenen Client nur die eigenen uncommitteten Änderungen vor dem
+eigenen Job. Das frühere zweite Verb ``bibi-ctrl test`` hatte genau dieses
+In-place-Verhalten und ist damit überflüssig — es bleibt als
+Deprecation-Alias auf ``run`` bestehen.
+
 Kein Retry standardmäßig (``attempts=0`` in ``run_pinned()``, bewusst *nicht*
 der Scheduler-Default 1 — ein fälliger Retry bräuchte den gepinnten
 ``Worker``-Loop aus ``create_app()``, den es hier, ohne laufenden Daemon,
@@ -48,12 +60,50 @@ def _wait_until_terminal(job_id: str, *, poll: float = 0.1) -> dict:
         conn.close()
 
 
+def local_run_denied() -> str | None:
+    """PLAN-38: Ablehnungstext, wenn dieser Knoten ``run`` nicht darf — sonst ``None``.
+
+    Rollen aus der Config-Datei, genau wie ``daemon_cmd._resolve_roles()`` sie
+    liest (``BIBI_ROLE``). Die CLI baut keinen Daemon, hat also kein
+    aufgelöstes ``Roles`` — die gemeinsame Regel liegt trotzdem an einer
+    Stelle (``roles.forbids_local_run()``), damit CLI und HTTP-Route nie
+    auseinanderlaufen."""
+    from bibi import config
+    from bibi.daemon import roles as R
+    blocked = R.forbids_local_run(R.parse_role_env(config.read_env().get("BIBI_ROLE", "")))
+    return R.local_run_denied_message(blocked) if blocked else None
+
+
+def _auto_sync_notice() -> str | None:
+    """PLAN-38 Stufe 1: Hinweis, wenn das Ergebnis nicht liegen bleiben wird.
+
+    Bei ``auto_sync: on`` committet der Lauf sein eigenes Ergebnis am Ende
+    selbst (Stufe 2, ``wrapper._commit_in_place()``) und der Synchronizer
+    pusht es — die Zusage „bleibt als modified/untracked liegen" gilt dann
+    nicht. Das eigentliche Ärgernis wäre nicht der Commit, sondern dass er
+    lautlos passiert; darum hier ansagen statt verbieten."""
+    from bibi import state
+    if not state.get_auto_sync():
+        return None
+    return ("Hinweis: auto_sync ist an — das Ergebnis dieses Laufs wird am Ende "
+            "automatisch committet (mit Job-Provenienz) und vom Synchronizer gepusht. "
+            "`bibi-ctrl sync off`, wenn du es vorher ansehen willst.")
+
+
 def run(args: argparse.Namespace) -> int:
     if not args.slug and not args.command:
         print("bibi-ctrl run: <slug> oder --cmd nötig", file=sys.stderr)
         return 2
+    denied = local_run_denied()
+    if denied:
+        print(f"bibi-ctrl run: {denied}", file=sys.stderr)
+        return 2
+    notice = _auto_sync_notice()
+    if notice:
+        print(notice, file=sys.stderr)
     try:
-        res = run_pinned(slug=args.slug, cmd=args.command, kind=args.kind)
+        # in_place=True (PLAN-38): lokaler Stand statt frischem trunk-Worktree.
+        res = run_pinned(slug=args.slug, cmd=args.command, kind=args.kind, in_place=True)
     except LookupError as exc:
         print(f"bibi-ctrl run: {exc}", file=sys.stderr)
         return 1

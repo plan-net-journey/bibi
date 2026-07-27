@@ -75,9 +75,11 @@ def test_remote_approved_node_can_control_jobs(gated):
 
 
 def test_remote_dispatch_routes_blocked_without_approval(gated):
+    # `/-/test` ist mit PLAN-38 (2026-07-27) ersatzlos entfallen — `/-/run`
+    # läuft selbst in-place, die Route war danach ein exaktes Duplikat. Das
+    # Approval-Gate gilt unverändert für den verbliebenen Dispatch-Weg.
     _, remote, _ = gated
     assert remote.post("/-/run", json={"cmd": "echo hi"}).status_code == 403
-    assert remote.post("/-/test", json={"cmd": "echo hi"}).status_code == 403
 
 
 # ── Loopback bleibt frei (kein Regressionsrisiko für den Host selbst) ───────
