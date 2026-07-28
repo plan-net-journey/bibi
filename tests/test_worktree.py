@@ -172,3 +172,90 @@ def test_remove_refuses_via_non_canonical_path_to_repo_root(repo: Path):
     assert sneaky.resolve() == repo.resolve()
     wt.remove(repo_root=repo, worktree=sneaky)
     assert repo.exists() and (repo / ".git").exists()
+
+
+# ── Befund 3 (2026-07-28): "Merge-Sweep holt nach" ist nach einem trunk-Rebase
+# eine falsche Auskunft ────────────────────────────────────────────────────────
+#
+# Live erlebt: nach einer Divergenz-Auflösung per `/sync` (die trunk rebased)
+# zeigten vier agent/*-Branches auf verworfene Commits. prepare() verweigerte
+# den -B-Reset korrekt, verwies aber auf den Merge-Sweep — der es grundsätzlich
+# nicht heilen konnte. Beide Mechanismen zeigten aufeinander, der Zustand blieb
+# stehen. Siehe vault/case/20260621.Bibi4-870bd9db/20260728.IdleGuardBefunde.md.
+
+
+def _rewrite_trunk_over(repo: Path, branch: str) -> None:
+    """Simuliert, was ein Rebase von trunk anrichtet: der Inhalt von ``branch``
+    steckt danach inhaltlich in trunk, aber unter einem ANDEREN SHA. Genau die
+    Konstellation, in der ``is_ahead()`` weiterhin True liefert, obwohl es
+    nichts mehr nachzuholen gibt. Ein Cherry-Pick erzeugt sie exakt."""
+    sha = _git(repo, "rev-parse", branch)
+    _git(repo, "cherry-pick", sha)
+
+
+def test_ahead_counts_split_equivalent_commits(repo: Path):
+    work = repo / "data" / "worktrees"
+    p = wt.prepare(repo_root=repo, work_dir=work, slug="run1")
+    (p / "new.txt").write_text("x\n")
+    wt.commit(worktree=p, message="add", slug="run1")
+
+    # echte, nirgends vorhandene Arbeit: 1 voraus, 0 davon schon in trunk
+    assert wt.ahead_counts(repo_root=repo, branch="agent/run1") == (1, 0)
+
+    _rewrite_trunk_over(repo, "agent/run1")
+    # jetzt inhaltlich in trunk, aber unter anderem SHA → weiterhin "ahead"
+    assert wt.is_ahead(repo_root=repo, branch="agent/run1", trunk="trunk")
+    assert wt.ahead_counts(repo_root=repo, branch="agent/run1") == (1, 1)
+
+
+def test_prepare_message_keeps_sweep_hint_for_genuine_work(repo: Path):
+    # Regression: der Normalfall (echte ungemergte Arbeit) muss weiterhin auf
+    # den Merge-Sweep verweisen — dort ist die Auskunft richtig.
+    work = repo / "data" / "worktrees"
+    p = wt.prepare(repo_root=repo, work_dir=work, slug="run1")
+    (p / "new.txt").write_text("x\n")
+    wt.commit(worktree=p, message="add", slug="run1")
+    with pytest.raises(wt.GitOpError) as exc:
+        wt.prepare(repo_root=repo, work_dir=work, slug="run1")
+    assert "Merge-Sweep holt nach" in str(exc.value)
+
+
+def test_prepare_message_names_rewrite_instead_of_sweep(repo: Path):
+    # Der Befund selbst: stecken ALLE Commits inhaltlich schon in trunk, kann
+    # der Sweep nichts holen — die Meldung darf ihn nicht versprechen, sondern
+    # muss den Rebase benennen und den Handgriff zeigen.
+    work = repo / "data" / "worktrees"
+    p = wt.prepare(repo_root=repo, work_dir=work, slug="run1")
+    (p / "new.txt").write_text("x\n")
+    wt.commit(worktree=p, message="add", slug="run1")
+    _rewrite_trunk_over(repo, "agent/run1")
+
+    with pytest.raises(wt.GitOpError) as exc:
+        wt.prepare(repo_root=repo, work_dir=work, slug="run1")
+    msg = str(exc.value)
+    assert "Merge-Sweep holt nach" not in msg      # die falsche Auskunft
+    assert "umgeschrieben" in msg                   # der tatsächliche Grund
+    assert "branch -f agent/run1 trunk" in msg      # der Handgriff
+    # und der Branch ist weiterhin unangetastet — gemeldet, nicht repariert
+    assert wt.is_ahead(repo_root=repo, branch="agent/run1", trunk="trunk")
+
+
+def test_prepare_message_reports_failed_sweep_attempts(repo: Path):
+    # Zweite Hälfte des Befunds: der Sweep hatte im Live-Fall bereits zweimal
+    # vergeblich versucht (data/merge_quarantine.json, failures: 2), während
+    # die Meldung ihn unverändert als Lösung ankündigte.
+    from bibi.daemon import merge_quarantine
+
+    work = repo / "data" / "worktrees"
+    p = wt.prepare(repo_root=repo, work_dir=work, slug="run1")
+    (p / "new.txt").write_text("x\n")
+    wt.commit(worktree=p, message="add", slug="run1")
+    trunk_sha = _git(repo, "rev-parse", "trunk")
+    merge_quarantine.record_failure(repo, "agent/run1", trunk_sha=trunk_sha)
+    merge_quarantine.record_failure(repo, "agent/run1", trunk_sha=trunk_sha)
+
+    with pytest.raises(wt.GitOpError) as exc:
+        wt.prepare(repo_root=repo, work_dir=work, slug="run1")
+    msg = str(exc.value)
+    assert "2" in msg and "vergeblich" in msg
+    assert "/sync" in msg

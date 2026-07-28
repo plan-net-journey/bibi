@@ -99,6 +99,65 @@ def is_ahead(*, repo_root: Path, branch: str, trunk: str = "trunk") -> bool:
     return r.code == 0 and r.stdout.strip() not in ("", "0")
 
 
+def ahead_counts(*, repo_root: Path, branch: str,
+                 trunk: str = "trunk") -> tuple[int, int]:
+    """``(voraus, davon inhaltlich schon in trunk)`` — die zweite Zahl ist der
+    Unterschied, den :func:`is_ahead` allein nicht sehen kann.
+
+    ``git cherry`` vergleicht Patch-IDs statt SHAs und markiert mit ``-``, was
+    inhaltlich bereits in ``trunk`` steckt. Nach einem Rebase von trunk (den
+    ``/sync`` zur Konfliktauflösung selbst herbeiführt) zeigen alle davon
+    abzweigenden ``agent/*``-Branches auf ersetzte Commits: SHA-verschieden,
+    inhaltlich identisch. ``rev-list`` zählt sie als "voraus", zu holen gibt es
+    aber nichts. (0, 0) bei unbekanntem Branch — der Aufrufer prüft ohnehin
+    zuerst :func:`is_ahead`."""
+    r = _git(["cherry", trunk, branch], cwd=repo_root, check=False)
+    if r.code != 0:
+        return (0, 0)
+    lines = [ln for ln in r.stdout.splitlines() if ln.strip()]
+    return len(lines), sum(1 for ln in lines if ln.startswith("-"))
+
+
+def unmerged_reason(*, repo_root: Path, branch: str, trunk: str = "trunk") -> str:
+    """Begründung für die verweigerte ``-B``-Reset — so genau, wie die Lage es
+    hergibt (Befund 3, 2026-07-28).
+
+    Bis dahin sagte diese Meldung ausnahmslos "Merge-Sweep holt nach". Das
+    stimmt für den Normalfall (echte ungemergte Arbeit) und war im Live-Vorfall
+    trotzdem eine falsche Auskunft: nach einem trunk-Rebase kann der Sweep die
+    betroffenen Branches grundsätzlich nicht heilen, und wo er es schon
+    mehrfach vergeblich versucht hatte, stand die Ankündigung ohnehin gegen die
+    Tatsachen. Beide Mechanismen zeigten aufeinander, der Zustand blieb stehen.
+
+    Repariert wird hier bewusst nichts — nur benannt. Ob ein Branch echte
+    Arbeit trägt, kann nur ein Mensch entscheiden (im Live-Fall trug einer von
+    vieren eine 245-zeilige Ergebnisdatei)."""
+    total, equivalent = ahead_counts(repo_root=repo_root, branch=branch, trunk=trunk)
+    head = (f"{branch} hat ungemergte Commits voraus von {trunk} — "
+            "-B-Reset verweigert (F-b)")
+
+    if total and equivalent == total:
+        return (f"{head}: alle {total} stecken inhaltlich bereits in {trunk}, nur unter "
+                f"anderem SHA — {trunk} wurde umgeschrieben (z. B. durch den Rebase, mit "
+                f"dem /sync eine Divergenz auflöst). Der Merge-Sweep kann hier nichts "
+                f"holen. Nach Sichtprüfung zurücksetzen: git branch -f {branch} {trunk}")
+
+    try:
+        from bibi.daemon import merge_quarantine
+        entry = merge_quarantine.get(repo_root, branch)
+    except Exception:                                    # pragma: no cover
+        entry = None
+    failures = entry.failures if entry else 0
+
+    mixed = (f", davon {equivalent} inhaltlich bereits in {trunk} (Teil-Rewrite)"
+             if equivalent else "")
+    if failures:
+        return (f"{head}: {total} voraus{mixed}; der Merge-Sweep hat bereits "
+                f"{failures}-mal vergeblich versucht, sie nachzuholen — er wird es von "
+                f"allein nicht mehr richten. Von Hand auflösen: /sync")
+    return f"{head}{(': ' + str(total) + ' voraus' + mixed) if mixed else ''}, Merge-Sweep holt nach"
+
+
 def prepare(*, repo_root: Path, work_dir: Path, slug: str, trunk: str = "trunk") -> Path:
     """Frischen Worktree unter ``work_dir/<slug>/`` auf ``agent/<slug>`` anlegen.
 
@@ -107,8 +166,11 @@ def prepare(*, repo_root: Path, work_dir: Path, slug: str, trunk: str = "trunk")
 
     **F-b (PLAN-7):** Hat ``agent/<slug>`` noch **ungemergte** Commits voraus von
     trunk (Merge-back stand aus), würde ``-B`` sie verwerfen → Datenverlust. Darum:
-    abbrechen statt verwerfen. Der periodische Merge-Sweep (F-a) holt den Branch
-    nach; der Lauf scheitert sauber als ``failed`` und wird neu versucht.
+    abbrechen statt verwerfen. Im Regelfall holt der periodische Merge-Sweep (F-a)
+    den Branch nach; der Lauf scheitert sauber als ``failed`` und wird neu versucht.
+    Wo das nicht zutrifft — nach einem trunk-Rewrite oder wenn der Sweep bereits
+    mehrfach gescheitert ist — sagt die Fehlermeldung das jetzt auch, statt ihn
+    weiter zu versprechen (s. :func:`unmerged_reason`, Befund 3 vom 2026-07-28).
 
     Der eigentliche Git-/LFS-Anteil läuft serialisiert über ``_PREPARE_SEMAPHORE``
     (s. dortiger Kommentar) — der günstige ``is_ahead()``-Vorab-Check bleibt
@@ -118,8 +180,7 @@ def prepare(*, repo_root: Path, work_dir: Path, slug: str, trunk: str = "trunk")
     if is_ahead(repo_root=repo_root, branch=branch, trunk=trunk):
         raise GitOpError(
             ["worktree", "prepare"],
-            f"{branch} hat ungemergte Commits voraus von {trunk} — "
-            "-B-Reset verweigert (F-b), Merge-Sweep holt nach", 1)
+            unmerged_reason(repo_root=repo_root, branch=branch, trunk=trunk), 1)
     work_dir.mkdir(parents=True, exist_ok=True)
     path = work_dir / slug
     with _PREPARE_SEMAPHORE:
