@@ -11,7 +11,7 @@ allowed-tools:
 # /close — pause the case
 
 `/close` = `/save` (case scope) **+ set status paused + clear path**. Requires an
-active case (parked cwd).
+active case (parked cwd or the session's park marker).
 
 ## Steps
 

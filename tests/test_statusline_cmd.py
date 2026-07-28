@@ -1,8 +1,9 @@
 """Tests für `bibi-ctrl statusline` — die Claude-Code-Statusleiste.
 
 Das git-Segment braucht ein echtes Repo (Fixtures aus conftest); der aktive
-Case kommt über den Display-Mirror `path:` in `.state.md` (nicht über das cwd),
-weil die Statusleiste in einem Subprozess ohne Session-cwd läuft.
+Case kommt über die Park-Marke der Session (`session_id` aus dem Payload), weil
+die Statusleiste in einem Subprozess ohne Sicht auf das Bash-cwd läuft — ohne
+`session_id` bleibt der `path:`-Mirror in `.state.md` als Fallback.
 """
 
 from __future__ import annotations
@@ -25,6 +26,46 @@ def _render(**payload):
 def _park_mirror(folder) -> None:
     """Display-Mirror `path:` auf den (vault-relativen) Case setzen."""
     state.set_path(str(folder.resolve().relative_to(repo.vault().resolve())))
+
+
+# --- aktiver Case: über die Park-Marke der Session, Mirror nur als Fallback ---
+
+def test_case_shown_from_session_park_marker(repo_with_origin, monkeypatch):
+    """Die Leiste läuft ohne Sicht aufs Bash-cwd — die ``session_id`` im
+    Payload ist ihr einziger Zugang zum aktiven Case."""
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-A")
+    folder = case_store.create_case("Alpha Feature")
+    _park_mirror(folder)
+
+    # frischer Leisten-Prozess: nichts adoptiert, keine Session in der Umgebung
+    monkeypatch.delenv("BIBI_SESSION_ID")
+    state.adopt_session(None)
+    assert "AlphaFeature" in _render(session_id="sess-A")
+
+
+def test_case_label_drops_date_and_hash(repo_with_origin, monkeypatch):
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-A")
+    folder = case_store.create_case("Alpha Feature")
+    _park_mirror(folder)
+    out = _render(session_id="sess-A")
+    assert folder.name not in out  # nicht der volle 20260624.…-deadbeef-Name
+    assert "AlphaFeature" in out
+
+
+def test_case_falls_back_to_mirror_without_session_id(repo_with_origin, monkeypatch):
+    """Trägt das Payload keine ``session_id``, bleibt der `.state.md`-Mirror —
+    das alte Verhalten, damit die Leiste nie leer ausgeht."""
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-A")
+    folder = case_store.create_case("Alpha Feature")
+    _park_mirror(folder)
+
+    monkeypatch.delenv("BIBI_SESSION_ID")
+    state.adopt_session(None)
+    assert "AlphaFeature" in _render()
+
+
+def test_no_case_segment_without_any_active_case(repo_with_origin):
+    assert "proto:" not in _render(session_id="sess-unbekannt")
 
 
 # --- git-Segment: tree × sync, orthogonal, happy path kollabiert zu "clean" ---

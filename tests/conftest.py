@@ -109,6 +109,24 @@ def _isolate_node_config(tmp_path_factory, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv(k, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_session(monkeypatch: pytest.MonkeyPatch):
+    """Kein Test darf die Park-Marke der *echten* Session sehen oder schreiben.
+
+    Die Suite läuft regelmäßig innerhalb einer Claude-Code-Session, die
+    ``CLAUDE_CODE_SESSION_ID`` setzt — ohne Isolation hinge das Ergebnis von
+    ``state.get_path()`` davon ab, ob gerade ein Case geparkt ist. Tests, die
+    eine Session brauchen, setzen ``BIBI_SESSION_ID`` selbst.
+    ``state._adopted_session`` ist Prozess-global und leakt sonst zwischen
+    Tests (analog ``_reset_dispatch_count`` oben)."""
+    from bibi import state
+    for k in ("BIBI_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
+        monkeypatch.delenv(k, raising=False)
+    state.adopt_session(None)
+    yield
+    state.adopt_session(None)
+
+
 @pytest.fixture
 def seed_journal_row():
     """Test-Helfer: legt eine vollständige ``journal``-Zeile direkt per SQL an —

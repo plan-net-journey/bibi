@@ -1,7 +1,10 @@
 """``bibi-ctrl save`` — committen + (optional) pushen (PLAN-1 §1.2).
 
-Zwei Geltungsbereiche (A10): mit aktivem Case (cwd im Case-Ordner) werden nur
+Zwei Geltungsbereiche (A10): mit aktivem Case (``state.get_path()``) werden nur
 die fallbezogenen Änderungen committet; ohne aktiven Case das *gesamte* Repo.
+``--repo`` erzwingt den Repo-Scope auch bei aktivem Case — seit der Case an der
+Session hängt statt am cwd, ist "kein Case aktiv" kein Zufallszustand mehr, aus
+dem der Repo-Scope nebenbei herausfällt; wer ihn will, sagt es.
 Push folgt der Sync-Matrix (§4.9): ``--push`` oder ``auto_sync on`` → pushen;
 sonst committen + integrieren, aber nicht pushen (der Skill fragt nach).
 """
@@ -19,11 +22,13 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("-m", "--message", help="Commit-Message überschreiben")
     p.add_argument("--push", action="store_true",
                    help="pushen unabhängig vom auto_sync-Flag")
+    p.add_argument("--repo", action="store_true",
+                   help="das ganze Repo committen, auch wenn ein Case aktiv ist")
     p.set_defaults(func=run)
 
 
 def run(args: argparse.Namespace) -> int:
-    path = state.get_path()  # vault-relativ (aktiver Case) oder None
+    path = None if args.repo else state.get_path()  # vault-relativ oder None
     if path:
         scope = repo.vault() / path
         default_msg = f"save: {scope.name}"

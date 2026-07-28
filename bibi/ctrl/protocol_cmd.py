@@ -13,7 +13,7 @@ import json
 import sys
 from pathlib import Path
 
-from bibi import case_store, frontmatter, protocol
+from bibi import case_store, frontmatter, protocol, state
 
 
 def register(sub: argparse._SubParsersAction) -> None:
@@ -51,6 +51,11 @@ def run_on_stop(_: argparse.Namespace) -> int:
         hook_data = json.load(sys.stdin)
     except Exception:
         return 0
+
+    # Hooks laufen als eigener Prozess im Projektverzeichnis, nie im geparkten
+    # Case-cwd — ohne die session_id aus dem Payload fände `active_case()` hier
+    # grundsätzlich nichts und das Turn-Logging liefe still ins Leere.
+    state.adopt_session(hook_data.get("session_id"))
 
     folder = case_store.active_case()
     if folder is None:

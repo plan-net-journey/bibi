@@ -22,7 +22,11 @@ def run(args: argparse.Namespace) -> int:
     # --- Repo-State ---
     s = state.read()
     case_path = state.get_path()
-    print(f"path: {case_path or '(none)'}")
+    # Quelle mit ausweisen: "cwd" heißt, die Shell steht im Case; "session"
+    # heißt, nur die Park-Marke hält ihn noch — beides funktioniert, aber der
+    # Unterschied erklärt, warum ein `cd` woanders hin nichts kaputt macht.
+    src = state.path_source()
+    print(f"path: {case_path or '(none)'}" + (f" ({src})" if src else ""))
     print(f"auto_sync: {s.get('auto_sync', 'off')}")
     if s.get("sync_conflict"):
         print("sync_conflict: true")

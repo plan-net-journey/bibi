@@ -157,10 +157,10 @@ def create_case(topic: str) -> Path:
 
 
 def active_case() -> Path | None:
-    """Ordner des aktiven Case (aus dem geparkten cwd) oder None.
+    """Ordner des aktiven Case oder None.
 
-    Geteilt von close/done/delete/on-stop. Die Wahrheit ist das cwd
-    (``state.get_path``); der ``.state.md``-Mirror wird nicht herangezogen.
+    Geteilt von close/done/delete/on-stop. Quelle ist ``state.get_path()`` —
+    das geparkte cwd, sonst die Park-Marke der Session.
     """
     path = state.get_path()
     if not path:

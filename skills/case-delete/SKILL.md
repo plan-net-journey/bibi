@@ -30,8 +30,8 @@ think«, silence) — abort.
 
 ## Effect
 
-1. Derives the active case from the parked cwd (no active case → refuses with a
-   pointer to `/open`).
+1. Derives the active case from the parked cwd, else the session's park marker
+   (no active case → refuses with a pointer to `/open`).
 2. `git rm -rf vault/<case_dir>/<folder>/` (gone in working tree and index;
    untracked leftovers cleaned too).
 3. Commits `delete: <folder>`, integrates, pushes per the sync matrix (`--push`

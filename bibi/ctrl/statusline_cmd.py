@@ -3,7 +3,7 @@
 Liest Claudes JSON-Payload (model, ctx%) von stdin und kombiniert ihn mit dem
 bibi-Repo-State (`.claude/.state.md` + git) zu einer Zeile:
 
-    <tree> · <sync> │ <branch> │ <model> │ ctx:<pct>% [│ proto:<state>] │ sync:<state>
+    <tree> · <sync> │ <branch> │ <model> │ ctx:<pct>% [│ <case> │ proto:<state>] │ sync:<state>
 
 `<tree>` ist clean|modified, `<sync>` ist synced|ahead|behind|diverged — zwei
 orthogonale Dimensionen, beide sichtbar; nur der Happy Path `clean · synced`
@@ -20,9 +20,12 @@ N Job-Branches nach 3 Fehlschlägen aus dem automatischen Merge-back-Retry
 eskaliert, `bibi/daemon/merge_quarantine.py`) > `on`/`off` (stehende Push-
 Zustimmung) — in dieser Priorität, nur einer sichtbar.
 
-Der aktive Case kommt aus dem **Display-Mirror** `path:` in `.state.md`, NICHT
-aus dem cwd: die Statusleiste läuft in einem Subprozess ohne Sicht auf das
-Bash-Tool-cwd der Session (DESIGN §3.2). Alle Reads sind netzfrei. Robustheit
+Der aktive Case kommt aus der **Park-Marke der Session** (`session_id` aus dem
+Payload → `state.get_path()`): die Statusleiste läuft in einem Subprozess ohne
+Sicht auf das Bash-Tool-cwd der Session (DESIGN §3.2), die Session-ID ist ihr
+einziger Zugang. Ohne `session_id` im Payload fällt sie auf den `path:`-Mirror
+in `.state.md` zurück — bei parallelen Sessions ggf. der Case einer anderen.
+Alle Reads sind netzfrei. Robustheit
 geht vor: liegt das cwd in keinem bibi-Repo, fallen die repo-abhängigen Segmente
 weg, statt die Leiste crashen zu lassen.
 """
@@ -70,6 +73,20 @@ def _git_segment() -> str:
             + _color(s.sync, _SYNC_COLOR[s.sync]))
 
 
+def _case_label(folder: Path) -> str:
+    """Sprechender Kurzname: '20260621.Bibi4-870bd9db' → 'Bibi4'.
+
+    Datum und Kurz-Hash sind in der Leiste nur Rauschen; wer sie braucht, sieht
+    sie im Ordnernamen (``bibi-ctrl status``).
+    """
+    name = folder.name
+    if "." in name:
+        name = name.split(".", 1)[1]
+    if "-" in name:
+        name = name.rsplit("-", 1)[0]
+    return name or folder.name
+
+
 def _proto_state(folder: Path) -> str:
     pf = case_store.read_frontmatter(folder).get("protocol")
     if not pf:
@@ -100,13 +117,24 @@ def render(payload: dict[str, Any]) -> str:
     if used_pct is not None:
         parts.append(_color(f"ctx:{used_pct:.0f}%", MAGENTA))
 
-    # bibi-State (proto + sync) — über den Mirror, ebenfalls defensiv.
+    # bibi-State (Case + proto + sync) — ebenfalls defensiv.
     try:
+        # Die Leiste läuft als eigener Prozess ohne Sicht aufs Bash-cwd; die
+        # session_id aus dem Payload ist ihr einziger Zugang zum Park-Zustand
+        # der Session. Fehlt sie, bleibt der `.state.md`-Mirror als Fallback —
+        # der kann bei parallelen Sessions den Case einer anderen zeigen und
+        # ist deshalb nur zweite Wahl.
+        sid = payload.get("session_id")
+        state.adopt_session(sid)
         s = state.read()
-        path = s.get("path")
+        # Mit session_id ist die Park-Marke allein maßgeblich — auch ihr
+        # Fehlen, das heißt dann "diese Session hat keinen Case". Sonst würde
+        # der geteilte Mirror einer parallelen Session hier durchschlagen.
+        path = state.get_path() if sid else (state.get_path() or s.get("path"))
         if path:
             folder = repo.vault() / path
             if folder.exists():
+                parts.append(_color(_case_label(folder), CYAN))
                 proto = _proto_state(folder)
                 color = {"on": GREEN, "dbg": YELLOW, "off": GRAY}[proto]
                 parts.append(_color(f"proto:{proto}", color))

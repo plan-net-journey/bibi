@@ -19,9 +19,17 @@ Then **park the shell** by `cd`-ing into the folder the command prints on its
 cd "<path from the cd: line>"
 ```
 
-From here on the Bash-tool cwd *is* the active case. `bibi-ctrl save/close/done`
-derive the case from this cwd. The cwd persists across calls and survives
-context compaction; each session has its own, so parallel sessions never collide.
+`bibi-ctrl open` also writes a **park marker** for this Claude Code session
+(`data/park/<session_id>`), so the active case no longer depends on the cwd
+holding still. `save/close/done` prefer the cwd when it points into a case, and
+fall back to the marker otherwise — parallel sessions stay isolated either way,
+each writing its own marker.
+
+Still `cd` into the folder: it keeps relative paths working and makes the active
+case obvious in the shell. But you no longer lose the case when a later command
+`cd`s elsewhere, when two parallel Bash calls overwrite each other's cwd, or when
+the session restarts. `bibi-ctrl status` prints where the case is coming from
+(`cwd` or `session`).
 
 ## Effect
 
@@ -34,7 +42,8 @@ context compaction; each session has its own, so parallel sessions never collide
 4. **No match** ⇒ create: `vault/<case_dir>/YYYYmmdd.<slug>-<short>/` with
    `README.md` (frontmatter `status: open`).
 5. In all open/create cases the command prints a `cd:` line — **cd into it.** It
-   also updates the `path:` display mirror in `.state.md` (statusline only).
+   also writes the session's park marker and the `path:` mirror in `.state.md`
+   (the latter is only a fallback for contexts without a session id).
 
 ## When
 
@@ -44,10 +53,11 @@ context compaction; each session has its own, so parallel sessions never collide
 
 ## Note
 
-The active case is the parked cwd. Switch cases mid-session by `cd`-ing into
-another folder (after `/save` on the current one, so its README state is
-current). Each session / machine / user parks its own cwd independently, so
-several cases can be active in parallel — one per shell.
+Switch cases mid-session by running `/open` on the other one (after `/save` on
+the current one, so its README state is current) — that rewrites the session's
+park marker. A bare `cd` into another case folder also switches, since the cwd
+takes precedence while it points into a case. Each session / machine / user
+parks independently, so several cases can be active in parallel.
 
 ## Configuration
 

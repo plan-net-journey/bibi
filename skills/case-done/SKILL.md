@@ -11,7 +11,7 @@ allowed-tools:
 # /done — close the case (final)
 
 `/done` = `/close`, but final: `status: closed` and a closing wrap-up instead of
-a resume note. Requires an active case (parked cwd).
+a resume note. Requires an active case (parked cwd or the session's park marker).
 
 ## Steps
 
