@@ -34,8 +34,22 @@ Options:
 - **`cron`** — recurring on a cron pattern (e.g. "every 10 minutes",
   "daily at 09:00", "Mondays at 18:00")
 - **`at`** — one-shot at a single point in time
+- **`never`** — registered but never fires by itself; run it by hand
+  (`/run` locally, or START/RESET in the web UI). The right answer for a
+  test schedule, a draft, or anything whose timing isn't settled yet —
+  `never` is a supported special value (`bibi/schedule/parser.py`,
+  `SPECIAL_SCHEDULES`), not a trick: the job registers normally and simply
+  gets no `next_fire_at`.
+
+Offer `never` actively when the user's own words suggest a trial ("test",
+"try out", "probe", "erstmal schauen"). It is the safe default for
+experiments, and picking a cron pattern instead is the single most likely
+way for this wizard to cause damage — see the warning in step 10.
 
 ### 2. Cron pattern OR at-timestamp
+
+For **never**: nothing to ask — write `schedule: never` and continue with
+step 3.
 
 For **cron**: ask for the cron pattern. Offer useful presets:
 - `*/10 * * * *` — every 10 minutes
@@ -163,7 +177,7 @@ Before writing the file: show the rendered MD in a code block and ask
 
 ```yaml
 ---
-schedule: "<cron-pattern>"      # OR:  at: <ISO>
+schedule: "<cron-pattern>"      # OR:  schedule: never   OR:  at: <ISO>
 job: <command>                  # OR:  job: "claude: <prompt>"
 # include the following only when set / overridden:
 # soul: <Soul>
@@ -198,6 +212,34 @@ bibi-ctrl rescan
 This talks to whichever scheduler is actually configured for this node
 (`BIBI_SCHEDULER_URL`, possibly remote) — never assume it is local.
 
+**Say this out loud before finishing, it is the wizard's sharpest edge:**
+an uncommitted schedule MD is harmless — only this node sees it, and only a
+local `/run` executes it. **The commit is what arms it.** Once the MD
+reaches `trunk`, the scheduler node's synchronizer pulls it and fires it on
+its pattern, on someone else's machine, without anyone re-confirming. A
+`*/10 * * * *` test schedule that felt local while it was being tried out
+therefore starts producing a job run plus a merge commit every ten minutes
+on the production host the moment it is pushed.
+
+That is not hypothetical: it happened on 2026-07-28 (PLAN-37 Befund 6) with
+exactly this wizard's default preset — 14 fires plus 14 merge commits in
+`trunk` in one day, and the resulting output file went on to cause a sync
+divergence that took hours to unwind.
+
+So, when the trigger is `cron` or `at`:
+- Tell the user in one sentence that committing arms the schedule on the
+  scheduler node, and ask whether that is intended **now** or whether
+  `schedule: never` (step 1) plus a manual `/run` is the better fit for the
+  moment.
+- If they keep the cron pattern, remind them how to disarm it later:
+  change `schedule:` to `never` and commit, or delete the MD and commit —
+  removing it only locally changes nothing on the host until pushed.
+
+If the schedule writes an output file, add `.gitignore` coverage **before**
+the first run, not after: once a run has committed the file, it is tracked,
+and a later ignore rule no longer applies to it (that is precisely how the
+`probe.log` mess above started — `git rm --cached` is then needed).
+
 Inspect the output:
 - Schedule appears in `inserted=` → success
 - Errors are printed on stderr → show the error, ask whether to fix or
@@ -213,9 +255,16 @@ On success: compact confirmation:
   path:  vault/case/<...>/<Name>.md
   next:  <ETA, from the rescan output or a quick `bibi-ctrl job list`>
   soul:  <Soul, if set>
+  armed: <no — uncommitted | no — schedule: never | YES — committed cron/at>
 
 Observe: /job list    or the scheduler's web UI (`/-/ui/schedules`)
 ```
+
+Fill `armed:` from what is actually true, not from what was intended: a
+`never` job shows `next: --` and never fires; an uncommitted MD is invisible
+to the scheduler node no matter what its pattern says. If the MD is
+committed **and** carries a cron/`at` trigger, say `YES` and name the node
+it will fire on.
 
 ## Refuse
 

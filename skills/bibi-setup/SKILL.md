@@ -26,6 +26,34 @@ Every step below is idempotent — re-running this skill on an already
 configured node is safe, it just confirms the current state instead of
 redoing work.
 
+## 0. Per-user git prerequisites
+
+A freshly created OS user has no `~/.gitconfig`, and therefore no LFS filters
+— even when the `git-lfs` binary is installed system-wide. The repo is
+already cloned by the time this skill runs, so every LFS-tracked file
+(screenshots and other binaries in the vault) has landed as a pointer text
+file instead of its content. Check and fix before anything else:
+
+```bash
+git config --get filter.lfs.clean >/dev/null 2>&1 || git lfs install
+```
+
+Then confirm the working copy is actually intact rather than assuming the
+filter fixed it retroactively — `git lfs install` only arms future
+checkouts:
+
+```bash
+git lfs pull 2>/dev/null || true
+```
+
+If `git-lfs` isn't installed at all, say so and stop rather than working
+around it: the team's `CLAUDE.md` requires it on every node, and a checkout
+full of pointer files is worse than a failed setup because it looks fine.
+
+(Live-Fund PLAN-37, 2026-07-27: this step was missing from every onboarding
+path — neither `INSTALL.md` nor this skill mentioned it — and had to be run
+by hand on the `mmu` test node.)
+
 ## 1. Resolve `bibi-ctrl`
 
 ```bash
@@ -42,6 +70,24 @@ uv pip install .
 
 (Already done automatically during a ttyd-container onboarding — this step
 then just no-ops, `.venv/bin/bibi-ctrl` already exists.)
+
+**Then put `bibi-ctrl` on `PATH`, even though every step below uses the
+resolved path.** Claude Code's own hooks and statusline from this repo's
+`.claude/settings.json` call it blank, and they run outside this
+conversation — they fail with `bibi-ctrl: not found` regardless of how
+carefully the steps below qualify the command:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$PWD/.venv/bin/bibi-ctrl" ~/.local/bin/bibi-ctrl
+```
+
+Skip only if `command -v bibi-ctrl` already resolved in the check above.
+The ttyd-container onboarding has always done this (PLAN-33 stages
+33.0–33.2); the native-host path lost it in translation, which is why a
+successful setup still ended every Claude session with two
+`Stop hook error: /bin/sh: 1: bibi-ctrl: not found` lines (Live-Fund
+PLAN-37, 2026-07-27).
 
 **Use the same resolved command for every `bibi-ctrl` invocation below.** A
 fresh `Bash` tool call does not inherit `source`-based PATH changes from an
@@ -121,6 +167,30 @@ falls back to the engine default, exactly like an empty Enter in the old
 interactive prompts.
 
 ## 5. Daemon start — environment-aware
+
+**First: does this node share a machine with another bibi instance?** If the
+scheduler (or another client) runs on this same host, this node needs its
+own listen port — otherwise `config.daemon_port()` derives it from
+`BIBI_SCHEDULER_URL` and collides with the instance already there. There is
+no `--port` flag on `daemon install`; it reads `config.daemon_port()`, so
+the only way to bake a different port into the unit is the environment
+variable. **Set it per command, never `export` it:**
+
+```bash
+BIBI_DAEMON_PORT=<free port> <bibi-ctrl> daemon install --connect
+```
+
+The written unit then carries the port for good (`Environment=BIBI_DAEMON_PORT=…`
+plus `--port` in `ExecStart`, see `bibi/daemon/install.py`), so the daemon is
+correct from then on without anything left in the shell.
+
+**Why never `export`:** `BIBI_DAEMON_PORT` outranks `BIBI_SCHEDULER_URL` in
+`config.scheduler_base_url()` — deliberately, it means "talk to MY OWN
+daemon" (PLAN-13). Left standing in the shell, it silently redirects every
+later `bibi-ctrl job`/`at` away from the scheduler to this node's own
+daemon. The failure is silent and plausible: `/job list` returns a
+believable list — the local node's — with no error at all. That cost real
+debugging time on the `mmu` test node (Live-Fund PLAN-37, 2026-07-27).
 
 ```bash
 <bibi-ctrl> daemon status
@@ -210,6 +280,21 @@ one the human used to reach this terminal in the first place, not
   daemon:     <install|foreground, port>
   dashboard:  <URL, or "shown above" if a browser opened directly>
 ```
+
+Before reporting success, check the shell you're leaving behind:
+
+```bash
+echo "${BIBI_DAEMON_PORT:-(unset)}"
+```
+
+If it is set, tell the human plainly that it must go — `unset
+BIBI_DAEMON_PORT`, and remove it from any profile file it was added to,
+then start a fresh session (a `claude` session inherits the environment it
+was launched from, so an already-running one keeps the stale value). Until
+then every `/job` and `/at` from this shell silently addresses the local
+daemon instead of the scheduler. Don't skip this because the setup itself
+succeeded — that is exactly the situation in which it bites, since the
+daemon is fine and only the human's later commands go wrong.
 
 ## Refuse
 
