@@ -77,6 +77,44 @@ def _resolve_worker_name() -> str | None:
     return name or None
 
 
+SHUTDOWN_TIMEOUT_DEFAULT_S = 10
+
+
+def _resolve_shutdown_timeout() -> int:
+    """Frist in Sekunden, die uvicorn beim SIGTERM auf offene Verbindungen
+    wartet: ``BIBI_SHUTDOWN_TIMEOUT_S`` env > Config-Datei > Default 10.
+
+    Der Wert existiert wegen des Event-Bus (PLAN-36): ``/-/events`` ist ein
+    SSE-Strom, der von sich aus nie schließt. Uvicorns Default (keine Frist)
+    heißt „unbegrenzt warten" — damit hielt **jeder offene Browser-Tab** den
+    Daemon am Neustart fest. Unter systemd fiel das nur als Verzögerung auf
+    (``TimeoutStopSec``-Default 90 s, dann SIGKILL: gemessen 1m30s gegen 0,17s
+    ohne Tab), unter launchd war es ein stiller Ausfall — der Prozess nahm
+    keine Verbindungen mehr an, lebte aber weiter, also sah ``KeepAlive``
+    nichts zum Respawnen (Case-Befund 2026-07-28g).
+
+    Bewusst **kein** :data:`config.KEYS`-Eintrag: niemand soll beim ``init``-
+    Interview eine Shutdown-Frist eintippen müssen. In der env-Datei wirkt der
+    Wert trotzdem, weil ``read_env()`` ungefiltert parst — der Notausstieg für
+    einen Knoten mit ungewöhnlich langen In-flight-Requests bleibt also da.
+
+    ``0`` ist gültig (sofort abbrechen). Ungültiges fällt auf den Default
+    zurück, nie auf ``None``: unbegrenztes Warten ist genau der Fehler.
+    Getrennt von ``run()`` gehalten, damit ohne echten uvicorn-Start testbar
+    (wie ``_apply_auto_sync_default`` und ``_resolve_worker_name``).
+    """
+    raw = (os.environ.get("BIBI_SHUTDOWN_TIMEOUT_S", "").strip()
+           or config.read_env().get("BIBI_SHUTDOWN_TIMEOUT_S", "").strip())
+    if raw:
+        try:
+            secs = int(raw)
+        except ValueError:
+            return SHUTDOWN_TIMEOUT_DEFAULT_S
+        if secs >= 0:
+            return secs
+    return SHUTDOWN_TIMEOUT_DEFAULT_S
+
+
 def run(args: argparse.Namespace) -> int:
     r, errs = resolve_from_args(args)
     if errs:
@@ -155,10 +193,15 @@ def run(args: argparse.Namespace) -> int:
                                    os.environ.get("BIBI_LOG_LEVEL"))
     log_path = activity.setup_logging(role_names=names, level=level,
                                       log_dir=repo.root() / "data" / "daemon-log")
+    grace = _resolve_shutdown_timeout()
     activity.emit(logging.getLogger("bibi.daemon"), logging.INFO, "daemon.start",
                   role="daemon", roles=",".join(names), port=port,
-                  loglevel=logging.getLevelName(level), log=str(log_path))
-    uvicorn.run(app, host=args.host, port=port)
+                  loglevel=logging.getLevelName(level), log=str(log_path),
+                  shutdown_grace_s=grace)
+    # timeout_graceful_shutdown: ohne die Frist wartet uvicorn beim SIGTERM
+    # unbegrenzt auf offene Verbindungen — und der SSE-Strom /-/events schließt
+    # nie von selbst (s. _resolve_shutdown_timeout()).
+    uvicorn.run(app, host=args.host, port=port, timeout_graceful_shutdown=grace)
     return 0
 
 

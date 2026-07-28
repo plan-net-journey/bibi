@@ -156,6 +156,85 @@ def test_resolve_worker_name_new_name_file_wins_over_legacy_env(
     assert daemon_cmd._resolve_worker_name() == "new-name"
 
 
+# --- Graceful-Shutdown-Frist (Case-Befund 2026-07-28g) -----------------------
+#
+# Ohne Frist wartet uvicorn beim SIGTERM unbegrenzt auf offene Verbindungen.
+# Der Event-Bus-Strom (/-/events, PLAN-36) ist genau so eine Verbindung und
+# schließt nie von selbst: jeder offene Browser-Tab hielt den Daemon fest —
+# unter systemd bis zum 90-s-SIGKILL, unter launchd dauerhaft (der Prozess
+# lauscht nicht mehr, lebt aber, also greift KeepAlive nicht).
+
+
+def test_resolve_shutdown_timeout_default(env_iso):
+    assert (daemon_cmd._resolve_shutdown_timeout()
+            == daemon_cmd.SHUTDOWN_TIMEOUT_DEFAULT_S)
+
+
+def test_resolve_shutdown_timeout_from_env(env_iso, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("BIBI_SHUTDOWN_TIMEOUT_S", "3")
+    assert daemon_cmd._resolve_shutdown_timeout() == 3
+
+
+def test_resolve_shutdown_timeout_from_config_file(env_iso):
+    # Kein KEYS-Eintrag (write_env filtert darauf) — der Wert ist bewusst kein
+    # Interview-Feld von `init`, aber in der env-Datei trotzdem wirksam, weil
+    # read_env() jede Zeile ungefiltert parst.
+    from bibi import config
+    p = config.env_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("BIBI_SHUTDOWN_TIMEOUT_S=7\n", encoding="utf-8")
+    assert daemon_cmd._resolve_shutdown_timeout() == 7
+
+
+def test_resolve_shutdown_timeout_env_wins_over_file(
+    env_iso, monkeypatch: pytest.MonkeyPatch
+):
+    from bibi import config
+    p = config.env_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("BIBI_SHUTDOWN_TIMEOUT_S=7\n", encoding="utf-8")
+    monkeypatch.setenv("BIBI_SHUTDOWN_TIMEOUT_S", "3")
+    assert daemon_cmd._resolve_shutdown_timeout() == 3
+
+
+def test_resolve_shutdown_timeout_zero_means_immediate(
+    env_iso, monkeypatch: pytest.MonkeyPatch
+):
+    # 0 ist ein gültiger Wunsch ("sofort abbrechen"), nicht "kein Wert gesetzt".
+    monkeypatch.setenv("BIBI_SHUTDOWN_TIMEOUT_S", "0")
+    assert daemon_cmd._resolve_shutdown_timeout() == 0
+
+
+@pytest.mark.parametrize("raw", ["abc", "-5", "", "  ", "2.5"])
+def test_resolve_shutdown_timeout_invalid_falls_back_to_default(
+    env_iso, monkeypatch: pytest.MonkeyPatch, raw: str
+):
+    # Nie None (= uvicorns unbegrenztes Warten) — das ist genau der Fehler.
+    monkeypatch.setenv("BIBI_SHUTDOWN_TIMEOUT_S", raw)
+    assert (daemon_cmd._resolve_shutdown_timeout()
+            == daemon_cmd.SHUTDOWN_TIMEOUT_DEFAULT_S)
+
+
+def test_run_passes_shutdown_timeout_to_uvicorn(
+    env_iso, monkeypatch: pytest.MonkeyPatch
+):
+    import uvicorn
+    captured: dict = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: captured.update(kw))
+    monkeypatch.setenv("BIBI_SHUTDOWN_TIMEOUT_S", "4")
+    # run() verankert den Bind-Port absichtlich im echten os.environ (PLAN-30
+    # Ebene 1 v2, für Wrapper-Subprozesse) — hier vorab durch monkeypatch
+    # geschleust, damit er nach dem Test wieder verschwindet statt in andere
+    # Testmodule zu lecken (test_heartbeat erwartet ihn ungesetzt).
+    monkeypatch.setenv("BIBI_DAEMON_PORT", "8769")
+
+    rc = daemon_cmd.run(_args(controller=True, host="127.0.0.1", port=8769,
+                              log_level=None))
+
+    assert rc == 0
+    assert captured["timeout_graceful_shutdown"] == 4
+
+
 def test_run_returns_2_on_validation_error(env_iso):
     # main() parst + ruft run(); validierungsbedingter Frühausstieg (vor uvicorn).
     # scheduler⊥connect ist eine harte Invariante (§4.2) → Frühausstieg.
