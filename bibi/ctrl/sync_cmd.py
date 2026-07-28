@@ -22,11 +22,17 @@ Befund 8, committet seit PLAN-30 Ebene 5 nichts mehr — s. u.).
                            (live_edit/blocked) blockieren den restlichen
                            Ablauf NICHT.
                         1. Immer integrieren (fetch + rebase), geschützt durch
-                           den Idle-Fenster-Guard (PLAN-30 Ebene 4): würde der
-                           Pull eine gerade bearbeitete Datei anfassen, wird
-                           der GESAMTE Versuch übersprungen, nicht nur ein
-                           Teil. Sonst: Konflikt → im Tree lassen +
-                           ``sync_conflict`` (KI-Auflösung).
+                           Ebene 4s Idle-Guard — seit der Revision 2026-07-28
+                           (Befund 1) aber nur noch mit dessen dirty-Hälfte
+                           (``live_within_s=0``): unfertige Arbeit wird nie
+                           überfahren, das bloße Alter einer Datei blockiert
+                           aber nicht mehr. Die Zeit-Heuristik meint einen
+                           tippenden Menschen; wer explizit ``/sync`` aufruft,
+                           IST dieser Mensch (derselbe Grundsatz wie Schritt 0),
+                           und bei einer Job-Ausgabedatei traf sie ohnehin nur
+                           den eigenen Scheduler. Konflikt → im Tree lassen +
+                           ``sync_conflict`` (KI-Auflösung). Übersprungen →
+                           die blockierenden Pfade werden genannt.
                         2. Immer pushen, unabhängig von ``auto_sync`` — der
                            ``/sync``-Aufruf ist die Freigabe für den Push.
                         3. Dirty Änderungen — egal ob im aktiven Projekt oder
@@ -69,6 +75,17 @@ def _toggle_off(_: argparse.Namespace) -> int:
 def _print_conflicts() -> None:
     for f in git_ops.conflicted_files():
         print(f"  {f}", file=sys.stderr)
+
+
+def _print_live_paths(*, stream=sys.stdout) -> None:
+    """Welche Pfade den Pull gerade blockieren — Sync-Divergenz 2026-07-28,
+    Befund 1. Die alte Meldung ("Zieldatei wird bearbeitet") nannte weder die
+    Datei noch einen Weg nach vorn; im Vorfall kostete genau das Stunden, weil
+    nicht erkennbar war, dass die "bearbeitete" Datei die Ausgabe eines
+    Schedules ist. ``within_s=0`` spiegelt den Aufruf im Pull-Schritt: dort ist
+    der zeitbasierte Teil des Guards aus, es bleiben die dirty Pfade."""
+    for path, _age in git_ops.live_overlap_report(within_s=0):
+        print(f"  {path}", file=stream)
 
 
 def _resolve_stuck_merge_branches() -> int | None:
@@ -177,13 +194,20 @@ def _run_sync_preview() -> int:
                   f"erst nach diesem dran)")
 
     branch = git_ops.current_branch()
-    ok, kind, ahead, behind = git_ops.integrate_preview(branch, guard_live_paths=True)
+    # live_within_s=0 wie im echten Lauf (s. `_run_sync_apply()`): die Vorschau
+    # muss denselben Lauf vorhersagen, den `--apply` fährt — mit dem vollen
+    # Zeitfenster hätte sie ein Überspringen angekündigt, das nicht eintritt.
+    ok, kind, ahead, behind = git_ops.integrate_preview(branch, guard_live_paths=True,
+                                                        live_within_s=0)
     if not ok:
         if kind == "conflict":
             print("Pull würde konfligieren — Marker müssten aufgelöst werden.")
             noteworthy = True
         elif kind == "live_edit":
-            print("Pull würde gerade übersprungen — Zieldatei wird bearbeitet.")
+            print("Pull würde übersprungen — der Pull fasst Dateien mit "
+                  "unfertigen Änderungen an:")
+            _print_live_paths()
+            noteworthy = True
         else:
             print(f"Pull würde fehlschlagen: {kind}")
             noteworthy = True
@@ -252,11 +276,20 @@ def _run_sync_apply() -> int:
         active_case_rel=active_case_rel)
 
     branch = git_ops.current_branch()
-    # guard_live_paths (Ebene 4/5): der Pull-Schritt ist ein ganz normaler
-    # automatischer Schreibvorgang wie der Merge-back-Sweep, nur manuell
-    # angestoßen — überspringt den GESAMTEN Pull-Versuch, wenn er eine gerade
-    # bearbeitete Datei anfassen würde.
-    ok, kind = git_ops.integrate(branch, keep_conflict=True, guard_live_paths=True)
+    # live_within_s=0 (Revision 2026-07-28, Befund 1): Ebene 4s Guard bleibt
+    # scharf, aber nur mit seiner dirty-Hälfte. Die zeitbasierte Hälfte ist eine
+    # Heuristik für einen tippenden Menschen — und traf im Vorfall systematisch
+    # daneben: die blockierende Datei war die Ausgabedatei eines 10-Minuten-
+    # Schedules, wurde also nie "ruhig", und weil derselbe Guard im Daemon-Loop
+    # ebenso greift, war die Divergenz über KEINEN der beiden Wege mehr
+    # auflösbar (bei einem Job-Intervall unter 120 s gäbe es gar kein Fenster
+    # mehr). Wer explizit `/sync` aufruft, IST der Mensch, den die Heuristik
+    # schützen soll — derselbe Grundsatz wie in Schritt 0
+    # (`_resolve_stuck_merge_branches()`). Echte uncommittete Arbeit schützt
+    # der dirty-Teil unverändert, und unbeaufsichtigt bleibt das volle Fenster
+    # in Kraft (`daemon/synchronizer.py`).
+    ok, kind = git_ops.integrate(branch, keep_conflict=True, guard_live_paths=True,
+                                 live_within_s=0)
     if not ok:
         if kind == "conflict":
             state.set_sync_conflict(True)
@@ -264,16 +297,23 @@ def _run_sync_apply() -> int:
                   file=sys.stderr)
             _print_conflicts()
         elif kind == "live_edit":
-            print("Pull übersprungen — Zieldatei wird gerade bearbeitet, "
-                  "gleich nochmal `/sync` versuchen.", file=sys.stderr)
+            print("Pull übersprungen — der Pull fasst Dateien mit unfertigen "
+                  "Änderungen an, dort erst `/save`:", file=sys.stderr)
+            _print_live_paths(stream=sys.stderr)
         else:
             print(f"Abgleich fehlgeschlagen: {kind}", file=sys.stderr)
         return 1
     print("integrated")
 
-    pok, pmsg = git_ops.push(branch)
+    pok, pmsg, pkind = git_ops.push(branch)
     if not pok:
-        print(f"push fehlgeschlagen: {pmsg}", file=sys.stderr)
+        # Der Reject-Retry integriert mit keep_conflict=False, lässt also keine
+        # Marker im Tree — nur das Flag setzen, damit der nächste `/sync` den
+        # Rebase mit Auflösung fährt. `pkind` kommt jetzt aus der Quelle, statt
+        # aus der Fehlermeldung erraten zu werden (Befund 2).
+        if pkind == "conflict":
+            state.set_sync_conflict(True)
+        print(f"push fehlgeschlagen ({pkind}): {pmsg}", file=sys.stderr)
         return 1
     state.set_sync_conflict(False)
     print("push ok")

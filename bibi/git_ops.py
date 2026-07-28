@@ -382,7 +382,17 @@ def stage_and_commit(scope: Path | None, message: str,
 _CONFLICT_INFO_LINE = re.compile(r"^\d+ [0-9a-fA-F]+ [123]\t(.+)$", re.DOTALL)
 
 
-def _pull_live_overlap(fetch_head: str, *, within_s: int = 120,
+LIVE_EDIT_WINDOW_S = 120
+"""Wie lange nach dem letzten Schreibvorgang ein Pfad als "wird gerade
+bearbeitet" gilt (PLAN-30 Ebene 4). Der Wert passt zu einem Menschen, der in
+einer Datei arbeitet — nicht zu einem Scheduler: ein Job, der häufiger als
+dieses Fenster läuft, hält seine Ausgabedatei dauerhaft "frisch" und blockiert
+damit jeden Pull, der sie anfasst (Sync-Divergenz 2026-07-28, Befund 1). Wer
+das nicht will, schaltet den mtime-Teil per ``live_within_s=0`` ab; der
+dirty-Teil des Guards bleibt davon unberührt."""
+
+
+def _pull_live_overlap(fetch_head: str, *, within_s: int = LIVE_EDIT_WINDOW_S,
                        now: float | None = None) -> set[str]:
     """PLAN-30 Ebene 5 (nutzt Ebene 4s Guard-Prinzip): welche Pfade würde das
     Einmischen von ``fetch_head`` anfassen, die GERADE dirty oder kürzlich
@@ -411,6 +421,48 @@ def _pull_live_overlap(fetch_head: str, *, within_s: int = 120,
     return dirty | recently_touched_paths(repo.root(), sorted(changed), within_s=within_s, now=now)
 
 
+def live_overlap_report(*, within_s: int = 120, now: float | None = None
+                        ) -> list[tuple[str, float | None]]:
+    """Welche Pfade blockieren gerade einen ``live_edit``-Skip, und wie alt ist
+    ihr letzter Schreibvorgang? Liefert ``(pfad, alter_in_s)``, aufsteigend nach
+    Alter; ``None`` als Alter heißt "nicht statbar" (Pfad existiert nicht mehr).
+
+    Motivation (Sync-Divergenz 2026-07-28, Befund 1): die bisherige Meldung
+    "Zieldatei wird bearbeitet" ließ offen, WELCHE Datei blockiert und ob
+    überhaupt ein Mensch beteiligt ist. Im Vorfall war es die Ausgabedatei
+    eines 10-Minuten-Schedules — der Guard hielt also nicht einen tippenden
+    Menschen von der Datei fern, sondern den eigenen Scheduler, und die
+    Empfehlung "gleich nochmal versuchen" lief ins Leere. Mit Pfad und Alter
+    ist das auf einen Blick zu unterscheiden.
+
+    Nutzt das vorhandene ``FETCH_HEAD`` und fetcht bewusst NICHT neu: die
+    Funktion läuft unmittelbar nach einem ``integrate()``, das gerade gefetcht
+    hat — ein zweiter Fetch würde nur ein Race-Fenster gegen einen Dritten
+    (Daemon-Synchronizer, zweites ``/sync``) öffnen. Ohne ``FETCH_HEAD``
+    (nie gefetcht) gibt es nichts zu berichten: leere Liste."""
+    # Rein diagnostisch und ausschließlich in Fehlerpfaden aufgerufen (Skip-
+    # Meldung, Daemon-Log) — darf deshalb unter keinen Umständen selbst die
+    # Ursache eines Abbruchs werden, auch nicht bei kaputtem/fehlendem Repo.
+    try:
+        head = _git(["rev-parse", "FETCH_HEAD"], check=False)
+        if head.returncode != 0:
+            return []
+        overlap = _pull_live_overlap(head.stdout.strip(), within_s=within_s, now=now)
+    except OSError:
+        return []
+    if not overlap:
+        return []
+    ref = time.time() if now is None else now
+    out: list[tuple[str, float | None]] = []
+    for p in overlap:
+        try:
+            out.append((p, ref - (repo.root() / p).stat().st_mtime))
+        except OSError:
+            out.append((p, None))
+    out.sort(key=lambda item: (item[1] is None, item[1], item[0]))
+    return out
+
+
 def _pull_merge_tree(fetch_head: str) -> tuple[str, set[str]]:
     """``git merge-tree --write-tree -z HEAD fetch_head`` ausführen (reiner
     Dry-Run, kein Working-Tree-Zugriff) und ``(tree_oid, konfliktende_pfade)``
@@ -436,7 +488,8 @@ def _pull_merge_tree(fetch_head: str) -> tuple[str, set[str]]:
 
 def _integrate_impl(branch: str, keep_conflict: bool = False,
                     strategy: str = "rebase", guard_live_paths: bool = False,
-                    now: float | None = None, dry_run: bool = False
+                    now: float | None = None, dry_run: bool = False,
+                    live_within_s: int = LIVE_EDIT_WINDOW_S
                     ) -> tuple[bool, str | None, int | None, int | None]:
     """Interne Implementierung — liefert zusätzlich ``(ahead, behind)``,
     berechnet aus DENSELBEN ``local``/``remote``-SHAs, die auch ``ok``/``kind``
@@ -472,7 +525,7 @@ def _integrate_impl(branch: str, keep_conflict: bool = False,
             return True, None, ahead, 0
         return True, None, None, None
 
-    if guard_live_paths and _pull_live_overlap(remote, now=now):
+    if guard_live_paths and _pull_live_overlap(remote, within_s=live_within_s, now=now):
         return False, "live_edit", None, None
 
     if _git(["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"], check=False).returncode == 0:
@@ -511,7 +564,8 @@ def _integrate_impl(branch: str, keep_conflict: bool = False,
 
 def integrate(branch: str, keep_conflict: bool = False,
              strategy: str = "rebase", guard_live_paths: bool = False,
-             now: float | None = None, dry_run: bool = False) -> tuple[bool, str | None]:
+             now: float | None = None, dry_run: bool = False,
+             live_within_s: int = LIVE_EDIT_WINDOW_S) -> tuple[bool, str | None]:
     """Origin minimal integrieren: fetch + ff/rebase|merge (kein Push).
 
     Gibt (ok, kind) zurück. kind ist None bei Erfolg, sonst
@@ -523,12 +577,24 @@ def integrate(branch: str, keep_conflict: bool = False,
     KI-Auflösung (§1.6 A) die Marker auflösen und ``continue_rebase_and_push``
     rufen kann.
 
-    ``guard_live_paths`` (PLAN-30 Ebene 4/5, Default False — nur ``/sync``
-    aktiviert das explizit): bevor irgendetwas geschrieben wird, prüfen, ob
-    das Einmischen eine gerade dirty oder kürzlich bearbeitete Datei anfassen
-    würde — wenn ja, den GESAMTEN Pull-Versuch überspringen (``kind
-    "live_edit"``), kein Teil-Skip. ``now`` optional für deterministische
-    Tests, an den Guard durchgereicht.
+    ``guard_live_paths`` (PLAN-30 Ebene 4/5, Default False): bevor irgendetwas
+    geschrieben wird, prüfen, ob das Einmischen eine gerade dirty oder kürzlich
+    bearbeitete Datei anfassen würde — wenn ja, den GESAMTEN Pull-Versuch
+    überspringen (``kind "live_edit"``), kein Teil-Skip. ``now`` optional für
+    deterministische Tests, an den Guard durchgereicht.
+
+    ``live_within_s`` steuert davon nur den zweiten, zeitbasierten Teil;
+    ``0`` schaltet ihn ab, der dirty-Teil bleibt in jedem Fall scharf. Diese
+    Trennung stammt aus der Sync-Divergenz vom 2026-07-28 (Befund 1): die
+    beiden Hälften des Guards schützen Unterschiedliches. "Dirty" ist echte,
+    uncommittete Arbeit — die darf ein Pull nie überfahren, egal wer ihn
+    auslöst. "Kürzlich geschrieben" ist dagegen eine Heuristik für *einen
+    tippenden Menschen*, und die greift systematisch daneben, sobald die
+    fragliche Datei die Ausgabe eines kurz getakteten Jobs ist: sie wird nie
+    ruhig, der Pull nie ausgeführt, die Divergenz nie aufgelöst. Der
+    interaktive ``/sync`` setzt deshalb ``live_within_s=0`` — wer explizit
+    synchronisiert, ist selbst der Mensch, den die Heuristik schützen soll —
+    während der unbeaufsichtigte Synchronizer-Loop beim vollen Fenster bleibt.
 
     ``strategy``: bei echter Divergenz (weder Fast-Forward noch identisch)
     entscheidet dies, wie integriert wird:
@@ -567,12 +633,14 @@ def integrate(branch: str, keep_conflict: bool = False,
     zu öffnen."""
     ok, kind, _ahead, _behind = _integrate_impl(
         branch, keep_conflict=keep_conflict, strategy=strategy,
-        guard_live_paths=guard_live_paths, now=now, dry_run=dry_run)
+        guard_live_paths=guard_live_paths, now=now, dry_run=dry_run,
+        live_within_s=live_within_s)
     return ok, kind
 
 
 def integrate_preview(branch: str, *, guard_live_paths: bool = True,
-                      now: float | None = None
+                      now: float | None = None,
+                      live_within_s: int = LIVE_EDIT_WINDOW_S
                       ) -> tuple[bool, str | None, int | None, int | None]:
     """``/sync``s Vorschau: wie ``integrate(dry_run=True)``, liefert aber
     zusätzlich ``(ahead, behind)`` — beide aus demselben Fetch berechnet, den
@@ -587,7 +655,7 @@ def integrate_preview(branch: str, *, guard_live_paths: bool = True,
     fehl, ein Rebase/Merge war schon offen, o. Ä.) — bei ``ok=True`` immer
     zwei echte Zahlen, nie ``None``."""
     return _integrate_impl(branch, keep_conflict=True, guard_live_paths=guard_live_paths,
-                           now=now, dry_run=True)
+                           now=now, dry_run=True, live_within_s=live_within_s)
 
 
 def abort_rebase() -> None:
@@ -617,11 +685,11 @@ def continue_merge_and_push() -> tuple[bool, list[str], str | None]:
         return False, log, _classify_failure(commit.stderr.strip())
     log.append("Konflikt aufgelöst, Merge abgeschlossen")
     branch = current_branch()
-    pok, pmsg = push(branch)
+    pok, pmsg, pkind = push(branch)
     log.append(f"push {'ok' if pok else 'FAIL'}")
     if not pok and pmsg:
         log.append(pmsg)
-    return (pok, log, None if pok else _classify_failure(pmsg))
+    return (pok, log, None if pok else pkind)
 
 
 def continue_rebase_and_push() -> tuple[bool, list[str], str | None]:
@@ -643,38 +711,77 @@ def continue_rebase_and_push() -> tuple[bool, list[str], str | None]:
         return False, log, _classify_failure(cont.stderr.strip())
     log.append("Konflikt aufgelöst, rebase fortgesetzt")
     branch = current_branch()  # HEAD ist nach --continue wieder am Branch
-    pok, pmsg = push(branch)
+    pok, pmsg, pkind = push(branch)
     log.append(f"push {'ok' if pok else 'FAIL'}")
     if not pok and pmsg:
         log.append(pmsg)
-    return (pok, log, None if pok else _classify_failure(pmsg))
+    return (pok, log, None if pok else pkind)
 
 
-def push(branch: str) -> tuple[bool, str]:
-    """Branch pushen. Bei Reject einmal rebase + retry."""
+def push(branch: str, *, guard_live_paths: bool = False) -> tuple[bool, str, str | None]:
+    """Branch pushen. Bei Reject einmal integrieren + retry.
+
+    Gibt ``(ok, msg, kind)`` zurück — ``kind`` ist ``None`` bei Erfolg, sonst
+    dieselbe Klassifikation wie :func:`integrate` (``"conflict"``,
+    ``"live_edit"``, ``"unreachable"``, ``"auth"``, ``"repo_busy"``).
+
+    Der Reject-Retry lief bis 2026-07-28 als roher ``git pull --rebase`` direkt
+    über ``_git()`` — vorbei an PLAN-30 Ebene 4/5, vorbei an
+    ``is_conflict_resolution_pending()`` und mit einer Fehlermeldung, die der
+    Aufrufer per ``_classify_failure()`` erst wieder erraten musste. Zwei
+    Folgen, beide im Vorfall belegt (Sync-Divergenz 2026-07-28, Befund 2):
+
+    1. Ausgerechnet dieser Pfad rührte den geteilten Checkout unbeaufsichtigt
+       an — im Synchronizer alle drei Minuten, ohne Backoff — während der
+       Idle-Guard danebenstand und den regulären Weg blockierte.
+    2. Der abgebrochene Rebase lieferte "rebase failed (aborted)"; das ist
+       weder ``unreachable`` noch ``auth``, also stufte ``_classify_failure()``
+       es als ``conflict`` ein und der Synchronizer setzte ``sync_conflict``.
+       Ein bloßer Idle-Skip wäre so nie von einem echten Konflikt zu
+       unterscheiden gewesen.
+
+    Jetzt geht der Retry durch ``_integrate_impl()`` und erbt Guard,
+    Konfliktbehandlung und Klassifikation des regulären Pfades.
+    ``guard_live_paths`` Default ``False`` = bisheriges Verhalten für alle
+    interaktiven Aufrufer (``/save``, ``/sync``, ``continue_*``); der
+    unbeaufsichtigte Synchronizer-Sweep setzt es auf ``True``. Strategie
+    bleibt bewusst ``rebase`` wie bisher — die merge-Variante ist eine
+    Entscheidung des Pull-Loops (s. ``daemon/synchronizer.py``), nicht dieses
+    Retrys."""
     args = ["push", "-u", "origin", branch]
     proc = _git(args, check=False, timeout=GIT_NET_TIMEOUT)
     if proc.returncode == 0:
-        return True, (proc.stdout + proc.stderr).strip()
+        return True, (proc.stdout + proc.stderr).strip(), None
     if "rejected" in proc.stderr or "non-fast-forward" in proc.stderr:
-        rb = _git(["pull", "--rebase", "origin", branch], check=False, timeout=GIT_NET_TIMEOUT)
-        if rb.returncode != 0:
-            _git(["rebase", "--abort"], check=False)
-            return False, f"rebase failed (aborted):\n{rb.stderr.strip()}"
+        ok, kind, _a, _b = _integrate_impl(branch, guard_live_paths=guard_live_paths)
+        if not ok:
+            return False, f"push abgelehnt, Integration nicht möglich ({kind})", kind
         retry = _git(args, check=False, timeout=GIT_NET_TIMEOUT)
-        return retry.returncode == 0, (retry.stdout + retry.stderr).strip()
-    return False, (proc.stdout + proc.stderr).strip()
+        msg = (retry.stdout + retry.stderr).strip()
+        return (True, msg, None) if retry.returncode == 0 else (False, msg, _classify_failure(msg))
+    msg = (proc.stdout + proc.stderr).strip()
+    return False, msg, _classify_failure(msg)
 
 
 # --- Orchestrierung (§4.9: commit → integrate → push/ask) ---
 
 def commit_and_push(scope: Path | None, message: str, do_push: bool,
-                    identity: tuple[str, str] | None = None) -> tuple[bool, list[str], str | None]:
+                    identity: tuple[str, str] | None = None, *,
+                    guard_live_paths: bool = False) -> tuple[bool, list[str], str | None]:
     """Vollständiger Schreibpfad. Gibt (ok, log, kind) zurück.
 
     ``do_push`` spiegelt die Sync-Matrix: an → pushen; aus → committen +
     integrieren, aber **nicht** pushen (der Skill fragt dann nach).
     ``identity``: s. ``stage_and_commit()`` (PLAN-21 Befund 8).
+
+    ``guard_live_paths`` (Default ``False``) entscheidet nach der Leitregel,
+    die PLAN-30 Ebene 4/5 seit dem 2026-07-28 einheitlich zieht: der Idle-Guard
+    gilt für **unbeaufsichtigte** Schreibvorgänge, nicht für solche, die ein
+    anwesender Mensch gerade ausgelöst hat. ``/save``, ``/close``, ``/done``
+    lassen ihn deshalb aus (der Mensch ist da und hat entschieden), der
+    Synchronizer-Hintergrund-Sweep setzt ihn auf ``True`` — er ist genau der
+    Fall, für den Ebene 4 gebaut wurde. Reicht bis in den Reject-Retry von
+    :func:`push` durch, der ihn bis dahin komplett umging (Befund 2).
 
     Verweigert VOR jedem Schreibversuch, wenn irgendwo im Repo bereits ein
     Merge/Rebase offen ist (``is_conflict_resolution_pending()``, Review-
@@ -692,7 +799,7 @@ def commit_and_push(scope: Path | None, message: str, do_push: bool,
     log.append(f"committed: {message}" if committed else "nothing to commit")
 
     branch = current_branch()
-    ok, kind = integrate(branch)
+    ok, kind = integrate(branch, guard_live_paths=guard_live_paths)
     if not ok:
         log.append(f"integrate FAILED ({kind})")
         return False, log, kind
@@ -702,11 +809,11 @@ def commit_and_push(scope: Path | None, message: str, do_push: bool,
         log.append("nicht gepusht (auto_sync off) — push mit: bibi-ctrl save --push")
         return True, log, None
 
-    pok, pmsg = push(branch)
+    pok, pmsg, pkind = push(branch, guard_live_paths=guard_live_paths)
     log.append(f"push {'ok' if pok else 'FAIL'}")
     if not pok and pmsg:
         log.append(pmsg)
-    return (pok, log, None if pok else _classify_failure(pmsg))
+    return (pok, log, None if pok else pkind)
 
 
 def remove_path_and_push(path: Path, message: str,
@@ -749,8 +856,8 @@ def remove_path_and_push(path: Path, message: str,
     if not do_push:
         log.append("nicht gepusht (auto_sync off)")
         return True, log, None
-    pok, pmsg = push(branch)
+    pok, pmsg, pkind = push(branch)
     log.append(f"push {'ok' if pok else 'FAIL'}")
     if not pok and pmsg:
         log.append(pmsg)
-    return (pok, log, None if pok else _classify_failure(pmsg))
+    return (pok, log, None if pok else pkind)

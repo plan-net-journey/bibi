@@ -98,9 +98,20 @@ def _default_push() -> tuple[bool, list[str], str | None]:
     # bibi-Identität statt der ambienten (bisher fälschlich menschlichen)
     # Git-Config, damit Commits aus diesem Hintergrund-Sweep im Log/Blame von
     # tatsächlich vom User selbst ausgelösten Commits unterscheidbar sind.
+    #
+    # guard_live_paths=True (Revision 2026-07-28, Befund 2): dieser Sweep ist
+    # der unbeaufsichtigte Schreibpfad schlechthin, bekam Ebene 4s Idle-Guard
+    # aber nie — weder für sein `integrate()` noch für den Reject-Retry in
+    # `push()`, der bis dahin roh an git ging. Live beobachtet: der Retry rührte
+    # den geteilten Checkout alle drei Minuten an, während derselbe Guard den
+    # interaktiven Weg blockierte, und meldete seinen abgebrochenen Rebase als
+    # `conflict` — womit `sync_conflict` gesetzt wurde, obwohl gar kein Konflikt
+    # aufzulösen war. Beides erledigt sich damit, dass hier derselbe geschützte
+    # Weg läuft wie im Pull-Loop darunter.
     from bibi import git_ops
     return git_ops.commit_and_push(
-        None, git_ops.auto_commit_message(), do_push=True, identity=("bibi/sync", "bibi@local"))
+        None, git_ops.auto_commit_message(), do_push=True,
+        identity=("bibi/sync", "bibi@local"), guard_live_paths=True)
 
 
 def _default_pull() -> tuple[bool, str | None]:
@@ -359,6 +370,21 @@ class Synchronizer:
         # Konflikt hat innerhalb eines Ticks Vorrang: ein erfolgreicher Pull darf
         # einen im selben Tick erkannten Push-Konflikt nicht überschreiben.
         from bibi import state
+        if "live_edit" in kinds:
+            # Befund 1 (Sync-Divergenz 2026-07-28): ein Idle-Skip war bisher
+            # nach außen komplett stumm — dass der Guard hier dauerhaft griff,
+            # ließ sich nur durch Nachstellen von Hand herausfinden. Mit Pfad
+            # und Alter ist sofort erkennbar, ob da ein Mensch tippt oder (wie
+            # im Vorfall) die Ausgabedatei eines kurz getakteten Schedules
+            # liegt, die nie ruhig genug wird.
+            from bibi import git_ops
+            blocking = git_ops.live_overlap_report()
+            oldest = next((age for _p, age in blocking if age is not None), None)
+            activity.emit(log, logging.INFO, "sync.live_edit",
+                          "Pull/Push übersprungen — Pfade gerade in Bearbeitung",
+                          role="synchronizer",
+                          paths=",".join(p for p, _age in blocking[:5]) or "?",
+                          age_s=round(oldest) if oldest is not None else -1)
         if "conflict" in kinds:
             state.set_sync_conflict(True)
             activity.emit(log, logging.WARNING, "sync.conflict",
