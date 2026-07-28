@@ -142,8 +142,8 @@ def test_push_when_ahead(repo_with_origin):
     git_ops.stage_and_commit(None, "local change")
     ok, kind = git_ops.integrate("trunk")
     assert ok and kind is None
-    ok2, _ = git_ops.push("trunk")
-    assert ok2
+    ok2, _msg, kind2 = git_ops.push("trunk")
+    assert ok2 and kind2 is None
     # Origin trägt den Commit jetzt.
     assert "local change" in _sh(origin, "log", "-1", "--pretty=%s")
 
