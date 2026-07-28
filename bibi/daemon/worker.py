@@ -1003,7 +1003,7 @@ def run_pinned(
     genau das im Docstring seit PLAN-28 schon angekündigte, aber nie an der
     ``/-/run``-Route umgesetzte Verhalten. **Nur** setzen, wenn ein
     laufender Daemon mit gepinntem Worker-Loop einen fälligen Retry auch
-    tatsächlich bedient (die HTTP-Routen ``/-/run``/``/-/test``) — der
+    tatsächlich bedient (die HTTP-Route ``/-/run``) — der
     CLI-Pfad (``bibi-ctrl run``/``test``, kein Daemon) darf das NIE setzen,
     sonst hängt ``_wait_until_terminal()`` für immer auf einem nie
     bedienten Retry (s. ``ctrl/run_cmd.py``-Moduldocstring, derselbe

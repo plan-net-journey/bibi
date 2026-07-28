@@ -99,20 +99,22 @@ def test_cli_run_needs_arg(gitrepo: Path):
     assert main(["run"]) == 2
 
 
-# ── POST /-/run (worker-gated) ───────────────────────────────────────────────
+# ── POST /-/run (client-only, in-place) ──────────────────────────────────────
 
 
 def test_run_endpoint(gitrepo: Path):
+    # PLAN-38 (2026-07-27): der Knoten trägt hier bewusst Client-Rollen. Vorher
+    # lief dieser Test mit ``{"worker"}`` — seit /run in-place gegen den
+    # Live-Checkout läuft, lehnt die Route genau diese Rolle mit 409 ab
+    # (roles.forbids_local_run(), Regel selbst in tests/test_run_client_only.py).
+    # Prüfgegenstand hier bleibt der volle Lauf-Lifecycle über die Route: echte
+    # jobs-Zeile, terminaler Status, pinned_host, Journal-Sicht.
     from fastapi.testclient import TestClient
 
     from bibi.daemon import roles
     from bibi.daemon.app import create_app
-    from bibi.daemon.worker import Worker
 
-    w = Worker(autopoll=False, repo_root=gitrepo,
-               work_dir=gitrepo / "data" / "worktrees",
-               db_path=gitrepo / "data" / "jobs.sqlite")
-    app = create_app(roles.resolve({"worker"}), worker=w)
+    app = create_app(roles.resolve({"synchronizer", "controller"}))
     with TestClient(app) as c:
         r = c.post("/-/run", json={"cmd": "echo via-endpoint"})
         assert r.status_code == 200
@@ -143,18 +145,24 @@ def test_run_endpoint(gitrepo: Path):
         # unbekannter slug → 404
 
 
-def test_test_endpoint_runs_in_place_and_never_commits(gitrepo: Path):
-    # User-Fund 2026-07-14 (bibi-ctrl test): POST /-/test läuft direkt gegen
-    # den Live-Checkout — genau die Reibung, die /test entfernen soll: eine
-    # UNCOMMITTETE Datei neben einer committeten Schedule-MD, die ein /-/run
-    # nie sähe (frischer Worktree von trunk), muss hier lesbar sein, UND
-    # weder sie noch die vom Job neu geschriebene Datei dürfen danach
-    # committet sein.
+def test_run_endpoint_runs_in_place_and_never_commits(gitrepo: Path):
+    # User-Fund 2026-07-14, ursprünglich gegen POST /-/test geschrieben; seit
+    # PLAN-38 (2026-07-27) ist genau das das Verhalten von POST /-/run selbst
+    # und /-/test ersatzlos entfallen (dessen 404 deckt
+    # tests/test_run_client_only.py ab). Prüfgegenstand unverändert: eine
+    # UNCOMMITTETE Datei neben einer committeten Schedule-MD, die der frühere
+    # Worktree-Lauf von trunk nie sah, muss hier lesbar sein, UND weder sie
+    # noch die vom Job neu geschriebene Datei dürfen danach committet sein.
+    #
+    # Der zweite Teil gilt seit PLAN-38 Stufe 2 nur bei auto_sync: off — mit
+    # auto_sync: on committet der Lauf sein eigenes Ergebnis bewusst selbst
+    # (tests/test_run_client_only.py). Darum hier explizit gesetzt, statt sich
+    # auf den Default zu verlassen.
     from fastapi.testclient import TestClient
 
+    from bibi import state
     from bibi.daemon import roles
     from bibi.daemon.app import create_app
-    from bibi.daemon.worker import Worker
 
     job_dir = gitrepo / "vault" / "case" / "myjob"
     job_dir.mkdir(parents=True)
@@ -165,12 +173,10 @@ def test_test_endpoint_runs_in_place_and_never_commits(gitrepo: Path):
     _git(gitrepo, "commit", "-q", "-m", "seed myjob")
     (job_dir / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")  # NIE committet
 
-    w = Worker(autopoll=False, repo_root=gitrepo,
-               work_dir=gitrepo / "data" / "worktrees",
-               db_path=gitrepo / "data" / "jobs.sqlite")
-    app = create_app(roles.resolve({"worker"}), worker=w)
+    state.set_auto_sync(False)
+    app = create_app(roles.resolve({"synchronizer", "controller"}))
     with TestClient(app) as c:
-        r = c.post("/-/test", json={"slug": "myjob"})
+        r = c.post("/-/run", json={"slug": "myjob"})
         assert r.status_code == 200
         slug = r.json()["slug"]
         assert r.json()["status"] == "running"

@@ -140,7 +140,7 @@ _LOCAL_CLIENT_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 def _require_approved_or_local(request: Request,
                                x_bibi_node_id: str | None = Header(default=None)) -> None:
-    """Sperrt Job-Control-Routen (``/-/job*``-Aktionen, ``/-/run``, ``/-/test``)
+    """Sperrt Job-Control-Routen (``/-/job*``-Aktionen, ``/-/run``)
     für nicht freigeschaltete Knoten — Live-Fund 2026-07-25 (Job-Control-
     Approval-Bug): das Open-Trust-Freischalt-Modell (PLAN-32, ``approved_nodes``)
     war bisher nur an Heartbeat/Config-Distribution verdrahtet, nicht hier — ein
