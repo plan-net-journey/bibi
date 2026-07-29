@@ -58,4 +58,8 @@ body:
       value: |
         **Dringlichkeit** nach dem Anlegen als Label setzen:
         `P1` blockiert Arbeit oder gefährdet Daten · `P2` sollte gemacht werden ·
-        `someday` bewusst zurückgestellt.
+        `P3` bewertet und bewusst zurückgestellt.
+
+        Ein Issue **ohne** `P`-Label ist nicht „unwichtig", sondern **noch nicht
+        triagiert** — das ist der Unterschied, an dem man erkennt, wo noch eine
+        Entscheidung aussteht.

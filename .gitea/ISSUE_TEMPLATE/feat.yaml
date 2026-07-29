@@ -9,7 +9,7 @@ body:
       value: |
         Für Wünsche und Ideen. Ein CR darf unfertig sein — „noch nicht
         entschieden" ist ein legitimer Inhalt, „bewusst zurückgestellt" auch
-        (dann Label `someday`, damit er nicht als Versäumnis gelesen wird).
+        (dann Label `P3`, damit er nicht als Versäumnis gelesen wird).
 
         Das `repo:`-Label bleibt offen, bis klar ist, wohin die Änderung
         gehört: Engine, Team-Blueprint oder diese Instanz.
