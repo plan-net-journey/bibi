@@ -10,17 +10,22 @@ import argparse
 import sys
 
 from . import (
+    at_cmd,
     daemon_cmd,
+    doctor_cmd,
     init_cmd,
     job_cmd,
     lifecycle_cmd,
+    mergeback_cmd,
     open_cmd,
     protocol_cmd,
     run_cmd,
     save_cmd,
+    soul_cmd,
     status_cmd,
     statusline_cmd,
     sync_cmd,
+    test_cmd,
 )
 
 
@@ -39,6 +44,13 @@ def main(argv: list[str] | None = None) -> int:
     daemon_cmd.register(sub)
     job_cmd.register(sub)
     run_cmd.register(sub)
+    run_cmd.register_pinned(sub)
+    test_cmd.register(sub)
+    at_cmd.register(sub)
+    doctor_cmd.register(sub)
+    mergeback_cmd.register(sub)
+    job_cmd.register_rescan(sub)
+    soul_cmd.register(sub)
 
     args = parser.parse_args(argv)
     if not getattr(args, "cmd", None):

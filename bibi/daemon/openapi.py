@@ -16,12 +16,12 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from bibi.schedule.models import Kind, Reason, Status
 
 #: Vertrags-Version — bei Änderungen am ``/-/``-Vertrag bewusst hochzählen (§1.1).
-CONTRACT_VERSION = "3.0"
+CONTRACT_VERSION = "3.3"
 
 
 # ── Schemata (§4.4/§4.5/§1.4) ───────────────────────────────────────────────
@@ -36,6 +36,16 @@ class JobView(BaseModel):
     kind: Kind
     status: Status
     reason: Reason | None = None
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _coerce_reason(cls, v: object) -> Reason | None:
+        if v is None:
+            return None
+        try:
+            return Reason(v)
+        except ValueError:
+            return None
     priority: int = 0
     enqueued_at: float | None = None
     started_at: float | None = None
@@ -45,6 +55,9 @@ class JobView(BaseModel):
     host: str | None = None
     worker: str | None = None
     output_ref: str | None = None
+    next_fire_at: float | None = None  # nächster geplanter Trigger (überfällig-Anzeige)
+    last_run_at: float | None = None   # letzter abgeschlossener Lauf (aus Journal)
+    app_url: str | None = None          # HITL-Eingabe-Endpunkt der App (v10, §10.4)
 
 
 class ScheduleView(BaseModel):
@@ -56,6 +69,7 @@ class ScheduleView(BaseModel):
     next_fire_at: float | None = None
     last_status: Status | None = None
     last_run_at: float | None = None
+    oneshot: bool = False  # One-shot (at:) — Basis fürs Archiv (§4.4)
 
 
 class NextRequest(BaseModel):
@@ -96,6 +110,9 @@ class StatusReport(BaseModel):
     output_ref: str | None = None
     attempt: int | None = None        # Retry-Accounting (§3.5/§3.6)
     next_fire_at: float | None = None  # Backoff-Zeitpunkt
+    commit_sha: str | None = None      # Worktree-Commit des Laufs (v6, F7-Link)
+    branch: str | None = None          # agent/<slug> (v6)
+    app_url: str | None = None          # HITL-Eingabe-Endpunkt der App (§10.4, direkt ans FE)
 
 
 class KillRequest(BaseModel):
@@ -108,6 +125,7 @@ class JournalEntryView(BaseModel):
     """Eine Journal-Zeile (§1.4). ``host``/``worker`` first-class (föderierte
     A13-Sicht), ``output_ref`` referenziert die ``output.jsonl``."""
 
+    id: int | None = None  # DB-Zeilen-ID — Schlüssel für DELETE /-/journal/{id}
     run_id: str
     slug: str
     kind: Kind
@@ -120,6 +138,8 @@ class JournalEntryView(BaseModel):
     host: str | None = None
     worker: str | None = None
     output_ref: str | None = None
+    commit_sha: str | None = None  # Worktree-Commit des Laufs (v6, F7-Link)
+    branch: str | None = None      # agent/<slug> (v6)
     domain: str = "scheduled"  # 'scheduled' (disponiert) | 'local' (/run), §1.4
 
 
@@ -133,11 +153,31 @@ class RunRequest(BaseModel):
 
 
 class WorkerHeartbeat(BaseModel):
-    """``POST /-/worker`` — Anmeldung/Heartbeat eines verbundenen Workers (A12, §3.6)."""
+    """``POST /-/worker`` — Anmeldung/Heartbeat eines verbundenen Workers (A12, §3.6).
+
+    ``node_id``/``git_user``/``role`` (Bibi4-Iteration, Connected-Clients-
+    Screen): optional statt required, damit ein älterer Client (vor dieser
+    Änderung) weiterhin ohne 422 registrieren kann — die Registry behandelt
+    ein fehlendes Feld als eigenen Fallback, s. WorkerRegistry. ``role``
+    (User-Fund: "Client Übersicht braucht die Rollen je Client") ist der
+    rohe ``BIBI_ROLE``-Wert des sendenden Knotens, unverändert durchgereicht.
+    ``port`` (Batch 9 Punkt 3, User-Fund: "Name+Host zu einem Link
+    kombinieren") ist der tatsächliche Bind-Port des sendenden Knotens,
+    gelesen aus ``BIBI_DAEMON_PORT`` (``Heartbeat._beat()``) — derselbe
+    Env-Var-Wert, den auch der Wrapper für seinen Merge-back-Trigger nutzt.
+    ``client_config_version`` (PLAN-32 Stufe 32.2) ist die zuletzt vom
+    Client angewandte Config-Bundle-Version (``config.distributed_config_version()``)
+    — der Host hängt das Bundle in der Antwort nur an, wenn sie von seiner
+    aktuellen Version abweicht."""
 
     worker: str
     host: str
     git_status: str | None = None
+    node_id: str | None = None
+    git_user: str | None = None
+    role: str | None = None
+    port: int | None = None
+    client_config_version: str | None = None
 
 
 class WorkerView(BaseModel):
@@ -149,6 +189,10 @@ class WorkerView(BaseModel):
     last_heartbeat: float | None = None
     git_status: str | None = None
     stale: bool = False
+    node_id: str | None = None
+    git_user: str | None = None
+    role: str | None = None
+    port: int | None = None
 
 
 def _todo(endpoint: str) -> JSONResponse:
@@ -177,9 +221,14 @@ def add_contract_routes(app: FastAPI) -> None:
     def scheduler_next(req: NextRequest | None = None):  # noqa: ARG001
         return _todo("POST /-/scheduler/next")
 
-    @app.post("/-/scheduler/status/{id}", tags=["scheduler"])
-    def scheduler_status(id: str, report: StatusReport):  # noqa: A002, ARG001
-        return _todo("POST /-/scheduler/status/{id}")
+    # POST /-/scheduler/status/{id}: bewusst KEIN Stub hier (mehr) — anders als
+    # jede andere Route in dieser Funktion ist sie seit PLAN-30 Ebene 1 v2
+    # (2026-07-15) rollenunabhängig immer real (``app.py::_add_status_route()``,
+    # registriert vor dieser Funktion → gewinnt ohnehin), aus demselben Grund,
+    # aus dem ``/-/run``/``/-/run/journal`` nie Teil dieses gefrorenen v3.0-
+    # Vertrags waren: ein gepinnter Lauf braucht sie auf jedem Knotentyp, nicht
+    # nur mit ``roles.scheduler``. Ein Stub-Duplikat hier hätte nur eine
+    # doppelte OpenAPI-Operation-ID erzeugt, ohne je greifbar zu sein.
 
     # ── Job: Scheduler-Sicht (DB-Rows, §4.4) ─────────────────────────────────
     @app.get("/-/job", response_model=list[JobView], tags=["job"])
@@ -232,3 +281,12 @@ def add_contract_routes(app: FastAPI) -> None:
     @app.get("/-/journal", response_model=list[JournalEntryView], tags=["journal"])
     def journal_list(slug: str | None = None, host: str | None = None):  # noqa: ARG001
         return _todo("GET /-/journal")
+
+    @app.delete("/-/journal/{jid}", tags=["journal"])
+    def journal_delete(jid: int):  # noqa: ARG001
+        return _todo("DELETE /-/journal/{id}")
+
+    # ── Lifecycle-Zeitreihe (PLAN-21 Befund 11) ───────────────────────────────
+    @app.get("/-/landings", tags=["journal"])
+    def landings_list(since: float | None = None):  # noqa: ARG001
+        return _todo("GET /-/landings")

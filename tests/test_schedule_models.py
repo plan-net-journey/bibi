@@ -6,6 +6,7 @@ import json
 
 from bibi.schedule.models import (
     DEFAULT_CLAUDE_MODEL,
+    DEFAULT_DEFER_MAX,
     JobRow,
     JournalEntry,
     Kind,
@@ -13,6 +14,9 @@ from bibi.schedule.models import (
     Reason,
     ScheduleSpec,
     Status,
+    display_kind,
+    effective_kind,
+    is_claude_payload,
 )
 
 
@@ -23,16 +27,17 @@ def test_status_values_match_design_5_4():
     }
 
 
-def test_kind_uses_renamed_types():
-    # PLAN-3 §1.2: exec→job, prompt→claude; app fürs Modell vorhanden.
-    assert {k.value for k in Kind} == {"job", "claude", "app"}
-    assert "exec" not in {k.value for k in Kind}
-    assert "prompt" not in {k.value for k in Kind}
+def test_kind_unified_job_only():
+    # PLAN-10 Stufe 10.0: ein einziger Typ.
+    assert {k.value for k in Kind} == {"job"}
 
 
 def test_reason_root_causes_match_design_5_5():
+    # User-Feedback 2026-07-04: silence_timeout/hitl_timeout zu einem Konzept
+    # zusammengelegt ("Silence bei Jobs = Aktivität bei Apps") — activity_timeout
+    # als eigener Reason entfällt, alles läuft über "silence".
     assert {r.value for r in Reason} == {
-        "silence", "activity_timeout", "deferred_expired",
+        "silence", "deferred_expired",
         "no_process", "by_user", "by_wall_time",
     }
 
@@ -45,17 +50,28 @@ def test_strenum_is_json_and_str_friendly():
     # StrEnum: Werte landen ohne Konvertierung in JSON/SQLite.
     assert str(Status.PENDING) == "pending"
     assert json.dumps({"status": Status.RUNNING}) == '{"status": "running"}'
-    assert Kind.CLAUDE == "claude"
+    assert Kind.JOB == "job"
 
 
 def test_schedule_spec_defaults():
-    s = ScheduleSpec(slug="hello", kind=Kind.CLAUDE, payload="Hallo?")
+    s = ScheduleSpec(slug="hello", kind=Kind.JOB, payload="claude: Hallo?")
     assert s.priority == 0
     assert s.model == DEFAULT_CLAUDE_MODEL == "claude-sonnet-4-6"
-    assert s.attempts == 1
+    # 0, nicht 1 (User-Fund 2026-07-21, Bibi4 Batch 6): attempts=1 hätte
+    # einen zusätzlichen Retry gewährt (attempt_cur < attempts_max im
+    # Wrapper), 0 heißt "ein Versuch, kein automatischer Retry" ohne jede
+    # Frontmatter-Angabe.
+    assert s.attempts == 0
     assert s.silence_timeout == 3600
-    assert s.hitl_timeout == 48 * 3600
     assert s.at is None and s.schedule is None
+    # defer_max hat einen eigenstaendigen globalen Default (§5.5); wall_time/
+    # defer_time/error_time bleiben None-Sentinel (Bibi4-Iteration, User-Fund:
+    # wall_time sollte per Default AUS sein, sonst killt es Apps, die absichtlich
+    # endlos laufen, nach 1h — nur noch Opt-in wie defer_time/error_time).
+    assert s.wall_time is None
+    assert s.defer_max == DEFAULT_DEFER_MAX == 1200
+    assert s.defer_time is None
+    assert s.error_time is None
 
 
 def test_schedule_spec_is_frozen():
@@ -83,9 +99,55 @@ def test_job_row_minimal_and_output_ref():
 
 def test_journal_entry_run_id_and_host_first_class():
     e = JournalEntry(
-        run_id="hello:1", slug="hello", kind=Kind.CLAUDE, status=Status.COMPLETE,
+        run_id="hello:1", slug="hello", kind=Kind.JOB, status=Status.COMPLETE,
         host="air2024", worker="w1", output_ref="data/job/ab12/output.jsonl",
     )
     assert e.run_id == "hello:1"
     assert e.host == "air2024"
     assert e.output_ref is not None  # referenziert, enthält nicht (§1.4)
+
+
+# ── Stufe 12.0 — gemeinsamer Helper: „ist das ein claude-Job" ────────────────
+
+
+def test_is_claude_payload_true_for_claude_prefix():
+    assert is_claude_payload("claude: tu was")
+    assert is_claude_payload("  claude:   mehrzeilig\nweiter")
+
+
+def test_is_claude_payload_false_for_none_and_other():
+    assert not is_claude_payload(None)
+    assert not is_claude_payload("")
+    assert not is_claude_payload("echo hi")
+
+
+def test_effective_kind_claude_prefix_wins():
+    assert effective_kind("claude: tu was") == "claude"
+
+
+def test_effective_kind_default_job():
+    # PLAN-25 Befund 7, User-Fund: Jobs mit port+prefix sollen einfach als
+    # "job" erscheinen, nicht als eigener "app"-Typ — effective_kind() kennt
+    # app_port seit PLAN-25 gar nicht mehr (Parameter komplett entfernt).
+    assert effective_kind("echo hi") == "job"
+    assert effective_kind(None) == "job"
+
+
+# ── Bibi4-Iteration — display_kind(): job/claude/app für Anzeige-Stellen ─────
+
+
+def test_display_kind_app_port_wins_over_claude_payload():
+    # User-Fund: "Apps enden nicht" — fachlich eigene Kategorie, auch wenn der
+    # Payload gleichzeitig ein claude:-Prefix trägt.
+    assert display_kind("claude: tu was", 9100) == "app"
+
+
+def test_display_kind_falls_back_to_effective_kind_without_app_port():
+    assert display_kind("claude: tu was", None) == "claude"
+    assert display_kind("echo hi", None) == "job"
+    assert display_kind(None, None) == "job"
+
+
+def test_display_kind_zero_app_port_is_not_app():
+    # app_port=0 wäre kein gültiger Port — falsy, fällt auf effective_kind() zurück.
+    assert display_kind("echo hi", 0) == "job"

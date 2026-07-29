@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 
-from bibi import case_store, frontmatter
+from bibi import case_store, frontmatter, state
 from bibi.ctrl import main
 
 
@@ -90,3 +90,44 @@ def test_on_stop_always_zero_without_active_case(team_repo, monkeypatch):
     # cwd = repo root; kaputtes Payload
     monkeypatch.setattr("sys.stdin", io.StringIO("nicht-json"))
     assert main(["on-stop"]) == 0
+
+
+def test_on_stop_finds_case_via_session_id_in_payload(team_repo, tmp_path, monkeypatch):
+    """Der echte Hook-Fall: der Hook läuft als eigener Prozess im
+    Projektverzeichnis, nie im geparkten Case-cwd. Die ``session_id`` aus dem
+    Payload ist sein einziger Zugang zum aktiven Case — ohne sie lief das
+    Turn-Logging still ins Leere, egal ob protocol an war."""
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-A")
+    folder = _activate("Alpha")
+    main(["protocol", "on"])
+    state.set_path(f"case/{folder.name}")  # wie /open: Park-Marke schreiben
+
+    # Ab hier ist es ein frischer Hook-Prozess: Repo-Root, keine Session in der
+    # Umgebung — nur das Payload weiß, zu welcher Session er gehört.
+    os.chdir(team_repo)
+    monkeypatch.delenv("BIBI_SESSION_ID")
+    state.adopt_session(None)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
+        {"transcript_path": str(_make_transcript(tmp_path)), "session_id": "sess-A"})))
+
+    assert main(["on-stop"]) == 0
+    entry = json.loads((folder / "protocol.json").read_text().splitlines()[-1])
+    assert entry["prompt"] == "frage?" and entry["final"] == "antwort"
+
+
+def test_on_stop_ignores_a_foreign_sessions_case(team_repo, tmp_path, monkeypatch):
+    """Parallele Sessions: der Hook der einen Session darf nicht ins Protokoll
+    der anderen schreiben."""
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-A")
+    folder = _activate("Alpha")
+    main(["protocol", "on"])
+    state.set_path(f"case/{folder.name}")
+
+    os.chdir(team_repo)
+    monkeypatch.delenv("BIBI_SESSION_ID")
+    state.adopt_session(None)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
+        {"transcript_path": str(_make_transcript(tmp_path)), "session_id": "sess-B"})))
+
+    assert main(["on-stop"]) == 0
+    assert not (folder / "protocol.json").exists()

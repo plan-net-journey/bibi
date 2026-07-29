@@ -12,13 +12,15 @@ allowed-tools:
 
 ## Scope (A10)
 
-`bibi-ctrl save` has two scopes, decided automatically by the parked cwd:
+`bibi-ctrl save` has two scopes:
 
-- **Active case** (cwd inside a case folder) → commits only the case-related
-  changes.
-- **No active case** → checks the *whole repository* for changes.
+- **Active case** (cwd inside a case folder, or the session's park marker from
+  `/open`) → commits only the case-related changes.
+- **No active case** → checks the *whole repository* for changes. `--repo`
+  forces this scope even while a case is active.
 
-Check which one applies with `bibi-ctrl status` (`path:` line).
+Check which one applies with `bibi-ctrl status` — its `path:` line names the
+case and where it comes from (`cwd` or `session`).
 
 ## Steps
 

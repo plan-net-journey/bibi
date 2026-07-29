@@ -9,6 +9,9 @@ from pathlib import Path
 from bibi import case_store, state
 from bibi.ctrl import main
 
+import pytest
+pytestmark = pytest.mark.slow
+
 
 def _sh(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True,
@@ -46,6 +49,39 @@ def test_save_active_case_path_scope(repo_with_origin):
     assert any("AlphaFeature" in f for f in files.splitlines())
     assert "outside.txt" not in files
     assert "save: 20" in _local_head(root)  # "save: <YYYYmmdd…folder>"
+
+
+def test_save_stays_case_scoped_after_cwd_left_the_case(repo_with_origin, monkeypatch):
+    """Der Kern der Session-Park-Marke: ``/open`` parkt, irgendein späterer
+    ``cd`` verlässt den Case — und ``save`` committet trotzdem nur den Case
+    statt still auf das ganze Repo umzuschwenken."""
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-A")
+    root, _ = repo_with_origin
+    folder = case_store.create_case("Alpha Feature")
+    os.chdir(folder)
+    state.set_path(f"case/{folder.name}")  # wie /open
+    (root / "outside.txt").write_text("x", encoding="utf-8")
+
+    os.chdir(root)  # cwd weg — früher hieß das: Repo-Scope
+    assert main(["save", "--push"]) == 0
+    files = _sh(root, "show", "--name-only", "--pretty=format:", "HEAD")
+    assert "outside.txt" not in files
+    assert any("AlphaFeature" in f for f in files.splitlines())
+
+
+def test_save_repo_flag_forces_full_scope_despite_active_case(repo_with_origin, monkeypatch):
+    """Das Gegenstück: Repo-Scope ist jetzt eine Ansage, kein Nebenprodukt."""
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-A")
+    root, _ = repo_with_origin
+    folder = case_store.create_case("Alpha Feature")
+    os.chdir(folder)
+    state.set_path(f"case/{folder.name}")
+    (root / "outside.txt").write_text("x", encoding="utf-8")
+
+    assert main(["save", "--repo", "--push"]) == 0
+    files = _sh(root, "show", "--name-only", "--pretty=format:", "HEAD")
+    assert "outside.txt" in files
+    assert f"save: {root.name}" in _local_head(root)
 
 
 # --- Sync-Matrix §4.9 ---

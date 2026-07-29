@@ -4,13 +4,14 @@ Reine Typen — keine DB, kein HTTP. Die Enums sind ``StrEnum``, damit ihre Wert
 ohne Konvertierung in JSON/OpenAPI und SQLite landen (``Status.PENDING ==
 "pending"``).
 
-Namensangleichung gegenüber bibi3 (PLAN-3 §1.2): der Shell-Typ heißt **``job``**
-(früher ``exec``), der AI-Typ heißt **``claude``** (früher ``prompt``) — der Typ
-benennt das Tool/den Dispatch-Mechanismus, nicht das abstrakte Konzept.
+Unified Job Model (PLAN-10 §3 Stufe 10.0): ein einziger Typ ``JOB``. Frühere
+``CLAUDE``- und ``APP``-Typen wurden aufgelöst — ``claude:``-Prefix-Expansion
+passiert beim Spawn im Worker, App-Verhalten ist reine Laufzeit-Konvention.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -31,18 +32,47 @@ class Status(StrEnum):
 
 
 class Kind(StrEnum):
-    """Ausführungstypen (DESIGN §5.3/§7.5). Frontmatter-Key == Typ == Registry-Key."""
+    """Ausführungstypen. Nur noch ``JOB`` (PLAN-10 Stufe 10.0)."""
 
-    JOB = "job"          # Shell-Befehl im Worktree (früher `exec`)
-    CLAUDE = "claude"    # `claude -p` (früher `prompt`)
-    APP = "app"          # langlebiger App-Prozess (Phase 6) — hier nur fürs Modell
+    JOB = "job"
+
+
+# claude:-Prefix-Erkennung für Payload-Expansion (PLAN-10 Stufe 10.0; PLAN-12
+# Stufe 12.0: konsolidiert aus worker.py::_CLAUDE_RE + render.py::_effective_sched_type).
+CLAUDE_PAYLOAD_RE = re.compile(r"^\s*claude\s*:\s*(.+)", re.DOTALL)
+
+
+def is_claude_payload(payload: str | None) -> bool:
+    return bool(payload and CLAUDE_PAYLOAD_RE.match(payload.strip()))
+
+
+def effective_kind(payload: str | None) -> str:
+    """Anzeige-/Dispatch-Typ: ``claude:``-Prefix ⇒ ``"claude"``; sonst ``"job"``
+    (PLAN-25 Befund 7 — ``app_port`` beeinflusst die Anzeige nicht mehr, Jobs
+    mit Port+Prefix erscheinen wie jeder andere Job). Einzige Quelle für alle
+    Aufrufer — DB-``kind`` ist seit PLAN-10 immer ``"job"``."""
+    if is_claude_payload(payload):
+        return "claude"
+    return "job"
+
+
+def display_kind(payload: str | None, app_port: int | None) -> str:
+    """Wie ``effective_kind()``, zusätzlich ``"app"`` für Jobs mit ``app_port``
+    (Bibi4-Iteration, User-Fund: "Apps enden nicht" — fachlich eigene Kategorie,
+    trotz PLAN-25 Befund 7. Bewusst eine *separate* Funktion statt ``effective_kind()``
+    selbst zu ändern: dessen Aufrufer außerhalb der Anzeige — Silence-Timeout-Wahl,
+    Schedules-Übersicht/-Filter — sollen ``app_port`` weiterhin ignorieren). Einzige
+    Quelle für alle **Anzeige**-Stellen, die job/claude/app unterscheiden: Type-Spalte,
+    Job-Status-Card, Archive-Tabelle — sonst driften die Zählweisen wieder auseinander."""
+    if app_port:
+        return "app"
+    return effective_kind(payload)
 
 
 class Reason(StrEnum):
     """Root Causes für Terminal-/Sonderzustände (DESIGN §5.5)."""
 
-    SILENCE = "silence"                    # zombie: kein stdout/stderr (job/claude)
-    ACTIVITY_TIMEOUT = "activity_timeout"  # zombie: app in awaiting, keine Activity
+    SILENCE = "silence"                    # zombie: keine Aktivität (Output/Signal)
     DEFERRED_EXPIRED = "deferred_expired"  # inactive: Deferred-Periode abgelaufen
     NO_PROCESS = "no_process"              # killed: Prozess weg ohne Exit-Code
     BY_USER = "by_user"                    # killed: manuelles kill
@@ -56,13 +86,40 @@ class Owner(StrEnum):
     WORKER = "worker"
 
 
-# Default-Modell für `claude`-Jobs (DESIGN §7.5; überschreibbar via `model:`).
+# Default-Modell für claude:-Prefix-Jobs (überschreibbar via `model:`).
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
 
-# Default-Silence-Timeout für job/claude in Sekunden (DESIGN §5.5: 1 h).
+# Default-Silence-Timeout in Sekunden — kind-abhängig (User-Feedback 2026-07-04:
+# silence_timeout/hitl_timeout zusammengelegt, "Silence bei Jobs = Aktivität bei
+# Apps"). claude:-Payloads (Batch, kein HITL) bekommen den kurzen Default (1h);
+# echte Apps (`app_port`/`app_prefix` gesetzt, long-lived, HITL-fähig über
+# run_app) den langen (48h) — ein Mensch darf so lange auf eine Antwort warten,
+# ohne dass silence_timeout vorzeitig zuschlägt. Einfache Jobs ohne App-Marker
+# (PLAN-31 Befund 4, 2026-07-17: `DEFAULT_SILENCE_TIMEOUT_APP` galt vorher
+# fälschlich für JEDEN Nicht-claude:-Job, nicht nur für Apps — ein hängender
+# einfacher Job blieb dadurch bis zu 48h unbemerkt, statt zeitnah als Zombie
+# aufzufallen) bekommen einen deutlich kürzeren Default (2h).
 DEFAULT_SILENCE_TIMEOUT = 3600
-# Default-HITL-Activity-Timeout für app in Sekunden (DESIGN §5.5: 48 h).
-DEFAULT_HITL_TIMEOUT = 48 * 3600
+DEFAULT_SILENCE_TIMEOUT_APP = 48 * 3600
+DEFAULT_SILENCE_TIMEOUT_JOB = 2 * 3600
+
+#: Wall-Time (§5.5) — None-Sentinel wie defer_time/error_time (Bibi4-Iteration,
+#: User-Fund: "wall_time Default muss doch None sein ... sonst laufen Apps in
+#: die Default Wall Time und wir wollen bei Apps den Zombie Status verwenden").
+#: Kein globaler DEFAULT_WALL_TIME mehr — Wall Time ist reines Opt-in fürs
+#: einzelne Schedule, nie ein ungewollter Default für JOB/CLAUDE/APP gleichermaßen.
+
+#: Defer-Time-Default (§5.5) — nur der letzte Fallback in _finish(), wenn
+#: weder ein expliziter bibi.job.Deferred(seconds=N) noch Schedule-
+#: Frontmatter (`defer_time:`) etwas anderes vorgeben.
+DEFAULT_DEFER_TIME = 360
+
+#: defer_max-Default (§5.5) — ein Job, der 20 Minuten am Stück (seit dem
+#: ERSTEN Defer, `deferred_at`) nur deferred statt fertig zu werden, gilt als
+#: zu unzuverlässig und wird vom Sweep auf `inactive` gesetzt (User-Fund: "er
+#: ist zu faul, deferred ständig"). Vorher: kein Default, ein Job ohne
+#: explizites `defer_max:` verfiel nie automatisch.
+DEFAULT_DEFER_MAX = 20 * 60
 
 
 @dataclass(frozen=True)
@@ -76,7 +133,7 @@ class ScheduleSpec:
 
     slug: str
     kind: Kind
-    payload: str  # job: Shell-Cmd | claude: Prompt | app: Entrypoint
+    payload: str  # Shell-Cmd; mit `claude: <prompt>` Prefix → claude-Expansion beim Spawn
 
     # Trigger (§5.2) — croniter-Ausdruck | now | startup | never  bzw. ISO-8601.
     schedule: str | None = None
@@ -85,26 +142,37 @@ class ScheduleSpec:
     # Scheduler-Auswahl (§4.4).
     priority: int = 0
 
-    # claude-spezifisch (§5.3/§7.5).
+    # claude:-Prefix-Felder (nur bei claude:-Payload ausgewertet).
     model: str = DEFAULT_CLAUDE_MODEL
     soul: str | None = None
     session: str | None = None
 
     # Lifecycle-Stellschrauben (§5.5) — vom Worker ausgewertet (Stufe 3.5).
-    attempts: int = 1
+    # attempts = Retries ZUSÄTZLICH zum ersten Lauf, nicht Gesamtversuche
+    # (Wrapper: "attempt_cur < attempts_max" in _finish()) — Default 0 heißt
+    # ein Versuch, kein automatischer Retry (User-Fund 2026-07-21, Bibi4
+    # Batch 6: attempts=1 lief tatsächlich zweimal vor "error").
+    attempts: int = 0
     backoff: str = "fixed"  # fixed | linear | exponential
     silence_timeout: int = DEFAULT_SILENCE_TIMEOUT
     wall_time: int | None = None
     defer_time: int | None = None
-    defer_max: int | None = None
-    hitl_timeout: int = DEFAULT_HITL_TIMEOUT
+    defer_max: int = DEFAULT_DEFER_MAX
+    error_time: int | None = None
 
-    # app-spezifisch (§5.3) — Phase 6, hier nur strukturell.
     app_port: int | None = None
     app_prefix: str | None = None
+    exec_mode: str | None = None  # "host"|"container" — überschreibt Knoten-Config
 
     # Optionales Override-Image (§7.6).
     image: str | None = None
+
+    # Generischer, UNVALIDIERTER Escape-Hatch für zusätzliche `docker run`-
+    # Argumente (§7.6a) — nur in exec_mode: container relevant, sonst No-op.
+    # Rohe Strings, ungeprüft an die Docker-CLI durchgereicht: kann bestehende
+    # Sicherheits-Annahmen (arbitrary-UID, feste Mounts) unterlaufen, z. B.
+    # `--privileged` oder `-v /:/host`. Siehe CONVENTIONS.md-Warnung.
+    docker_args: list[str] | None = None
 
 
 @dataclass(frozen=True)

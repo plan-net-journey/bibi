@@ -25,11 +25,16 @@ EXPECTED_TRANSITIONS = [
     (Status.DEFERRED, Event.EXPIRE, Status.INACTIVE),
     (Status.AWAITING, Event.INPUT, Status.RUNNING),
     (Status.AWAITING, Event.TIMEOUT, Status.ZOMBIE),
+    (Status.AWAITING, Event.KILL, Status.KILLED),
     (Status.COMPLETE, Event.RESET, Status.PENDING),
     (Status.ERROR, Event.RESET, Status.PENDING),
     (Status.INACTIVE, Event.RESET, Status.PENDING),
     (Status.ZOMBIE, Event.RESET, Status.PENDING),
     (Status.KILLED, Event.RESET, Status.PENDING),
+    (Status.PENDING, Event.KILL, Status.KILLED),
+    (Status.FAILED, Event.KILL, Status.KILLED),
+    (Status.DEFERRED, Event.KILL, Status.KILLED),
+    (Status.COMPLETE, Event.KILL, Status.KILLED),
 ]
 
 
@@ -60,6 +65,15 @@ def test_forbidden_edges_explicit():
         (Status.RUNNING, Event.DISPATCH),   # nur aus pending
         (Status.PENDING, Event.RESET),      # pending ist kein Terminal
         (Status.ERROR, Event.RETRY),        # error nur via reset
+        # Terminalzustände außer complete — KILL bleibt dort No-op (§5.4,
+        # User-Feedback 2026-07-03: KILL ist reine Lauf-Ebene, keine Job/
+        # Schedule-Semantik mehr). complete ist seit 2026-07-20 die explizite
+        # Ausnahme (s. EXPECTED_TRANSITIONS oben) — Lazy Rearm konnte einen
+        # complete-Job sonst nie wirklich anhalten, ohne die MD zu editieren.
+        (Status.ERROR, Event.KILL),
+        (Status.ZOMBIE, Event.KILL),
+        (Status.INACTIVE, Event.KILL),
+        (Status.KILLED, Event.KILL),
     ]:
         assert not lc.can(src, ev)
         with pytest.raises(IllegalTransition):
@@ -72,8 +86,11 @@ def test_terminal_set_matches_design():
     )
     for t in lc.TERMINAL:
         assert lc.is_terminal(t)
-        # Terminal → einziges Event ist RESET → pending.
-        assert lc.events_from(t) == {Event.RESET}
+        # Terminal → RESET → pending (§5.4) bleibt für alle der einzige Ausgang.
+        # complete hat seit 2026-07-20 zusätzlich KILL → killed (Lazy-Rearm-
+        # Bremse, s. test_forbidden_edges_explicit) — die einzige Ausnahme.
+        expected = {Event.RESET, Event.KILL} if t is Status.COMPLETE else {Event.RESET}
+        assert lc.events_from(t) == expected
         assert lc.apply(t, Event.RESET) == Status.PENDING
     assert not lc.is_terminal(Status.RUNNING)
     assert not lc.is_terminal(Status.PENDING)
@@ -94,43 +111,29 @@ def test_owner_matches_design_5_4():
     assert set(lc.OWNER) == set(Status)
 
 
-# ── Typ-gebundene Kanten (§5.4) ─────────────────────────────────────────────
+# ── Typ-gebundene Kanten (PLAN-10 Stufe 10.0: ein Typ, keine Einschränkungen) ─
 
 
-def test_awaiting_edges_are_app_only():
-    # app erreicht awaiting; job/claude nie.
-    assert lc.apply(Status.RUNNING, Event.AWAIT_INPUT, kind=Kind.APP) == Status.AWAITING
-    for k in (Kind.JOB, Kind.CLAUDE):
-        with pytest.raises(IllegalTransition):
-            lc.apply(Status.RUNNING, Event.AWAIT_INPUT, kind=k)
-        assert not lc.can(Status.RUNNING, Event.AWAIT_INPUT, kind=k)
-    # auch die Ausgänge aus awaiting sind app-only
-    assert lc.apply(Status.AWAITING, Event.INPUT, kind=Kind.APP) == Status.RUNNING
-    assert lc.apply(Status.AWAITING, Event.TIMEOUT, kind=Kind.APP) == Status.ZOMBIE
+def test_all_events_valid_for_job():
+    # Ein Typ JOB — alle Kanten gelten für ihn.
+    assert lc.apply(Status.RUNNING, Event.AWAIT_INPUT, kind=Kind.JOB) == Status.AWAITING
+    assert lc.apply(Status.AWAITING, Event.INPUT, kind=Kind.JOB) == Status.RUNNING
+    assert lc.apply(Status.AWAITING, Event.TIMEOUT, kind=Kind.JOB) == Status.ZOMBIE
+    assert lc.apply(Status.RUNNING, Event.SILENCE, kind=Kind.JOB) == Status.ZOMBIE
 
 
-def test_silence_zombie_is_job_claude_only():
-    for k in (Kind.JOB, Kind.CLAUDE):
-        assert lc.apply(Status.RUNNING, Event.SILENCE, kind=k) == Status.ZOMBIE
-    with pytest.raises(IllegalTransition):
-        lc.apply(Status.RUNNING, Event.SILENCE, kind=Kind.APP)
-    assert not lc.can(Status.RUNNING, Event.SILENCE, kind=Kind.APP)
-
-
-def test_kind_agnostic_edges_allow_any_kind():
-    # Nicht typ-gebundene Kanten gelten für jeden Typ.
+def test_all_edges_allow_kind_job():
+    # Kein Event ist für Kind.JOB gesperrt.
     for k in Kind:
         assert lc.apply(Status.PENDING, Event.DISPATCH, kind=k) == Status.RUNNING
         assert lc.apply(Status.RUNNING, Event.COMPLETE, kind=k) == Status.COMPLETE
 
 
-def test_events_from_filters_by_kind():
+def test_events_from_with_kind_job():
+    # Alle Kanten aus RUNNING erreichbar.
     job_events = lc.events_from(Status.RUNNING, kind=Kind.JOB)
     assert Event.SILENCE in job_events
-    assert Event.AWAIT_INPUT not in job_events
-    app_events = lc.events_from(Status.RUNNING, kind=Kind.APP)
-    assert Event.AWAIT_INPUT in app_events
-    assert Event.SILENCE not in app_events
+    assert Event.AWAIT_INPUT in job_events
 
 
 # ── Reason-Zuordnung (§5.5) ─────────────────────────────────────────────────
@@ -138,7 +141,9 @@ def test_events_from_filters_by_kind():
 
 def test_reason_for_fixed_events():
     assert lc.reason_for(Event.SILENCE) is Reason.SILENCE
-    assert lc.reason_for(Event.TIMEOUT) is Reason.ACTIVITY_TIMEOUT
+    # TIMEOUT (awaiting → zombie) meldet seit der Zusammenlegung (User-Feedback
+    # 2026-07-04) dieselbe Root Cause wie SILENCE, bleibt aber ein eigenes Event.
+    assert lc.reason_for(Event.TIMEOUT) is Reason.SILENCE
     assert lc.reason_for(Event.EXPIRE) is Reason.DEFERRED_EXPIRED
     assert lc.reason_for(Event.COMPLETE) is None  # Happy-Path hat keine Root Cause
 
@@ -162,12 +167,12 @@ def test_kill_reasons_set():
 
 def test_targets_of_running():
     t = lc.targets(Status.RUNNING, kind=Kind.JOB)
-    assert t == {Status.COMPLETE, Status.FAILED, Status.DEFERRED, Status.KILLED, Status.ZOMBIE}
-    # app: awaiting statt silence-zombie
-    ta = lc.targets(Status.RUNNING, kind=Kind.APP)
-    assert Status.AWAITING in ta and Status.ZOMBIE not in ta
+    assert t == {
+        Status.COMPLETE, Status.FAILED, Status.DEFERRED,
+        Status.KILLED, Status.ZOMBIE, Status.AWAITING,
+    }
 
 
 def test_targets_of_pending_and_terminal():
-    assert lc.targets(Status.PENDING) == {Status.RUNNING}
-    assert lc.targets(Status.COMPLETE) == {Status.PENDING}
+    assert lc.targets(Status.PENDING) == {Status.RUNNING, Status.KILLED}
+    assert lc.targets(Status.COMPLETE) == {Status.PENDING, Status.KILLED}

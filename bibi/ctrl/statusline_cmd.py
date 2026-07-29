@@ -3,15 +3,29 @@
 Liest Claudes JSON-Payload (model, ctx%) von stdin und kombiniert ihn mit dem
 bibi-Repo-State (`.claude/.state.md` + git) zu einer Zeile:
 
-    <tree> · <sync> │ <branch> │ <model> │ ctx:<pct>% [│ proto:<state>] │ sync:<state>
+    <tree> · <sync> │ <branch> │ <model> │ ctx:<pct>% [│ <case> │ proto:<state>] │ sync:<state>
 
-`<tree>` ist clean|modified, `<sync>` ist synced|ahead|behind|conflict — zwei
+`<tree>` ist clean|modified, `<sync>` ist synced|ahead|behind|diverged — zwei
 orthogonale Dimensionen, beide sichtbar; nur der Happy Path `clean · synced`
-kollabiert zu `clean`.
+kollabiert zu `clean`. `diverged` (bis Batch 7 Stufe 3 `conflict` genannt —
+umbenannt, User-Fund: "ich verstehe die Bedeutung von conflict und sync:
+!conflict nicht") heißt ahead UND behind zugleich > 0, kein echter,
+blockierender Merge-Konflikt (`bibi.git_status.working_tree_status()`).
 
-Der aktive Case kommt aus dem **Display-Mirror** `path:` in `.state.md`, NICHT
-aus dem cwd: die Statusleiste läuft in einem Subprozess ohne Sicht auf das
-Bash-Tool-cwd der Session (DESIGN §3.2). Alle Reads sind netzfrei. Robustheit
+Der letzte `sync:<state>`-Segment ist `!conflict` (aktiver Pull-Konflikt, aus
+`.state.md`s `sync_conflict`-Flag — ein davon komplett unabhängiger dritter
+Begriff, absichtlich weiterhin "conflict" genannt, weil hier wirklich ein
+echter, blockierender `<<<<<<<`-Merge ansteht) > `!stuck(N)` (PLAN-30 Ebene 3:
+N Job-Branches nach 3 Fehlschlägen aus dem automatischen Merge-back-Retry
+eskaliert, `bibi/daemon/merge_quarantine.py`) > `on`/`off` (stehende Push-
+Zustimmung) — in dieser Priorität, nur einer sichtbar.
+
+Der aktive Case kommt aus der **Park-Marke der Session** (`session_id` aus dem
+Payload → `state.get_path()`): die Statusleiste läuft in einem Subprozess ohne
+Sicht auf das Bash-Tool-cwd der Session (DESIGN §3.2), die Session-ID ist ihr
+einziger Zugang. Ohne `session_id` im Payload fällt sie auf den `path:`-Mirror
+in `.state.md` zurück — bei parallelen Sessions ggf. der Case einer anderen.
+Alle Reads sind netzfrei. Robustheit
 geht vor: liegt das cwd in keinem bibi-Repo, fallen die repo-abhängigen Segmente
 weg, statt die Leiste crashen zu lassen.
 """
@@ -25,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from bibi import case_store, git_ops, repo, state
+from bibi.git_status import working_tree_status
 
 R = "\033[0m"
 YELLOW = "\033[33m"
@@ -39,42 +54,37 @@ def _color(text: str, code: str) -> str:
     return f"{code}{text}{R}"
 
 
+_TREE_COLOR = {"clean": GREEN, "modified": YELLOW}
+_SYNC_COLOR = {"synced": GREEN, "ahead": CYAN, "behind": RED, "diverged": RED}
+
+
 def _git_segment() -> str:
     """Ein billiger, netzfreier Read des Working Tree → gerendertes git-Segment.
 
     `<tree> · <sync>` mit unabhängigen Farben. Kollabiert zu `clean` (grün),
     wenn beide Dimensionen am Happy Path sind.
     """
-    proc = git_ops._git(
-        ["--no-optional-locks", "status", "--porcelain=v2", "--branch"],
-        check=False,
-    )
-    if proc.returncode != 0:
+    s = working_tree_status(repo.root())
+    if s is None:
         return ""
-
-    ahead = behind = 0
-    dirty = False
-    for line in proc.stdout.splitlines():
-        if line.startswith("# branch.ab "):
-            a, b = line.split()[-2:]
-            ahead, behind = int(a.lstrip("+")), int(b.lstrip("-"))
-        elif line and not line.startswith("#"):
-            dirty = True
-
-    tree_label, tree_color = ("modified", YELLOW) if dirty else ("clean", GREEN)
-    if ahead and behind:
-        sync_label, sync_color = "conflict", RED
-    elif ahead:
-        sync_label, sync_color = "ahead", CYAN
-    elif behind:
-        sync_label, sync_color = "behind", RED
-    else:
-        sync_label, sync_color = "synced", GREEN
-
-    if not dirty and sync_label == "synced":
+    if s.tree == "clean" and s.sync == "synced":
         return _color("clean", GREEN)
-    return (_color(tree_label, tree_color) + _color(" · ", GRAY)
-            + _color(sync_label, sync_color))
+    return (_color(s.tree, _TREE_COLOR[s.tree]) + _color(" · ", GRAY)
+            + _color(s.sync, _SYNC_COLOR[s.sync]))
+
+
+def _case_label(folder: Path) -> str:
+    """Sprechender Kurzname: '20260621.Bibi4-870bd9db' → 'Bibi4'.
+
+    Datum und Kurz-Hash sind in der Leiste nur Rauschen; wer sie braucht, sieht
+    sie im Ordnernamen (``bibi-ctrl status``).
+    """
+    name = folder.name
+    if "." in name:
+        name = name.split(".", 1)[1]
+    if "-" in name:
+        name = name.rsplit("-", 1)[0]
+    return name or folder.name
 
 
 def _proto_state(folder: Path) -> str:
@@ -107,22 +117,41 @@ def render(payload: dict[str, Any]) -> str:
     if used_pct is not None:
         parts.append(_color(f"ctx:{used_pct:.0f}%", MAGENTA))
 
-    # bibi-State (proto + sync) — über den Mirror, ebenfalls defensiv.
+    # bibi-State (Case + proto + sync) — ebenfalls defensiv.
     try:
+        # Die Leiste läuft als eigener Prozess ohne Sicht aufs Bash-cwd; die
+        # session_id aus dem Payload ist ihr einziger Zugang zum Park-Zustand
+        # der Session. Fehlt sie, bleibt der `.state.md`-Mirror als Fallback —
+        # der kann bei parallelen Sessions den Case einer anderen zeigen und
+        # ist deshalb nur zweite Wahl.
+        sid = payload.get("session_id")
+        state.adopt_session(sid)
         s = state.read()
-        path = s.get("path")
+        # Mit session_id ist die Park-Marke allein maßgeblich — auch ihr
+        # Fehlen, das heißt dann "diese Session hat keinen Case". Sonst würde
+        # der geteilte Mirror einer parallelen Session hier durchschlagen.
+        path = state.get_path() if sid else (state.get_path() or s.get("path"))
         if path:
             folder = repo.vault() / path
             if folder.exists():
+                parts.append(_color(_case_label(folder), CYAN))
                 proto = _proto_state(folder)
                 color = {"on": GREEN, "dbg": YELLOW, "off": GRAY}[proto]
                 parts.append(_color(f"proto:{proto}", color))
         if s.get("sync_conflict"):
             parts.append(_color("sync:!conflict", RED))
-        elif s.get("auto_sync") == "on":
-            parts.append(_color("sync:on", GREEN))
         else:
-            parts.append(_color("sync:off", GRAY))
+            # PLAN-30 Ebene 3: dieselbe Quarantäne-Liste aus Ebene 2 — ein
+            # aktiver Pull-Konflikt (oben) ist dringlicher und gewinnt, sonst
+            # fällt ins Auge, wenn Job-Branches auf manuelle Klärung warten.
+            from bibi.daemon import merge_quarantine
+            stuck = merge_quarantine.escalated(repo.root())
+            if stuck:
+                parts.append(_color(f"sync:!stuck({len(stuck)})", RED))
+            elif s.get("auto_sync") == "on":
+                parts.append(_color("sync:on", GREEN))
+            else:
+                parts.append(_color("sync:off", GRAY))
     except (Exception, SystemExit):
         pass
 

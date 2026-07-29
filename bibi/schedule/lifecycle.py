@@ -5,10 +5,9 @@ Herzstück wird isoliert bewiesen, bevor es an DB/Prozesse gekoppelt wird (wie d
 ``PushDebouncer`` der Phase 2). Die Übergänge und Owner-Regeln stammen 1:1 aus der
 §5.4-Tabelle, die Root Causes aus §5.5.
 
-Die Maschine ist **typ-agnostisch im Graphen**, kennt aber die typ-gebundenen
-Kanten (DESIGN §5.4): ``awaiting`` und seine Kanten gelten nur für ``app``, der
-Silence-``zombie`` nur für ``job``/``claude``. ``apply(..., kind=...)`` setzt das
-durch; ohne ``kind`` bleibt die Prüfung aus (reine Graph-Sicht).
+PLAN-10 Stufe 10.0: ein einziger Typ ``JOB`` — keine typ-gebundenen Kanten mehr.
+Alle Events gelten für alle Jobs. ``apply(..., kind=...)`` wird der Rückwärts-
+kompatibilität wegen beibehalten, hat aber keine einschränkende Wirkung mehr.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ class Event(StrEnum):
     FAIL = "fail"                # running → failed
     DEFER = "defer"              # running → deferred
     AWAIT_INPUT = "await_input"  # running → awaiting   (nur app)
-    KILL = "kill"                # running → killed
+    KILL = "kill"                # running/pending → killed
     SILENCE = "silence"          # running → zombie     (nur job/claude)
     RETRY = "retry"              # failed  → running
     EXHAUST = "exhaust"          # failed  → error
@@ -78,31 +77,47 @@ _TRANSITIONS: dict[tuple[Status, Event], Status] = {
     (Status.DEFERRED, Event.EXPIRE): Status.INACTIVE,
     (Status.AWAITING, Event.INPUT): Status.RUNNING,
     (Status.AWAITING, Event.TIMEOUT): Status.ZOMBIE,
+    (Status.AWAITING, Event.KILL): Status.KILLED,
     # Terminal → pending (reset)
     (Status.COMPLETE, Event.RESET): Status.PENDING,
     (Status.ERROR, Event.RESET): Status.PENDING,
     (Status.INACTIVE, Event.RESET): Status.PENDING,
     (Status.ZOMBIE, Event.RESET): Status.PENDING,
     (Status.KILLED, Event.RESET): Status.PENDING,
+    # KILL greift überall dort, wo gerade noch ein Lauf aktiv oder unmittelbar
+    # bevorstehend ist (pending wartet auf Trigger, failed auf Retry, deferred
+    # auf Resume) — reine Lauf-Ebene, KEINE Job/Schedule-Semantik mehr (User-
+    # Feedback 2026-07-03: "vermischt Lauf und Job/Schedule-Behandlung").
+    (Status.PENDING, Event.KILL): Status.KILLED,
+    (Status.FAILED, Event.KILL): Status.KILLED,
+    (Status.DEFERRED, Event.KILL): Status.KILLED,
+    # User-Redesign 2026-07-20 (widerruft den Teil von 2026-07-03, der COMPLETE
+    # bewusst ausschloss): dank Lazy Rearm trägt ein wiederkehrender complete-
+    # Job weiter einen next_fire_at und dispatcht sich beim nächsten fälligen
+    # Tick von selbst neu — KILL war dort bis hierhin ein reiner No-op, ein Job
+    # ließ sich also gar nicht "anhalten", ohne die MD zu editieren. Jetzt: wie
+    # ein RESET archiviert dieser Übergang den abgeschlossenen Lauf (s.
+    # report_status()s eigener Archiv-Zweig für genau diese Kante), landet aber
+    # sofort auf KILLED statt PENDING — next_fire_at wird dabei genullt (kommt
+    # aus dem KILLED/ERROR/…-Zweig dort), Lazy Rearm kann diesen Zustand also
+    # nicht mehr überholen. Bleibt weiterhin reine Lauf-Ebene, keine MD-
+    # Änderung: ein RESET holt den Job jederzeit zurück in den Schedule.
+    (Status.COMPLETE, Event.KILL): Status.KILLED,
 }
 
-# ── Typ-gebundene Kanten (§5.4) ─────────────────────────────────────────────
-
-#: Events, die nur für bestimmte Typen gültig sind. Nicht gelistete Events gelten
-#: für alle Typen.
-EVENT_KINDS: dict[Event, frozenset[Kind]] = {
-    Event.AWAIT_INPUT: frozenset({Kind.APP}),
-    Event.INPUT: frozenset({Kind.APP}),
-    Event.TIMEOUT: frozenset({Kind.APP}),
-    Event.SILENCE: frozenset({Kind.JOB, Kind.CLAUDE}),
-}
+# ── Typ-gebundene Kanten ─────────────────────────────────────────────────────
+# PLAN-10 Stufe 10.0: ein Typ (JOB) → keine Einschränkungen.
+EVENT_KINDS: dict[Event, frozenset[Kind]] = {}
 
 # ── Reason-Zuordnung (§5.5) ─────────────────────────────────────────────────
 
 #: Events mit fest verknüpfter Root Cause (§5.5).
 EVENT_REASON: dict[Event, Reason] = {
     Event.SILENCE: Reason.SILENCE,
-    Event.TIMEOUT: Reason.ACTIVITY_TIMEOUT,
+    # TIMEOUT (awaiting → zombie) bleibt ein eigenes Event in der Übergangs-
+    # tabelle (anderer Quellzustand als SILENCE), meldet aber dieselbe Root
+    # Cause — User-Feedback 2026-07-04: "Silence bei Jobs = Aktivität bei Apps".
+    Event.TIMEOUT: Reason.SILENCE,
     Event.EXPIRE: Reason.DEFERRED_EXPIRED,
 }
 

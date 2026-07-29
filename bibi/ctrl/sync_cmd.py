@@ -1,11 +1,52 @@
-"""``bibi-ctrl sync …`` — Git-Abgleich (PLAN-1 §1.5, §4.9).
+"""``bibi-ctrl sync …`` — Git-Abgleich (PLAN-1 §1.5, §4.9; Neufassung PLAN-25
+Befund 8, committet seit PLAN-30 Ebene 5 nichts mehr — s. u.).
 
 - ``sync on|off``      — auto_sync-Flag (stehende Push-Zustimmung) umschalten
-- ``sync``            — manueller Abgleich: dirty → warnen + auf /save verweisen
-                        (committet NIE selbst); sauber → integrieren → push if ahead;
-                        Konflikt → im Tree lassen + sync_conflict (KI-Auflösung)
-- ``sync continue``   — nach KI-Auflösung der Marker den Rebase fortsetzen + push
-- ``sync abort``      — offenen Rebase abbrechen
+- ``sync``            — Vorschau (Nachtrag 2026-07-16, spiegelt ``bibi-ctrl
+                        mergeback``s Konvention: bare listet/sagt vorher,
+                        ``--apply`` führt aus). Zeigt für jeden Schritt unten
+                        die vorhergesagte Klassifikation — dieselbe Logik wie
+                        der echte Lauf (``dry_run=True``), keine Mutation,
+                        keine Quarantäne-Schreibvorgänge. Ein bereits offener
+                        Rebase/Merge ist kein Vorschau-Fall, sondern ein
+                        realer Zustand — dieselbe Meldung wie bei ``--apply``.
+- ``sync --apply``    — manueller, (fast) immer wirksamer Abgleich:
+                        0. JEDEN unmergten Job-Branch zuerst klären (PLAN-30
+                           Ebene 3 + Nachtrag 2026-07-16), nicht mehr nur
+                           bereits eskalierte — ein anwesender Mensch, der
+                           explizit `/sync` aufruft, IST die Zustimmung, auch
+                           einen noch nicht eskalierten Branch jetzt
+                           anzufassen, statt auf zufällige trunk-Bewegungen zu
+                           warten. Konflikt → im Tree lassen + Marker anzeigen
+                           (KI-Auflösung). Ruhige Zwischenzustände
+                           (live_edit/blocked) blockieren den restlichen
+                           Ablauf NICHT.
+                        1. Immer integrieren (fetch + rebase), geschützt durch
+                           Ebene 4s Idle-Guard — seit der Revision 2026-07-28
+                           (Befund 1) aber nur noch mit dessen dirty-Hälfte
+                           (``live_within_s=0``): unfertige Arbeit wird nie
+                           überfahren, das bloße Alter einer Datei blockiert
+                           aber nicht mehr. Die Zeit-Heuristik meint einen
+                           tippenden Menschen; wer explizit ``/sync`` aufruft,
+                           IST dieser Mensch (derselbe Grundsatz wie Schritt 0),
+                           und bei einer Job-Ausgabedatei traf sie ohnehin nur
+                           den eigenen Scheduler. Konflikt → im Tree lassen +
+                           ``sync_conflict`` (KI-Auflösung). Übersprungen →
+                           die blockierenden Pfade werden genannt.
+                        2. Immer pushen, unabhängig von ``auto_sync`` — der
+                           ``/sync``-Aufruf ist die Freigabe für den Push.
+                        3. Dirty Änderungen — egal ob im aktiven Projekt oder
+                           in fremden Cases — werden nur noch ANGEZEIGT, nie
+                           committet (PLAN-30 Ebene 5, löst Befund 2: das
+                           bisherige automatische Cluster-Committen fremder
+                           Cases war ein vierter, unverorteter Interaktions-
+                           Modus, der sich nicht an Nebenbedingung 0 hielt).
+                           Committen ist ausschließlich ``/save``s Aufgabe.
+- ``sync continue``   — nach KI-Auflösung der Marker den offenen Rebase ODER
+                        Job-Branch-Merge fortsetzen + push (erkennt selbst,
+                        welcher der beiden offen ist — ein Werkzeug für beide
+                        Konfliktarten, PLAN-30 Ebene 3).
+- ``sync abort``      — offenen Rebase ODER Job-Branch-Merge abbrechen
 - ``sync hook-stop``  — Hintergrund: bei auto_sync transient committen + push
 - ``sync hook-start`` — Hintergrund: bei auto_sync pullen; Konflikt-Warnung surface
 """
@@ -15,7 +56,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-from bibi import git_ops, state
+from bibi import git_ops, repo, state
+from bibi.daemon import mergeback, merge_quarantine
 
 
 def _toggle_on(_: argparse.Namespace) -> int:
@@ -35,42 +77,290 @@ def _print_conflicts() -> None:
         print(f"  {f}", file=sys.stderr)
 
 
-def run_sync(_: argparse.Namespace) -> int:
-    """Manueller Abgleich (§4.9)."""
+def _print_live_paths(*, stream=sys.stdout) -> None:
+    """Welche Pfade den Pull gerade blockieren — Sync-Divergenz 2026-07-28,
+    Befund 1. Die alte Meldung ("Zieldatei wird bearbeitet") nannte weder die
+    Datei noch einen Weg nach vorn; im Vorfall kostete genau das Stunden, weil
+    nicht erkennbar war, dass die "bearbeitete" Datei die Ausgabe eines
+    Schedules ist. ``within_s=0`` spiegelt den Aufruf im Pull-Schritt: dort ist
+    der zeitbasierte Teil des Guards aus, es bleiben die dirty Pfade."""
+    for path, _age in git_ops.live_overlap_report(within_s=0):
+        print(f"  {path}", file=stream)
+
+
+def _resolve_stuck_merge_branches() -> int | None:
+    """PLAN-30 Ebene 3 + Nachtrag 2026-07-16 (/sync-Erweiterung): JEDEN
+    unmergten ``agent/*``-Branch anfassen, nicht mehr nur eskalierte
+    (``merge_quarantine.escalated()``) — ein anwesender Mensch, der explizit
+    ``/sync`` aufruft, IST die Zustimmung, auch einen noch nicht eskalierten
+    Branch (< ``ESCALATE_AFTER`` Fehlschläge, sonst der automatischen
+    Weiterversuchung überlassen) jetzt anzufassen, nicht nur die per Ebene-2-
+    Zähler bereits hart eskalierten. Dasselbe Prinzip, mit dem `/sync` an
+    anderer Stelle bereits committetes Work unconditional pusht: ein
+    expliziter Aufruf ist selbst die Zustimmung. ``force=True`` umgeht dabei
+    ausschließlich die Quarantäne-Vorprüfung — Ebene 4s Idle-Guard bleibt
+    unumgehbar, auch hier (`_live_overlap()` wird nie mit ``force`` übersprungen).
+
+    Löst genau EINEN Branch pro ``/sync``-Aufruf tatsächlich auf (nicht alle
+    automatisch hintereinander) — nach einer heiklen Konflikt-Auflösung soll
+    nicht unbeaufsichtigt der nächste Versuch lostrudeln. Ein ruhiger
+    Zwischenzustand (``live_edit``/``blocked`` — nichts kaputt, nur "gerade
+    nicht möglich") ist dagegen KEIN Show-Stopper: anders als ein echter
+    Konflikt hinterlässt er keinen offenen Zustand, der eine Pause
+    rechtfertigt — der normale ``/sync``-Ablauf (Pull/Push/Dirty-Anzeige)
+    läuft in diesem Fall im selben Aufruf weiter. ``None`` = nichts zu tun
+    ODER nur ruhig übersprungen, weiter im normalen Ablauf. ``int`` =
+    Exitcode, ``run_sync()`` kehrt sofort zurück (offener Konflikt ODER
+    erfolgreich gemergt, aber noch mehr Branches hängen)."""
+    root = repo.root()
+    pending = mergeback.unmerged_agent_branches(repo_root=root)
+    if not pending:
+        return None
+    branch = pending[0]
+    slug = branch.removeprefix("agent/")
+    res = mergeback.merge_back(repo_root=root, slug=slug, force=True, keep_conflict=True)
+    if res.status == "conflict":
+        print(f"⚠ Merge-Konflikt beim Auflösen von {branch} — Marker auflösen, "
+              f"dann `bibi-ctrl sync continue` (oder `sync abort`).", file=sys.stderr)
+        _print_conflicts()
+        return 1
+    if res.status == "merged":
+        print(f"{branch}: gemergt")
+        remaining = mergeback.unmerged_agent_branches(repo_root=root)
+        if remaining:
+            print(f"{len(remaining)} weitere(r) hängende(r) Branch(es) — "
+                  f"erneut `/sync` ausführen: {', '.join(remaining)}")
+            return 0
+        return None
+    if res.status == "up_to_date":
+        print(f"{branch}: bereits aktuell (kein Merge nötig)")
+        return None
+    # "live_edit"/"blocked"/"error"/"repo_busy" — ruhiger Zwischenzustand,
+    # kein Konfliktmarker, nichts offen gelassen. Kein Grund, den restlichen
+    # /sync-Ablauf (Pull/Push/Dirty-Anzeige) für diesen Aufruf zu blockieren.
+    print(f"{branch}: {res.status} — {res.detail} — gleich nochmal `/sync` "
+          f"versuchen.", file=sys.stderr)
+    return None
+
+
+def run_sync(args: argparse.Namespace) -> int:
+    """``sync`` ohne Flag: Vorschau, keine Mutation (Nachtrag 2026-07-16,
+    spiegelt ``bibi-ctrl mergeback``s Konvention — bare listet nur, ``--apply``
+    führt aus). ``--apply``: das bisherige, vollständig wirksame Verhalten."""
+    if getattr(args, "apply", False):
+        return _run_sync_apply()
+    return _run_sync_preview()
+
+
+def _run_sync_preview() -> int:
+    """Zeigt, was ``sync --apply`` täte, ohne irgendetwas anzufassen —
+    dieselbe Klassifikationslogik wie der echte Lauf (``dry_run=True`` bei
+    ``mergeback.merge_back()``/``git_ops.integrate()``, kein zweiter,
+    potenziell abweichender Vorhersage-Weg). Ein bereits offener Rebase/Merge
+    ist kein Vorschau-Fall, sondern ein realer, schon bestehender Zustand —
+    dieselbe Meldung wie bisher, dieselbe Bedeutung von Exitcode 1."""
     if git_ops.is_rebase_in_progress():
         print("Rebase offen — Marker auflösen, dann `bibi-ctrl sync continue` "
               "(oder `sync abort`).", file=sys.stderr)
         _print_conflicts()
         return 1
-    if git_ops.is_dirty():
-        print("Working tree dirty — erst `/save` (sync committet nicht selbst).",
-              file=sys.stderr)
+    if git_ops.is_merge_in_progress():
+        print("Merge offen (Job-Branch-Konflikt) — Marker auflösen, dann "
+              "`bibi-ctrl sync continue` (oder `sync abort`).", file=sys.stderr)
+        _print_conflicts()
         return 1
 
+    root = repo.root()
+    noteworthy = False
+
+    pending = mergeback.unmerged_agent_branches(repo_root=root)
+    if pending:
+        job_branch = pending[0]
+        slug = job_branch.removeprefix("agent/")
+        res = mergeback.merge_back(repo_root=root, slug=slug, force=True,
+                                   keep_conflict=True, dry_run=True)
+        if res.status == "conflict":
+            print(f"{job_branch}: würde konfligieren — {res.detail}")
+            noteworthy = True
+        elif res.status == "merged":
+            print(f"{job_branch}: würde sauber gemergt")
+            noteworthy = True
+        elif res.status == "up_to_date":
+            print(f"{job_branch}: bereits aktuell (kein Merge nötig)")
+        else:  # live_edit/blocked/error/quarantined/repo_busy
+            print(f"{job_branch}: {res.status} — {res.detail}")
+        if len(pending) > 1:
+            print(f"({len(pending) - 1} weitere(r) unmergte(r) Branch(es), "
+                  f"erst nach diesem dran)")
+
     branch = git_ops.current_branch()
-    ok, kind = git_ops.integrate(branch, keep_conflict=True)
+    # live_within_s=0 wie im echten Lauf (s. `_run_sync_apply()`): die Vorschau
+    # muss denselben Lauf vorhersagen, den `--apply` fährt — mit dem vollen
+    # Zeitfenster hätte sie ein Überspringen angekündigt, das nicht eintritt.
+    ok, kind, ahead, behind = git_ops.integrate_preview(branch, guard_live_paths=True,
+                                                        live_within_s=0)
+    if not ok:
+        if kind == "conflict":
+            print("Pull würde konfligieren — Marker müssten aufgelöst werden.")
+            noteworthy = True
+        elif kind == "live_edit":
+            print("Pull würde übersprungen — der Pull fasst Dateien mit "
+                  "unfertigen Änderungen an:")
+            _print_live_paths()
+            noteworthy = True
+        else:
+            print(f"Pull würde fehlschlagen: {kind}")
+            noteworthy = True
+    elif ahead is None or behind is None:
+        print("Pull: würde sauber integrieren (Stand nicht ermittelbar)")
+    elif behind and ahead:
+        print(f"Pull: würde sauber integrieren, danach {ahead} Commit(s) pushen")
+    elif behind:
+        print(f"Pull: würde sauber integrieren ({behind} Commit(s), nichts zu pushen danach)")
+    elif ahead:
+        print(f"Pull: nichts zu tun, danach {ahead} Commit(s) pushen")
+    else:
+        print("Pull: nichts zu tun")
+
+    active_case_rel = state.get_path()
+    other_cases, caseless, active_dirty = git_ops.cluster_dirty_paths(
+        git_ops.dirty_paths(), case_dir_name=repo.case_dir_name(),
+        active_case_rel=active_case_rel)
+    if other_cases or caseless:
+        print("Unfertige Änderungen außerhalb des aktiven Projekts — dort `/save` ausführen:")
+        for case_rel in sorted(other_cases):
+            print(f"  {case_rel}")
+        if caseless:
+            print("  (weitere, case-lose Änderungen)")
+    if active_dirty:
+        print("Änderungen im aktiven Projekt — `/save` ausführen:")
+        for p in active_dirty:
+            print(f"  {p}")
+
+    print("--apply zum Ausführen." if noteworthy else "nichts zu tun.")
+    return 1 if noteworthy else 0
+
+
+def _run_sync_apply() -> int:
+    """Manueller Abgleich — Neufassung PLAN-25 Befund 8: cluster-committen
+    (case-fremde Änderungen) → integrieren (immer) → pushen (immer). Nur
+    dirty Änderungen im aktiven Projekt bleiben unangetastet (→ ``/save``).
+
+    PLAN-30 Ebene 3: eskalierte Job-Branch-Konflikte werden VOR diesem Ablauf
+    geklärt (``_resolve_stuck_merge_branches()``) — ein sauberer Tree danach,
+    bevor Pull/Push überhaupt starten."""
+    if git_ops.is_rebase_in_progress():
+        print("Rebase offen — Marker auflösen, dann `bibi-ctrl sync continue` "
+              "(oder `sync abort`).", file=sys.stderr)
+        _print_conflicts()
+        return 1
+    if git_ops.is_merge_in_progress():
+        print("Merge offen (Job-Branch-Konflikt) — Marker auflösen, dann "
+              "`bibi-ctrl sync continue` (oder `sync abort`).", file=sys.stderr)
+        _print_conflicts()
+        return 1
+
+    rc = _resolve_stuck_merge_branches()
+    if rc is not None:
+        return rc
+
+    # PLAN-30 Ebene 5: /sync committet nichts mehr, auch keine fremden Cases
+    # (das war Befund 2 — /sync verhielt sich für Nicht-aktive Cases wie ein
+    # eigener, ungefragter vierter Interaktions-Modus). Committen ist
+    # ausschließlich /saves Aufgabe. Dirty Änderungen werden nur noch
+    # angezeigt, für JEDEN Case (nicht mehr nur den aktiven) — reine
+    # Information, kein Risiko, kein Schreibzugriff.
+    active_case_rel = state.get_path()
+    other_cases, caseless, active_dirty = git_ops.cluster_dirty_paths(
+        git_ops.dirty_paths(), case_dir_name=repo.case_dir_name(),
+        active_case_rel=active_case_rel)
+
+    branch = git_ops.current_branch()
+    # live_within_s=0 (Revision 2026-07-28, Befund 1): Ebene 4s Guard bleibt
+    # scharf, aber nur mit seiner dirty-Hälfte. Die zeitbasierte Hälfte ist eine
+    # Heuristik für einen tippenden Menschen — und traf im Vorfall systematisch
+    # daneben: die blockierende Datei war die Ausgabedatei eines 10-Minuten-
+    # Schedules, wurde also nie "ruhig", und weil derselbe Guard im Daemon-Loop
+    # ebenso greift, war die Divergenz über KEINEN der beiden Wege mehr
+    # auflösbar (bei einem Job-Intervall unter 120 s gäbe es gar kein Fenster
+    # mehr). Wer explizit `/sync` aufruft, IST der Mensch, den die Heuristik
+    # schützen soll — derselbe Grundsatz wie in Schritt 0
+    # (`_resolve_stuck_merge_branches()`). Echte uncommittete Arbeit schützt
+    # der dirty-Teil unverändert, und unbeaufsichtigt bleibt das volle Fenster
+    # in Kraft (`daemon/synchronizer.py`).
+    ok, kind = git_ops.integrate(branch, keep_conflict=True, guard_live_paths=True,
+                                 live_within_s=0)
     if not ok:
         if kind == "conflict":
             state.set_sync_conflict(True)
             print("⚠ Merge-Konflikt — Marker auflösen, dann `bibi-ctrl sync continue`.",
                   file=sys.stderr)
             _print_conflicts()
+        elif kind == "live_edit":
+            print("Pull übersprungen — der Pull fasst Dateien mit unfertigen "
+                  "Änderungen an, dort erst `/save`:", file=sys.stderr)
+            _print_live_paths(stream=sys.stderr)
         else:
             print(f"Abgleich fehlgeschlagen: {kind}", file=sys.stderr)
         return 1
+    print("integrated")
 
-    pok, pmsg = git_ops.push(branch)
-    if pok:
-        state.set_sync_conflict(False)
-        print("sync ok")
-        return 0
-    print(f"push fehlgeschlagen: {pmsg}", file=sys.stderr)
-    return 1
+    pok, pmsg, pkind = git_ops.push(branch)
+    if not pok:
+        # Der Reject-Retry integriert mit keep_conflict=False, lässt also keine
+        # Marker im Tree — nur das Flag setzen, damit der nächste `/sync` den
+        # Rebase mit Auflösung fährt. `pkind` kommt jetzt aus der Quelle, statt
+        # aus der Fehlermeldung erraten zu werden (Befund 2).
+        if pkind == "conflict":
+            state.set_sync_conflict(True)
+        print(f"push fehlgeschlagen ({pkind}): {pmsg}", file=sys.stderr)
+        return 1
+    state.set_sync_conflict(False)
+    print("push ok")
+
+    if other_cases or caseless:
+        print("Unfertige Änderungen außerhalb des aktiven Projekts (nicht angefasst) "
+              "— dort `/save` ausführen:", file=sys.stderr)
+        for case_rel in sorted(other_cases):
+            print(f"  {case_rel}", file=sys.stderr)
+        if caseless:
+            print("  (weitere, case-lose Änderungen)", file=sys.stderr)
+    if active_dirty:
+        print("Änderungen im aktiven Projekt (nicht angefasst) — `/save` ausführen:",
+              file=sys.stderr)
+        for p in active_dirty:
+            print(f"  {p}", file=sys.stderr)
+
+    print("sync ok")
+    return 0
 
 
 def run_continue(_: argparse.Namespace) -> int:
+    """PLAN-30 Ebene 3: erkennt selbst, ob ein Job-Branch-Merge (Requirement 2)
+    oder ein Pull-Rebase (Requirement 3) offen ist — ein Werkzeug für beide
+    Konfliktarten, kein zweiter Befehl nötig."""
+    if git_ops.is_merge_in_progress():
+        root = repo.root()
+        ok, log, kind = git_ops.continue_merge_and_push()
+        for line in log:
+            print(line)
+        if not ok:
+            if kind == "conflict":
+                _print_conflicts()
+            return 1
+        # Der gerade abgeschlossene Merge räumt seine eigene Quarantäne-Zeile
+        # nicht selbst auf (git_ops.py kennt merge_quarantine bewusst nicht,
+        # keine Rückabhängigkeit daemon → git_ops) — gegen die jetzt aktuelle
+        # unmerged-Liste prunen holt das nach, ohne den Branch-Namen hier
+        # erneut ermitteln zu müssen (derselbe Mechanismus wie remerge_all()).
+        remaining = mergeback.unmerged_agent_branches(repo_root=root)
+        merge_quarantine.prune(root, keep_branches=set(remaining))
+        if remaining:
+            print(f"{len(remaining)} weitere(r) hängende(r) Branch(es) — "
+                  f"erneut `/sync` ausführen: {', '.join(remaining)}")
+        return 0
     if not git_ops.is_rebase_in_progress():
-        print("kein Rebase im Gange.")
+        print("kein Rebase/Merge im Gange.")
         return 0
     ok, log, kind = git_ops.continue_rebase_and_push()
     for line in log:
@@ -84,8 +374,14 @@ def run_continue(_: argparse.Namespace) -> int:
 
 
 def run_abort(_: argparse.Namespace) -> int:
+    """PLAN-30 Ebene 3: erkennt selbst, welche Konfliktart offen ist (s.
+    ``run_continue()``)."""
+    if git_ops.is_merge_in_progress():
+        git_ops.abort_merge()
+        print("merge abgebrochen.")
+        return 0
     if not git_ops.is_rebase_in_progress():
-        print("kein Rebase im Gange.")
+        print("kein Rebase/Merge im Gange.")
         return 0
     git_ops.abort_rebase()
     print("rebase abgebrochen.")
@@ -117,6 +413,8 @@ def run_hook_start(_: argparse.Namespace) -> int:
 
 def register(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("sync", help="Git-Abgleich (on|off|continue|abort|hook-* oder manuell)")
+    p.add_argument("--apply", action="store_true",
+                   help="tatsächlich ausführen statt nur Vorschau (Nachtrag 2026-07-16)")
     p.set_defaults(func=run_sync)
     ssub = p.add_subparsers(dest="sync_cmd")
     ssub.add_parser("on").set_defaults(func=_toggle_on)

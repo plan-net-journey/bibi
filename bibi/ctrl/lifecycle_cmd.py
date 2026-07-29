@@ -32,12 +32,22 @@ def _do_push(args: argparse.Namespace) -> bool:
 
 
 def _finish(ok: bool, log: list[str], kind: str | None, root: Path) -> int:
-    """Log ausgeben, Konflikt markieren, Display-Mirror leeren, un-parken."""
+    """Log ausgeben, Konflikt markieren, Display-Mirror leeren, un-parken.
+
+    Review-Runde 7, Fund 4: bei ``kind == "repo_busy"`` hat der Guard JEDE
+    Änderung verweigert, bevor sie überhaupt versucht wurde (s.
+    ``git_ops.commit_and_push()``/``remove_path_and_push()``) — der Case ist
+    unverändert, der Nutzer soll ihn also nicht verlieren. Dasselbe gilt für
+    ``"conflict"``: ein offener Merge/Rebase braucht die geteilte KI-Auflösung
+    (``/sync``), die im selben, weiterhin aktiven Case stattfinden soll, nicht
+    nach einem erneuten ``/open``."""
     for line in log:
         print(line)
     if kind == "conflict":
         state.set_sync_conflict(True)
         print("⚠ Merge-Konflikt — KI-Auflösung nötig (/sync).", file=sys.stderr)
+    if kind in ("conflict", "repo_busy"):
+        return 0 if ok else 1
     state.set_path(None)
     print(f"cd: {root}")  # un-park: Skill cd't zurück zur Repo-Wurzel
     return 0 if ok else 1

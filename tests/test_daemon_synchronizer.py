@@ -7,6 +7,8 @@ import pytest
 from bibi import state
 from bibi.daemon.synchronizer import PushDebouncer, Synchronizer, params_for
 
+pytestmark = pytest.mark.slow
+
 
 # ── reine Debounce-Logik ────────────────────────────────────────────────────
 
@@ -85,6 +87,29 @@ def test_tick_pushes_after_idle(team_repo):
     assert calls["push"] == 1
 
 
+def test_tick_push_logs_loglines_as_message(team_repo, caplog):
+    # PLAN-25 Befund 3 Ebene 1, User-Fund: "sync.push ok=true kind=null" ist zu
+    # dürftig — commit_and_push() (git_ops.py) liefert schon eine sprechende
+    # loglines-Liste ("committed: ...", "integrated", "push ok"), die bisher
+    # nie ans Aktivitätslog durchgereicht wurde (nur ok=/kind=).
+    import logging as _logging
+    s, _ = _mk(push=True)
+    s.tick(0.0)  # öffnet das Änderungsfenster (first_change_at/last_change_at)
+    with caplog.at_level(_logging.INFO, logger="bibi.daemon.synchronizer"):
+        s.tick(600.0)  # Debounce-Fenster (10 min Idle bei <50 Zeilen) abgelaufen
+    rec = next(r for r in caplog.records if getattr(r, "bibi", {}).get("event") == "sync.push")
+    assert rec.getMessage() == "log"  # _mk()s push_fn liefert loglines=["log"]
+
+
+def test_push_now_logs_loglines_as_message(team_repo, caplog):
+    import logging as _logging
+    s, _ = _mk(push=True)
+    with caplog.at_level(_logging.INFO, logger="bibi.daemon.synchronizer"):
+        s.push_now()
+    rec = next(r for r in caplog.records if getattr(r, "bibi", {}).get("event") == "sync.push")
+    assert rec.getMessage() == "log"
+
+
 def test_tick_pulls_on_interval(team_repo):
     s, calls = _mk(pull=True, stat=("", 0))
     s.tick(0.0)
@@ -149,6 +174,59 @@ def test_real_push_reaches_origin(repo_with_origin):
     assert subj.startswith("auto:")                     # transiente Auto-Commit-Message
 
 
+# ── Nachtrag 2026-07-16: _default_pull() bekommt Ebene 4s Idle-Guard ───────
+# (live entdeckt: der unbeaufsichtigte Hintergrund-Pull hatte den Guard nie
+# bekommen, nur der interaktive /sync-Pfad — derselbe echte Konflikt wurde
+# alle 3 Minuten unbegrenzt neu versucht, dieselbe Fehlerklasse wie der
+# Ursprungsvorfall.)
+
+def _sh(cwd, *args):
+    import subprocess
+    return subprocess.run(["git", *args], cwd=cwd, check=True,
+                          capture_output=True, text=True).stdout
+
+
+def _clone(origin, dest):
+    _sh(dest.parent, "clone", "-q", str(origin), dest.name)
+    _sh(dest, "config", "user.name", "O"); _sh(dest, "config", "user.email", "o@e.x")
+    return dest
+
+
+def test_default_pull_skips_when_target_path_recently_touched(repo_with_origin, tmp_path):
+    root, origin = repo_with_origin
+    other = _clone(origin, tmp_path / "other")
+    (other / "pyproject.toml").write_text("REMOTE\n", encoding="utf-8")
+    _sh(other, "add", "-A"); _sh(other, "commit", "-q", "-m", "remote edit")
+    _sh(other, "push", "-q", "origin", "trunk")
+
+    (root / "pyproject.toml").write_text("LOCAL dirty\n", encoding="utf-8")  # nicht committet
+    head_before = _sh(root, "rev-parse", "HEAD").strip()
+
+    s = Synchronizer(pull=True, repo_root=root)
+    did = s.tick(0.0)
+    assert did["pulled"] is True  # ein Pull-VERSUCH fand statt (guard != "kein Pull")
+    assert _sh(root, "rev-parse", "HEAD").strip() == head_before  # aber nichts integriert
+    assert (root / "pyproject.toml").read_text() == "LOCAL dirty\n"  # unangetastet
+
+
+def test_default_pull_proceeds_when_no_overlap(repo_with_origin, tmp_path):
+    # Ein unbeteiligter dirty Pfad darf einen ansonsten sauberen Pull nicht
+    # verhindern — der Guard prüft nur echten Überlapp (dasselbe Prinzip wie
+    # /syncs eigener Pull-Guard, hier für den automatischen Loop).
+    root, origin = repo_with_origin
+    other = _clone(origin, tmp_path / "other")
+    (other / "remote.txt").write_text("r\n", encoding="utf-8")
+    _sh(other, "add", "-A"); _sh(other, "commit", "-q", "-m", "remote edit")
+    _sh(other, "push", "-q", "origin", "trunk")
+
+    (root / "unrelated.txt").write_text("dirty, aber nicht Teil des Pulls\n", encoding="utf-8")
+
+    s = Synchronizer(pull=True, repo_root=root)
+    did = s.tick(0.0)
+    assert did["pulled"] is True
+    assert (root / "remote.txt").exists()
+
+
 def test_push_gated_by_consent(team_repo):
     calls = {"push": 0}
     consent = {"on": False}
@@ -167,3 +245,295 @@ def test_push_gated_by_consent(team_repo):
     consent["on"] = True
     s.tick(1200.0)
     assert calls["push"] == 1          # Zustimmung an → abgelaufenes Fenster pusht sofort
+
+
+def test_tick_merge_sweep_merges_unmerged_branches(tmp_path):
+    """F-a (PLAN-7): der Tick mergt liegengebliebene agent/*-Branches nach trunk."""
+    import subprocess
+
+    from bibi.daemon import worktree as wt
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+    # ungemergten agent/x-Branch erzeugen
+    p = wt.prepare(repo_root=root, work_dir=root / "data" / "wt", slug="x")
+    (p / "n.md").write_text("hi\n")
+    wt.commit(worktree=p, message="run", slug="x")
+    assert wt.is_ahead(repo_root=root, branch="agent/x", trunk="trunk")
+
+    s = Synchronizer(repo_root=root)   # kein push/pull, nur Sweep
+    s.tick(0.0)
+    assert not wt.is_ahead(repo_root=root, branch="agent/x", trunk="trunk")  # gemergt
+
+
+def test_merge_sweep_pushes_immediately_after_merge(tmp_path):
+    # Bug 2026-07-07 (User-Fund: "warum steht bei sarasate SYNC: ahead") — der
+    # Push-Debouncer beobachtet nur den Working-Tree-Diff; ein Merge-Commit
+    # hinterlässt sofort wieder einen sauberen Tree, der ihn nie auslöst.
+    # diff_stat liefert hier bewusst "sauber" (leerer Tree), damit der Test
+    # NUR den neuen push_now()-Aufruf in _merge_sweep() prüft, nicht den
+    # Debounce-Pfad (der ohne den Fix bei sauberem Tree nie pushen würde).
+    import subprocess
+
+    from bibi.daemon import worktree as wt
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+    p = wt.prepare(repo_root=root, work_dir=root / "data" / "wt", slug="x")
+    (p / "n.md").write_text("hi\n")
+    wt.commit(worktree=p, message="run", slug="x")
+
+    calls = {"push": 0}
+
+    def push_fn():
+        calls["push"] += 1
+        return (True, [], None)
+
+    s = Synchronizer(push=True, repo_root=root, diff_stat=lambda: ("", 0),
+                     push_fn=push_fn, pull_fn=lambda: (True, None))
+    s.tick(0.0)
+    assert calls["push"] == 1
+
+
+def test_merge_sweep_does_not_push_when_nothing_merged(tmp_path):
+    import subprocess
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+
+    calls = {"push": 0}
+
+    def push_fn():
+        calls["push"] += 1
+        return (True, [], None)
+
+    s = Synchronizer(push=True, repo_root=root, diff_stat=lambda: ("", 0),
+                     push_fn=push_fn, pull_fn=lambda: (True, None))
+    s.tick(0.0)   # keine agent/*-Branches vorhanden ⇒ nichts gemergt
+    assert calls["push"] == 0
+
+
+def test_tick_merge_sweep_logs_stuck_conflict(tmp_path, caplog):
+    """Bugfix 2026-07-05: ein Konflikt beim Merge-back darf nicht stumm
+    verschwinden (verschleierte den dirty-trunk-Fund lange, s. Migration.md)."""
+    import logging
+    import subprocess
+
+    from bibi.daemon import worktree as wt
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+    # agent/x-Branch ändert f.txt ...
+    p = wt.prepare(repo_root=root, work_dir=root / "data" / "wt", slug="x")
+    (p / "f.txt").write_text("from agent\n")
+    wt.commit(worktree=p, message="run", slug="x")
+    # ... trunk ändert dieselbe Datei anders → echter Merge-Konflikt beim Sweep
+    (root / "f.txt").write_text("from trunk\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "trunk edit")
+    # Review-Runde 7 (Nachtrag): _merge_sweep() ruft mergeback.remerge_all() ohne
+    # now=-Durchreichung auf — tick(0.0)s eigenes now steuert nur Push/Pull-Timing,
+    # nicht den Idle-Guard im Merge-back selbst. Ohne Vordatierung würde Ebene 4s
+    # Guard f.txt als "kürzlich bearbeitet" werten und den Sweep mit "live_edit"
+    # statt einem echten Konflikt abschließen — os.utime() statt now=, weil hier
+    # (wie bei der HTTP-Route) kein now=-Parameter bis zum Guard durchgereicht wird.
+    import os
+    import time
+    stale = time.time() - 300
+    os.utime(root / "f.txt", (stale, stale))
+
+    s = Synchronizer(repo_root=root)  # kein push/pull, nur Sweep
+    with caplog.at_level(logging.WARNING, logger="bibi.daemon.synchronizer"):
+        s.tick(0.0)
+    assert any(
+        getattr(r, "bibi", {}).get("event") == "merge.sweep.stuck" for r in caplog.records
+    )
+    assert wt.is_ahead(repo_root=root, branch="agent/x", trunk="trunk")  # weiterhin unmerged
+
+
+def test_tick_no_sweep_without_repo_root(team_repo):
+    s, calls = _mk()           # repo_root=None ⇒ kein Merge-/Worktree-Sweep, kein Fehler
+    s.tick(0.0)                # darf nicht werfen
+
+
+# ── Worktree-Sweep (Bug "Kein Worktree Cleanup", Case 20260621.Bibi4-870bd9db) ─
+
+def test_tick_worktree_sweep_removes_orphaned_worktree(tmp_path):
+    """Ein abgeschlossener Einmal-Job (`at:`, kein `schedule:`) feuert nie
+    wieder — der Tick räumt seinen liegengebliebenen Worktree jetzt weg,
+    statt ihn für immer stehen zu lassen (live beobachtet: 19 Leichen,
+    ~31 GB, sarasate-root auf 92 %)."""
+    import subprocess
+
+    from bibi.daemon import job_db as jdb
+    from bibi.daemon import worktree as wt
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+
+    vault = root / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    vault.mkdir(parents=True)
+    (vault / "OneShot.md").write_text(
+        '---\nat: "2020-01-01T09:00:00"\njob: "echo hi"\n---\n', encoding="utf-8")
+
+    conn = jdb.connect(root / "data" / "jobs.sqlite")
+    jdb.rescan(conn, vault_root=root / "vault" / "case")
+    job_id = conn.execute("SELECT id FROM jobs WHERE slug=?", ("OneShot",)).fetchone()["id"]
+    jdb.report_status(conn, job_id, status="running")
+    jdb.report_status(conn, job_id, status="complete")
+    conn.close()
+
+    p = wt.prepare(repo_root=root, work_dir=root / "data" / "worktrees", slug="OneShot")
+    assert p.exists()
+
+    s = Synchronizer(repo_root=root)  # kein push/pull, nur Sweep
+    s.tick(0.0)
+
+    assert not p.exists()
+
+
+def test_tick_worktree_sweep_keeps_active_slug(tmp_path):
+    """Ein wiederkehrender, noch aktiver Job (pending, künftiger Fire fällig)
+    bleibt unangetastet — nur echte Leichen werden entfernt."""
+    import subprocess
+
+    from bibi.daemon import job_db as jdb
+    from bibi.daemon import worktree as wt
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+
+    vault = root / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    vault.mkdir(parents=True)
+    (vault / "Runner.md").write_text(
+        '---\nschedule: "*/5 * * * *"\njob: "echo hi"\n---\n', encoding="utf-8")
+
+    conn = jdb.connect(root / "data" / "jobs.sqlite")
+    jdb.rescan(conn, vault_root=root / "vault" / "case")
+    conn.close()
+
+    p = wt.prepare(repo_root=root, work_dir=root / "data" / "worktrees", slug="Runner")
+
+    s = Synchronizer(repo_root=root)
+    s.tick(0.0)
+
+    assert p.exists()
+
+
+def test_tick_worktree_sweep_never_removes_unmerged_work(tmp_path):
+    """F-b-Sicherheitsprinzip (``worktree.prepare()``s Dokstring) gilt auch
+    hier: ein Slug ohne jobs-Zeile ist zwar orphan, aber solange sein
+    Branch Commits voraus von trunk hat, entfernt der Sweep ihn nicht — der
+    Merge-Sweep bekommt zuerst die Chance, sie nach trunk zu holen.
+
+    Korrektur (User-Fund, `--slow`-Lauf 2026-07-23): der ursprüngliche Aufbau
+    ließ trunk und den "ghost"-Branch nie divergieren — der Merge-Sweep
+    mergte "ghost" deshalb anstandslos (kein Konflikt, s.
+    `test_tick_merge_sweep_logs_stuck_conflict` oben für denselben
+    Konflikt-Aufbau), womit `is_ahead()` beim Worktree-Sweep direkt danach
+    schon `False` war — das Entfernen war also technisch korrekt, der Test
+    hat nie echte "ungemergte Arbeit" hergestellt. Jetzt wie beim Nachbartest:
+    trunk UND der Branch ändern dieselbe Datei unterschiedlich, damit der
+    Merge-back real konfligiert und die Arbeit bis zum Worktree-Sweep
+    tatsächlich noch unmerged/ahead ist."""
+    import os
+    import subprocess
+    import time
+
+    from bibi.daemon import job_db as jdb
+    from bibi.daemon import worktree as wt
+
+    root = tmp_path / "r"
+    root.mkdir()
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@e.x")
+    g("config", "user.name", "t")
+    (root / "f.txt").write_text("base\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+
+    jdb.connect(root / "data" / "jobs.sqlite").close()  # DB existiert, "ghost" unbekannt
+
+    # agent/ghost-Branch ändert f.txt ...
+    p = wt.prepare(repo_root=root, work_dir=root / "data" / "worktrees", slug="ghost")
+    (p / "f.txt").write_text("from agent\n")
+    wt.commit(worktree=p, message="run", slug="ghost")
+    # ... trunk ändert dieselbe Datei anders → echter Merge-Konflikt beim Sweep,
+    # vordatiert (wie im Nachbartest), sonst wertet Ebene 4s Idle-Guard sie als
+    # "kürzlich bearbeitet" und der Sweep bricht mit "live_edit" statt Konflikt ab.
+    (root / "f.txt").write_text("from trunk\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "trunk edit")
+    stale = time.time() - 300
+    os.utime(root / "f.txt", (stale, stale))
+    assert wt.is_ahead(repo_root=root, branch="agent/ghost", trunk="trunk")
+
+    s = Synchronizer(repo_root=root)
+    s.tick(0.0)
+
+    assert wt.is_ahead(repo_root=root, branch="agent/ghost", trunk="trunk")  # Merge blieb Konflikt
+    assert p.exists()  # trotz fehlender jobs-Zeile nicht entfernt — ungemergte Arbeit

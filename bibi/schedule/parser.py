@@ -8,9 +8,9 @@ Drei Ausgänge (wie bibi3' Parser, auf das bibi4-Modell übertragen):
 - **ok**    — ``ScheduleSpec`` steht.
 
 Trigger-Syntax (§5.2): ``schedule:`` ist ein croniter-Ausdruck **oder** ein
-Spezialwert (``now``/``startup``/``never``); ``at:`` ein ISO-8601-Zeitpunkt.
-Genau einer von beiden. Typ-Schlüssel (§5.3): genau einer von ``job:``/``claude:``/
-``app:`` (Key == Typ == Registry-Schlüssel, §1.2).
+Spezialwert (``now``/``startup``/``never``/``autostart``); ``at:`` ein ISO-8601-Zeitpunkt.
+Genau einer von beiden. Typ-Schlüssel: nur ``job:`` (PLAN-10 Stufe 10.0).
+``job: claude: <prompt>`` → claude-Prefix-Expansion beim Spawn.
 
 Slug-Ableitung (§6.6/bibi3 §2.5): explizites ``slug:`` gewinnt; sonst bei
 ``README.md``/``SCHEDULE.md`` der Ordnername; sonst der Dateistamm.
@@ -19,6 +19,7 @@ Slug-Ableitung (§6.6/bibi3 §2.5): explizites ``slug:`` gewinnt; sonst bei
 from __future__ import annotations
 
 import datetime as _dt
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,20 +30,25 @@ from dateutil import parser as _date_parser
 from bibi import frontmatter
 from bibi.schedule.models import (
     DEFAULT_CLAUDE_MODEL,
-    DEFAULT_HITL_TIMEOUT,
+    DEFAULT_DEFER_MAX,
     DEFAULT_SILENCE_TIMEOUT,
+    DEFAULT_SILENCE_TIMEOUT_APP,
+    DEFAULT_SILENCE_TIMEOUT_JOB,
     Kind,
     ScheduleSpec,
+    is_claude_payload,
 )
 
+_CLAUDE_PREFIX_RE = re.compile(r"^\s*claude\s*:\s*(.+)", re.DOTALL)
+
 #: Spezialwerte von ``schedule:`` (§5.2) — keine cron-Ausdrücke.
-SPECIAL_SCHEDULES: frozenset[str] = frozenset({"now", "startup", "never"})
+SPECIAL_SCHEDULES: frozenset[str] = frozenset({"now", "startup", "never", "on_demand", "autostart"})
 
 #: Dateinamen, bei denen der Ordnername den Slug bestimmt (§6.6).
 SCHEDULE_FILENAMES: frozenset[str] = frozenset({"README.md", "SCHEDULE.md"})
 
-#: Frontmatter-Key → Typ (§5.3). Reihenfolge irrelevant; genau einer muss gesetzt sein.
-_TYPE_KEYS: dict[str, Kind] = {"job": Kind.JOB, "claude": Kind.CLAUDE, "app": Kind.APP}
+#: Frontmatter-Key → Typ (§5.3, PLAN-10 Stufe 10.0). Nur noch ``job:``.
+_TYPE_KEYS: dict[str, Kind] = {"job": Kind.JOB}
 
 _VALID_BACKOFF: frozenset[str] = frozenset({"fixed", "linear", "exponential"})
 
@@ -162,7 +168,7 @@ def parse_text(
     if len(present) == 0:
         return ParseResult(
             schedule_ref=schedule_ref,
-            error="Frontmatter braucht genau einen Typ: `job:`, `claude:` oder `app:` (§5.3)",
+            error="Frontmatter braucht `job:` (§5.3); claude-Prefix: `job: claude: <prompt>`",
         )
     if len(present) > 1:
         keys = ", ".join(f"`{k}:`" for k, _ in present)
@@ -176,20 +182,63 @@ def parse_text(
     # ── Ganzzahl-Felder (§5.5) ───────────────────────────────────────────────
     errors: list[str] = []
     priority, e = _coerce_int(fm, "priority", 0); errors += [e] if e else []
-    attempts, e = _coerce_int(fm, "attempts", 1); errors += [e] if e else []
-    silence_timeout, e = _coerce_int(fm, "silence_timeout", DEFAULT_SILENCE_TIMEOUT)
+    # Default 0 (nicht 1!) — User-Fund 2026-07-21 (Bibi4 Batch 6, Witz.md lief
+    # 2× vor "error"): der Wrapper prüft "attempt_cur < attempts_max"
+    # (_finish()), attempts=1 gewährt also EINEN Retry (2 Gesamtversuche),
+    # nicht "1 Versuch, kein Retry" wie der Feldname nahelegt — "attempts:"
+    # meint N Retries zusätzlich zum ersten Lauf (0c2b822-Commit-Text: "attempts:
+    # 2 = 2 Retries, 3 Gesamtversuche"). Default 0 = ein Versuch, kein
+    # automatischer Retry, ohne jede Frontmatter-Angabe — deckt sich mit
+    # run_pinned()s längst bewusst gewähltem CLI-Default (worker.py, dortiger
+    # Docstring). Kein Betriebsrisiko: alle produktiven Collectors
+    # (news-aggregator, gmail-*, calendar-transfer, daily-digest) setzen
+    # attempts: bereits explizit.
+    attempts, e = _coerce_int(fm, "attempts", 0); errors += [e] if e else []
+    # User-Feedback 2026-07-04: silence_timeout/hitl_timeout zusammengelegt —
+    # claude:-Payloads (Batch, run_job, kein HITL) bekommen den kurzen Default,
+    # echte Apps (long-lived, HITL-fähig über run_app) den langen. PLAN-31
+    # Befund 4 (2026-07-17): "echte App" heißt jetzt tatsächlich `app_port`/
+    # `app_prefix` gesetzt — vorher bekam JEDER Nicht-claude:-Job denselben
+    # 48h-Default wie eine App, ein hängender einfacher Job blieb dadurch bis
+    # zu 48h unbemerkt statt zeitnah als Zombie aufzufallen. Presence-Check
+    # auf `fm` direkt, nicht auf die weiter unten erst noch gecoerceten
+    # `app_port`/`app_prefix`-Variablen — die stehen an dieser Stelle im Code
+    # noch nicht zur Verfügung.
+    _is_app = "app_port" in fm or "app_prefix" in fm
+    if is_claude_payload(payload):
+        _default_silence = DEFAULT_SILENCE_TIMEOUT
+    elif _is_app:
+        _default_silence = DEFAULT_SILENCE_TIMEOUT_APP
+    else:
+        _default_silence = DEFAULT_SILENCE_TIMEOUT_JOB
+    silence_timeout, e = _coerce_int(fm, "silence_timeout", _default_silence)
     errors += [e] if e else []
-    hitl_timeout, e = _coerce_int(fm, "hitl_timeout", DEFAULT_HITL_TIMEOUT)
-    errors += [e] if e else []
-    wall_time = defer_time = defer_max = app_port = None
+    # defer_max hat (anders als wall_time/defer_time/error_time) einen
+    # eigenständigen globalen Default (§5.5, DEFAULT_DEFER_MAX) und wird
+    # deshalb wie silence_timeout IMMER gecoerct, nicht nur bei Frontmatter-
+    # Präsenz. wall_time/defer_time/error_time bleiben None-Sentinel (Bibi4-
+    # Iteration, User-Fund: wall_time OHNE explizite Angabe killte auch Apps,
+    # die absichtlich endlos laufen sollen, nach 1h — jetzt reines Opt-in wie
+    # defer_time/error_time schon vorher). Deren Präzedenz lebt als 3-Tier-
+    # Fallback weiter unten im Wrapper (_finish()), damit der globale
+    # BIBI_RETRY_BASE-Override dort weiterhin greifen kann.
+    defer_max, e = _coerce_int(fm, "defer_max", DEFAULT_DEFER_MAX); errors += [e] if e else []
+    wall_time = defer_time = error_time = app_port = None
     if "wall_time" in fm:
         wall_time, e = _coerce_int(fm, "wall_time", 0); errors += [e] if e else []
     if "defer_time" in fm:
         defer_time, e = _coerce_int(fm, "defer_time", 0); errors += [e] if e else []
-    if "defer_max" in fm:
-        defer_max, e = _coerce_int(fm, "defer_max", 0); errors += [e] if e else []
+    if "error_time" in fm:
+        error_time, e = _coerce_int(fm, "error_time", 0); errors += [e] if e else []
     if "app_port" in fm:
         app_port, e = _coerce_int(fm, "app_port", 0); errors += [e] if e else []
+    docker_args = None
+    if "docker_args" in fm:
+        raw = fm["docker_args"]
+        if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+            errors.append("docker_args: muss eine Liste von Strings sein")
+        else:
+            docker_args = raw
     if errors:
         return ParseResult(schedule_ref=schedule_ref, error="; ".join(errors))
 
@@ -200,13 +249,14 @@ def parse_text(
             error=f"backoff: muss eines von {sorted(_VALID_BACKOFF)} sein",
         )
 
-    # ── claude-/app-Felder ───────────────────────────────────────────────────
+    # ── claude-Prefix-Felder (gelten wenn payload mit `claude:` beginnt) ────
     model = DEFAULT_CLAUDE_MODEL
-    if kind is Kind.CLAUDE and isinstance(fm.get("model"), str) and fm["model"].strip():
+    if isinstance(fm.get("model"), str) and fm["model"].strip():
         model = fm["model"].strip()
     soul = fm["soul"].strip() if isinstance(fm.get("soul"), str) and fm["soul"].strip() else None
     session = fm["session"].strip() if isinstance(fm.get("session"), str) and fm["session"].strip() else None
     app_prefix = fm["app_prefix"].strip() if isinstance(fm.get("app_prefix"), str) and fm["app_prefix"].strip() else None
+    exec_mode = fm["exec_mode"].strip().lower() if isinstance(fm.get("exec_mode"), str) and fm["exec_mode"].strip() else None
     image = fm["image"].strip() if isinstance(fm.get("image"), str) and fm["image"].strip() else None
 
     slug, slug_explicit = derive_slug(path, fm)
@@ -217,8 +267,9 @@ def parse_text(
         model=model, soul=soul, session=session,
         attempts=attempts, backoff=backoff.lower(),
         silence_timeout=silence_timeout, wall_time=wall_time,
-        defer_time=defer_time, defer_max=defer_max, hitl_timeout=hitl_timeout,
-        app_port=app_port, app_prefix=app_prefix, image=image,
+        defer_time=defer_time, defer_max=defer_max, error_time=error_time,
+        app_port=app_port, app_prefix=app_prefix, exec_mode=exec_mode, image=image,
+        docker_args=docker_args,
     )
     return ParseResult(
         schedule_ref=schedule_ref, spec=spec, slug_explicit=slug_explicit, mtime=mtime

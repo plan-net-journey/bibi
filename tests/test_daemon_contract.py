@@ -27,11 +27,12 @@ def test_openapi_covers_job_scheduler_worker_journal(client):
     assert "/-/scheduler/status/{id}" in paths
     assert "/-/worker" in paths
     assert "/-/journal" in paths
+    assert "/-/landings" in paths
 
 
 def test_openapi_is_versioned(client):
     spec = client.get("/-/openapi.json").json()
-    assert spec["info"]["version"] == CONTRACT_VERSION == "3.0"
+    assert spec["info"]["version"] == CONTRACT_VERSION == "3.3"
 
 
 def test_schemas_present_in_components(client):
@@ -55,7 +56,9 @@ def test_status_enum_in_schema(client):
     "method,path,body",
     [
         ("post", "/-/scheduler/next", None),
-        ("post", "/-/scheduler/status/abc", {"status": "running"}),
+        # KEIN /-/scheduler/status/{id} hier (mehr) — seit PLAN-30 Ebene 1 v2
+        # rollenunabhängig immer real, s. test_status_route_works_without_any_role
+        # unten und den Kommentar in openapi.py::add_contract_routes().
         ("get", "/-/job", None),
         ("get", "/-/job/abc", None),
         ("get", "/-/job/abc/status", None),
@@ -68,6 +71,8 @@ def test_status_enum_in_schema(client):
         ("post", "/-/job/abc/reset", None),
         ("get", "/-/worker", None),
         ("get", "/-/journal", None),
+        ("delete", "/-/journal/1", None),
+        ("get", "/-/landings", None),
     ],
 )
 def test_all_stubs_return_501_json_no_html(client, method, path, body):
@@ -76,6 +81,18 @@ def test_all_stubs_return_501_json_no_html(client, method, path, body):
     # Reine JSON-API — keine Route gibt HTML zurück (§1.1, §3.8).
     assert r.headers["content-type"].startswith("application/json")
     assert r.json()["error"] == "not implemented"
+
+
+def test_status_route_works_without_any_role(client):
+    """PLAN-30 Ebene 1 v2 (2026-07-15): anders als jede andere v3.0-Route ist
+    POST /-/scheduler/status/{id} bewusst KEIN 501-Stub mehr, auch auf einem
+    Daemon ganz ohne Rolle — ein gepinnter Lauf braucht sie überall, damit sein
+    Wrapper-Subprozess den Merge-back-Trigger feuern kann (s. Kommentar in
+    openapi.py::add_contract_routes()). 404 statt 501 beweist: die echte Route
+    antwortet, nicht der Stub."""
+    r = client.post("/-/scheduler/status/abc", json={"status": "running"})
+    assert r.status_code == 404
+    assert r.json()["error"] == "job not found"
 
 
 def test_no_route_returns_html(client):

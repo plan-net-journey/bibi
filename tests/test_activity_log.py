@@ -1,0 +1,219 @@
+"""Daemon-Aktivitätslog (PLAN-5 §5.1) — Formatter, emit, Setup, CLI-Render."""
+
+from __future__ import annotations
+
+import json
+import logging
+
+from bibi.daemon import activity
+
+
+# ── reine Helfer ──────────────────────────────────────────────────────────────
+
+def test_role_from_logger():
+    assert activity.role_from_logger("bibi.daemon.synchronizer") == "synchronizer"
+    assert activity.role_from_logger("bibi.worker") == "worker"
+    assert activity.role_from_logger("bibi.daemon") == "daemon"
+
+
+def test_human_line_compact_and_with_context():
+    assert activity.human_line(ts="08:30:00", level="INFO", role="worker",
+                               event="worker.pickup") == "08:30:00 INFO worker worker.pickup"
+    line = activity.human_line(ts="08:30:01", level="ERROR", role="scheduler",
+                               event="scheduler.rescan", msg="done",
+                               slug="echo", run_id="r1", fields={"inserted": 2})
+    assert "scheduler.rescan  done" in line
+    assert "slug=echo" in line and "run=r1" in line and "inserted=2" in line
+
+
+# ── Formatter (über echte LogRecords) ─────────────────────────────────────────
+
+def _record(**bibi) -> logging.LogRecord:
+    rec = logging.LogRecord("bibi.worker", logging.INFO, __file__, 1,
+                            bibi.pop("msg", ""), None, None)
+    rec.bibi = bibi
+    return rec
+
+
+def test_jsonl_formatter_emits_structured_object():
+    rec = _record(msg="picked", event="worker.pickup", role="worker",
+                  slug="echo", run_id="r1", fields={"exit": 0})
+    obj = json.loads(activity.JsonlFormatter().format(rec))
+    assert obj["event"] == "worker.pickup"
+    assert obj["role"] == "worker"
+    assert obj["slug"] == "echo" and obj["run_id"] == "r1"
+    assert obj["msg"] == "picked" and obj["exit"] == 0
+    assert obj["level"] == "INFO"
+    assert obj["ts"]  # vorhanden + parsebar
+    from datetime import datetime
+    datetime.fromisoformat(obj["ts"])
+
+
+def test_jsonl_role_falls_back_to_logger_name():
+    rec = _record(event="x")  # kein role im Payload
+    obj = json.loads(activity.JsonlFormatter().format(rec))
+    assert obj["role"] == "worker"  # aus "bibi.worker"
+
+
+def test_human_formatter_one_line():
+    rec = _record(msg="tick", event="sync.pull", role="synchronizer",
+                  fields={"ok": True})
+    out = activity.HumanFormatter().format(rec)
+    assert "\n" not in out
+    assert "sync.pull" in out and "synchronizer" in out and "ok=True" in out
+
+
+def test_render_jsonl_line_roundtrip():
+    rec = _record(msg="done", event="scheduler.rescan", role="scheduler",
+                  fields={"inserted": 1})
+    jline = activity.JsonlFormatter().format(rec)
+    human = activity.render_jsonl_line(jline)
+    assert "scheduler.rescan" in human and "inserted=1" in human and "\n" not in human
+
+
+def test_render_jsonl_line_tolerates_garbage():
+    assert activity.render_jsonl_line("not json") == "not json"
+
+
+# ── emit + setup_logging ──────────────────────────────────────────────────────
+
+def test_emit_attaches_payload(caplog):
+    logger = logging.getLogger("bibi.test.emit")
+    with caplog.at_level(logging.INFO, logger="bibi.test.emit"):
+        activity.emit(logger, logging.INFO, "worker.pickup", "hi",
+                      role="worker", slug="echo", run_id="r9", exit=0)
+    rec = caplog.records[-1]
+    assert rec.bibi["event"] == "worker.pickup"
+    assert rec.bibi["slug"] == "echo"
+    assert rec.bibi["fields"] == {"exit": 0}
+
+
+def test_setup_logging_two_sinks_and_writes_jsonl(tmp_path):
+    log_dir = tmp_path / "daemon-log"
+    path = activity.setup_logging(role_names=["worker"], log_dir=log_dir,
+                                  to_stdout=True)
+    try:
+        assert path == log_dir / "daemon.jsonl"
+        logger = logging.getLogger("bibi")
+        # zwei Sinks: rotierende Datei + stdout
+        kinds = {type(h).__name__ for h in logger.handlers}
+        assert "RotatingFileHandler" in kinds and "StreamHandler" in kinds
+        activity.emit(logging.getLogger("bibi.worker"), logging.INFO,
+                      "worker.pickup", role="worker", slug="echo")
+        for h in logger.handlers:
+            h.flush()
+        lines = path.read_text(encoding="utf-8").splitlines()
+        assert lines and json.loads(lines[-1])["event"] == "worker.pickup"
+    finally:
+        for h in list(logging.getLogger("bibi").handlers):
+            logging.getLogger("bibi").removeHandler(h)
+
+
+def test_tail_lines(tmp_path):
+    p = tmp_path / "f.jsonl"
+    p.write_text("a\nb\nc\n", encoding="utf-8")
+    assert activity.tail_lines(p, 2) == ["b", "c"]
+    assert activity.tail_lines(p, 0) == ["a", "b", "c"]
+    assert activity.tail_lines(tmp_path / "nope", 5) == []
+
+
+def test_broadcaster_delivers_across_thread():
+    # Publizieren aus einem fremden Thread → Zustellung in den asyncio-Abonnenten.
+    import asyncio
+    import threading
+
+    async def scenario():
+        b = activity.LogBroadcaster()
+        q = b.subscribe()
+        assert b.subscriber_count() == 1
+        t = threading.Thread(target=b.publish, args=('{"event": "x"}',))
+        t.start()
+        t.join()
+        line = await asyncio.wait_for(q.get(), timeout=2)
+        b.unsubscribe(q)
+        assert b.subscriber_count() == 0
+        return line
+
+    assert asyncio.run(scenario()) == '{"event": "x"}'
+
+
+def test_broadcaster_publish_without_subscribers_is_noop():
+    activity.LogBroadcaster().publish("x")  # darf nicht werfen
+
+
+def test_broadcaster_full_queue_drops_not_blocks():
+    import asyncio
+
+    async def scenario():
+        b = activity.LogBroadcaster(maxsize=1)
+        q = b.subscribe()
+        b.publish("a")
+        b.publish("b")  # Queue voll → verworfen, kein Block/Fehler
+        await asyncio.sleep(0)  # call_soon_threadsafe abarbeiten lassen
+        return q.qsize()
+
+    assert asyncio.run(scenario()) == 1
+
+
+def test_resolve_level_precedence_and_tolerance():
+    # CLI > env > Default; case-insensitiv; Unbekanntes wird übersprungen.
+    assert activity.resolve_level("debug", "error") == logging.DEBUG
+    assert activity.resolve_level(None, "WARNING") == logging.WARNING
+    assert activity.resolve_level(None, None) == logging.INFO
+    assert activity.resolve_level("bogus", "info") == logging.INFO  # CLI ungültig → env
+    assert activity.resolve_level("bogus", "nonsense") == logging.INFO  # → Default
+
+
+def test_setup_logging_respects_level(tmp_path):
+    path = activity.setup_logging(log_dir=tmp_path / "lvl", level=logging.WARNING,
+                                  to_stdout=False)
+    try:
+        log = logging.getLogger("bibi.worker")
+        activity.emit(log, logging.INFO, "worker.pickup")      # unter Schwelle → raus
+        activity.emit(log, logging.WARNING, "worker.heartbeat")  # ab Schwelle → drin
+        for h in logging.getLogger("bibi").handlers:
+            h.flush()
+        events = [json.loads(ln)["event"] for ln in
+                  path.read_text(encoding="utf-8").splitlines()]
+        assert "worker.heartbeat" in events and "worker.pickup" not in events
+    finally:
+        for h in list(logging.getLogger("bibi").handlers):
+            logging.getLogger("bibi").removeHandler(h)
+
+
+def test_setup_logging_is_idempotent(tmp_path):
+    activity.setup_logging(log_dir=tmp_path / "a")
+    activity.setup_logging(log_dir=tmp_path / "b")  # darf nicht doppelt verdrahten
+    try:
+        # file + broadcast + stdout, einmalig (nicht verdoppelt)
+        assert len(logging.getLogger("bibi").handlers) == 3
+    finally:
+        for h in list(logging.getLogger("bibi").handlers):
+            logging.getLogger("bibi").removeHandler(h)
+
+
+def test_emit_collapses_multiline_fields_to_one_line():
+    """git-stderr u. ä. mehrzeilige Feldwerte dürfen die Log-Zeile nicht zerreißen
+    (CR/LF-Sanitizing am emit-Chokepoint)."""
+    logger = logging.getLogger("bibi.test.oneline")
+    logger.setLevel(logging.DEBUG)
+    captured: list[logging.LogRecord] = []
+
+    class _Cap(logging.Handler):
+        def emit(self, record): captured.append(record)
+
+    h = _Cap()
+    logger.addHandler(h)
+    try:
+        activity.emit(logger, logging.ERROR, "worker.merge_error",
+                      "Merge-back-Fehler\nzweite Zeile", role="scheduler",
+                      slug="Witz", detail="error: local changes\n\tWitz.md\nAborting")
+    finally:
+        logger.removeHandler(h)
+
+    rec = captured[0]
+    jsonl = activity.JsonlFormatter().format(rec)
+    human = activity.HumanFormatter().format(rec)
+    assert "\n" not in jsonl and "\n" not in human   # je genau eine Zeile
+    assert "error: local changes Witz.md Aborting" in jsonl
+    assert "Merge-back-Fehler zweite Zeile" in human

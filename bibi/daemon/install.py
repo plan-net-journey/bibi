@@ -20,8 +20,23 @@ from pathlib import Path
 
 from bibi import config, repo
 
-SYSTEMD_UNIT = "bibi-daemon.service"
-SYSTEMD_UNIT_PATH = Path("/etc/systemd/system") / SYSTEMD_UNIT
+SYSTEMD_DIR = Path("/etc/systemd/system")
+
+
+def _systemd_unit_name(root: Path) -> str:
+    """Unit-Name **pro Repo eindeutig** (mehrere bibi-Instanzen je Host, §4.10).
+
+    Aus dem Repo-Ordnernamen abgeleitet (analog zum gehashten launchd-Label),
+    z. B. ``…/bibi-notes`` → ``bibi-notes-daemon.service``. Verhindert, dass eine
+    zweite Installation die Unit einer anderen Instanz überschreibt (früher fix
+    ``bibi-daemon.service``). Annahme: Repo-Basisname je Host eindeutig — wie für
+    systemd-Unit-Namen ohnehin nötig.
+    """
+    return f"{root.name}-daemon.service"
+
+
+def _systemd_unit_path(root: Path) -> Path:
+    return SYSTEMD_DIR / _systemd_unit_name(root)
 
 
 # ── gemeinsame Helfer ───────────────────────────────────────────────────────
@@ -45,8 +60,15 @@ def _nonsnap_uv() -> str:
     raise RuntimeError("uv nicht auf PATH (und ~/.local/bin/uv fehlt)")
 
 
-def _exec_args(uv: str, host: str, port: int) -> list[str]:
-    return [uv, "run", "bibi-ctrl", "daemon", "run", "--host", host, "--port", str(port)]
+def _exec_args(uv: str, host: str, port: int, *, connect: bool = False) -> list[str]:
+    args = [uv, "run", "bibi-ctrl", "daemon", "run", "--host", host, "--port", str(port)]
+    if connect:
+        # --connect ist ein reiner CLI-Modifikator, kein KNOWN_ROLES-Mitglied
+        # (roles.py) — BIBI_ROLE allein kann ihn nicht tragen. Ohne dieses Flag
+        # hier bliebe eine installierte Client-Unit ohne Heartbeat (A12), genau
+        # die Lücke, die PLAN-17 Stufe 17.0 bei Worker aufgedeckt hat.
+        args.append("--connect")
+    return args
 
 
 def _log_dir(root: Path) -> Path:
@@ -58,12 +80,12 @@ def _log_dir(root: Path) -> Path:
 # ── reine Text-Renderer ─────────────────────────────────────────────────────
 
 def systemd_unit_text(*, root: Path, uv: str, port: int, user: str,
-                      role: str | None = None) -> str:
+                      role: str | None = None, connect: bool = False) -> str:
     uv_dir = str(Path(uv).parent)
     path = f"{uv_dir}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     lines = [
         "[Unit]",
-        "Description=bibi daemon (Synchronizer/Scheduler/Worker)",
+        f"Description=bibi daemon ({root.name}) — port {port}",
         "After=network-online.target",
         "Wants=network-online.target",
         "",
@@ -73,11 +95,12 @@ def systemd_unit_text(*, root: Path, uv: str, port: int, user: str,
         f"WorkingDirectory={root}",
         f"Environment=HOME={Path.home()}",
         f"Environment=PATH={path}",
+        f"Environment=BIBI_DAEMON_PORT={port}",
     ]
     if role:
         lines.append(f"Environment=BIBI_ROLE={role}")
     lines += [
-        "ExecStart=" + " ".join(_exec_args(uv, "0.0.0.0", port)),
+        "ExecStart=" + " ".join(_exec_args(uv, "0.0.0.0", port, connect=connect)),
         "Restart=always",
         "RestartSec=3",
         "",
@@ -89,7 +112,7 @@ def systemd_unit_text(*, root: Path, uv: str, port: int, user: str,
 
 
 def launchd_plist_text(*, root: Path, uv: str, port: int, label: str,
-                       log_dir: Path, role: str | None = None) -> str:
+                       log_dir: Path, role: str | None = None, connect: bool = False) -> str:
     extra = [
         "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
         str(Path.home() / ".local" / "bin"), str(Path.home() / ".cargo" / "bin"),
@@ -100,11 +123,12 @@ def launchd_plist_text(*, root: Path, uv: str, port: int, label: str,
         "  <dict>",
         f"    <key>PATH</key><string>{path}</string>",
         f"    <key>HOME</key><string>{Path.home()}</string>",
+        f"    <key>BIBI_DAEMON_PORT</key><string>{port}</string>",
     ]
     if role:
         env.append(f"    <key>BIBI_ROLE</key><string>{role}</string>")
     env.append("  </dict>")
-    args = "".join(f"<string>{a}</string>" for a in _exec_args(uv, "127.0.0.1", port))
+    args = "".join(f"<string>{a}</string>" for a in _exec_args(uv, "127.0.0.1", port, connect=connect))
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -130,7 +154,7 @@ def _plist_path(label: str) -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
 
 
-def install(role: str | None = None) -> str:
+def install(role: str | None = None, connect: bool = False) -> str:
     root = repo.root()
     port = config.daemon_port()
     uv = _nonsnap_uv()
@@ -139,19 +163,36 @@ def install(role: str | None = None) -> str:
         plist = _plist_path(label)
         plist.parent.mkdir(parents=True, exist_ok=True)
         plist.write_text(launchd_plist_text(
-            root=root, uv=uv, port=port, label=label, log_dir=_log_dir(root), role=role))
+            root=root, uv=uv, port=port, label=label, log_dir=_log_dir(root), role=role,
+            connect=connect))
         subprocess.run(["launchctl", "load", str(plist)], check=False)
         return f"installed (launchd): {plist}"
     if sys.platform.startswith("linux"):
+        # Nebenbefund PLAN-33 Stufe 33.4: vor diesem Check meldete install() auf
+        # einem systemd-losen Host (z. B. einem Container, live gesehen: "sudo:
+        # systemctl: command not found") trotzdem "installed (systemd): …" —
+        # die beiden systemctl-Aufrufe unten liefen mit check=False, ihr
+        # Rückgabewert wurde nie geprüft. Früh und eindeutig ablehnen statt
+        # einen Fehlschlag als Erfolg zu melden.
+        if shutil.which("systemctl") is None:
+            return "install FAILED: systemctl nicht gefunden (kein systemd, z. B. in einem Container)"
+        unit = _systemd_unit_name(root)
+        unit_path = _systemd_unit_path(root)
         text = systemd_unit_text(root=root, uv=uv, port=port,
-                                 user=getpass.getuser(), role=role)
-        w = subprocess.run(["sudo", "tee", str(SYSTEMD_UNIT_PATH)],
+                                 user=getpass.getuser(), role=role, connect=connect)
+        w = subprocess.run(["sudo", "tee", str(unit_path)],
                            input=text, capture_output=True, text=True)
         if w.returncode != 0:
             return f"install FAILED: {w.stderr.strip() or 'sudo/permission'}"
-        subprocess.run(["sudo", "systemctl", "daemon-reload"], check=False)
-        subprocess.run(["sudo", "systemctl", "enable", "--now", SYSTEMD_UNIT], check=False)
-        return f"installed (systemd): {SYSTEMD_UNIT_PATH}"
+        reload_ = subprocess.run(["sudo", "systemctl", "daemon-reload"],
+                                 capture_output=True, text=True)
+        if reload_.returncode != 0:
+            return f"install FAILED (daemon-reload): {reload_.stderr.strip() or 'sudo/permission'}"
+        enable = subprocess.run(["sudo", "systemctl", "enable", "--now", unit],
+                                capture_output=True, text=True)
+        if enable.returncode != 0:
+            return f"install FAILED (enable --now): {enable.stderr.strip() or 'sudo/permission'}"
+        return f"installed (systemd): {unit_path}"
     return f"unsupported platform: {sys.platform}"
 
 
@@ -164,10 +205,12 @@ def uninstall() -> str:
             return f"uninstalled (launchd): {plist}"
         return "not installed"
     if sys.platform.startswith("linux"):
-        if not SYSTEMD_UNIT_PATH.exists():
+        unit = _systemd_unit_name(repo.root())
+        unit_path = _systemd_unit_path(repo.root())
+        if not unit_path.exists():
             return "not installed"
-        subprocess.run(["sudo", "systemctl", "disable", "--now", SYSTEMD_UNIT], check=False)
-        subprocess.run(["sudo", "rm", "-f", str(SYSTEMD_UNIT_PATH)], check=False)
+        subprocess.run(["sudo", "systemctl", "disable", "--now", unit], check=False)
+        subprocess.run(["sudo", "rm", "-f", str(unit_path)], check=False)
         subprocess.run(["sudo", "systemctl", "daemon-reload"], check=False)
-        return f"uninstalled (systemd): {SYSTEMD_UNIT_PATH}"
+        return f"uninstalled (systemd): {unit_path}"
     return f"unsupported platform: {sys.platform}"

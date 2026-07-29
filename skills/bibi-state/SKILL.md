@@ -16,10 +16,14 @@ bibi-ctrl status
 
 Prints the current state of the team repo and the active case:
 
-- **active case** — derived from the Bash-tool cwd (the parked working dir), the
-  single source of truth. Empty if no case is active.
+- **active case** — the Bash-tool cwd when it points into a case, otherwise the
+  session's park marker written by `/open`. The source is shown in parentheses
+  (`cwd` / `session`). Empty if no case is active.
 - **auto_sync** — `on`/`off`, the standing push consent (§4.9).
 - **sync_conflict** — `true` if a prior pull/rebase left unresolved markers.
+- **merge_stuck** — count + branch names of `agent/*` branches that failed to
+  merge back into trunk 3+ times in a row and were pulled out of automatic
+  retry (PLAN-30 Ebene 2/3); only shown when non-empty. Resolve via `/sync`.
 - **protocol** — the active case's logging mode, only shown when set.
 
 ## When

@@ -1,0 +1,571 @@
+"""Repo-/Vault-Hygiene (PLAN-5 §5.2) — reine Checks + doctor-CLI."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from bibi import hygiene, repo
+from bibi.ctrl import doctor_cmd
+
+
+# ── reine Checks ──────────────────────────────────────────────────────────────
+
+def test_large_unmanaged_flags_big_non_lfs_only():
+    files = [
+        ("vault/a.png", 900_000, False),   # groß + nicht LFS → Befund
+        ("vault/b.png", 900_000, True),    # groß, aber LFS → ok
+        ("README.md", 2_000, False),       # klein → ok
+    ]
+    findings = hygiene.check_large_unmanaged(files)
+    assert [f.path for f in findings] == ["vault/a.png"]
+    assert findings[0].kind == "large-unmanaged"
+
+
+def test_data_committed_flags_vault_data_paths():
+    paths = [
+        "vault/case/news/data/2026-06-27.ndjson",  # Sammeldaten → Befund
+        "vault/case/news/README.md",               # ok
+        "data/jobs.sqlite",                        # root-runtime (nicht vault/) → ok
+    ]
+    findings = hygiene.check_data_committed(paths)
+    assert [f.path for f in findings] == ["vault/case/news/data/2026-06-27.ndjson"]
+
+
+def test_lfs_finding():
+    assert hygiene.git_lfs_finding(True) == []
+    assert hygiene.git_lfs_finding(False)[0].kind == "lfs-missing"
+
+
+def test_conventions_finding():
+    assert hygiene.conventions_finding(True) == []
+    f = hygiene.conventions_finding(False)
+    assert f and f[0].kind == "conventions-missing"
+    assert f[0].path == "vault/CONVENTIONS.md"
+
+
+# ── PLAN-13 Stufe 13.3: job-doctor-Checks ─────────────────────────────────────
+
+
+def test_orphan_worktrees_flags_unknown_slug_only():
+    findings = hygiene.check_orphan_worktrees(
+        worktree_slugs=["Runner", "gone-job"],
+        known_slugs={"Runner", "Witz"},
+    )
+    assert [f.path for f in findings] == ["data/worktrees/gone-job"]
+    assert findings[0].kind == "orphan-worktree"
+
+
+def test_orphan_worktrees_deactivated_but_known_slug_is_not_orphan():
+    # Ein pausierter/deaktivierter Slug hat noch eine jobs-Zeile — kein Befund.
+    findings = hygiene.check_orphan_worktrees(
+        worktree_slugs=["paused-job"],
+        known_slugs={"paused-job"},
+    )
+    assert findings == []
+
+
+def test_orphan_worktrees_empty_input_no_findings():
+    assert hygiene.check_orphan_worktrees([], set()) == []
+
+
+def test_invalid_schedules_reports_parser_errors():
+    from bibi.schedule.parser import ParseResult
+    errors = [
+        ParseResult(schedule_ref="vault/case/x/Broken.md", error="Frontmatter braucht `job:`"),
+    ]
+    findings = hygiene.check_invalid_schedules(errors)
+    assert len(findings) == 1
+    assert findings[0].kind == "invalid-schedule"
+    assert findings[0].path == "vault/case/x/Broken.md"
+    assert findings[0].detail == "Frontmatter braucht `job:`"
+
+
+def test_invalid_schedules_empty_input_no_findings():
+    assert hygiene.check_invalid_schedules([]) == []
+
+
+# ── doctor-CLI gegen ein echtes Mini-Repo ─────────────────────────────────────
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+@pytest.fixture
+def gitrepo(tmp_path: Path, monkeypatch):
+    root = tmp_path / "r"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "trunk")
+    _git(root, "config", "user.email", "t@e.x")
+    _git(root, "config", "user.name", "t")
+    (root / "README.md").write_text("hi\n", encoding="utf-8")
+    # Repo-Invariant: jedes bibi-team-Repo führt vault/CONVENTIONS.md (sonst Befund).
+    (root / "vault").mkdir()
+    (root / "vault" / "CONVENTIONS.md").write_text("# conventions\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "init")
+    monkeypatch.chdir(root)
+    repo._root_of.cache_clear()
+    yield root
+    repo._root_of.cache_clear()
+
+
+def _args():
+    import argparse
+    return argparse.Namespace()
+
+
+def test_doctor_clean_repo(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    assert doctor_cmd.run(_args()) == 0
+    assert "keine Hygiene-Probleme" in capsys.readouterr().out
+
+
+def test_doctor_flags_large_unmanaged_blob(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    big = gitrepo / "vault" / "huge.bin"
+    big.parent.mkdir(parents=True, exist_ok=True)
+    big.write_bytes(b"x" * (600 * 1024))  # 600 KiB, kein LFS (kein .gitattributes)
+    _git(gitrepo, "add", "-A")
+    _git(gitrepo, "commit", "-q", "-m", "big")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1 and "large-unmanaged" in out and "vault/huge.bin" in out
+
+
+def test_doctor_flags_missing_conventions(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    _git(gitrepo, "rm", "-q", "vault/CONVENTIONS.md")
+    _git(gitrepo, "commit", "-q", "-m", "drop conventions")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1 and "conventions-missing" in out and "vault/CONVENTIONS.md" in out
+
+
+def test_doctor_flags_committed_data(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    d = gitrepo / "vault" / "case" / "news" / "data"
+    d.mkdir(parents=True)
+    (d / "feed.ndjson").write_text('{"x":1}\n', encoding="utf-8")
+    _git(gitrepo, "add", "-A")
+    _git(gitrepo, "commit", "-q", "-m", "data")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1 and "data-committed" in out
+
+
+def test_doctor_flags_orphan_worktree(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "data" / "worktrees" / "gone-job").mkdir(parents=True)
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "orphan-worktree" in out and "data/worktrees/gone-job" in out
+
+
+def test_doctor_ignores_worktree_with_known_slug(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "data" / "worktrees" / "Runner").mkdir(parents=True)
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    (d / "Runner.md").write_text('---\nschedule: "*/5 * * * *"\njob: "echo hi"\n---\n',
+                                 encoding="utf-8")
+    from bibi.daemon import job_db as jdb
+    conn = jdb.connect(gitrepo / "data" / "jobs.sqlite")
+    jdb.rescan(conn, vault_root=gitrepo / "vault" / "case")
+    conn.close()
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "orphan-worktree" not in out
+
+
+def test_doctor_flags_orphan_worktree_when_slug_deactivated(gitrepo: Path, capsys, monkeypatch):
+    # Case 20260621.Bibi4-870bd9db, "Kein Worktree Cleanup": eine Schedule-MD
+    # verschwindet (Case aufgeräumt, MD verschoben/gelöscht), der Worktree
+    # bleibt liegen — die jobs-Zeile bleibt wegen der Journal-Historie
+    # stehen (active=0, PLAN-14 §14.5), darf aber nicht mehr als "bekannt"
+    # zählen, sonst sieht doctor die Leiche nie.
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "data" / "worktrees" / "Runner").mkdir(parents=True)
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    md = d / "Runner.md"
+    md.write_text('---\nschedule: "*/5 * * * *"\njob: "echo hi"\n---\n', encoding="utf-8")
+    from bibi.daemon import job_db as jdb
+    conn = jdb.connect(gitrepo / "data" / "jobs.sqlite")
+    jdb.rescan(conn, vault_root=gitrepo / "vault" / "case")
+    md.unlink()
+    jdb.rescan(conn, vault_root=gitrepo / "vault" / "case")
+    conn.close()
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "orphan-worktree" in out and "data/worktrees/Runner" in out
+
+
+def test_doctor_flags_orphan_worktree_when_job_terminal_without_next_fire(
+        gitrepo: Path, capsys, monkeypatch):
+    # Ein abgeschlossener Einmal-Job (`at:`, kein `schedule:`) feuert nie
+    # wieder — next_fire_at bleibt None, auch wenn die MD noch im Vault
+    # liegt und die jobs-Zeile active=1 bleibt. Muss trotzdem als Waise
+    # auffallen, sonst bleibt sein Worktree für immer unsichtbar.
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "data" / "worktrees" / "OneShot").mkdir(parents=True)
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    (d / "OneShot.md").write_text(
+        '---\nat: "2020-01-01T09:00:00"\njob: "echo hi"\n---\n', encoding="utf-8")
+    from bibi.daemon import job_db as jdb
+    conn = jdb.connect(gitrepo / "data" / "jobs.sqlite")
+    jdb.rescan(conn, vault_root=gitrepo / "vault" / "case")
+    job_id = conn.execute("SELECT id FROM jobs WHERE slug=?", ("OneShot",)).fetchone()["id"]
+    jdb.report_status(conn, job_id, status="running")
+    jdb.report_status(conn, job_id, status="complete")
+    conn.commit()
+    conn.close()
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "orphan-worktree" in out and "data/worktrees/OneShot" in out
+
+
+def test_doctor_flags_invalid_schedule(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    (d / "Broken.md").write_text("---\nschedule: \"*/5 * * * *\"\n---\n", encoding="utf-8")  # kein job:
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "invalid-schedule" in out and "Broken.md" in out
+
+
+# ── PLAN-15: html-placeholder-tag ─────────────────────────────────────────────
+
+
+def test_html_placeholder_tag_flags_bare_placeholder():
+    findings = hygiene.check_html_placeholder_tags("x.md", "Text mit <cutoff> drin.\n")
+    assert len(findings) == 1
+    assert findings[0].kind == "html-placeholder-tag"
+    assert findings[0].path == "x.md:1"
+
+
+def test_html_placeholder_tag_flags_script_looking_fragment_too():
+    # Kein "sieht nach echtem HTML aus"-Sonderfall — beides gleich riskant.
+    findings = hygiene.check_html_placeholder_tags("x.md", "<script>alert(1)\n")
+    assert findings and findings[0].kind == "html-placeholder-tag"
+
+
+def test_html_placeholder_tag_ignores_autolinks():
+    findings = hygiene.check_html_placeholder_tags(
+        "x.md", "Siehe <https://example.com> und <mailto:a@b.de>.\n")
+    assert findings == []
+
+
+def test_html_placeholder_tag_ignores_fenced_code():
+    text = "vorher\n```\n<cutoff>\n```\nnachher\n"
+    assert hygiene.check_html_placeholder_tags("x.md", text) == []
+
+
+def test_html_placeholder_tag_ignores_backtick_escaped():
+    # Die empfohlene Lösung selbst darf nicht erneut anschlagen.
+    findings = hygiene.check_html_placeholder_tags("x.md", "Text mit `<cutoff>` drin.\n")
+    assert findings == []
+
+
+def test_html_placeholder_tag_ignores_double_backtick_escaped():
+    # Bug live gefunden (2026-07-18): doppelte Backticks (die Markdown-Syntax,
+    # um einen wörtlichen Backtick IM Code-Span zu zeigen, z. B. in
+    # CONVENTIONS.md selbst) wurden vom einfachen Backtick-Scrubbing nicht
+    # erkannt — `` `<cutoff>` `` schlug fälschlich als Fund durch.
+    findings = hygiene.check_html_placeholder_tags(
+        "x.md", "Schreib es als `` `<cutoff>` `` statt roh.\n")
+    assert findings == []
+
+
+def test_html_placeholder_tag_ignores_indented_code():
+    assert hygiene.check_html_placeholder_tags("x.md", "    <cutoff>\n") == []
+
+
+def test_html_placeholder_tag_multiple_on_one_line():
+    findings = hygiene.check_html_placeholder_tags("x.md", "<from> bis <to>\n")
+    assert len(findings) == 2
+
+
+def test_html_placeholder_tag_ignores_bare_email_autolink():
+    # Live-Fund im echten Vault (2026-07-18): <m.rau@host.de> ist gültiges
+    # CommonMark (Autolink ohne mailto:-Prefix), kein kaputtes Platzhalter-Tag.
+    findings = hygiene.check_html_placeholder_tags(
+        "x.md", "Kontakt: <m.rau@house-of-communication.com>\n")
+    assert findings == []
+
+
+def test_html_placeholder_tag_ignores_bare_email_autolink_single_label_domain():
+    findings = hygiene.check_html_placeholder_tags("x.md", "<bibi@local>\n")
+    assert findings == []
+
+
+def test_html_placeholder_tag_ignores_self_closing_tag():
+    # <path .../> ist mechanisch bereits geschlossen — kein "nie geschlossen".
+    findings = hygiene.check_html_placeholder_tags("x.md", '<path d="M12 2v2"/>\n')
+    assert findings == []
+
+
+def test_html_placeholder_tag_ignores_void_element():
+    findings = hygiene.check_html_placeholder_tags("x.md", "Zeile eins<br>Zeile zwei\n")
+    assert findings == []
+
+
+def test_html_placeholder_tag_still_flags_closing_tag_of_real_element():
+    # </svg> bleibt ein Fund — ob ein passendes öffnendes Tag existiert,
+    # prüft dieser Check bewusst nicht (out of scope, siehe Docstring).
+    findings = hygiene.check_html_placeholder_tags("x.md", "</svg>\n")
+    assert findings and findings[0].kind == "html-placeholder-tag"
+
+
+# ── PLAN-15: markdown-hardwrap ────────────────────────────────────────────────
+
+
+def test_hardwrap_flags_two_consecutive_prose_lines_as_one_finding():
+    text = "Erste Zeile eines Absatzes\nzweite Zeile desselben Absatzes\n"
+    findings = hygiene.check_markdown_hardwrap("x.md", text)
+    assert len(findings) == 1
+    assert findings[0].kind == "markdown-hardwrap"
+    assert findings[0].path == "x.md:1-2"
+
+
+def test_hardwrap_five_line_paragraph_is_one_finding_not_four():
+    text = "\n".join(f"Zeile {i} desselben Absatzes" for i in range(1, 6)) + "\n"
+    findings = hygiene.check_markdown_hardwrap("x.md", text)
+    assert len(findings) == 1
+    assert findings[0].path == "x.md:1-5"
+    assert "5 Zeilen" in findings[0].detail
+
+
+def test_hardwrap_single_line_paragraph_is_ok():
+    text = "Ein Absatz, beliebig lang, aber eine einzige physische Zeile.\n\nZweiter Absatz.\n"
+    assert hygiene.check_markdown_hardwrap("x.md", text) == []
+
+
+def test_hardwrap_ignores_lists_tables_blockquotes():
+    text = (
+        "- Listenpunkt eins\n- Listenpunkt zwei\n\n"
+        "| a | b |\n| - | - |\n\n"
+        "> Zitatzeile eins\n> Zitatzeile zwei\n"
+    )
+    assert hygiene.check_markdown_hardwrap("x.md", text) == []
+
+
+def test_hardwrap_ignores_fenced_code_and_frontmatter():
+    text = "---\nkey: val\nnoch eine\n---\n\n```\ncode zeile eins\ncode zeile zwei\n```\n"
+    assert hygiene.check_markdown_hardwrap("x.md", text) == []
+
+
+def test_hardwrap_two_separate_paragraphs_are_two_findings():
+    text = (
+        "Absatz eins Zeile eins\nAbsatz eins Zeile zwei\n\n"
+        "Absatz zwei Zeile eins\nAbsatz zwei Zeile zwei\n"
+    )
+    findings = hygiene.check_markdown_hardwrap("x.md", text)
+    assert [f.path for f in findings] == ["x.md:1-2", "x.md:4-5"]
+
+
+# ── PLAN-15: doctor-CLI liest jetzt Datei-Inhalte unter vault/ ───────────────
+
+
+def test_doctor_flags_placeholder_tag_in_vault_md(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "vault" / "note.md").write_text("Bitte <cutoff> ersetzen.\n", encoding="utf-8")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "html-placeholder-tag" in out and "note.md:1" in out
+
+
+def test_doctor_flags_hardwrapped_paragraph_in_vault_md(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "vault" / "note.md").write_text(
+        "Erste Zeile eines Absatzes\nzweite Zeile desselben Absatzes\n", encoding="utf-8")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "markdown-hardwrap" in out and "note.md:1-2" in out
+
+
+def test_doctor_ignores_backtick_escaped_placeholder_in_vault_md(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    (gitrepo / "vault" / "note.md").write_text("Bitte `<cutoff>` ersetzen.\n", encoding="utf-8")
+    assert doctor_cmd.run(_args()) == 0
+
+
+# ── Claude-Auth-Token-Check ────────────────────────────────────────────────────
+
+
+def test_missing_claude_auth_flags_when_claude_jobs_and_no_token():
+    findings = hygiene.check_missing_claude_auth(has_claude_jobs=True, token_present=False)
+    assert len(findings) == 1
+    assert findings[0].kind == "claude-auth-missing"
+
+
+def test_missing_claude_auth_no_finding_when_token_present():
+    assert hygiene.check_missing_claude_auth(has_claude_jobs=True, token_present=True) == []
+
+
+def test_missing_claude_auth_no_finding_when_no_claude_jobs():
+    assert hygiene.check_missing_claude_auth(has_claude_jobs=False, token_present=False) == []
+
+
+# ── BIBI_PUBLIC_HOST-Check (Bibi4-Iteration, User-Fund App-Link-Hostname) ──────
+
+
+def test_missing_public_host_flags_when_apps_and_no_public_host():
+    findings = hygiene.check_missing_public_host(has_apps=True, public_host_set=False)
+    assert len(findings) == 1
+    assert findings[0].kind == "public-host-missing"
+
+
+def test_missing_public_host_no_finding_when_public_host_set():
+    assert hygiene.check_missing_public_host(has_apps=True, public_host_set=True) == []
+
+
+def test_missing_public_host_no_finding_when_no_apps():
+    # Kein App-Job im Vault -> App-Links spielen für diesen Knoten keine
+    # Rolle, kein False Positive (analog check_missing_claude_auth).
+    assert hygiene.check_missing_public_host(has_apps=False, public_host_set=False) == []
+
+
+def test_doctor_flags_missing_claude_auth(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    (d / "Digest.md").write_text(
+        '---\nschedule: "0 8 * * *"\njob: "claude: Fasse den Tag zusammen"\n---\n',
+        encoding="utf-8")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "claude-auth-missing" in out
+
+
+def test_doctor_ignores_claude_auth_when_token_present(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    # PLAN-32 Stufe 32.0: präfigierte Form auch gesetzt, sonst feuert
+    # zusätzlich (korrekt) "legacy-job-env-name" — dieser Test prüft
+    # ausschließlich claude-auth-missing, nicht die Migrations-Warnung.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-test-token")
+    monkeypatch.setenv("BIBI_JOB_ENV_CLAUDE_CODE_OAUTH_TOKEN", "sk-test-token")
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    (d / "Digest.md").write_text(
+        '---\nschedule: "0 8 * * *"\njob: "claude: Fasse den Tag zusammen"\n---\n',
+        encoding="utf-8")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "claude-auth-missing" not in out
+
+
+def test_doctor_ignores_claude_auth_when_no_claude_jobs(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    d = gitrepo / "vault" / "case" / "20260717.Test-aaaaaaaa"
+    d.mkdir(parents=True)
+    (d / "Runner.md").write_text(
+        '---\nschedule: "*/5 * * * *"\njob: "echo hi"\n---\n', encoding="utf-8")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "claude-auth-missing" not in out
+
+
+# ── Legacy-Job-Env-Namen-Check (PLAN-32 Stufe 32.0) ────────────────────────────
+
+
+def test_legacy_job_env_names_flags_bare_name_without_prefix():
+    findings = hygiene.check_legacy_job_env_names({"ANTHROPIC_API_KEY": "sk-x"})
+    assert len(findings) == 1
+    assert findings[0].kind == "legacy-job-env-name"
+    assert findings[0].path == "ANTHROPIC_API_KEY"
+
+
+def test_legacy_job_env_names_no_finding_when_prefixed_form_present():
+    assert hygiene.check_legacy_job_env_names({
+        "ANTHROPIC_API_KEY": "sk-x", "BIBI_JOB_ENV_ANTHROPIC_API_KEY": "sk-x",
+    }) == []
+
+
+def test_legacy_job_env_names_no_finding_when_neither_set():
+    assert hygiene.check_legacy_job_env_names({}) == []
+
+
+def test_legacy_job_env_names_checks_both_credential_names():
+    findings = hygiene.check_legacy_job_env_names({
+        "ANTHROPIC_API_KEY": "sk-x", "CLAUDE_CODE_OAUTH_TOKEN": "sk-y",
+    })
+    assert {f.path for f in findings} == {"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}
+
+
+def test_doctor_flags_legacy_job_env_name(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-legacy")
+    monkeypatch.delenv("BIBI_JOB_ENV_ANTHROPIC_API_KEY", raising=False)
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "legacy-job-env-name" in out
+
+
+def test_doctor_ignores_legacy_job_env_name_when_prefixed_form_set(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-legacy")
+    monkeypatch.setenv("BIBI_JOB_ENV_ANTHROPIC_API_KEY", "sk-legacy")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "legacy-job-env-name" not in out
+
+
+# ── Legacy-Node-Name-Check (PLAN-34) ───────────────────────────────────────────
+
+
+def test_legacy_worker_name_flags_old_name_without_new_name():
+    findings = hygiene.check_legacy_worker_name({"BIBI_WORKER_NAME": "sarasate-client"})
+    assert len(findings) == 1
+    assert findings[0].kind == "legacy-node-name"
+    assert findings[0].path == "BIBI_WORKER_NAME"
+
+
+def test_legacy_worker_name_no_finding_when_new_name_present():
+    assert hygiene.check_legacy_worker_name({
+        "BIBI_WORKER_NAME": "sarasate-client", "BIBI_NODE_NAME": "sarasate-client",
+    }) == []
+
+
+def test_legacy_worker_name_no_finding_when_neither_set():
+    assert hygiene.check_legacy_worker_name({}) == []
+
+
+def test_doctor_flags_legacy_worker_name(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.setenv("BIBI_WORKER_NAME", "sarasate-client")
+    monkeypatch.delenv("BIBI_NODE_NAME", raising=False)
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "legacy-node-name" in out
+
+
+def test_doctor_ignores_legacy_worker_name_when_new_name_set(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.setenv("BIBI_WORKER_NAME", "sarasate-client")
+    monkeypatch.setenv("BIBI_NODE_NAME", "sarasate-client")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "legacy-node-name" not in out

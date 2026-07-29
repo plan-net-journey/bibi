@@ -6,6 +6,8 @@ Verdrahtung, Exit-Codes und Formatierung, nicht der Daemon (der hat eigene Tests
 
 from __future__ import annotations
 
+import argparse
+
 import pytest
 
 from bibi.ctrl import job_cmd, main
@@ -13,6 +15,38 @@ from bibi.ctrl import job_cmd, main
 
 def _patch(monkeypatch, code, body):
     monkeypatch.setattr(job_cmd, "_req", lambda url, method="GET": (code, body))
+
+
+# ── _base() (PLAN-13 Stufe 13.0) ─────────────────────────────────────────────
+
+
+def test_base_uses_scheduler_base_url_without_port_override(monkeypatch):
+    monkeypatch.setattr(job_cmd.config, "scheduler_base_url",
+                        lambda: "http://sarasate.tail9f9173.ts.net:8780")
+    assert job_cmd._base(argparse.Namespace(port=0)) == "http://sarasate.tail9f9173.ts.net:8780"
+
+
+def test_base_explicit_port_stays_local(monkeypatch):
+    # --port bleibt ein reiner Lokalitäts-Override, unabhängig davon, wohin
+    # BIBI_SCHEDULER_URL zeigt.
+    monkeypatch.setattr(job_cmd.config, "scheduler_base_url",
+                        lambda: "http://sarasate.tail9f9173.ts.net:8780")
+    assert job_cmd._base(argparse.Namespace(port=9000)) == "http://127.0.0.1:9000"
+
+
+def test_list_targets_remote_scheduler_url(monkeypatch, capsys):
+    # End-to-end: main(["job", "list"]) baut die URL tatsächlich aus
+    # scheduler_base_url(), nicht mehr blind aus 127.0.0.1.
+    monkeypatch.setattr(job_cmd.config, "scheduler_base_url",
+                        lambda: "http://sarasate.tail9f9173.ts.net:8780")
+    seen_urls = []
+
+    def fake_req(url, method="GET"):
+        seen_urls.append(url)
+        return 200, []
+    monkeypatch.setattr(job_cmd, "_req", fake_req)
+    assert main(["job", "list"]) == 0
+    assert seen_urls == ["http://sarasate.tail9f9173.ts.net:8780/-/job"]
 
 
 def test_list_formats_rows(monkeypatch, capsys):

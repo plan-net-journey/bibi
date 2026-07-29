@@ -38,7 +38,7 @@ def test_rescan_inserts_and_job_list(sched):
 
 def test_schedule_lists(sched):
     client, root = sched
-    _seed(root, "daily.md", '---\nschedule: "0 9 * * *"\nclaude: "x"\n---\n')
+    _seed(root, "daily.md", '---\nschedule: "0 9 * * *"\njob: "claude: x"\n---\n')
     client.post("/-/rescan")
     items = client.get("/-/schedule").json()["schedules"]
     assert any(s["slug"] == "daily" and s["trigger"] == "0 9 * * *" for s in items)
@@ -90,6 +90,18 @@ def test_scheduler_next_empty_is_204(sched):
     assert client.post("/-/scheduler/next").status_code == 204
 
 
+def test_scheduler_next_paused_in_maintenance(sched, monkeypatch):
+    # Wartungsmodus pausiert auch den Remote-Dispatch (Route gibt 204).
+    client, root = sched
+    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    client.post("/-/rescan")
+    monkeypatch.setattr("bibi.state.get_maintenance", lambda: True)
+    assert client.post("/-/scheduler/next").status_code == 204
+    # ohne Wartung wird derselbe Job reserviert
+    monkeypatch.setattr("bibi.state.get_maintenance", lambda: False)
+    assert client.post("/-/scheduler/next").json()["slug"] == "a"
+
+
 def test_scheduler_status_running_to_complete(sched):
     client, root = sched
     _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
@@ -122,3 +134,40 @@ def test_non_scheduler_job_is_501_stub(team_repo):
         assert client.get("/-/job").status_code == 501
         assert client.post("/-/scheduler/next").status_code == 501
         assert client.post("/-/rescan").status_code in (404, 405)
+
+
+# ── PLAN-10 §10.4: app_url in DB + JobView ───────────────────────────────────
+
+
+def test_scheduler_status_awaiting_stores_app_url(sched):
+    """POST /-/scheduler/status awaiting + app_url → app_url in GET /-/job/{id}."""
+    client, root = sched
+    _seed(root, "a/README.md", '---\nschedule: now\njob: echo x\n---\n')
+    client.post("/-/rescan")
+    jid = client.post("/-/scheduler/next").json()["id"]
+    client.post(f"/-/scheduler/status/{jid}", json={"status": "running"})
+    r = client.post(f"/-/scheduler/status/{jid}", json={
+        "status": "awaiting",
+        "app_url": "http://localhost:9100/input",
+    })
+    assert r.status_code == 200
+
+    job = client.get(f"/-/job/{jid}").json()
+    assert job["status"] == "awaiting"
+    assert job["app_url"] == "http://localhost:9100/input"
+
+
+def test_scheduler_status_running_clears_app_url(sched):
+    """Status running nach awaiting → app_url in DB wird gelöscht."""
+    client, root = sched
+    _seed(root, "a/README.md", '---\nschedule: now\njob: echo x\n---\n')
+    client.post("/-/rescan")
+    jid = client.post("/-/scheduler/next").json()["id"]
+    client.post(f"/-/scheduler/status/{jid}", json={"status": "running"})
+    client.post(f"/-/scheduler/status/{jid}", json={
+        "status": "awaiting",
+        "app_url": "http://localhost:9100/input",
+    })
+    client.post(f"/-/scheduler/status/{jid}", json={"status": "running"})
+    job = client.get(f"/-/job/{jid}").json()
+    assert job["app_url"] is None
