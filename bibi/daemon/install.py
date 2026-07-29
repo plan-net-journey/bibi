@@ -101,6 +101,24 @@ def systemd_unit_text(*, root: Path, uv: str, port: int, user: str,
         lines.append(f"Environment=BIBI_ROLE={role}")
     lines += [
         "ExecStart=" + " ".join(_exec_args(uv, "0.0.0.0", port, connect=connect)),
+        # KillMode=process: beim Stoppen NUR den Daemon selbst signalisieren,
+        # nicht die ganze cgroup. Ohne diese Zeile gilt systemds Default
+        # `control-group` — jeder Prozess der Unit bekommt das Signal, also auch
+        # die detachten Job-Wrapper, die einen Neustart überleben sollen.
+        # `start_new_session=True` (worker.py) schützt davor NICHT: es setzt den
+        # Wrapper in eigene Session und Prozessgruppe, was gegen
+        # POSIX-Signalweitergabe reicht — die cgroup verlässt er dadurch nicht.
+        #
+        # Der Fehlte-Fund (m.rau/bibi#40, 2026-07-29): der sarasate-Host trug
+        # die Zeile von Hand nachgepflegt, die per `daemon install` geschriebene
+        # mustertest-Unit nicht. Die als „live gemessen" geltende
+        # Job-Überlebensfähigkeit war also am Host gemessen, ein frisch
+        # onboardeter Knoten verlor bei jedem Neustart alle laufenden Jobs.
+        # Damit hing die Wirksamkeit des Job-Drains (#38) und des Restart-
+        # Endpunkts (#39) an einer Zeile, die der Installer nie schrieb.
+        # macOS ist nicht betroffen: launchd kennt kein cgroup-Äquivalent und
+        # signalisiert nur den Job-Prozess, dort trägt start_new_session allein.
+        "KillMode=process",
         "Restart=always",
         "RestartSec=3",
         "",
