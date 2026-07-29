@@ -91,6 +91,31 @@ def test_systemd_unit_text_without_connect_omits_flag():
     assert "--connect" not in t
 
 
+def test_systemd_unit_text_sets_killmode_process():
+    # #40: ohne die Zeile gilt systemds Default `control-group` — beim Stoppen
+    # bekommt jeder Prozess der Unit das Signal, also auch die detachten
+    # Job-Wrapper, die einen Neustart überleben sollen. `start_new_session=True`
+    # im Worker schützt nicht davor (eigene Session ≠ andere cgroup). Gefunden,
+    # weil der sarasate-Host die Zeile von Hand trug und die per
+    # `daemon install` geschriebene mustertest-Unit nicht: die Job-
+    # Überlebensfähigkeit war am Host gemessen, nicht am Installer-Ergebnis.
+    t = install.systemd_unit_text(
+        root=Path("/srv/team"), uv="/usr/bin/uv", port=8780, user="mra",
+    )
+    assert "KillMode=process" in t
+
+
+def test_launchd_plist_text_has_no_killmode():
+    # Gegenstück: launchd kennt kein cgroup-Äquivalent und signalisiert nur den
+    # Job-Prozess — dort trägt `start_new_session=True` allein. Eine
+    # KillMode-Entsprechung gibt es nicht und darf nicht erfunden werden.
+    t = install.launchd_plist_text(
+        root=Path("/Users/x/team"), uv="/opt/homebrew/bin/uv", port=9001,
+        label="com.bibi.abcd1234", log_dir=Path("/Users/x/team/data"),
+    )
+    assert "KillMode" not in t
+
+
 def test_launchd_plist_text_with_connect_appends_flag():
     t = install.launchd_plist_text(
         root=Path("/Users/x/team"), uv="/opt/homebrew/bin/uv", port=9001,
