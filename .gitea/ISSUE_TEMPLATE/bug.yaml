@@ -1,0 +1,61 @@
+name: Bug
+about: Fehlverhalten gegenüber dokumentiertem oder erwartetem Verhalten
+title: ""
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Struktur übernommen aus den Bug-Dossiers, die bis 2026-07 im Vault lagen
+        (`Symptom` → `Root Cause` → `Live-Befund`). Nur „Symptom" ist Pflicht —
+        Ursache und Befund dürfen leer bleiben, bis die Analyse sie füllt.
+
+        Das `repo:`-Label wird **bewusst nicht** vorbelegt: welchem Repo die
+        Änderung gehört, beantwortet meist erst die Analyse. Nachtragen, sobald
+        es feststeht — mehrere sind erlaubt, wenn ein Engine-Fix Doku nachzieht.
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: Symptom
+      description: >-
+        Was wurde beobachtet, wann und wo? Live-Beobachtungen mit Datum und
+        Knoten sind wertvoller als eine abstrakte Beschreibung.
+      placeholder: |
+        Live beobachtet am JJJJ-MM-TT auf <Knoten>: …
+        Erwartet wäre …, tatsächlich passiert …
+    validations:
+      required: true
+
+  - type: textarea
+    id: rootcause
+    attributes:
+      label: Root Cause
+      description: >-
+        Falls schon bekannt: die Stelle im Code mit Datei und Zeilenbereich,
+        nicht nur der Modulname. Leer lassen, wenn noch nicht untersucht.
+      placeholder: |
+        `bibi/daemon/worktree.py:104-121` prüft …, berücksichtigt aber nicht …
+
+  - type: textarea
+    id: befund
+    attributes:
+      label: Live-Befund
+      description: >-
+        Reproduktion, Messwerte, Logausschnitte — was belegt, dass es wirklich
+        so ist, und nicht nur plausibel klingt.
+
+  - type: input
+    id: knoten
+    attributes:
+      label: Betroffene Knoten
+      description: Wo tritt es auf? Falls unbekannt, offen lassen.
+      placeholder: "Mac, sarasate-Host, sarasate-Client — oder: nur sarasate"
+
+  - type: markdown
+    attributes:
+      value: |
+        **Dringlichkeit** nach dem Anlegen als Label setzen:
+        `P1` blockiert Arbeit oder gefährdet Daten · `P2` sollte gemacht werden ·
+        `someday` bewusst zurückgestellt.

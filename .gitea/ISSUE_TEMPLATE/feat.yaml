@@ -1,0 +1,48 @@
+name: Change Request
+about: Neue Fähigkeit oder Erweiterung von bibi
+title: ""
+labels:
+  - feat
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Für Wünsche und Ideen. Ein CR darf unfertig sein — „noch nicht
+        entschieden" ist ein legitimer Inhalt, „bewusst zurückgestellt" auch
+        (dann Label `someday`, damit er nicht als Versäumnis gelesen wird).
+
+        Das `repo:`-Label bleibt offen, bis klar ist, wohin die Änderung
+        gehört: Engine, Team-Blueprint oder diese Instanz.
+
+  - type: textarea
+    id: wunsch
+    attributes:
+      label: Was soll bibi können?
+      description: In einem Satz das Ziel, dann bei Bedarf Details.
+    validations:
+      required: true
+
+  - type: textarea
+    id: warum
+    attributes:
+      label: Auslöser
+      description: >-
+        Woher kommt der Wunsch — welche konkrete Situation hat ihn ausgelöst?
+        Das entscheidet später, ob die Umsetzung wirklich getroffen hat, was
+        gemeint war.
+
+  - type: textarea
+    id: offen
+    attributes:
+      label: Offene Fragen
+      description: >-
+        Was ist bewusst noch nicht entschieden? Explizite Unklarheit ist
+        wertvoller als eine früh erfundene Festlegung.
+
+  - type: textarea
+    id: abgrenzung
+    attributes:
+      label: Ausdrücklich nicht Teil davon
+      description: >-
+        Was klingt verwandt, gehört aber nicht dazu? Verhindert, dass ein CR
+        beim Umsetzen unkontrolliert wächst.

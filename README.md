@@ -58,3 +58,17 @@ bibi-ctrl init
 ```
 
 Default-Branch: `trunk`.
+
+## Issue-Tracking
+
+Bugs und Change Requests werden im Issue-Board **dieses** Repos geführt — und
+zwar nicht nur für die Engine, sondern gebündelt auch für `bibi-team` und die
+Team-Instanz `bibi-notes`. Welchem der drei Repos eine Änderung gehört, ist ein
+Label (`repo:engine`, `repo:team`, `repo:notes`), kein Ablageort: die Zuordnung
+ergibt sich häufig erst aus der Analyse und darf offen bleiben oder mehrfach
+gesetzt werden.
+
+Vorlagen liegen unter `.gitea/ISSUE_TEMPLATE/` (`bug.yaml`, `feat.yaml`). Die
+Bug-Vorlage folgt der Struktur Symptom → Root Cause → Live-Befund, die sich in
+den früheren Vault-Dossiers bewährt hat; die Root-Cause-Angabe nennt Datei und
+Zeilenbereich, nicht nur den Modulnamen.
