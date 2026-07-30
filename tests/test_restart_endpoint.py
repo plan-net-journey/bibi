@@ -114,6 +114,49 @@ def test_sync_lock_is_passed_to_the_pull(tmp_path: Path, monkeypatch):
     assert pulls == [lock]
 
 
+def test_pull_for_deploy_calls_git_ops_correctly(monkeypatch):
+    """Die eine Stelle, die alle anderen Tests wegmocken — und genau dort saß
+    der Fehler.
+
+    Beim ersten scharfen Einsatz (2026-07-30) antwortete der Endpunkt auf allen
+    drei Knoten mit ``current_branch() takes 0 positional arguments but 1 was
+    given``: ``_pull_for_deploy`` reichte ein Repo-Root durch, das die Funktion
+    gar nicht annimmt (``git_ops._git()`` arbeitet im Prozess-cwd). Sämtliche
+    Endpunkt-Tests hatten ``_pull_for_deploy`` ersetzt und konnten den
+    Signaturfehler deshalb nicht sehen. Dieser Test ruft die echte Funktion und
+    mockt eine Ebene tiefer.
+    """
+    from bibi import git_ops
+    seen: dict = {}
+
+    monkeypatch.setattr(git_ops, "current_branch", lambda: "trunk")
+    monkeypatch.setattr(git_ops, "integrate",
+                        lambda branch, **kw: (seen.update(branch=branch, kw=kw), (True, None))[1])
+
+    ok, kind = app_mod._pull_for_deploy()
+    assert (ok, kind) == (True, None)
+    assert seen["branch"] == "trunk"
+    # Der Live-Edit-Guard muss aus sein: er schützt unbeaufsichtigte Läufe vor
+    # einem tippenden Menschen — ein angefordertes Deployment ist das Gegenteil,
+    # und ein stiller Skip wäre hier der Fehler.
+    assert seen["kw"]["guard_live_paths"] is False
+
+
+def test_pull_for_deploy_holds_the_sync_lock(monkeypatch):
+    import threading
+    from bibi import git_ops
+    lock = threading.Lock()
+    held: list[bool] = []
+
+    monkeypatch.setattr(git_ops, "current_branch", lambda: "trunk")
+    monkeypatch.setattr(git_ops, "integrate",
+                        lambda branch, **kw: (held.append(lock.locked()), (True, None))[1])
+
+    app_mod._pull_for_deploy(lock)
+    assert held == [True]        # während des Pulls gehalten
+    assert lock.locked() is False  # danach wieder frei
+
+
 def test_restart_uses_sigterm_not_hard_exit(harness):
     # Entscheidend, nicht kosmetisch: nur über SIGTERM greifen uvicorns
     # timeout_graceful_shutdown und das lifespan-Finally. Ein os._exit() würde
