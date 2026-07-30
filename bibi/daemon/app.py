@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import socket
 import time
 from contextlib import asynccontextmanager
@@ -24,12 +25,12 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from bibi import config, repo, state
-from bibi.daemon import activity, job_db, mergeback, openapi, output_format
+from bibi.daemon import activity, boot_signal, job_db, mergeback, openapi, output_format
 from bibi.daemon import worker as worker_mod  # Modul-Alias (bibi.daemon.app.worker ist eine Worker-Instanz)
 from bibi.schedule import models
 from bibi.daemon.openapi import (
-    JobReservation, JobView, KillRequest, NextRequest, RunRequest, StatusReport,
-    WorkerHeartbeat, WorkerView,
+    JobReservation, JobView, KillRequest, NextRequest, RestartRequest, RunRequest,
+    StatusReport, WorkerHeartbeat, WorkerView,
 )
 from bibi.daemon import roles as roles_mod  # Modul-Alias (der Parameter heißt `roles`)
 from bibi.daemon.roles import Roles
@@ -201,6 +202,62 @@ def _require_approved_or_local(request: Request,
         conn.close()
     if status != "approved":
         raise HTTPException(status_code=403, detail=f"node not approved (status: {status})")
+
+
+def _add_daemon_routes(app: FastAPI) -> None:
+    """``/-/restart`` — bewusst **rollenunabhängig** (m.rau/bibi#39).
+
+    Jeder Knoten muss neu startbar sein, nicht nur der Scheduler: der Deploy
+    trifft alle drei. Beim ersten Entwurf lag die Route in
+    ``_add_scheduler_routes()`` und war damit auf einem reinen Client (Mac:
+    ``synchronizer,controller,connect``) gar nicht vorhanden — genau dort, wo
+    sie am häufigsten gebraucht wird.
+    """
+
+    @app.post("/-/restart", tags=["daemon"])
+    async def daemon_restart(req: RestartRequest):
+        """Diesen Daemon neu starten — optional mit Deployment oder Reset.
+
+        Es gibt keinen „Neustart-Befehl": die Units tragen ``Restart=always``
+        mit ``RestartSec=3`` (bzw. launchd ``KeepAlive``) und starten über
+        ``uv run bibi-ctrl daemon run``. **Ein sauberes Prozessende genügt
+        also** — der Supervisor bringt den Daemon nach drei Sekunden mit einem
+        gegen die Lock gesyncten venv zurück.
+
+        ``deployment``/``reset`` hinterlegen vorher ein Signal, das den Prozess
+        überlebt; abgearbeitet wird es beim nächsten Start **vor** dem Server
+        (``boot_signal``, dort steht die ausführliche Begründung des
+        Doppel-Neustarts). Ohne Flags ist es ein reiner Neustart, der kein
+        Signal braucht.
+
+        Der Prozess endet **verzögert**, damit diese Antwort den Aufrufer noch
+        erreicht — und über SIGTERM an sich selbst, nicht per ``os._exit()``:
+        nur so greifen ``timeout_graceful_shutdown`` und die Aufräumarbeit im
+        ``lifespan``-Finally. Ein harter Abbruch würde genau die Garantien
+        aushebeln, um die es beim Job-Drain (#38) geht.
+        """
+        kinds: list[str] = []
+        if req.reset:
+            boot_signal.request("reset")
+            kinds.append("reset")
+        if req.deployment and not req.reset:
+            # reset impliziert deployment (s. boot_signal) — nicht doppelt
+            # anfordern, sonst stünde derselbe Vorgang zweimal im Bericht.
+            boot_signal.request("deployment")
+            kinds.append("deployment")
+
+        activity.emit(log, logging.INFO, "daemon.restart_requested",
+                      "Neustart angefordert", role="daemon",
+                      kinds=",".join(kinds) or "restart")
+
+        async def _later() -> None:
+            await asyncio.sleep(0.5)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        asyncio.create_task(_later())
+        return {"restarting": True, "signals": kinds,
+                "note": "Supervisor startet neu; bei deployment/reset folgt ein "
+                        "zweiter Start, bevor der Server wieder läuft"}
 
 
 def _add_status_route(app: FastAPI, *, sync_lock=None, synchronizer=None) -> None:
@@ -1426,6 +1483,9 @@ def create_app(
     # status/{id} — auf JEDEM Knoten, nicht nur mit roles.scheduler (s. Docstring
     # von _add_status_route()).
     _add_status_route(app, sync_lock=sync_lock, synchronizer=synchronizer)
+    # /-/restart ebenso rollenunabhängig: ein Deploy trifft alle Knoten, und der
+    # häufigste Adressat ist ein reiner Client (s. _add_daemon_routes()).
+    _add_daemon_routes(app)
 
     # ── Scheduler-Rolle: übrige echte DB-Routen (PLAN-3 §3.1) ───────────────
     # Zuerst registriert ⇒ gewinnen gegen die 3.0-Contract-Stubs für /-/job.
