@@ -222,8 +222,12 @@ def _pull_for_deploy(sync_lock=None) -> tuple[bool, str | None]:
     niemand wüsste warum.
     """
     from bibi import git_ops
-    root = repo.root()
-    branch = git_ops.current_branch(root) or "trunk"
+    # Kein cwd-Argument: `git_ops._git()` arbeitet durchgängig im Prozess-cwd,
+    # und der Daemon läuft im Repo-Root (`WorkingDirectory={root}` in der Unit,
+    # analog im launchd-Plist). Ein `current_branch(root)` wäre nicht nur
+    # überflüssig, sondern ein TypeError — genau der Fehler, der beim ersten
+    # scharfen Einsatz auftrat (2026-07-30).
+    branch = git_ops.current_branch() or "trunk"
     if sync_lock is None:
         return git_ops.integrate(branch, guard_live_paths=False)
     with sync_lock:
