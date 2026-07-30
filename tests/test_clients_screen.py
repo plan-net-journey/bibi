@@ -178,6 +178,14 @@ class _FakeClient:
         self.node_actions.append((node_id, verb))
         return {"node_id": node_id, "status": "approved" if verb == "approve" else "blocked"}
 
+    # m.rau/bibi#39: der Restart geht direkt an den Knoten, nicht über den
+    # Scheduler — hier nur aufgezeichnet.
+    restarts: list[tuple] = []
+
+    def restart_node(self, host, port, *, deployment=False, reset=False, timeout=90.0):
+        type(self).restarts.append((host, port, deployment))
+        return {"restarting": True, "pulled": deployment}
+
 
 def test_clients_screen_route_renders_registered_worker(team_repo: Path):
     client = _FakeClient(workers=[{
@@ -276,3 +284,80 @@ def test_clients_node_action_route_rejects_unknown_verb(team_repo: Path):
         r = c.post("/-/ui/clients/n1/frobnicate")
     assert r.status_code == 404
     assert client.node_actions == []
+
+
+# ── Neustart-Knöpfe (m.rau/bibi#39) ────────────────────────────────────────
+
+
+def test_clients_table_offers_restart_and_deploy():
+    # Zwei getrennte Verben statt eines mit Häkchen: Restart beendet nur den
+    # Prozess, Deploy pullt vorher. Der Unterschied ist zu bedeutsam, um ihn
+    # hinter einer Option zu verstecken.
+    workers = [{"worker": "w", "host": "h", "port": 8780, "node_id": "n1",
+                "stale": False, "connected_at": 0, "last_heartbeat": 0}]
+    html = render._clients_table(workers, now=0)
+    assert "<th>Neustart</th>" in html
+    assert 'hx-post="/-/ui/clients/n1/restart"' in html
+    assert 'hx-post="/-/ui/clients/n1/deploy"' in html
+    # Ein Klick, der einen laufenden Knoten beendet, darf nicht versehentlich
+    # passieren.
+    assert "hx-confirm" in html
+
+
+def test_clients_table_omits_restart_without_port():
+    # Ohne Port gibt es keine Adresse zum Aufrufen — dann lieber keine
+    # Schaltfläche als eine, die ins Leere liefe.
+    workers = [{"worker": "old", "host": "h", "node_id": "n2", "stale": False,
+                "connected_at": 0, "last_heartbeat": 0}]
+    html = render._clients_table(workers, now=0)
+    assert "/restart" not in html
+    assert "<th>Neustart</th>" in html
+
+
+def test_clients_fragment_offers_restart_all():
+    # Aktion auf die Föderation, nicht auf einen Knoten — deshalb im Panel-Kopf.
+    html = render.clients_fragment([], now=0)
+    assert 'hx-post="/-/ui/clients/restart-all"' in html
+    assert 'hx-post="/-/ui/clients/restart-all?deploy=true"' in html
+
+
+def test_clients_restart_route_targets_the_node_directly(team_repo: Path):
+    # m.rau/bibi#39: Host und Port kommen aus der Registry — aus dem Heartbeat
+    # des Knotens selbst, also so, wie er sich erreichbar meldet.
+    _FakeClient.restarts = []
+    c = _FakeClient(workers=[{"worker": "w1", "host": "h1", "port": 8781,
+                              "node_id": "n1", "stale": False,
+                              "connected_at": 0, "last_heartbeat": 0}])
+    app = create_app(roles.resolve({"controller"}), controller_client=c)
+    with TestClient(app) as tc:
+        r = tc.post("/-/ui/clients/n1/restart")
+    assert r.status_code == 200
+    assert _FakeClient.restarts == [("h1", 8781, False)]
+
+
+def test_clients_deploy_route_sets_deployment_flag(team_repo: Path):
+    _FakeClient.restarts = []
+    c = _FakeClient(workers=[{"worker": "w1", "host": "h1", "port": 8781,
+                              "node_id": "n1", "stale": False,
+                              "connected_at": 0, "last_heartbeat": 0}])
+    app = create_app(roles.resolve({"controller"}), controller_client=c)
+    with TestClient(app) as tc:
+        tc.post("/-/ui/clients/n1/deploy")
+    assert _FakeClient.restarts == [("h1", 8781, True)]
+
+
+def test_clients_restart_all_puts_host_last(team_repo: Path):
+    """Rollierend, Host zuletzt: er trägt die Föderation. Startet er zusammen
+    mit den Clients neu, laufen deren Heartbeats für die Dauer beider Neustarts
+    ins Leere."""
+    _FakeClient.restarts = []
+    c = _FakeClient(workers=[{"worker": "client", "host": "h2", "port": 8781,
+                              "node_id": "n2", "stale": False,
+                              "connected_at": 0, "last_heartbeat": 0}])
+    app = create_app(roles.resolve({"controller"}), controller_client=c)
+    with TestClient(app) as tc:
+        r = tc.post("/-/ui/clients/restart-all")
+    assert r.status_code == 200
+    # Der Host-Eintrag entsteht lokal (_host_worker_entry) und steht hinten.
+    assert len(_FakeClient.restarts) >= 1
+    assert _FakeClient.restarts[0][0] == "h2"

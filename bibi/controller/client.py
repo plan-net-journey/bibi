@@ -159,3 +159,39 @@ class ControllerClient:
     def node_action(self, node_id: str, verb: str) -> dict:
         # verb ∈ {approve, block} — PLAN-32 Stufe 32.1, Open-Trust-Connect-Gate.
         return self._request("POST", f"/-/worker/{node_id}/{verb}") or {}
+
+    @staticmethod
+    def restart_node(host: str, port: int, *, deployment: bool = False,
+                     reset: bool = False, timeout: float = 90.0) -> dict:
+        """``POST /-/restart`` **direkt** beim Zielknoten (m.rau/bibi#39).
+
+        Anders als ``node_action()`` läuft das nicht über den Scheduler: einen
+        Knoten neu zu starten ist keine Scheduler-Aufgabe, und der Umweg brächte
+        nichts — die Registry kennt Host und Port jedes Knotens aus dessen
+        eigenem Heartbeat.
+
+        Großzügiges Timeout, weil bei ``deployment=True`` ein ``git pull``
+        synchron im Request läuft (mit LFS-Inhalten dauert der). Die Antwort
+        kommt trotzdem **vor** dem Prozessende — der Kill ist um eine halbe
+        Sekunde verzögert, genau dafür.
+        """
+        url = f"http://{host}:{port}/-/restart"
+        data = json.dumps({"deployment": deployment, "reset": reset}).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={"Content-Type": "application/json", "Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                body = resp.read()
+                return json.loads(body) if body else {}
+        except urllib.error.HTTPError as e:
+            # 409 = Pull fehlgeschlagen, kein Neustart. Das ist die nützlichste
+            # Auskunft des ganzen Endpunkts und darf nicht zu einem generischen
+            # „Fehler" verwaschen werden.
+            try:
+                detail = json.loads(e.read() or b"{}").get("detail", "")
+            except Exception:  # noqa: BLE001
+                detail = ""
+            return {"error": f"HTTP {e.code}", "detail": detail}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}

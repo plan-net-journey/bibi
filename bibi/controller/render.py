@@ -780,6 +780,34 @@ def _node_engine_cell(engine: str | None) -> str:
     return _e(engine)
 
 
+def _node_restart_cell(node_id: str | None, port: int | None) -> str:
+    """Neustart-Knöpfe je Knoten (m.rau/bibi#39).
+
+    Zwei getrennte Verben statt eines mit Häkchen: **Restart** beendet nur den
+    Prozess, **Deploy** pullt vorher. Der Unterschied ist bedeutsam genug, ihn
+    nicht hinter einer Option zu verstecken — der eine holt einen neuen Stand,
+    der andere nicht.
+
+    Ohne ``port`` (älterer Client, oder erster Heartbeat noch nicht durch) gibt
+    es keine Adresse zum Aufrufen; dann bleibt die Zelle leer statt einen Knopf
+    anzubieten, der ins Leere liefe.
+
+    ``hx-confirm`` bei beiden: ein Klick, der einen laufenden Knoten beendet,
+    darf nicht versehentlich passieren. Der Drain (#38) macht ihn verantwortbar,
+    nicht folgenlos.
+    """
+    if not node_id or not port:
+        return "—"
+    base = (f'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this"')
+    return (
+        f'<button class="startbtn" hx-post="/-/ui/clients/{_e(node_id)}/restart" '
+        f'hx-confirm="Diesen Knoten neu starten?" {base}>Restart{_BTN_SPINNER}</button> '
+        f'<button class="startbtn" hx-post="/-/ui/clients/{_e(node_id)}/deploy" '
+        f'hx-confirm="Neuen Stand holen und neu starten?" {base}>'
+        f'Deploy{_BTN_SPINNER}</button>'
+    )
+
+
 _APPROVAL_CHIP_CLASS = {"pending": "chip modified", "approved": "chip clean",
                         "blocked": "chip conflict"}
 
@@ -828,6 +856,7 @@ def _clients_table(workers: list[dict], now: float) -> str:
             + "</td>"
             f"<td>{status_html}</td>"
             f"<td>{_node_approval_cell(w.get('node_id'), w.get('approval_status', 'pending'))}</td>"
+            f"<td>{_node_restart_cell(w.get('node_id'), w.get('port'))}</td>"
             f"<td>{_abs_datetime(w.get('connected_at'), now)}</td>"
             f"<td>{_ago(w.get('last_heartbeat'), now)}</td>"
             "</tr>"
@@ -836,7 +865,8 @@ def _clients_table(workers: list[dict], now: float) -> str:
         '<table><thead><tr><th>Name</th>'
         f"{_role_matrix_header()}"
         '<th>Engine</th><th>Git-User</th>'
-        '<th>Git-Status</th><th>Status</th><th>Freigabe</th><th>Connected seit</th>'
+        '<th>Git-Status</th><th>Status</th><th>Freigabe</th><th>Neustart</th>'
+        '<th>Connected seit</th>'
         '<th>Letzter Heartbeat</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
@@ -847,6 +877,18 @@ def clients_fragment(workers: list[dict], now: float | None = None) -> str:
     return (
         '<div id="clientsboard" data-bus="nodes" data-bus-refetch="/-/ui/clients/board">'
         '<div class="panel-card"><h2>Nodes</h2>'
+        # „Restart all" (m.rau/bibi#39) im Panel-Kopf, nicht je Zeile: es ist
+        # eine Aktion auf die Föderation, nicht auf einen Knoten. Rollierend
+        # ausgeführt (Clients zuerst, Host zuletzt) — siehe clients_restart_all().
+        '<p class="handles">'
+        '<button class="startbtn" hx-post="/-/ui/clients/restart-all" '
+        'hx-confirm="ALLE Knoten neu starten?" hx-target="#clientsboard" '
+        f'hx-swap="outerHTML" hx-disabled-elt="this">Restart all{_BTN_SPINNER}</button> '
+        '<button class="startbtn" hx-post="/-/ui/clients/restart-all?deploy=true" '
+        'hx-confirm="Auf ALLEN Knoten den neuen Stand holen und neu starten?" '
+        'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this">'
+        f'Deploy all{_BTN_SPINNER}</button>'
+        '</p>'
         f"{_clients_table(workers, now)}</div>"
         "</div>"
     )
