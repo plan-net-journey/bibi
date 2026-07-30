@@ -178,6 +178,37 @@ class WorkerHeartbeat(BaseModel):
     role: str | None = None
     port: int | None = None
     client_config_version: str | None = None
+    # m.rau/bibi#19: ``engine`` ist die Bezeichnung des installierten Stands
+    # (``engine_info.EngineInfo.label()`` — ein Tag wie "v0.2.0", sonst
+    # "dev @ 86ea20e", oder "0.2.1 (editable)" für einen Knoten, der gegen ein
+    # Arbeits-Checkout läuft statt gegen den gepinnten Stand). ``git_commit``
+    # ist der kurze Commit des **Team-Repos**, den ``git_status`` bewusst nicht
+    # trägt: zwei Knoten können beide "synced" melden und doch auf
+    # verschiedenen Commits stehen. Beide optional — ein älterer Client
+    # registriert sich weiterhin ohne 422, sein Eintrag bleibt nur leer.
+    engine: str | None = None
+    git_commit: str | None = None
+
+
+class RestartRequest(BaseModel):
+    """``POST /-/restart`` — Neustart dieses Daemons (m.rau/bibi#39).
+
+    Ohne Flags ein reiner Neustart: der Prozess beendet sich, der Supervisor
+    bringt ihn zurück.
+
+    ``deployment`` pullt **vor** dem Beenden, synchron im Request. Nötig, weil
+    ``uv run`` das venv gegen die Lock im **lokalen** Checkout synct und der
+    Synchronizer nur alle 180 s pullt — ein Neustart direkt nach einem Push
+    führe sonst den alten Stand wieder hoch. Weil der Pull hier passiert und
+    nicht erst beim nächsten Start, genügt **ein** Neustart; schlägt er fehl,
+    wird gar nicht neu gestartet und der Aufrufer bekommt 409.
+
+    ``reset`` wirft zusätzlich das venv weg und pullt ebenfalls. Nur dieser Fall
+    braucht zwei Neustarts: ein Prozess kann sein eigenes venv nicht unter sich
+    austauschen (s. ``boot_signal``)."""
+
+    deployment: bool = False
+    reset: bool = False
 
 
 class WorkerView(BaseModel):
@@ -193,6 +224,8 @@ class WorkerView(BaseModel):
     git_user: str | None = None
     role: str | None = None
     port: int | None = None
+    engine: str | None = None       # installierter Engine-Stand (#19)
+    git_commit: str | None = None   # kurzer Commit des Team-Repos (#19)
 
 
 def _todo(endpoint: str) -> JSONResponse:

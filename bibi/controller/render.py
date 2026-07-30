@@ -756,6 +756,25 @@ def _node_git_status_chips(git_status: str | None) -> str:
             f'<span class="{sync_cls}">{_e(sync)}</span>')
 
 
+def _node_engine_cell(engine: str | None) -> str:
+    """Installierter Engine-Stand je Knoten (m.rau/bibi#19).
+
+    ``engine`` ist die fertige Bezeichnung aus ``engine_info.EngineInfo.label()``
+    — hier wird nur dekoriert, nicht interpretiert. Ein Tag ("v0.2.0") steht
+    neutral; ein editable install bekommt einen Warn-Chip, denn er ist die
+    stille Falle, um die es in dem Issue eigentlich geht: ein Knoten, der gegen
+    ein Arbeits-Checkout läuft statt gegen den gepinnten Stand, sah bisher aus
+    wie jeder andere."""
+    if not engine:
+        return "—"
+    if "(editable)" in engine:
+        base = engine.replace("(editable)", "").strip()
+        return (f'{_e(base)} <span class="chip conflict" '
+                'title="laeuft gegen ein Arbeits-Checkout, nicht gegen den '
+                'gepinnten Stand">editable</span>')
+    return _e(engine)
+
+
 _APPROVAL_CHIP_CLASS = {"pending": "chip modified", "approved": "chip clean",
                         "blocked": "chip conflict"}
 
@@ -797,8 +816,11 @@ def _clients_table(workers: list[dict], now: float) -> str:
             "<tr>"
             f"<td>{_node_link_cell(w.get('worker'), w.get('host'), w.get('port'))}</td>"
             f"{_role_matrix_cells(w.get('role'))}"
+            f"<td>{_node_engine_cell(w.get('engine'))}</td>"
             f"<td>{_e(w.get('git_user') or '—')}</td>"
-            f"<td>{_node_git_status_chips(w.get('git_status'))}</td>"
+            f"<td>{_node_git_status_chips(w.get('git_status'))}"
+            + (f' <code>{_e(w["git_commit"])}</code>' if w.get("git_commit") else "")
+            + "</td>"
             f"<td>{status_html}</td>"
             f"<td>{_node_approval_cell(w.get('node_id'), w.get('approval_status', 'pending'))}</td>"
             f"<td>{_abs_datetime(w.get('connected_at'), now)}</td>"
@@ -808,7 +830,7 @@ def _clients_table(workers: list[dict], now: float) -> str:
     return (
         '<table><thead><tr><th>Name</th>'
         f"{_role_matrix_header()}"
-        '<th>Git-User</th>'
+        '<th>Engine</th><th>Git-User</th>'
         '<th>Git-Status</th><th>Status</th><th>Freigabe</th><th>Connected seit</th>'
         '<th>Letzter Heartbeat</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"

@@ -387,16 +387,27 @@ def add_controller_routes(
         import os
         import socket
         from bibi import config, git_ops, repo as repo_mod
+        from bibi.engine_info import engine_info
         from bibi.git_status import working_tree_status
         git_user = git_status = "—"
+        git_commit: str | None = None
         try:
             root = repo_mod.root()
             git_user = git_ops.git_user_name(root) or "—"
             s = working_tree_status(root)
             if s is not None:
                 git_status = f"{s.branch or '(detached)'} · {s.tree} · {s.sync}"
+                git_commit = s.oid[:7] if s.oid else None
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
+        # m.rau/bibi#19: der Host heartbeatet sich nie selbst, sein Eintrag
+        # entsteht hier — die Engine-Angabe muss deshalb an dieser Stelle
+        # ebenfalls ermittelt werden, sonst bliebe genau der Knoten leer, der
+        # die Tabelle ausliefert.
+        try:
+            engine = engine_info().label()
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            engine = None
         raw_port = os.environ.get("BIBI_DAEMON_PORT")
         _env = config.read_env()
         return {
@@ -407,6 +418,8 @@ def add_controller_routes(
             "port": int(raw_port) if raw_port and raw_port.isdigit() else None,
             "git_user": git_user,
             "git_status": git_status,
+            "git_commit": git_commit,
+            "engine": engine,
             "stale": False,
             "connected_at": None,
             "last_heartbeat": None,

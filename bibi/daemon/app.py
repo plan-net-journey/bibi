@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import socket
 import time
 from contextlib import asynccontextmanager
@@ -24,12 +25,12 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from bibi import config, repo, state
-from bibi.daemon import activity, job_db, mergeback, openapi, output_format
+from bibi.daemon import activity, boot_signal, job_db, mergeback, openapi, output_format
 from bibi.daemon import worker as worker_mod  # Modul-Alias (bibi.daemon.app.worker ist eine Worker-Instanz)
 from bibi.schedule import models
 from bibi.daemon.openapi import (
-    JobReservation, JobView, KillRequest, NextRequest, RunRequest, StatusReport,
-    WorkerHeartbeat, WorkerView,
+    JobReservation, JobView, KillRequest, NextRequest, RestartRequest, RunRequest,
+    StatusReport, WorkerHeartbeat, WorkerView,
 )
 from bibi.daemon import roles as roles_mod  # Modul-Alias (der Parameter heißt `roles`)
 from bibi.daemon.roles import Roles
@@ -201,6 +202,109 @@ def _require_approved_or_local(request: Request,
         conn.close()
     if status != "approved":
         raise HTTPException(status_code=403, detail=f"node not approved (status: {status})")
+
+
+def _pull_for_deploy(sync_lock=None) -> tuple[bool, str | None]:
+    """Origin integrieren, synchron und unter dem ``sync_lock`` (m.rau/bibi#39).
+
+    Warum im Request und nicht als Boot-Signal (Einwand von m.rau, 2026-07-30):
+    liegt die neue Lock **vor** dem ersten Neustart im Checkout, synct ``uv run``
+    sofort dagegen — ein Durchlauf genügt statt zweier. Dazu zwei Vorteile, die
+    den Signal-Weg auch inhaltlich schlechter machen: hier gilt der
+    ``sync_lock`` (der Synchronizer pullt/pusht sonst gleichzeitig ins selbe
+    Repo), und ein Fehlschlag lässt sich dem Aufrufer direkt melden statt ihn
+    nur ins Log zu schreiben.
+
+    ``guard_live_paths=False``: der Live-Edit-Guard schützt **unbeaufsichtigte**
+    Schreibvorgänge davor, einem tippenden Menschen den Boden wegzuziehen. Ein
+    angefordertes Deployment ist das Gegenteil — ein stiller Skip wäre hier
+    genau der Fehler, weil der Knoten ohne den neuen Stand zurückkäme und
+    niemand wüsste warum.
+    """
+    from bibi import git_ops
+    root = repo.root()
+    branch = git_ops.current_branch(root) or "trunk"
+    if sync_lock is None:
+        return git_ops.integrate(branch, guard_live_paths=False)
+    with sync_lock:
+        return git_ops.integrate(branch, guard_live_paths=False)
+
+
+def _add_daemon_routes(app: FastAPI, *, sync_lock=None) -> None:
+    """``/-/restart`` — bewusst **rollenunabhängig** (m.rau/bibi#39).
+
+    Jeder Knoten muss neu startbar sein, nicht nur der Scheduler: der Deploy
+    trifft alle drei. Beim ersten Entwurf lag die Route in
+    ``_add_scheduler_routes()`` und war damit auf einem reinen Client (Mac:
+    ``synchronizer,controller,connect``) gar nicht vorhanden — genau dort, wo
+    sie am häufigsten gebraucht wird.
+    """
+
+    @app.post("/-/restart", tags=["daemon"])
+    async def daemon_restart(req: RestartRequest):
+        """Diesen Daemon neu starten — optional mit Deployment oder Reset.
+
+        Es gibt keinen „Neustart-Befehl": die Units tragen ``Restart=always``
+        mit ``RestartSec=3`` (bzw. launchd ``KeepAlive``) und starten über
+        ``uv run bibi-ctrl daemon run``. **Ein sauberes Prozessende genügt
+        also** — der Supervisor bringt den Daemon nach drei Sekunden mit einem
+        gegen die Lock gesyncten venv zurück.
+
+        ``deployment`` pullt **hier, synchron**: damit liegt die neue Lock schon
+        vor dem Neustart und ein Durchlauf genügt. Schlägt der Pull fehl, wird
+        **nicht** neu gestartet — ein Neustart auf den alten Stand wäre nur
+        Ausfallzeit ohne Nutzen, und der Aufrufer erfährt den Grund (409) statt
+        ihn im Log suchen zu müssen.
+
+        ``reset`` hinterlegt zusätzlich ein Boot-Signal, weil ein Prozess sein
+        eigenes venv nicht unter sich austauschen kann; das ist der einzige
+        Fall, der noch zwei Neustarts braucht (s. ``boot_signal``).
+
+        Der Prozess endet **verzögert**, damit diese Antwort den Aufrufer noch
+        erreicht — und über SIGTERM an sich selbst, nicht per ``os._exit()``:
+        nur so greifen ``timeout_graceful_shutdown`` und die Aufräumarbeit im
+        ``lifespan``-Finally. Ein harter Abbruch würde genau die Garantien
+        aushebeln, um die es beim Job-Drain (#38) geht.
+        """
+        pulled = False
+        if req.deployment or req.reset:
+            # Blockierendes git in den Executor: dieser Event-Loop trägt auch
+            # den SSE-Strom /-/events und die Heartbeats der anderen Knoten.
+            loop = asyncio.get_running_loop()
+            ok, kind = await loop.run_in_executor(
+                None, lambda: _pull_for_deploy(sync_lock))
+            if not ok:
+                activity.emit(log, logging.WARNING, "daemon.restart_aborted",
+                              "Neustart abgebrochen — Pull fehlgeschlagen",
+                              role="daemon", reason=str(kind))
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"pull failed ({kind}) — kein Neustart, der Knoten "
+                           "bleibt auf dem laufenden Stand")
+            pulled = True
+            activity.emit(log, logging.INFO, "daemon.deploy_pull",
+                          "Deployment: origin integriert", role="daemon")
+
+        kinds: list[str] = []
+        if req.reset:
+            boot_signal.request("reset")
+            kinds.append("reset")
+
+        activity.emit(log, logging.INFO, "daemon.restart_requested",
+                      "Neustart angefordert", role="daemon",
+                      kinds=",".join(kinds) or "restart",
+                      pulled=str(pulled).lower())
+
+        async def _later() -> None:
+            await asyncio.sleep(0.5)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        asyncio.create_task(_later())
+        note = ("Supervisor startet neu" if not kinds else
+                "Supervisor startet neu; reset braucht einen zweiten Start, "
+                "bevor der Server wieder läuft")
+        return {"restarting": True, "pulled": pulled,
+                "signals": kinds, "note": note}
 
 
 def _add_status_route(app: FastAPI, *, sync_lock=None, synchronizer=None) -> None:
@@ -473,7 +577,8 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                 raise HTTPException(status_code=401, detail="node blocked by host operator")
         result = registry.heartbeat(hb.worker, hb.host, hb.git_status,
                                     node_id=hb.node_id, git_user=hb.git_user, role=hb.role,
-                                    port=hb.port)
+                                    port=hb.port, engine=hb.engine,
+                                    git_commit=hb.git_commit)
         # PLAN-32 Stufe 32.2: Config-Bundle-Distribution huckepack auf
         # demselben Heartbeat-Roundtrip. config_version reist bei JEDEM
         # Heartbeat mit (paar Bytes, kein Secret) — config_bundle nur, wenn
@@ -1425,6 +1530,11 @@ def create_app(
     # status/{id} — auf JEDEM Knoten, nicht nur mit roles.scheduler (s. Docstring
     # von _add_status_route()).
     _add_status_route(app, sync_lock=sync_lock, synchronizer=synchronizer)
+    # /-/restart ebenso rollenunabhängig: ein Deploy trifft alle Knoten, und der
+    # häufigste Adressat ist ein reiner Client (s. _add_daemon_routes()). Der
+    # sync_lock wird durchgereicht, damit der Deploy-Pull nicht mit dem
+    # Synchronizer ins selbe Repo greift.
+    _add_daemon_routes(app, sync_lock=sync_lock)
 
     # ── Scheduler-Rolle: übrige echte DB-Routen (PLAN-3 §3.1) ───────────────
     # Zuerst registriert ⇒ gewinnen gegen die 3.0-Contract-Stubs für /-/job.
