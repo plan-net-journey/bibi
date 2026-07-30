@@ -24,6 +24,7 @@ class WorkerRegistry:
         self, worker: str, host: str, git_status: str | None = None, *,
         node_id: str | None = None, git_user: str | None = None,
         role: str | None = None, port: int | None = None, now: float | None = None,
+        engine: str | None = None, git_commit: str | None = None,
     ) -> dict:
         """``node_id`` (Bibi4-Iteration, User-Fund: derselbe physische Client
         tauchte je nach Netzwerk mit unterschiedlichem ``worker``-Namen auf,
@@ -37,13 +38,22 @@ class WorkerRegistry:
         Übersicht braucht die Rollen je Client") ist der rohe
         ``BIBI_ROLE``-String des sendenden Knotens, unverändert gespeichert.
         ``port`` (Batch 9 Punkt 3) ist der tatsächliche Bind-Port des
-        sendenden Knotens, für den Name+Host-Link im Nodes-Screen."""
+        sendenden Knotens, für den Name+Host-Link im Nodes-Screen.
+
+        ``engine``/``git_commit`` (m.rau/bibi#19): der installierte Engine-Stand
+        und der Commit des Team-Repos. Ein Knoten konnte bisher nicht sagen, was
+        er fährt — ein Deploy war damit nicht überprüfbar, sondern nur über
+        Verhaltensmerkmale des neuen Codes zu erschließen. Beide werden
+        unverändert durchgereicht; ein Client, der sie nicht sendet, hinterlässt
+        sie leer statt einen alten Wert zu konservieren (sonst zeigte der Screen
+        nach einem Downgrade des Clients dauerhaft den letzten bekannten Stand)."""
         now = time.time() if now is None else now
         key = node_id or worker
         with self._lock:
             entry = self._w.get(key) or {"connected_at": now}
             entry.update(worker=worker, host=host, git_status=git_status,
                          node_id=node_id, git_user=git_user, role=role, port=port,
+                         engine=engine, git_commit=git_commit,
                          last_heartbeat=now)
             self._w[key] = entry
             return dict(entry)

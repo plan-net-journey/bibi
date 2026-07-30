@@ -41,34 +41,56 @@ class _FakeClient:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.calls: list[tuple] = []
+        self.last_kwargs: dict = {}
 
-    def register(self, worker: str, host: str, git_status: str | None = None, *,
-                 node_id: str | None = None, git_user: str | None = None,
-                 role: str | None = None, port: int | None = None,
-                 client_config_version: str | None = None) -> dict | None:
-        self.calls.append((worker, host, git_status, node_id, git_user, role, port,
-                           client_config_version))
+    def register(self, worker: str, host: str, git_status: str | None = None,
+                 **kw) -> dict | None:
+        # ``**kw`` statt einer exakt gespiegelten Signatur: der Heartbeat bekommt
+        # regelmäßig neue Felder (role, port, client_config_version, jetzt
+        # engine/git_commit für m.rau/bibi#19). Eine nachzuziehende Parameterliste
+        # ließ die Aufrufe hier bei jeder Erweiterung in einen TypeError laufen,
+        # den ``Heartbeat._beat()`` als „Scheduler nicht erreichbar" verschluckt —
+        # die Tests scheiterten dann mit „0 Aufrufe" statt mit dem echten Grund.
+        self.calls.append((worker, host, git_status, kw.get("node_id"),
+                           kw.get("git_user"), kw.get("role"), kw.get("port"),
+                           kw.get("client_config_version")))
+        self.last_kwargs = kw
         if self.fail:
             raise ConnectionError("scheduler unreachable")
         return None
 
 
-def test_git_status_reports_branch_tree_and_sync(gitrepo: Path):
+def test_tree_status_reports_branch_tree_and_sync(gitrepo: Path):
     # PLAN-18 Stufe 18.0: A12 verspricht Tree+Sync im Heartbeat, bisher kam nur
     # der Branch-Name hoch — geteilte working_tree_status()-Basis behebt das.
     hb = Heartbeat(client=_FakeClient(), repo_root=gitrepo)
-    assert hb._git_status() == "trunk · clean · synced"
+    label, commit = hb._tree_status()
+    assert label == "trunk · clean · synced"
+    # m.rau/bibi#19: der Commit kommt als zweiter Rückgabewert dazu, nicht im
+    # String — „synced" allein sagt nicht, ob zwei Knoten denselben Stand fahren.
+    assert commit and len(commit) == 7
 
 
-def test_git_status_reflects_modified_tree(gitrepo: Path):
+def test_tree_status_reflects_modified_tree(gitrepo: Path):
     (gitrepo / "f").write_text("y", encoding="utf-8")
     hb = Heartbeat(client=_FakeClient(), repo_root=gitrepo)
-    assert hb._git_status() == "trunk · modified · synced"
+    assert hb._tree_status()[0] == "trunk · modified · synced"
 
 
-def test_git_status_na_outside_git_repo(tmp_path: Path):
+def test_tree_status_na_outside_git_repo(tmp_path: Path):
     hb = Heartbeat(client=_FakeClient(), repo_root=tmp_path)
-    assert hb._git_status() == "n/a"
+    assert hb._tree_status() == ("n/a", None)
+
+
+def test_engine_and_commit_included_in_heartbeat(gitrepo: Path):
+    # m.rau/bibi#19: ohne diese Angabe konnte ein Deploy sein eigenes Ergebnis
+    # nicht prüfen — der letzte Nachweis lief über ein Verhaltensmerkmal des
+    # neuen Codes in einer Logzeile, also über Indizien.
+    client = _FakeClient()
+    hb = Heartbeat(client=client, repo_root=gitrepo)
+    hb._beat()
+    assert client.last_kwargs["engine"]        # Label, nie leer (mindestens "n/a")
+    assert client.last_kwargs["git_commit"]
 
 
 def test_start_registers_immediately(gitrepo: Path):

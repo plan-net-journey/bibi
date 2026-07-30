@@ -94,6 +94,46 @@ def test_clients_table_handles_missing_role_gracefully():
     assert html.count('role-box off"') == 4
 
 
+def test_clients_table_shows_engine_and_commit():
+    # m.rau/bibi#19: ein Knoten konnte bisher nicht sagen, welche Engine er
+    # fährt — ein Deploy war damit nicht überprüfbar. Der Commit steht neben
+    # den Git-Chips, weil "synced" allein nicht beantwortet, ob zwei Knoten
+    # denselben Stand haben.
+    workers = [{
+        "worker": "sarasate", "host": "sarasate", "stale": False,
+        "git_status": "trunk · clean · synced", "git_commit": "a1b2c3d",
+        "engine": "v0.2.0", "connected_at": 0, "last_heartbeat": 0,
+    }]
+    html = render._clients_table(workers, now=0)
+    assert "<th>Engine</th>" in html
+    assert "v0.2.0" in html
+    assert "<code>a1b2c3d</code>" in html
+
+
+def test_clients_table_flags_editable_engine():
+    # Der eigentliche Anlass des Issues: ein Knoten gegen ein Arbeits-Checkout
+    # sah bisher aus wie jeder andere. Jetzt trägt er einen Warn-Chip.
+    workers = [{
+        "worker": "mac", "host": "mac", "stale": False,
+        "engine": "0.2.1 (editable)", "connected_at": 0, "last_heartbeat": 0,
+    }]
+    html = render._clients_table(workers, now=0)
+    assert 'class="chip conflict"' in html
+    assert ">editable<" in html
+    # Die Version bleibt daneben lesbar, der Chip ersetzt sie nicht.
+    assert "0.2.1" in html
+
+
+def test_clients_table_handles_missing_engine_gracefully():
+    # Ein älterer Client sendet die Felder nicht — die Zeile bleibt leer statt
+    # zu brechen.
+    workers = [{"worker": "old", "host": "h", "stale": False,
+               "connected_at": 0, "last_heartbeat": 0}]
+    html = render._clients_table(workers, now=0)
+    assert "<th>Engine</th>" in html
+    assert "editable" not in html
+
+
 def test_clients_fragment_is_bus_driven():
     # PLAN-36 Stufe 36.3: kein 10s-Self-Poll mehr — die Region haengt am
     # kollektiven Bus-Target "nodes" (Collector: WorkerRegistry-Fingerprint).

@@ -63,7 +63,9 @@ class LocalScheduler:
     def register(self, worker: str, host: str, git_status: str | None = None, *,
                  node_id: str | None = None, git_user: str | None = None,
                  role: str | None = None, port: int | None = None,
-                 client_config_version: str | None = None) -> dict | None:
+                 client_config_version: str | None = None,
+                 engine: str | None = None,
+                 git_commit: str | None = None) -> dict | None:
         return None  # Single-Node: keine Anmeldung, kein Bundle zu holen
 
 
@@ -106,7 +108,9 @@ class RemoteScheduler:
     def register(self, worker: str, host: str, git_status: str | None = None, *,
                  node_id: str | None = None, git_user: str | None = None,
                  role: str | None = None, port: int | None = None,
-                 client_config_version: str | None = None) -> dict | None:
+                 client_config_version: str | None = None,
+                 engine: str | None = None,
+                 git_commit: str | None = None) -> dict | None:
         # PLAN-32 Stufe 32.1/32.2: liefert jetzt die volle Host-Antwort zurück
         # (approval_status-Nebeneffekte + config_version/config_bundle) —
         # vorher wurde die Antwort verworfen. Ein non-200 (z. B. 401 bei
@@ -117,6 +121,10 @@ class RemoteScheduler:
             "worker": worker, "host": host, "git_status": git_status,
             "node_id": node_id, "git_user": git_user, "role": role, "port": port,
             "client_config_version": client_config_version,
+            # m.rau/bibi#19 — beide optional im Schema, ein älterer Host
+            # ignoriert sie einfach (FastAPI verwirft unbekannte Felder nicht
+            # mit 422, solange das Modell sie nicht verbietet).
+            "engine": engine, "git_commit": git_commit,
         })
         if code != 200:
             raise RuntimeError(f"heartbeat rejected: HTTP {code}")
