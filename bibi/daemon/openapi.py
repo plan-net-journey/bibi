@@ -190,6 +190,25 @@ class WorkerHeartbeat(BaseModel):
     git_commit: str | None = None
 
 
+class RestartRequest(BaseModel):
+    """``POST /-/restart`` — Neustart dieses Daemons (m.rau/bibi#39).
+
+    Ohne Flags ein reiner Neustart: der Prozess beendet sich, der Supervisor
+    bringt ihn zurück. ``deployment`` hinterlegt zusätzlich ein Boot-Signal, das
+    beim nächsten Start ``git pull`` auslöst — nötig, weil ``uv run`` das venv
+    gegen die Lock im **lokalen** Checkout synct und der Synchronizer nur alle
+    180 s pullt; ein Neustart direkt nach einem Push käme sonst zu früh und
+    fuhre den alten Stand wieder hoch. ``reset`` wirft zusätzlich das venv weg
+    und impliziert ``deployment``.
+
+    Beides führt zu einem **zweiten** Neustart, bevor der Server wieder läuft:
+    ein Prozess kann sein eigenes venv nicht unter sich austauschen
+    (s. ``boot_signal``)."""
+
+    deployment: bool = False
+    reset: bool = False
+
+
 class WorkerView(BaseModel):
     """Ein beim Scheduler angemeldeter Worker (§4.5, A12) — Heartbeat + Git-Status."""
 

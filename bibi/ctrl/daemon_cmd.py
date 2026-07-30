@@ -17,7 +17,7 @@ import sys
 import urllib.request
 
 from bibi import config, repo, state
-from bibi.daemon import activity
+from bibi.daemon import activity, boot_signal
 from bibi.daemon import roles as R
 
 
@@ -198,6 +198,15 @@ def run(args: argparse.Namespace) -> int:
                   role="daemon", roles=",".join(names), port=port,
                   loglevel=logging.getLevelName(level), log=str(log_path),
                   shutdown_grace_s=grace)
+    # Boot-Signale (m.rau/bibi#39): Phase 2 des Doppel-Neustarts. Hier — VOR
+    # uvicorn.run() — ist das ein gewöhnlicher Programmablauf: pullen bzw. venv
+    # wegwerfen, dann zurückkehren. Kein Server, kein Signal-Handling, keine
+    # Dienste, die gleich wieder gestoppt werden müssten. Der Supervisor
+    # (Restart=always/KeepAlive) startet erneut, und erst dieser dritte Prozess
+    # läuft mit dem neuen Stand, weil `uv run` das venv beim Hochfahren gegen
+    # die inzwischen gepullte Lock synct.
+    if boot_signal.apply_and_clear():
+        return 0
     # timeout_graceful_shutdown: ohne die Frist wartet uvicorn beim SIGTERM
     # unbegrenzt auf offene Verbindungen — und der SSE-Strom /-/events schließt
     # nie von selbst (s. _resolve_shutdown_timeout()).
