@@ -194,16 +194,18 @@ class RestartRequest(BaseModel):
     """``POST /-/restart`` — Neustart dieses Daemons (m.rau/bibi#39).
 
     Ohne Flags ein reiner Neustart: der Prozess beendet sich, der Supervisor
-    bringt ihn zurück. ``deployment`` hinterlegt zusätzlich ein Boot-Signal, das
-    beim nächsten Start ``git pull`` auslöst — nötig, weil ``uv run`` das venv
-    gegen die Lock im **lokalen** Checkout synct und der Synchronizer nur alle
-    180 s pullt; ein Neustart direkt nach einem Push käme sonst zu früh und
-    fuhre den alten Stand wieder hoch. ``reset`` wirft zusätzlich das venv weg
-    und impliziert ``deployment``.
+    bringt ihn zurück.
 
-    Beides führt zu einem **zweiten** Neustart, bevor der Server wieder läuft:
-    ein Prozess kann sein eigenes venv nicht unter sich austauschen
-    (s. ``boot_signal``)."""
+    ``deployment`` pullt **vor** dem Beenden, synchron im Request. Nötig, weil
+    ``uv run`` das venv gegen die Lock im **lokalen** Checkout synct und der
+    Synchronizer nur alle 180 s pullt — ein Neustart direkt nach einem Push
+    führe sonst den alten Stand wieder hoch. Weil der Pull hier passiert und
+    nicht erst beim nächsten Start, genügt **ein** Neustart; schlägt er fehl,
+    wird gar nicht neu gestartet und der Aufrufer bekommt 409.
+
+    ``reset`` wirft zusätzlich das venv weg und pullt ebenfalls. Nur dieser Fall
+    braucht zwei Neustarts: ein Prozess kann sein eigenes venv nicht unter sich
+    austauschen (s. ``boot_signal``)."""
 
     deployment: bool = False
     reset: bool = False

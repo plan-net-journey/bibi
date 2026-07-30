@@ -204,7 +204,33 @@ def _require_approved_or_local(request: Request,
         raise HTTPException(status_code=403, detail=f"node not approved (status: {status})")
 
 
-def _add_daemon_routes(app: FastAPI) -> None:
+def _pull_for_deploy(sync_lock=None) -> tuple[bool, str | None]:
+    """Origin integrieren, synchron und unter dem ``sync_lock`` (m.rau/bibi#39).
+
+    Warum im Request und nicht als Boot-Signal (Einwand von m.rau, 2026-07-30):
+    liegt die neue Lock **vor** dem ersten Neustart im Checkout, synct ``uv run``
+    sofort dagegen — ein Durchlauf genügt statt zweier. Dazu zwei Vorteile, die
+    den Signal-Weg auch inhaltlich schlechter machen: hier gilt der
+    ``sync_lock`` (der Synchronizer pullt/pusht sonst gleichzeitig ins selbe
+    Repo), und ein Fehlschlag lässt sich dem Aufrufer direkt melden statt ihn
+    nur ins Log zu schreiben.
+
+    ``guard_live_paths=False``: der Live-Edit-Guard schützt **unbeaufsichtigte**
+    Schreibvorgänge davor, einem tippenden Menschen den Boden wegzuziehen. Ein
+    angefordertes Deployment ist das Gegenteil — ein stiller Skip wäre hier
+    genau der Fehler, weil der Knoten ohne den neuen Stand zurückkäme und
+    niemand wüsste warum.
+    """
+    from bibi import git_ops
+    root = repo.root()
+    branch = git_ops.current_branch(root) or "trunk"
+    if sync_lock is None:
+        return git_ops.integrate(branch, guard_live_paths=False)
+    with sync_lock:
+        return git_ops.integrate(branch, guard_live_paths=False)
+
+
+def _add_daemon_routes(app: FastAPI, *, sync_lock=None) -> None:
     """``/-/restart`` — bewusst **rollenunabhängig** (m.rau/bibi#39).
 
     Jeder Knoten muss neu startbar sein, nicht nur der Scheduler: der Deploy
@@ -224,11 +250,15 @@ def _add_daemon_routes(app: FastAPI) -> None:
         also** — der Supervisor bringt den Daemon nach drei Sekunden mit einem
         gegen die Lock gesyncten venv zurück.
 
-        ``deployment``/``reset`` hinterlegen vorher ein Signal, das den Prozess
-        überlebt; abgearbeitet wird es beim nächsten Start **vor** dem Server
-        (``boot_signal``, dort steht die ausführliche Begründung des
-        Doppel-Neustarts). Ohne Flags ist es ein reiner Neustart, der kein
-        Signal braucht.
+        ``deployment`` pullt **hier, synchron**: damit liegt die neue Lock schon
+        vor dem Neustart und ein Durchlauf genügt. Schlägt der Pull fehl, wird
+        **nicht** neu gestartet — ein Neustart auf den alten Stand wäre nur
+        Ausfallzeit ohne Nutzen, und der Aufrufer erfährt den Grund (409) statt
+        ihn im Log suchen zu müssen.
+
+        ``reset`` hinterlegt zusätzlich ein Boot-Signal, weil ein Prozess sein
+        eigenes venv nicht unter sich austauschen kann; das ist der einzige
+        Fall, der noch zwei Neustarts braucht (s. ``boot_signal``).
 
         Der Prozess endet **verzögert**, damit diese Antwort den Aufrufer noch
         erreicht — und über SIGTERM an sich selbst, nicht per ``os._exit()``:
@@ -236,28 +266,45 @@ def _add_daemon_routes(app: FastAPI) -> None:
         ``lifespan``-Finally. Ein harter Abbruch würde genau die Garantien
         aushebeln, um die es beim Job-Drain (#38) geht.
         """
+        pulled = False
+        if req.deployment or req.reset:
+            # Blockierendes git in den Executor: dieser Event-Loop trägt auch
+            # den SSE-Strom /-/events und die Heartbeats der anderen Knoten.
+            loop = asyncio.get_running_loop()
+            ok, kind = await loop.run_in_executor(
+                None, lambda: _pull_for_deploy(sync_lock))
+            if not ok:
+                activity.emit(log, logging.WARNING, "daemon.restart_aborted",
+                              "Neustart abgebrochen — Pull fehlgeschlagen",
+                              role="daemon", reason=str(kind))
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"pull failed ({kind}) — kein Neustart, der Knoten "
+                           "bleibt auf dem laufenden Stand")
+            pulled = True
+            activity.emit(log, logging.INFO, "daemon.deploy_pull",
+                          "Deployment: origin integriert", role="daemon")
+
         kinds: list[str] = []
         if req.reset:
             boot_signal.request("reset")
             kinds.append("reset")
-        if req.deployment and not req.reset:
-            # reset impliziert deployment (s. boot_signal) — nicht doppelt
-            # anfordern, sonst stünde derselbe Vorgang zweimal im Bericht.
-            boot_signal.request("deployment")
-            kinds.append("deployment")
 
         activity.emit(log, logging.INFO, "daemon.restart_requested",
                       "Neustart angefordert", role="daemon",
-                      kinds=",".join(kinds) or "restart")
+                      kinds=",".join(kinds) or "restart",
+                      pulled=str(pulled).lower())
 
         async def _later() -> None:
             await asyncio.sleep(0.5)
             os.kill(os.getpid(), signal.SIGTERM)
 
         asyncio.create_task(_later())
-        return {"restarting": True, "signals": kinds,
-                "note": "Supervisor startet neu; bei deployment/reset folgt ein "
-                        "zweiter Start, bevor der Server wieder läuft"}
+        note = ("Supervisor startet neu" if not kinds else
+                "Supervisor startet neu; reset braucht einen zweiten Start, "
+                "bevor der Server wieder läuft")
+        return {"restarting": True, "pulled": pulled,
+                "signals": kinds, "note": note}
 
 
 def _add_status_route(app: FastAPI, *, sync_lock=None, synchronizer=None) -> None:
@@ -1484,8 +1531,10 @@ def create_app(
     # von _add_status_route()).
     _add_status_route(app, sync_lock=sync_lock, synchronizer=synchronizer)
     # /-/restart ebenso rollenunabhängig: ein Deploy trifft alle Knoten, und der
-    # häufigste Adressat ist ein reiner Client (s. _add_daemon_routes()).
-    _add_daemon_routes(app)
+    # häufigste Adressat ist ein reiner Client (s. _add_daemon_routes()). Der
+    # sync_lock wird durchgereicht, damit der Deploy-Pull nicht mit dem
+    # Synchronizer ins selbe Repo greift.
+    _add_daemon_routes(app, sync_lock=sync_lock)
 
     # ── Scheduler-Rolle: übrige echte DB-Routen (PLAN-3 §3.1) ───────────────
     # Zuerst registriert ⇒ gewinnen gegen die 3.0-Contract-Stubs für /-/job.

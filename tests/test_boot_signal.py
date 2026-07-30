@@ -1,9 +1,11 @@
-"""Boot-Signale und der Doppel-Neustart (m.rau/bibi#39).
+"""Boot-Signale (m.rau/bibi#39).
 
-Geprüft wird die Mechanik, nicht git: der Pull ist gemockt. Was hier zählt, ist
-dass Signale den Prozess überleben, genau einmal wirken und auch im Fehlerfall
-verschwinden — eine Neustart-Schleife wäre der teuerste Fehlerfall, weil sie den
-Knoten dauerhaft aus dem Betrieb nimmt.
+Nach dem Einwand von m.rau (2026-07-30) ist hier nur noch ``reset`` übrig: der
+Deploy-Pull läuft im Request, nicht als Boot-Signal (s. Modul-Docstring von
+``boot_signal``). Was hier zählt, ist dass ein Signal den Prozess überlebt,
+genau einmal wirkt und auch im Fehlerfall verschwindet — eine Neustart-Schleife
+wäre der teuerste Fehlerfall, weil sie den Knoten dauerhaft aus dem Betrieb
+nimmt.
 """
 
 from __future__ import annotations
@@ -17,19 +19,26 @@ from bibi.daemon import boot_signal as bs
 
 def test_request_and_pending_roundtrip(tmp_path: Path):
     assert bs.pending(tmp_path) == []
-    bs.request("deployment", tmp_path)
-    assert bs.pending(tmp_path) == ["deployment"]
+    bs.request("reset", tmp_path)
+    assert bs.pending(tmp_path) == ["reset"]
 
 
 def test_request_is_idempotent(tmp_path: Path):
-    bs.request("deployment", tmp_path)
-    bs.request("deployment", tmp_path)
-    assert bs.pending(tmp_path) == ["deployment"]
+    bs.request("reset", tmp_path)
+    bs.request("reset", tmp_path)
+    assert bs.pending(tmp_path) == ["reset"]
 
 
 def test_unknown_kind_is_rejected(tmp_path: Path):
     with pytest.raises(ValueError):
         bs.request("frobnicate", tmp_path)
+
+
+def test_deployment_is_no_longer_a_boot_signal(tmp_path: Path):
+    # Der Pull gehört in den Request: liegt die neue Lock vor dem ERSTEN
+    # Neustart im Checkout, genügt ein Durchlauf statt zweier.
+    with pytest.raises(ValueError):
+        bs.request("deployment", tmp_path)
 
 
 def test_apply_without_signal_does_not_ask_for_restart(tmp_path: Path):
@@ -38,13 +47,23 @@ def test_apply_without_signal_does_not_ask_for_restart(tmp_path: Path):
     assert bs.apply_and_clear(tmp_path) is False
 
 
-def test_deployment_pulls_and_requests_restart(tmp_path: Path, monkeypatch):
-    calls: list[Path] = []
-    monkeypatch.setattr(bs, "_pull", lambda root: (calls.append(root), (True, None))[1])
-    bs.request("deployment", tmp_path)
+def test_reset_removes_venv_and_requests_restart(tmp_path: Path):
+    venv = tmp_path / ".venv"
+    (venv / "lib").mkdir(parents=True)
+    (venv / "lib" / "x").write_text("y", encoding="utf-8")
+
+    bs.request("reset", tmp_path)
     assert bs.apply_and_clear(tmp_path) is True
-    assert calls == [tmp_path]
+    assert not venv.exists()
     # Signal weg: der nächste Start ist ein gewöhnlicher.
+    assert bs.pending(tmp_path) == []
+
+
+def test_signal_is_cleared_even_if_venv_is_missing(tmp_path: Path):
+    # Kein venv da (z. B. schon entfernt): kein Fehler, und das Signal bleibt
+    # nicht liegen.
+    bs.request("reset", tmp_path)
+    assert bs.apply_and_clear(tmp_path) is True
     assert bs.pending(tmp_path) == []
 
 
@@ -53,55 +72,11 @@ def test_signal_is_cleared_before_the_work_happens(tmp_path: Path, monkeypatch):
     # Signal liegen, das beim nächsten Start dasselbe erneut anstößt.
     seen: list[list[str]] = []
 
-    def fake_pull(root):
-        seen.append(bs.pending(root))
-        return True, None
+    def fake_rmtree(path, **kw):
+        seen.append(bs.pending(tmp_path))
 
-    monkeypatch.setattr(bs, "_pull", fake_pull)
-    bs.request("deployment", tmp_path)
+    monkeypatch.setattr(bs.shutil, "rmtree", fake_rmtree)
+    (tmp_path / ".venv").mkdir()
+    bs.request("reset", tmp_path)
     bs.apply_and_clear(tmp_path)
     assert seen == [[]]
-
-
-def test_failed_pull_still_clears_and_restarts(tmp_path: Path, monkeypatch):
-    # Der Knoten läuft dann auf dem alten Stand weiter — richtig so, aber ohne
-    # Schleife. Sichtbar wird der Fehlschlag über activity, nicht über ein
-    # liegengebliebenes Signal.
-    monkeypatch.setattr(bs, "_pull", lambda root: (False, "conflict"))
-    bs.request("deployment", tmp_path)
-    assert bs.apply_and_clear(tmp_path) is True
-    assert bs.pending(tmp_path) == []
-
-
-def test_pull_exception_does_not_escape(tmp_path: Path, monkeypatch):
-    def boom(root):
-        raise RuntimeError("git weg")
-
-    monkeypatch.setattr(bs, "_pull", boom)
-    bs.request("deployment", tmp_path)
-    # Ein Fehler beim Pull darf den Neustart nicht verlieren.
-    assert bs.apply_and_clear(tmp_path) is True
-
-
-def test_reset_removes_venv_and_implies_deployment(tmp_path: Path, monkeypatch):
-    pulled: list[Path] = []
-    monkeypatch.setattr(bs, "_pull", lambda root: (pulled.append(root), (True, None))[1])
-    venv = tmp_path / ".venv"
-    (venv / "lib").mkdir(parents=True)
-    (venv / "lib" / "x").write_text("y", encoding="utf-8")
-
-    bs.request("reset", tmp_path)
-    assert bs.apply_and_clear(tmp_path) is True
-    assert not venv.exists()
-    # reset impliziert deployment: ein neues venv entsteht gegen die aktuelle
-    # Lock, also wird vorher gepullt.
-    assert pulled == [tmp_path]
-
-
-def test_reset_and_deployment_together_pull_once(tmp_path: Path, monkeypatch):
-    pulled: list[Path] = []
-    monkeypatch.setattr(bs, "_pull", lambda root: (pulled.append(root), (True, None))[1])
-    bs.request("deployment", tmp_path)
-    bs.request("reset", tmp_path)
-    bs.apply_and_clear(tmp_path)
-    assert len(pulled) == 1
