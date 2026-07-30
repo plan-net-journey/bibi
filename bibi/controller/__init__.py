@@ -479,6 +479,36 @@ def add_controller_routes(
         workers = [_host_worker_entry(), *(_status().get("workers") or [])]
         return HTMLResponse(render.clients_fragment(workers))
 
+    @app.post("/-/ui/clients/expected-version", include_in_schema=False)
+    def clients_set_expected_version(version: str = "", deploy: bool = False):
+        """Die erwartete Engine-Version setzen (m.rau/bibi#39).
+
+        Das Ändern **ist** der Deploy: `pyproject.toml` schreiben, `uv lock`
+        regenerieren, committen, pushen. Es entsteht kein zweites Soll-Feld
+        neben der Lock — sie bleibt die einzige Wahrheit, dieses Feld ist ihre
+        Bedienoberfläche. Dass der Controller dafür ins Repo schreiben darf,
+        ist eine ausdrückliche Entscheidung (m.rau, 2026-07-30).
+
+        Der Rollout ist bewusst optional (`deploy`): erst sehen, was die Lock
+        sagt, dann ausrollen — oder beides in einem Zug.
+        """
+        from bibi.daemon import deploy as deploy_mod
+        res = deploy_mod.set_expected_version(version)
+        if res.get("ok") and res.get("changed") and deploy:
+            import time as _t
+            workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+            own = _host_worker_entry().get("node_id")
+            ordered = ([w for w in workers if w.get("node_id") != own]
+                       + [w for w in workers if w.get("node_id") == own])
+            for w in ordered:
+                if w.get("port"):
+                    client.restart_node(w.get("host") or "127.0.0.1",
+                                        int(w["port"]), deployment=True)
+                    _t.sleep(0.3)
+            _t.sleep(1.0)
+        workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+        return HTMLResponse(render.clients_fragment(workers, deploy_result=res))
+
     @app.post("/-/ui/clients/restart-all", include_in_schema=False)
     def clients_restart_all(deploy: bool = False):
         """„Restart all" (m.rau/bibi#39) — rollierend, nicht gleichzeitig.

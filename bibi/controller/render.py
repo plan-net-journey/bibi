@@ -872,11 +872,57 @@ def _clients_table(workers: list[dict], now: float) -> str:
     )
 
 
-def clients_fragment(workers: list[dict], now: float | None = None) -> str:
+def _expected_version_form(deploy_result: dict | None) -> str:
+    """Feld für die erwartete Engine-Version (m.rau/bibi#39).
+
+    Der aktuelle Ref kommt aus ``pyproject.toml`` — also aus der Absicht, nicht
+    aus der Lock. Genau der Unterschied ist der Punkt: hier wird die Absicht
+    gesetzt, das Ergebnis erzeugt ``uv lock``.
+
+    Zwei Knöpfe: **Setzen** schreibt und pusht, **Setzen + Ausrollen** stößt
+    zusätzlich den Neustart aller Knoten an. Getrennt, weil man den Lock-Diff
+    sehen wollen kann, bevor drei Daemons durchstarten.
+    """
+    try:
+        from bibi.daemon import deploy as deploy_mod
+        cur = deploy_mod.current_ref() or "?"
+    except Exception:  # noqa: BLE001 — defensiv (§2.7)
+        cur = "?"
+    msg = ""
+    if deploy_result:
+        if deploy_result.get("ok") and deploy_result.get("changed"):
+            msg = (f'<span class="chip clean">gesetzt: {_e(deploy_result.get("ref",""))}</span>'
+                   f' <span class="ts-dim">(war {_e(deploy_result.get("was",""))}'
+                   f'{", gepusht" if deploy_result.get("pushed") else ", NICHT gepusht"})</span>')
+        elif deploy_result.get("ok"):
+            msg = f'<span class="ts-dim">{_e(deploy_result.get("note",""))}</span>'
+        else:
+            # Der Fehlerfall ist der wichtigere: uv lock scheitert, wenn der Tag
+            # nicht existiert — dann wurde zurückgerollt und nichts committet.
+            msg = (f'<span class="chip conflict">{_e(deploy_result.get("error",""))}</span>'
+                   f' <span class="ts-dim">{_e(deploy_result.get("detail",""))}</span>')
+    return (
+        '<p class="handles">'
+        '<label>Erwartete Engine-Version '
+        f'<input name="version" value="{_e(cur)}" size="14"></label> '
+        '<button class="startbtn" hx-post="/-/ui/clients/expected-version" '
+        'hx-include="closest p" hx-target="#clientsboard" hx-swap="outerHTML" '
+        f'hx-disabled-elt="this">Setzen{_BTN_SPINNER}</button> '
+        '<button class="startbtn" hx-post="/-/ui/clients/expected-version?deploy=true" '
+        'hx-include="closest p" hx-confirm="Version setzen UND alle Knoten neu starten?" '
+        'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this">'
+        f'Setzen + Ausrollen{_BTN_SPINNER}</button> {msg}'
+        '</p>'
+    )
+
+
+def clients_fragment(workers: list[dict], now: float | None = None, *,
+                     deploy_result: dict | None = None) -> str:
     now = time.time() if now is None else now
     return (
         '<div id="clientsboard" data-bus="nodes" data-bus-refetch="/-/ui/clients/board">'
         '<div class="panel-card"><h2>Nodes</h2>'
+        f"{_expected_version_form(deploy_result)}"
         # „Restart all" (m.rau/bibi#39) im Panel-Kopf, nicht je Zeile: es ist
         # eine Aktion auf die Föderation, nicht auf einen Knoten. Rollierend
         # ausgeführt (Clients zuerst, Host zuletzt) — siehe clients_restart_all().

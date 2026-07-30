@@ -361,3 +361,41 @@ def test_clients_restart_all_puts_host_last(team_repo: Path):
     # Der Host-Eintrag entsteht lokal (_host_worker_entry) und steht hinten.
     assert len(_FakeClient.restarts) >= 1
     assert _FakeClient.restarts[0][0] == "h2"
+
+
+def test_expected_version_form_shows_current_ref(monkeypatch):
+    # m.rau/bibi#39: der angezeigte Wert kommt aus pyproject.toml (der Absicht),
+    # nicht aus der Lock (dem Ergebnis).
+    from bibi.daemon import deploy as dm
+    monkeypatch.setattr(dm, "current_ref", lambda root=None: "v0.2.3")
+    html = render.clients_fragment([], now=0)
+    assert 'name="version"' in html
+    assert 'value="v0.2.3"' in html
+    assert 'hx-post="/-/ui/clients/expected-version"' in html
+    assert 'hx-post="/-/ui/clients/expected-version?deploy=true"' in html
+
+
+def test_expected_version_form_reports_failure_prominently(monkeypatch):
+    # Der Fehlerfall ist der wichtigere: uv lock scheitert, wenn der Tag nicht
+    # existiert — dann wurde zurückgerollt und nichts committet. Das muss man
+    # sehen, sonst hält man den Deploy für erfolgt.
+    from bibi.daemon import deploy as dm
+    monkeypatch.setattr(dm, "current_ref", lambda root=None: "v0.2.3")
+    html = render.clients_fragment(
+        [], now=0,
+        deploy_result={"ok": False, "error": "uv lock fehlgeschlagen für v9.9.9",
+                       "detail": "no such tag"})
+    assert 'class="chip conflict"' in html
+    assert "v9.9.9" in html
+
+
+def test_expected_version_form_warns_when_not_pushed(monkeypatch):
+    # Ohne Push bleibt die Absicht lokal und der Deploy liefe auf den anderen
+    # Knoten ins Leere — das darf nicht wie Erfolg aussehen.
+    from bibi.daemon import deploy as dm
+    monkeypatch.setattr(dm, "current_ref", lambda root=None: "v0.2.3")
+    html = render.clients_fragment(
+        [], now=0,
+        deploy_result={"ok": True, "changed": True, "ref": "v0.2.3",
+                       "was": "v0.2.2", "pushed": False})
+    assert "NICHT gepusht" in html
