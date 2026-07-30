@@ -641,7 +641,7 @@ def get_job_by_slug(conn: sqlite3.Connection, slug: str) -> dict | None:
 #: (RESET räumt `started_at` explizit, s. `report_status()`) — PLAN-22 Befund 2:
 #: nach RESET zeigte die Übersicht sonst weiterhin den alten Terminal-Status
 #: (z. B. "killed") statt "pending", weil genau dieser Ausschluss griff.
-_LIVE_ROW_STATUSES = {"running", "failed", "awaiting", "deferred", "pending"}
+_LIVE_ROW_STATUSES = {"starting", "running", "failed", "awaiting", "deferred", "pending"}
 
 
 def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
@@ -861,9 +861,17 @@ def reserve_next(
         # der Eager-Rearm in report_status()): frischer fire-Zähler (eindeutige
         # run_id), Attempt-Reset, terminaler Snapshot weg. Für pending/failed/deferred
         # sind diese Felder ohnehin schon leer/unverändert — die CASEs sind dort No-ops.
+        # status='starting' (m.rau/bibi#38): die Reservierung landet nicht mehr
+        # direkt auf 'running'. Der Wrapper ist an dieser Stelle noch nicht
+        # gespawnt — es gibt also keine PID, und ein 'running' ohne PID war
+        # genau die Lücke, die eine PID-basierte Waisen-Prüfung unmöglich
+        # machte. pid/pid_started_at werden mitgenullt, damit ein Wiederanlauf
+        # (complete → starting via Lazy Rearm, failed → starting via Retry)
+        # nicht die PID des VORIGEN Laufs erbt und der Check sie für den neuen
+        # hält.
         cur = conn.execute(
-            "UPDATE jobs SET status='running', locked_at=:now, started_at=:now, "
-            "worker=:w, host=:h, "
+            "UPDATE jobs SET status='starting', locked_at=:now, started_at=:now, "
+            "worker=:w, host=:h, pid=NULL, pid_started_at=NULL, "
             "fire        = CASE WHEN status='complete' THEN fire+1 ELSE fire END, "
             "attempt     = CASE WHEN status='complete' THEN 0 ELSE attempt END, "
             "finished_at = CASE WHEN status='complete' THEN NULL ELSE finished_at END, "
@@ -1214,12 +1222,31 @@ def get_pid(conn: sqlite3.Connection, job_id: str) -> tuple[int, str | None] | N
 
 def report_pid(
     conn: sqlite3.Connection, job_id: str, pid: int, pid_started_at: str | None,
-) -> None:
-    """PID + Startzeit unmittelbar nach Wrapper-Spawn in die DB schreiben (§10.2)."""
-    conn.execute(
-        "UPDATE jobs SET pid=:pid, pid_started_at=:ps WHERE id=:id",
+) -> bool:
+    """PID + Startzeit nach dem Wrapper-Spawn schreiben und ``starting`` →
+    ``running`` schalten (§10.2, m.rau/bibi#38). ``True``, wenn der Übergang
+    stattfand.
+
+    **Das ``AND status='starting'`` ist der Kern und kein Schmuck.** Diese
+    Funktion läuft, nachdem ``_run_wrapper()`` zurückgekehrt ist — bei
+    ``detach=True`` also unmittelbar nach dem ``Popen``, während der Wrapper
+    schon arbeitet. Ein sehr kurzer Job kann in diesem Moment längst fertig sein
+    und ``complete`` gemeldet haben. Ein unbedingtes ``SET status='running'``
+    würde diesen Terminalzustand überschreiben: der Job fiele auf ``running``
+    zurück, mit einer PID, deren Prozess nicht mehr existiert — und die
+    periodische Waisen-Prüfung räumte ihn beim nächsten Durchlauf als
+    ``killed/no_process`` ab. Ein erfolgreich beendeter Job landete als getötet,
+    und je schneller er ist, desto wahrscheinlicher.
+
+    Trifft das Update null Zeilen, hat der Wrapper das Rennen gewonnen; sein
+    gemeldeter Zustand bleibt stehen und die PID interessiert niemanden mehr.
+    """
+    cur = conn.execute(
+        "UPDATE jobs SET pid=:pid, pid_started_at=:ps, status='running' "
+        "WHERE id=:id AND status='starting'",
         {"pid": pid, "ps": pid_started_at, "id": job_id},
     )
+    return cur.rowcount > 0
 
 
 def reconcile_no_process(
@@ -1239,10 +1266,27 @@ def reconcile_no_process(
     return n
 
 
-def reconcile_startup_orphans(
-    conn: sqlite3.Connection, worker_name: str, now: float | None = None
+def reconcile_orphans(
+    conn: sqlite3.Connection, worker_name: str, now: float | None = None,
+    *, include_starting: bool = True,
 ) -> int:
-    """Beim Start: RUNNING/AWAITING-Jobs dieses Workers per PID prüfen (§10.2).
+    """RUNNING/AWAITING-Jobs dieses Workers per PID prüfen (§10.2, #38).
+
+    Hieß bis 2026-07-30 ``reconcile_startup_orphans`` und lief nur beim
+    Daemon-Start. Sie läuft jetzt zusätzlich periodisch (``Sweeper``), was erst
+    durch ``starting`` gefahrlos wurde: **RUNNING ⇒ pid gesetzt**, die Prüfung
+    ist also jederzeit eindeutig und braucht keine Karenzzeit, die einen
+    Setup-Vorgang von einem toten Prozess unterscheiden müsste.
+
+    ``include_starting`` trennt die beiden Aufrufer:
+
+    - **Beim Start** (``True``): ein vorgefundener ``starting``-Job ist
+      zweifelsfrei eine Waise. Sein Setup wurde vom Prozessende unterbrochen,
+      ein Wrapper existiert nicht und wird nie einen melden.
+    - **Periodisch** (``False``): ``starting`` heißt gerade *im Setup* —
+      Worktree anlegen, Container aufräumen, Image bauen. Das darf Minuten
+      dauern und ist genau der Fall, den ein laufender Sweep nicht anfassen
+      darf.
 
     - ``pid`` + ``pid_started_at`` stimmen mit dem laufenden Prozess überein →
       Prozess lebt echt noch (z. B. ``start_new_session=True``-Wrapper, der
@@ -1258,26 +1302,48 @@ def reconcile_startup_orphans(
     """
     now = time.time() if now is None else now
     n = 0
+    states = ["running", "awaiting"] + (["starting"] if include_starting else [])
     rows = conn.execute(
-        "SELECT id, schedule, pid, pid_started_at FROM jobs "
-        "WHERE status IN ('running', 'awaiting') AND worker=?",
-        (worker_name,),
+        "SELECT id, schedule, status, pid, pid_started_at FROM jobs "
+        f"WHERE status IN ({','.join('?' * len(states))}) AND worker=?",
+        (*states, worker_name),
     ).fetchall()
     for r in rows:
         pid = r["pid"]
+        if r["status"] == "starting":
+            # Kein Zweifelsfall: 'starting' bedeutet, dass der Wrapper noch nie
+            # gespawnt wurde. Wird dieser Zustand beim Daemon-Start vorgefunden,
+            # ist das Setup vom Prozessende unterbrochen worden — es gibt keinen
+            # Prozess, den man prüfen könnte, und es wird nie einen geben.
+            report_status(conn, r["id"], status="killed", reason="no_process", now=now)
+            _rearm_if_recurring(conn, r, now)
+            n += 1
+            continue
         still_alive = pid is not None and proc_started_at(pid) == r["pid_started_at"]
         if still_alive:
             continue
         report_status(conn, r["id"], status="killed", reason="no_process", now=now)
-        if is_recurring(r["schedule"]):
-            conn.execute(
-                "UPDATE jobs SET status='pending', next_fire_at=:now, attempt=0, "
-                "reason=NULL, locked_at=NULL, started_at=NULL, finished_at=NULL, "
-                "exit_code=NULL, output_ref=NULL, updated_at=:now WHERE id=:id",
-                {"now": now, "id": r["id"]},
-            )
+        _rearm_if_recurring(conn, r, now)
         n += 1
     return n
+
+
+def _rearm_if_recurring(conn: sqlite3.Connection, row, now: float) -> None:
+    """Wiederkehrende Jobs nach echtem ``killed`` sofort auf ``pending``.
+
+    Bei einem noch lebenden Prozess ausdrücklich **nicht** — der Scheduler würde
+    denselben Job sonst parallel ein zweites Mal dispatchen. Herausgezogen, weil
+    der ``starting``-Zweig (#38) dieselbe Behandlung braucht.
+    """
+    if not is_recurring(row["schedule"]):
+        return
+    conn.execute(
+        "UPDATE jobs SET status='pending', next_fire_at=:now, attempt=0, "
+        "reason=NULL, locked_at=NULL, started_at=NULL, finished_at=NULL, "
+        "exit_code=NULL, output_ref=NULL, pid=NULL, pid_started_at=NULL, "
+        "updated_at=:now WHERE id=:id",
+        {"now": now, "id": row["id"]},
+    )
 
 
 # ── Dispatch-Zähler (PLAN-21 Befund 11 v2, User-Redesign 2026-07-08) ────────
@@ -1539,8 +1605,12 @@ def verdict(conn: sqlite3.Connection, now: float | None = None) -> dict:
         if r["slug"] in current_slugs:
             continue
         jr = conn.execute("SELECT status FROM jobs WHERE slug=?", (r["slug"],)).fetchone()
-        if jr is None or jr["status"] == "running":
-            continue  # Schedule entfernt oder läuft gerade → kein „letzter-Lauf"-Problem
+        if jr is None or jr["status"] in ("starting", "running"):
+            # Schedule entfernt oder gerade aktiv → kein „letzter-Lauf"-Problem.
+            # 'starting' gehört dazu (#38): ein Job im Setup läuft bereits, sein
+            # Ausgang steht noch aus. Ihn wegen eines alten Fehllaufs zu melden
+            # wäre dieselbe Fehlmeldung, die dieser Zweig für 'running' verhindert.
+            continue
         d = journal_view(r)
         d["last_run"] = True  # Zeile re-armt, aber letzter Lauf gescheitert
         deviations.append(d)
@@ -1630,6 +1700,46 @@ def set_node_approval(conn: sqlite3.Connection, node_id: str, status: str, *,
         "ON CONFLICT(node_id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at",
         (node_id, status, now)
     )
+
+
+def reconcile_blocked_nodes(
+    conn: sqlite3.Connection, workers: list[dict], now: float | None = None,
+) -> int:
+    """Laufende Jobs **gebannter** Knoten beenden (m.rau/bibi#23).
+
+    Die Ban-Semantik war bisher nur halb gebaut: ein ``blocked`` gemeldeter
+    Knoten wird beim Heartbeat mit 401 abgewiesen und bekommt kein
+    Config-Bundle — seine bereits laufenden Jobs blieben aber unangetastet in
+    der DB stehen und zählten weiter als aktiv. Ein Bann, der laufende Arbeit
+    weiterlaufen lässt, ist keiner.
+
+    ``workers`` ist die Registry-Sicht (``worker`` + ``node_id`` je Zeile); die
+    Zuordnung Bann → Job läuft über den Worker-Namen, weil die jobs-Tabelle
+    keine ``node_id`` führt.
+
+    Landung ist ``killed``/``no_process``, wie bei jeder anderen Waise: der
+    Prozess ist für diesen Scheduler nicht mehr erreichbar, ob er auf dem
+    fremden Knoten noch atmet, kann er weder wissen noch beeinflussen. Der
+    lokale Worker ist nie betroffen — er heartbeatet sich nicht selbst und
+    steht folglich nie in dieser Liste.
+    """
+    now = time.time() if now is None else now
+    blocked = {r["node_id"]: r["status"] for r in
+               conn.execute("SELECT node_id, status FROM approved_nodes "
+                            "WHERE status='blocked'")}
+    if not blocked:
+        return 0
+    names = {w.get("worker") for w in workers
+             if w.get("node_id") in blocked and w.get("worker")}
+    n = 0
+    for name in names:
+        for r in conn.execute(
+            "SELECT id FROM jobs WHERE status IN ('starting','running','awaiting') "
+            "AND worker=?", (name,),
+        ).fetchall():
+            report_status(conn, r["id"], status="killed", reason="no_process", now=now)
+            n += 1
+    return n
 
 
 def list_node_approvals(conn: sqlite3.Connection) -> dict[str, str]:

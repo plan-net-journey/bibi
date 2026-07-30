@@ -429,6 +429,7 @@ def test_tick_worktree_sweep_removes_orphaned_worktree(tmp_path):
     conn = jdb.connect(root / "data" / "jobs.sqlite")
     jdb.rescan(conn, vault_root=root / "vault" / "case")
     job_id = conn.execute("SELECT id FROM jobs WHERE slug=?", ("OneShot",)).fetchone()["id"]
+    jdb.report_status(conn, job_id, status="starting")  # #38: pending → starting
     jdb.report_status(conn, job_id, status="running")
     jdb.report_status(conn, job_id, status="complete")
     conn.close()

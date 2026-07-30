@@ -81,7 +81,7 @@ def test_scheduler_next_reserves_priority_first(sched):
     assert r["kind"] == "job" and r["payload"] == "echo p"
     # reservierter Job ist jetzt running
     jobs = {j["slug"]: j for j in client.get("/-/job").json()}
-    assert jobs["p"]["status"] == "running"
+    assert jobs["p"]["status"] == "starting"  # #38: reserviert, Wrapper folgt
     assert jobs["z"]["status"] == "pending"
 
 

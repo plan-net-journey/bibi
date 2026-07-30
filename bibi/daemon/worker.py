@@ -621,10 +621,20 @@ def _retry_fields(reservation: dict) -> dict:
 def _report_pid_once(sched_db_path: str, jid: str, proc_pid: int) -> None:
     """Ein einzelner Versuch, die Wrapper-PID zu melden — frischer `connect()`
     je Aufruf (PLAN-31 Baustein B), damit ein Retry nach einem Lock-Fehler
-    nicht auf einer möglicherweise beschädigten Connection aufsetzt."""
+    nicht auf einer möglicherweise beschädigten Connection aufsetzt.
+
+    Schaltet zugleich ``starting`` → ``running`` (m.rau/bibi#38). Bleibt der
+    Übergang aus, war der Job schon fertig, bevor wir seine PID notieren
+    konnten — bei sehr kurzen Läufen der Normalfall, kein Fehler. Sein
+    gemeldeter Terminalzustand hat Vorrang und bleibt unangetastet.
+    """
     conn = job_db.connect(Path(sched_db_path))
     try:
-        job_db.report_pid(conn, jid, proc_pid, job_db.proc_started_at(proc_pid))
+        moved = job_db.report_pid(conn, jid, proc_pid, job_db.proc_started_at(proc_pid))
+        if not moved:
+            activity.emit(log, logging.DEBUG, "worker.pid_late",
+                          "Job war vor dem PID-Report schon terminal",
+                          role="worker", run_id=jid)
     finally:
         conn.close()
 
@@ -1161,6 +1171,12 @@ class Worker:
         self._task: asyncio.Task | None = None
         self._running = False
         self._maint_active = False  # Wartungs-Übergang nur einmal loggen (kein Tick-Spam)
+        # Drain (m.rau/bibi#38): prozess-lokal und bewusst NICHT der
+        # Wartungsmodus. Der ist persistenter State in .state.md und würde einen
+        # Neustart überdauern — ein Knoten, der nach dem Deploy stumm keine Jobs
+        # mehr annimmt, wäre die schlechteste Art von Nebenwirkung. Dieses Flag
+        # stirbt mit dem Prozess, und genau das ist gewollt.
+        self._draining = False
 
     def _roots(self) -> tuple[Path, Path]:
         root = self.repo_root or repo.root()
@@ -1224,6 +1240,10 @@ class Worker:
         Wartungsmodus (§ daemon-weit): pausiert das Reservieren neuer Jobs. Der
         Übergang wird **einmal** geloggt (nicht je Tick → kein Spam)."""
         self._poll_app_routes()
+        if self._draining:
+            # Drain (#38): keine neue Reservierung mehr. Laufende Jobs bleiben
+            # unberührt — sie sind detacht und überleben den Neustart.
+            return False
         if state.get_maintenance():
             if not self._maint_active:
                 self._maint_active = True
@@ -1281,7 +1301,7 @@ class Worker:
             _docker(["kill", exec_backend.container_name(job_id)])
             return True
         # Kein In-Memory-Handle (z. B. Job hat einen Daemon-Neustart überlebt,
-        # reconcile_startup_orphans() lässt ihn dann bewusst running) — PID aus
+        # reconcile_orphans() lässt ihn dann bewusst running) — PID aus
         # der DB reanimieren. Nur SIGTERM, kein SIGKILL-Backstop-Timer wie in
         # _terminate(): dafür fehlt hier der Popen-Handle zum .wait().
         conn = job_db.connect(self.db_path)
@@ -1363,6 +1383,60 @@ class Worker:
                 did = False
             if not did:
                 await asyncio.sleep(self.poll_interval)
+
+    def starting_count(self) -> int:
+        """Wie viele Jobs dieses Workers stecken gerade im Setup? (#38)"""
+        try:
+            conn = job_db.connect(self.db_path)
+        except Exception:  # noqa: BLE001 — ein Drain darf nie am Zählen scheitern
+            return 0
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM jobs WHERE status='starting' AND worker=?",
+                (self.worker_name,)).fetchone()
+            return int(row["n"]) if row else 0
+        except Exception:  # noqa: BLE001
+            return 0
+        finally:
+            conn.close()
+
+    async def drain(self, timeout: float = 120.0) -> dict:
+        """Keine neuen Jobs mehr annehmen und die laufende Setup-Phase auswarten
+        (m.rau/bibi#38, Design von m.rau).
+
+        **Gewartet wird auf ``starting``, nicht auf Job-Ende.** Das ist der ganze
+        Trick: ein Agent-Lauf dauert 30 Minuten und mehr — darauf zu warten hieße,
+        keinen Deploy mehr machen zu können. Ein *Setup* dauert Sekunden bis
+        wenige Minuten (Worktree, Container, Image-Build). Danach ist jeder
+        verbliebene Job detacht, hat eine bekannte PID und überlebt den Neustart
+        (``start_new_session=True`` plus ``KillMode=process``).
+
+        Damit wird aus „hoffentlich erwischt der Neustart gerade keinen Job im
+        Setup" eine Zusage. Ohne Drain war das ein Würfelwurf, dessen Fenster bei
+        einem Container-Job mit Image-Build minutenlang offen steht.
+        """
+        self._draining = True
+        deadline = time.time() + timeout
+        n = self.starting_count()
+        if n:
+            activity.emit(log, logging.INFO, "worker.drain",
+                          "Drain: warte auf Jobs im Setup", role="worker", starting=n)
+        while n and time.time() < deadline:
+            await asyncio.sleep(0.5)
+            n = self.starting_count()
+        out = {"drained": n == 0, "starting": n}
+        if n:
+            # Bewusst kein Abbruch: der Aufrufer entscheidet, ob er trotzdem
+            # neu startet. Ein hängender Image-Build darf einen Deploy nicht
+            # dauerhaft blockieren — aber er darf auch nicht unbemerkt bleiben.
+            activity.emit(log, logging.WARNING, "worker.drain",
+                          "Drain-Frist abgelaufen — Jobs stecken noch im Setup",
+                          role="worker", starting=n)
+        else:
+            activity.emit(log, logging.INFO, "worker.drain",
+                          "Drain abgeschlossen — nur noch detachte Jobs",
+                          role="worker")
+        return out
 
     async def start(self) -> None:
         if not self.autopoll:

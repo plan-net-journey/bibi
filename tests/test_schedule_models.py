@@ -22,7 +22,7 @@ from bibi.schedule.models import (
 
 def test_status_values_match_design_5_4():
     assert {s.value for s in Status} == {
-        "pending", "running", "failed", "error", "deferred",
+        "pending", "starting", "running", "failed", "error", "deferred",
         "inactive", "awaiting", "complete", "zombie", "killed",
     }
 

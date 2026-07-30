@@ -12,16 +12,30 @@ from bibi.schedule.models import Kind, Owner, Reason, Status
 
 # Die kanonische §5.4-Tabelle als Wahrheit für den Test (from, event, to).
 EXPECTED_TRANSITIONS = [
-    (Status.PENDING, Event.DISPATCH, Status.RUNNING),
+    # m.rau/bibi#38: der Dispatch landet auf STARTING, nicht auf RUNNING —
+    # erst der Wrapper-Spawn (SPAWNED) schaltet weiter. Dieselbe Verschiebung
+    # gilt für RETRY und RESUME: auch sie sind Dispatches.
+    (Status.PENDING, Event.DISPATCH, Status.STARTING),
+    (Status.STARTING, Event.SPAWNED, Status.RUNNING),
+    (Status.STARTING, Event.FAIL, Status.FAILED),
+    (Status.STARTING, Event.KILL, Status.KILLED),
+    # STARTING nimmt jede Wrapper-Meldung an, die auch RUNNING annimmt: der
+    # Wrapper läuft ab dem Popen und meldet eigenständig, während report_pid()
+    # erst danach dran ist. Ein kurzer Job ist regelmäßig fertig, bevor seine
+    # PID notiert ist.
+    (Status.STARTING, Event.COMPLETE, Status.COMPLETE),
+    (Status.STARTING, Event.DEFER, Status.DEFERRED),
+    (Status.STARTING, Event.AWAIT_INPUT, Status.AWAITING),
+    (Status.STARTING, Event.SILENCE, Status.ZOMBIE),
     (Status.RUNNING, Event.COMPLETE, Status.COMPLETE),
     (Status.RUNNING, Event.FAIL, Status.FAILED),
     (Status.RUNNING, Event.DEFER, Status.DEFERRED),
     (Status.RUNNING, Event.AWAIT_INPUT, Status.AWAITING),
     (Status.RUNNING, Event.KILL, Status.KILLED),
     (Status.RUNNING, Event.SILENCE, Status.ZOMBIE),
-    (Status.FAILED, Event.RETRY, Status.RUNNING),
+    (Status.FAILED, Event.RETRY, Status.STARTING),
     (Status.FAILED, Event.EXHAUST, Status.ERROR),
-    (Status.DEFERRED, Event.RESUME, Status.RUNNING),
+    (Status.DEFERRED, Event.RESUME, Status.STARTING),
     (Status.DEFERRED, Event.EXPIRE, Status.INACTIVE),
     (Status.AWAITING, Event.INPUT, Status.RUNNING),
     (Status.AWAITING, Event.TIMEOUT, Status.ZOMBIE),
@@ -125,7 +139,8 @@ def test_all_events_valid_for_job():
 def test_all_edges_allow_kind_job():
     # Kein Event ist für Kind.JOB gesperrt.
     for k in Kind:
-        assert lc.apply(Status.PENDING, Event.DISPATCH, kind=k) == Status.RUNNING
+        assert lc.apply(Status.PENDING, Event.DISPATCH, kind=k) == Status.STARTING
+        assert lc.apply(Status.STARTING, Event.SPAWNED, kind=k) == Status.RUNNING
         assert lc.apply(Status.RUNNING, Event.COMPLETE, kind=k) == Status.COMPLETE
 
 
@@ -174,5 +189,5 @@ def test_targets_of_running():
 
 
 def test_targets_of_pending_and_terminal():
-    assert lc.targets(Status.PENDING) == {Status.RUNNING, Status.KILLED}
+    assert lc.targets(Status.PENDING) == {Status.STARTING, Status.KILLED}
     assert lc.targets(Status.COMPLETE) == {Status.PENDING, Status.KILLED}

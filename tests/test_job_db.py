@@ -482,6 +482,7 @@ def test_journal_entries_from_different_job_incarnations_do_not_collide(conn, tm
 
     # Alte Job-Inkarnation erreicht fire=3 und schließt ab (echte Historie).
     conn.execute("UPDATE jobs SET fire=3 WHERE id=?", (old_jid,))
+    job_db.report_status(conn, old_jid, status="starting")  # #38: pending -> starting -> running
     job_db.report_status(conn, old_jid, status="running")
     job_db.report_status(conn, old_jid, status="complete", now=1000.0)
 
@@ -491,6 +492,7 @@ def test_journal_entries_from_different_job_incarnations_do_not_collide(conn, tm
     new_jid = conn.execute("SELECT id FROM jobs WHERE slug='flaky'").fetchone()["id"]
     assert new_jid != old_jid
     conn.execute("UPDATE jobs SET fire=3 WHERE id=?", (new_jid,))  # erreicht denselben fire-Wert
+    job_db.report_status(conn, new_jid, status="starting")  # #38: pending -> starting -> running
     job_db.report_status(conn, new_jid, status="running")
     job_db.report_status(conn, new_jid, status="complete", now=2000.0)
 
@@ -528,12 +530,14 @@ def test_schedule_list_status_shows_live_failed_not_stale_journal_error(conn, tm
     jid = conn.execute("SELECT id FROM jobs WHERE slug='flaky'").fetchone()["id"]
 
     # Erster Zyklus: erschöpft zu error (echte, abgeschlossene Journal-Zeile).
+    job_db.report_status(conn, jid, status="starting")  # #38: pending -> starting -> running
     job_db.report_status(conn, jid, status="running")
     job_db.report_status(conn, jid, status="failed")
     job_db.report_status(conn, jid, status="error")
 
     # Neuer Zyklus (RESET + Dispatch): running -> failed, NICHT weiter zu error.
     job_db.report_status(conn, jid, status="pending")
+    job_db.report_status(conn, jid, status="starting")  # #38: pending -> starting -> running
     job_db.report_status(conn, jid, status="running")
     job_db.report_status(conn, jid, status="failed")
 
@@ -551,7 +555,10 @@ def test_schedule_list_running_shows_started_at_not_dash(conn, tmp_path: Path):
     conn.execute("UPDATE jobs SET next_fire_at=1.0 WHERE slug='r'")
     res = job_db.reserve_next(conn, worker="w", host="h")
     sched = next(s for s in job_db.list_schedules(conn) if s["slug"] == "r")
-    assert sched["last_status"] == "running"
+    # #38: direkt nach der Reservierung steht der Job auf 'starting'. Die
+    # eigentliche Aussage des Tests bleibt: die Spalte zeigt started_at, nicht
+    # "—" — das gilt für jeden aktiven Zustand.
+    assert sched["last_status"] == "starting"
     assert sched["last_run_at"] is not None
     row = conn.execute("SELECT started_at, finished_at FROM jobs WHERE id=?",
                        (res["id"],)).fetchone()
@@ -567,6 +574,7 @@ def test_reset_increments_fire_and_allows_new_journal_entry(conn, tmp_path: Path
     jid = conn.execute("SELECT id FROM jobs WHERE slug='once'").fetchone()["id"]
 
     # Erster Lauf → error
+    job_db.report_status(conn, jid, status="starting")  # #38: pending -> starting -> running
     job_db.report_status(conn, jid, status="running")
     job_db.report_status(conn, jid, status="failed")
     job_db.report_status(conn, jid, status="error")
@@ -580,6 +588,7 @@ def test_reset_increments_fire_and_allows_new_journal_entry(conn, tmp_path: Path
     assert fire2 == fire1 + 1, "fire muss beim RESET erhöht werden"
 
     # Zweiter Lauf → gleicher Terminal-Status (error), muss trotzdem in den Journal
+    job_db.report_status(conn, jid, status="starting")  # #38: pending -> starting -> running
     job_db.report_status(conn, jid, status="running")
     job_db.report_status(conn, jid, status="failed")
     job_db.report_status(conn, jid, status="error")
@@ -602,6 +611,8 @@ def test_reset_from_killed_resets_attempt_to_zero(conn, tmp_path: Path):
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = conn.execute("SELECT id FROM jobs WHERE slug='once'").fetchone()["id"]
 
+    job_db.report_status(conn, jid, status="starting")  # #38: pending -> starting -> running
+
     job_db.report_status(conn, jid, status="running")
     job_db.report_status(conn, jid, status="failed", attempt=2)
     job_db.report_status(conn, jid, status="killed")
@@ -620,6 +631,8 @@ def test_kill_from_complete_archives_and_keeps_old_journal_entry(conn, tmp_path:
     _write(tmp_path / "case" / "once.md", '---\nschedule: "0 9 * * *"\njob: "echo x"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = conn.execute("SELECT id FROM jobs WHERE slug='once'").fetchone()["id"]
+
+    job_db.report_status(conn, jid, status="starting")  # #38: pending -> starting -> running
 
     job_db.report_status(conn, jid, status="running")
     job_db.report_status(conn, jid, status="complete")
@@ -651,6 +664,8 @@ def test_schedule_view_shows_pending_after_reset_not_stale_terminal_status(conn,
     _write(tmp_path / "case" / "once.md", '---\nschedule: never\njob: "echo x"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = conn.execute("SELECT id FROM jobs WHERE slug='once'").fetchone()["id"]
+
+    job_db.report_status(conn, jid, status="starting")  # #38: pending -> starting -> running
 
     job_db.report_status(conn, jid, status="running")
     job_db.report_status(conn, jid, status="killed", reason="by_user")
@@ -947,6 +962,7 @@ def test_journal_view_exposes_payload_after_real_run(conn, tmp_path: Path):
     _write(tmp_path / "case" / "once.md", '---\nschedule: never\njob: "claude: tu was"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = conn.execute("SELECT id FROM jobs WHERE slug='once'").fetchone()["id"]
+    job_db.report_status(conn, jid, status="starting")  # #38: pending -> starting -> running
     job_db.report_status(conn, jid, status="running")
     job_db.report_status(conn, jid, status="complete", exit_code=0)
     entry = conn.execute("SELECT id FROM journal WHERE slug='once'").fetchone()

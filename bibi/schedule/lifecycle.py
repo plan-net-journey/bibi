@@ -20,16 +20,17 @@ from bibi.schedule.models import Kind, Owner, Reason, Status
 class Event(StrEnum):
     """Lifecycle-Auslöser (die Kanten des §5.5-Graphen)."""
 
-    DISPATCH = "dispatch"        # pending → running   (auch das User-Verb `start`)
+    DISPATCH = "dispatch"        # pending → starting  (auch das User-Verb `start`)
+    SPAWNED = "spawned"          # starting → running  (PID bekannt, #38)
     COMPLETE = "complete"        # running → complete
-    FAIL = "fail"                # running → failed
+    FAIL = "fail"                # running/starting → failed
     DEFER = "defer"              # running → deferred
     AWAIT_INPUT = "await_input"  # running → awaiting   (nur app)
-    KILL = "kill"                # running/pending → killed
+    KILL = "kill"                # running/starting/pending → killed
     SILENCE = "silence"          # running → zombie     (nur job/claude)
-    RETRY = "retry"              # failed  → running
+    RETRY = "retry"              # failed  → starting
     EXHAUST = "exhaust"          # failed  → error
-    RESUME = "resume"            # deferred → running
+    RESUME = "resume"            # deferred → starting
     EXPIRE = "expire"            # deferred → inactive
     INPUT = "input"              # awaiting → running   (nur app)
     TIMEOUT = "timeout"          # awaiting → zombie    (nur app)
@@ -50,6 +51,10 @@ TERMINAL: frozenset[Status] = frozenset(
 #: Wer den Zustand besitzt = ist für den Übergang heraus verantwortlich (§5.4).
 OWNER: dict[Status, Owner] = {
     Status.PENDING: Owner.SCHEDULER,
+    # STARTING gehört dem Worker: er hat reserviert und ist dabei, den Wrapper
+    # zu spawnen — nur er kann den Zustand verlassen (SPAWNED bei Erfolg, FAIL
+    # bei einem Setup-Fehler).
+    Status.STARTING: Owner.WORKER,
     Status.RUNNING: Owner.WORKER,
     Status.FAILED: Owner.WORKER,
     Status.ERROR: Owner.SCHEDULER,
@@ -64,16 +69,39 @@ OWNER: dict[Status, Owner] = {
 # ── Übergangstabelle (§5.4/§5.5) ────────────────────────────────────────────
 
 _TRANSITIONS: dict[tuple[Status, Event], Status] = {
-    (Status.PENDING, Event.DISPATCH): Status.RUNNING,
+    # PLAN-… / m.rau/bibi#38: der Dispatch landet nicht mehr direkt auf RUNNING,
+    # sondern auf STARTING. Erst wenn der Wrapper läuft und seine PID bekannt
+    # ist, schaltet SPAWNED weiter — daher die Invariante RUNNING ⇒ pid gesetzt.
+    (Status.PENDING, Event.DISPATCH): Status.STARTING,
+    (Status.STARTING, Event.SPAWNED): Status.RUNNING,
+    # Setup-Fehler vor dem Spawn (Worktree, Container, Image): derselbe FAIL-
+    # Weg wie ein fehlgeschlagener Lauf, damit Retry/Backoff unverändert
+    # greifen — der Job ist nicht anders gescheitert, nur früher.
+    (Status.STARTING, Event.FAIL): Status.FAILED,
+    (Status.STARTING, Event.KILL): Status.KILLED,
+    # STARTING muss JEDE Wrapper-Meldung annehmen, die auch RUNNING annimmt —
+    # der Wrapper läuft ab dem ``Popen`` und meldet eigenständig, während
+    # ``report_pid()`` erst danach an die Reihe kommt. Ein kurzer Job ist
+    # regelmäßig fertig, bevor seine PID notiert ist; ohne diese Kanten würde
+    # sein Abschluss als "invalid" verworfen und die Zeile bliebe für immer auf
+    # STARTING stehen. Derselbe Race, den ``report_pid()`` von der anderen Seite
+    # behandelt — nur ist er hier kein Randfall, sondern der Normalfall für alles
+    # unter ein paar hundert Millisekunden.
+    (Status.STARTING, Event.COMPLETE): Status.COMPLETE,
+    (Status.STARTING, Event.DEFER): Status.DEFERRED,
+    (Status.STARTING, Event.AWAIT_INPUT): Status.AWAITING,
+    (Status.STARTING, Event.SILENCE): Status.ZOMBIE,
     (Status.RUNNING, Event.COMPLETE): Status.COMPLETE,
     (Status.RUNNING, Event.FAIL): Status.FAILED,
     (Status.RUNNING, Event.DEFER): Status.DEFERRED,
     (Status.RUNNING, Event.AWAIT_INPUT): Status.AWAITING,
     (Status.RUNNING, Event.KILL): Status.KILLED,
     (Status.RUNNING, Event.SILENCE): Status.ZOMBIE,
-    (Status.FAILED, Event.RETRY): Status.RUNNING,
+    # Retry und Resume gehen ebenfalls über STARTING — sie sind Dispatches wie
+    # jeder andere, und auch bei ihnen ist die PID erst nach dem Spawn bekannt.
+    (Status.FAILED, Event.RETRY): Status.STARTING,
     (Status.FAILED, Event.EXHAUST): Status.ERROR,
-    (Status.DEFERRED, Event.RESUME): Status.RUNNING,
+    (Status.DEFERRED, Event.RESUME): Status.STARTING,
     (Status.DEFERRED, Event.EXPIRE): Status.INACTIVE,
     (Status.AWAITING, Event.INPUT): Status.RUNNING,
     (Status.AWAITING, Event.TIMEOUT): Status.ZOMBIE,
