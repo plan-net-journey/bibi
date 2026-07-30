@@ -182,3 +182,59 @@ def test_response_arrives_before_the_process_is_killed(harness):
         r = c.post("/-/restart", json={})
         assert r.status_code == 200
         assert killed == []
+
+
+# ── Job-Drain vor dem Neustart (m.rau/bibi#38) ─────────────────────────────
+
+
+class _FakeWorker:
+    """Minimaler Worker-Ersatz: zeichnet auf, ob gedraint wurde."""
+
+    def __init__(self, drained: bool = True, starting: int = 0) -> None:
+        self.calls = 0
+        self._result = {"drained": drained, "starting": starting}
+        # create_app liest diese Attribute beim Verdrahten der Routen.
+        self.worker_name = "test-worker"
+        self.db_path = None
+
+    async def drain(self, timeout: float = 120.0) -> dict:
+        self.calls += 1
+        return self._result
+
+    async def start(self) -> None:   # vom Lifespan aufgerufen
+        pass
+
+    async def stop(self) -> None:
+        pass
+
+
+def test_restart_drains_before_killing(tmp_path: Path, monkeypatch):
+    # Ohne Drain wäre ein Restart ein Würfelwurf auf das Setup-Fenster: ein Job
+    # zwischen Reservierung und Wrapper-Spawn hat noch keinen eigenen Prozess
+    # und überlebt den Neustart deshalb nicht.
+    killed: list[int] = []
+    monkeypatch.setattr("bibi.daemon.app.os.kill", lambda pid, sig: killed.append(sig))
+    monkeypatch.setattr(boot_signal, "_dir", lambda root=None: tmp_path / "boot")
+    w = _FakeWorker()
+    app = create_app(roles.resolve({"controller"}), worker=w)
+    with TestClient(app) as c:
+        r = c.post("/-/restart", json={})
+    assert r.status_code == 200
+    assert w.calls == 1
+    assert r.json()["drained"] is True
+
+
+def test_restart_warns_when_drain_times_out(tmp_path: Path, monkeypatch):
+    # Ein hängender Image-Build darf einen Deploy nicht dauerhaft blockieren —
+    # aber er darf auch nicht unbemerkt bleiben. Also: neu starten, und es
+    # sagen.
+    monkeypatch.setattr("bibi.daemon.app.os.kill", lambda pid, sig: None)
+    monkeypatch.setattr(boot_signal, "_dir", lambda root=None: tmp_path / "boot")
+    app = create_app(roles.resolve({"controller"}),
+                     worker=_FakeWorker(drained=False, starting=2))
+    with TestClient(app) as c:
+        r = c.post("/-/restart", json={})
+    body = r.json()
+    assert body["restarting"] is True      # kein Abbruch
+    assert body["drained"] is False
+    assert "2 Job(s) noch im Setup" in body["note"]

@@ -50,6 +50,11 @@ th { text-align: left; color: #888; font-weight: 500; padding: .35rem .5rem;
 td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
 .st { font-family: ui-monospace, monospace; }
 .st.complete { color: #5fb37a; }
+/* starting (#38): Live-Farbe wie running, aber gedimmt — der Job ist aktiv, sein
+   Wrapper aber noch nicht gestartet. Ohne eigene Regel bliebe der Status
+   ungefärbt und wäre optisch nicht von "pending" zu unterscheiden, obwohl er
+   das Gegenteil bedeutet. */
+.st.starting { color: #5a9fe0; opacity: .7; }
 .st.running { color: #5a9fe0; }
 .st.awaiting { color: #d6a23e; }
 .st.pending, .st.deferred { color: #888; }
@@ -1085,7 +1090,7 @@ def timeseries_fragment(landings: list[dict], job_stats: dict | None = None,
 #: Filter-Optionen. „problem" ist eine **Gruppe** (Abweichungen als Filter statt
 #: eigenem Block): failed/error/killed/zombie + überfällig (pending, fällig verpasst).
 _SCHED_TYPES = ("job", "claude")
-_SCHED_STATUSES = ("running", "pending", "complete", "failed", "deferred", "problem")
+_SCHED_STATUSES = ("starting", "running", "pending", "complete", "failed", "deferred", "problem")
 _SCHED_PROBLEM = {"failed", "error", "killed", "zombie"}
 
 
@@ -1714,7 +1719,7 @@ def _git_segment_card(git_status: dict | None) -> str:
 
 
 _JOB_STATUS_WAITING = ("pending", "deferred", "failed")
-_JOB_STATUS_RUNNING = ("running", "awaiting")
+_JOB_STATUS_RUNNING = ("starting", "running", "awaiting")
 _JOB_STATUS_STOPPED = ("inactive", "zombie", "error", "killed")
 _JOB_STATUS_ROWS = (("Waiting", _JOB_STATUS_WAITING), ("Running", _JOB_STATUS_RUNNING),
                     ("Stopped", _JOB_STATUS_STOPPED))
@@ -3144,7 +3149,7 @@ def _live_placeholder_row(job: dict | None, now: float, *, anchor: str) -> str:
     if not job:
         return ""
     status = job.get("status") or "running"
-    if status not in ("running", "awaiting", "deferred"):
+    if status not in ("starting", "running", "awaiting", "deferred"):
         return ""
     st = _e(status)
     t_abs = _abs_datetime(job.get("started_at"), now)
@@ -3368,6 +3373,7 @@ _VERBS = ("start", "reset", "kill")
 # den Trigger (siehe job_db.py).
 _VERBS_FOR_STATUS: dict[str, tuple[str, ...]] = {
     "pending":  ("start", "kill"),
+    "starting": ("kill",),
     "running":  ("kill",),
     "awaiting": ("kill",),
     "failed":   ("start", "kill"),

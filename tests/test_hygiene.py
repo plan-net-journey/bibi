@@ -222,6 +222,7 @@ def test_doctor_flags_orphan_worktree_when_job_terminal_without_next_fire(
     conn = jdb.connect(gitrepo / "data" / "jobs.sqlite")
     jdb.rescan(conn, vault_root=gitrepo / "vault" / "case")
     job_id = conn.execute("SELECT id FROM jobs WHERE slug=?", ("OneShot",)).fetchone()["id"]
+    jdb.report_status(conn, job_id, status="starting")  # #38: pending → starting
     jdb.report_status(conn, job_id, status="running")
     jdb.report_status(conn, job_id, status="complete")
     conn.commit()

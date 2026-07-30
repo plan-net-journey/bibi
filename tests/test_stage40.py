@@ -218,9 +218,9 @@ def test_status_job_stats_counts_and_running_since_uptime(sched):
     client, root = sched
     _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
-    client.post("/-/scheduler/next")  # a → running
+    client.post("/-/scheduler/next")  # a → starting (#38: running erst nach dem Spawn)
     stats = client.get("/-/status").json()["job_stats"]
-    assert stats["counts"] == {"running": 1}
+    assert stats["counts"] == {"starting": 1}
     assert stats["running_since_uptime"] == 1
 
 
