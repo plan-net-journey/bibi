@@ -453,12 +453,84 @@ def add_controller_routes(
         # PLAN-32 Stufe 32.1: Approve-/Block-Buttons im Nodes-Screen — wirkt,
         # dann #clientsboard sofort neu rendern (analog schedule_action()s
         # Sofort-Swap statt auf das nächste nodes-Bus-Event zu warten).
-        if verb not in ("approve", "block"):
+        if verb not in ("approve", "block", "restart", "deploy"):
             return JSONResponse(status_code=404, content={"error": "unknown verb"})
+        workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+        if verb in ("restart", "deploy"):
+            # m.rau/bibi#39: direkt beim Zielknoten, nicht über den Scheduler.
+            # Host und Port stehen in der Registry — aus dem Heartbeat des
+            # Knotens selbst, also so, wie er sich erreichbar meldet.
+            target = next((w for w in workers if w.get("node_id") == node_id), None)
+            if target and target.get("port"):
+                client.restart_node(target.get("host") or "127.0.0.1",
+                                    int(target["port"]),
+                                    deployment=(verb == "deploy"))
+            # Kurz warten, damit der Knoten beim Neu-Rendern schon als
+            # disconnected erscheint statt scheinbar unverändert — sonst wirkt
+            # der Knopf folgenlos.
+            import time as _t
+            _t.sleep(1.0)
+            workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+            return HTMLResponse(render.clients_fragment(workers))
         try:
             client.node_action(node_id, verb)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
+        workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+        return HTMLResponse(render.clients_fragment(workers))
+
+    @app.post("/-/ui/clients/expected-version", include_in_schema=False)
+    def clients_set_expected_version(version: str = "", deploy: bool = False):
+        """Die erwartete Engine-Version setzen (m.rau/bibi#39).
+
+        Das Ändern **ist** der Deploy: `pyproject.toml` schreiben, `uv lock`
+        regenerieren, committen, pushen. Es entsteht kein zweites Soll-Feld
+        neben der Lock — sie bleibt die einzige Wahrheit, dieses Feld ist ihre
+        Bedienoberfläche. Dass der Controller dafür ins Repo schreiben darf,
+        ist eine ausdrückliche Entscheidung (m.rau, 2026-07-30).
+
+        Der Rollout ist bewusst optional (`deploy`): erst sehen, was die Lock
+        sagt, dann ausrollen — oder beides in einem Zug.
+        """
+        from bibi.daemon import deploy as deploy_mod
+        res = deploy_mod.set_expected_version(version)
+        if res.get("ok") and res.get("changed") and deploy:
+            import time as _t
+            workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+            own = _host_worker_entry().get("node_id")
+            ordered = ([w for w in workers if w.get("node_id") != own]
+                       + [w for w in workers if w.get("node_id") == own])
+            for w in ordered:
+                if w.get("port"):
+                    client.restart_node(w.get("host") or "127.0.0.1",
+                                        int(w["port"]), deployment=True)
+                    _t.sleep(0.3)
+            _t.sleep(1.0)
+        workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+        return HTMLResponse(render.clients_fragment(workers, deploy_result=res))
+
+    @app.post("/-/ui/clients/restart-all", include_in_schema=False)
+    def clients_restart_all(deploy: bool = False):
+        """„Restart all" (m.rau/bibi#39) — rollierend, nicht gleichzeitig.
+
+        Der Host trägt die Föderation: startet er zusammen mit den Clients neu,
+        laufen deren Heartbeats für die Dauer beider Neustarts ins Leere. Erst
+        die Clients, dann der Host — dann ist die Registry beim Wiederkommen
+        jedes Clients bereits wieder da. Bei drei Knoten und je drei Sekunden
+        ist der Unterschied klein, aber er kostet nichts.
+        """
+        import time as _t
+        workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+        own = _host_worker_entry().get("node_id")
+        ordered = ([w for w in workers if w.get("node_id") != own]
+                   + [w for w in workers if w.get("node_id") == own])
+        for w in ordered:
+            if not w.get("port"):
+                continue
+            client.restart_node(w.get("host") or "127.0.0.1", int(w["port"]),
+                                deployment=deploy)
+            _t.sleep(0.3)
+        _t.sleep(1.0)
         workers = [_host_worker_entry(), *(_status().get("workers") or [])]
         return HTMLResponse(render.clients_fragment(workers))
 

@@ -780,6 +780,34 @@ def _node_engine_cell(engine: str | None) -> str:
     return _e(engine)
 
 
+def _node_restart_cell(node_id: str | None, port: int | None) -> str:
+    """Neustart-Knöpfe je Knoten (m.rau/bibi#39).
+
+    Zwei getrennte Verben statt eines mit Häkchen: **Restart** beendet nur den
+    Prozess, **Deploy** pullt vorher. Der Unterschied ist bedeutsam genug, ihn
+    nicht hinter einer Option zu verstecken — der eine holt einen neuen Stand,
+    der andere nicht.
+
+    Ohne ``port`` (älterer Client, oder erster Heartbeat noch nicht durch) gibt
+    es keine Adresse zum Aufrufen; dann bleibt die Zelle leer statt einen Knopf
+    anzubieten, der ins Leere liefe.
+
+    ``hx-confirm`` bei beiden: ein Klick, der einen laufenden Knoten beendet,
+    darf nicht versehentlich passieren. Der Drain (#38) macht ihn verantwortbar,
+    nicht folgenlos.
+    """
+    if not node_id or not port:
+        return "—"
+    base = (f'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this"')
+    return (
+        f'<button class="startbtn" hx-post="/-/ui/clients/{_e(node_id)}/restart" '
+        f'hx-confirm="Diesen Knoten neu starten?" {base}>Restart{_BTN_SPINNER}</button> '
+        f'<button class="startbtn" hx-post="/-/ui/clients/{_e(node_id)}/deploy" '
+        f'hx-confirm="Neuen Stand holen und neu starten?" {base}>'
+        f'Deploy{_BTN_SPINNER}</button>'
+    )
+
+
 _APPROVAL_CHIP_CLASS = {"pending": "chip modified", "approved": "chip clean",
                         "blocked": "chip conflict"}
 
@@ -828,6 +856,7 @@ def _clients_table(workers: list[dict], now: float) -> str:
             + "</td>"
             f"<td>{status_html}</td>"
             f"<td>{_node_approval_cell(w.get('node_id'), w.get('approval_status', 'pending'))}</td>"
+            f"<td>{_node_restart_cell(w.get('node_id'), w.get('port'))}</td>"
             f"<td>{_abs_datetime(w.get('connected_at'), now)}</td>"
             f"<td>{_ago(w.get('last_heartbeat'), now)}</td>"
             "</tr>"
@@ -836,17 +865,76 @@ def _clients_table(workers: list[dict], now: float) -> str:
         '<table><thead><tr><th>Name</th>'
         f"{_role_matrix_header()}"
         '<th>Engine</th><th>Git-User</th>'
-        '<th>Git-Status</th><th>Status</th><th>Freigabe</th><th>Connected seit</th>'
+        '<th>Git-Status</th><th>Status</th><th>Freigabe</th><th>Neustart</th>'
+        '<th>Connected seit</th>'
         '<th>Letzter Heartbeat</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
 
 
-def clients_fragment(workers: list[dict], now: float | None = None) -> str:
+def _expected_version_form(deploy_result: dict | None) -> str:
+    """Feld für die erwartete Engine-Version (m.rau/bibi#39).
+
+    Der aktuelle Ref kommt aus ``pyproject.toml`` — also aus der Absicht, nicht
+    aus der Lock. Genau der Unterschied ist der Punkt: hier wird die Absicht
+    gesetzt, das Ergebnis erzeugt ``uv lock``.
+
+    Zwei Knöpfe: **Setzen** schreibt und pusht, **Setzen + Ausrollen** stößt
+    zusätzlich den Neustart aller Knoten an. Getrennt, weil man den Lock-Diff
+    sehen wollen kann, bevor drei Daemons durchstarten.
+    """
+    try:
+        from bibi.daemon import deploy as deploy_mod
+        cur = deploy_mod.current_ref() or "?"
+    except Exception:  # noqa: BLE001 — defensiv (§2.7)
+        cur = "?"
+    msg = ""
+    if deploy_result:
+        if deploy_result.get("ok") and deploy_result.get("changed"):
+            msg = (f'<span class="chip clean">gesetzt: {_e(deploy_result.get("ref",""))}</span>'
+                   f' <span class="ts-dim">(war {_e(deploy_result.get("was",""))}'
+                   f'{", gepusht" if deploy_result.get("pushed") else ", NICHT gepusht"})</span>')
+        elif deploy_result.get("ok"):
+            msg = f'<span class="ts-dim">{_e(deploy_result.get("note",""))}</span>'
+        else:
+            # Der Fehlerfall ist der wichtigere: uv lock scheitert, wenn der Tag
+            # nicht existiert — dann wurde zurückgerollt und nichts committet.
+            msg = (f'<span class="chip conflict">{_e(deploy_result.get("error",""))}</span>'
+                   f' <span class="ts-dim">{_e(deploy_result.get("detail",""))}</span>')
+    return (
+        '<p class="handles">'
+        '<label>Erwartete Engine-Version '
+        f'<input name="version" value="{_e(cur)}" size="14"></label> '
+        '<button class="startbtn" hx-post="/-/ui/clients/expected-version" '
+        'hx-include="closest p" hx-target="#clientsboard" hx-swap="outerHTML" '
+        f'hx-disabled-elt="this">Setzen{_BTN_SPINNER}</button> '
+        '<button class="startbtn" hx-post="/-/ui/clients/expected-version?deploy=true" '
+        'hx-include="closest p" hx-confirm="Version setzen UND alle Knoten neu starten?" '
+        'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this">'
+        f'Setzen + Ausrollen{_BTN_SPINNER}</button> {msg}'
+        '</p>'
+    )
+
+
+def clients_fragment(workers: list[dict], now: float | None = None, *,
+                     deploy_result: dict | None = None) -> str:
     now = time.time() if now is None else now
     return (
         '<div id="clientsboard" data-bus="nodes" data-bus-refetch="/-/ui/clients/board">'
         '<div class="panel-card"><h2>Nodes</h2>'
+        f"{_expected_version_form(deploy_result)}"
+        # „Restart all" (m.rau/bibi#39) im Panel-Kopf, nicht je Zeile: es ist
+        # eine Aktion auf die Föderation, nicht auf einen Knoten. Rollierend
+        # ausgeführt (Clients zuerst, Host zuletzt) — siehe clients_restart_all().
+        '<p class="handles">'
+        '<button class="startbtn" hx-post="/-/ui/clients/restart-all" '
+        'hx-confirm="ALLE Knoten neu starten?" hx-target="#clientsboard" '
+        f'hx-swap="outerHTML" hx-disabled-elt="this">Restart all{_BTN_SPINNER}</button> '
+        '<button class="startbtn" hx-post="/-/ui/clients/restart-all?deploy=true" '
+        'hx-confirm="Auf ALLEN Knoten den neuen Stand holen und neu starten?" '
+        'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this">'
+        f'Deploy all{_BTN_SPINNER}</button>'
+        '</p>'
         f"{_clients_table(workers, now)}</div>"
         "</div>"
     )
