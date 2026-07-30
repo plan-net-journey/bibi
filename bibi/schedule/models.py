@@ -20,6 +20,16 @@ class Status(StrEnum):
     """Job-Zustände (DESIGN §5.4/§5.5). Werte = DB-/JSON-Repräsentation."""
 
     PENDING = "pending"
+    # STARTING (m.rau/bibi#38, Vorschlag von m.rau 2026-07-29): reserviert und
+    # im Setup — Worktree anlegen, Container aufräumen, ggf. Image bauen —,
+    # aber der Wrapper-Prozess ist noch nicht bekannt. Erst ``report_pid()``
+    # schaltet auf RUNNING weiter. Damit gilt die Invariante
+    # **RUNNING ⇒ pid gesetzt**, und genau die macht die PID-basierte
+    # Waisen-Erkennung ohne Zeitheuristik korrekt: ein RUNNING-Job hat immer
+    # einen Prozess zum Prüfen, ein STARTING-Job hat per Konstruktion keinen,
+    # und ein beim Daemon-Start vorgefundener STARTING-Job ist eindeutig eine
+    # Waise — sein Setup wurde unterbrochen, ein Prozess existiert nicht.
+    STARTING = "starting"
     RUNNING = "running"
     FAILED = "failed"
     ERROR = "error"

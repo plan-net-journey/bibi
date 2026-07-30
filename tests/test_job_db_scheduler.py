@@ -117,11 +117,15 @@ def test_reserve_gates_on_next_fire_at(conn):
     assert job_db.reserve_next(conn) is None
 
 
-def test_reserve_flips_to_running(conn):
+def test_reserve_flips_to_starting(conn):
+    # m.rau/bibi#38: die Reservierung landet auf 'starting', nicht auf
+    # 'running' — an dieser Stelle ist der Wrapper noch nicht gespawnt, es gibt
+    # also keine PID. Erst report_pid() schaltet weiter.
     jid = _insert(conn, "a", 0, time.time())
     job_db.reserve_next(conn, worker="w1")
     row = conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
-    assert row["status"] == "running"
+    assert row["status"] == "starting"
+    assert row["pid"] is None
     assert row["locked_at"] is not None
     assert row["started_at"] is not None
     assert row["worker"] == "w1"
@@ -569,7 +573,7 @@ def test_failed_retry_via_reserve_next(conn):
     res = job_db.reserve_next(conn, worker="w", host="h")
     assert res is not None and res["id"] == jid
     row = conn.execute("SELECT status, attempt FROM jobs WHERE id=?", (jid,)).fetchone()
-    assert row["status"] == "running"
+    assert row["status"] == "starting"
     assert row["attempt"] == 1  # attempt unverändert (Reserve inkrementiert nicht)
 
 
@@ -591,7 +595,7 @@ def test_failed_retry_via_reserve_next_dispatches_last_granted_attempt(conn):
     res = job_db.reserve_next(conn, worker="w", host="h")
     assert res is not None and res["id"] == jid
     row = conn.execute("SELECT status, attempt FROM jobs WHERE id=?", (jid,)).fetchone()
-    assert row["status"] == "running"
+    assert row["status"] == "starting"  # #38: reserve_next landet auf starting
     assert row["attempt"] == 2
 
 
@@ -681,7 +685,7 @@ def test_complete_job_redispatched_via_reserve_next_bumps_fire_and_clears_snapsh
     row = conn.execute(
         "SELECT status, fire, attempt, finished_at, exit_code, output_ref, locked_at "
         "FROM jobs WHERE id=?", (jid,)).fetchone()
-    assert row["status"] == "running"
+    assert row["status"] == "starting"  # #38: reserve_next landet auf starting
     assert row["fire"] == 1                       # frischer, eindeutiger run_id-Zähler
     assert row["attempt"] == 0
     assert row["finished_at"] is None and row["exit_code"] is None and row["output_ref"] is None
@@ -1037,65 +1041,80 @@ def test_reconcile_no_process_kills_stale_worker_jobs(conn):
     assert conn.execute("SELECT status FROM jobs WHERE id=?", (other,)).fetchone()["status"] == "running"
 
 
-def test_reconcile_startup_orphans(conn):
+def test_reconcile_orphans(conn):
     mine = _seed_full(conn, slug="mine", status="running", worker="me", next_fire_at=0)
     theirs = _seed_full(conn, slug="theirs", status="running", worker="remote", next_fire_at=0)
-    assert job_db.reconcile_startup_orphans(conn, "me") == 1
+    assert job_db.reconcile_orphans(conn, "me") == 1
     assert conn.execute("SELECT status, reason FROM jobs WHERE id=?", (mine,)).fetchone()["status"] == "killed"
     assert conn.execute("SELECT status FROM jobs WHERE id=?", (theirs,)).fetchone()["status"] == "running"
 
 
-def test_reconcile_startup_orphans_awaiting(conn):
+def test_reconcile_orphans_awaiting(conn):
     # AWAITING-Jobs (HITL) werden ebenfalls reconciliert.
     jid = _seed_full(conn, slug="waiting", status="awaiting", worker="me", next_fire_at=0)
-    assert job_db.reconcile_startup_orphans(conn, "me") == 1
+    assert job_db.reconcile_orphans(conn, "me") == 1
     row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
     assert row["status"] == "killed"
     assert row["reason"] == "no_process"
 
 
-def test_reconcile_startup_orphans_no_pid_kills_without_signal(conn):
+def test_reconcile_orphans_no_pid_kills_without_signal(conn):
     # Kein PID in DB (Altlast) → killed, kein Signal-Versuch.
     jid = _seed_full(conn, slug="legacy", status="running", worker="me", next_fire_at=0)
     # pid=NULL in DB → keine Ausnahme, trotzdem killed
-    assert job_db.reconcile_startup_orphans(conn, "me") == 1
+    assert job_db.reconcile_orphans(conn, "me") == 1
     assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "killed"
 
 
-def test_reconcile_startup_orphans_pid_recycled(conn):
+def test_reconcile_orphans_pid_recycled(conn):
     # PID in DB, aber pid_started_at stimmt nicht überein → PID recycled,
     # kein SIGKILL, nur killed in DB.
     jid = _seed_full(conn, slug="recycled", status="running", worker="me",
                      next_fire_at=0, pid=99999, pid_started_at="stale-ts")
     # proc_started_at(99999) liefert entweder None (PID tot) oder einen anderen Wert.
     # In jedem Fall: Status muss killed sein, kein Fehler.
-    n = job_db.reconcile_startup_orphans(conn, "me")
+    n = job_db.reconcile_orphans(conn, "me")
     assert n == 1
     assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "killed"
 
 
-def test_reconcile_startup_orphans_live_pid_left_running(conn, monkeypatch):
+def test_reconcile_orphans_live_pid_left_running(conn, monkeypatch):
     # Prozess lebt noch (gleiche PID + Startzeit) → kein SIGKILL, Status bleibt
     # running — der Wrapper überlebt Daemon-Neustarts bewusst (start_new_session=
-    # True) und meldet seinen Abschluss selbst, s. reconcile_startup_orphans()-Docstring.
+    # True) und meldet seinen Abschluss selbst, s. reconcile_orphans()-Docstring.
     import os
     killed = []
     monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
     monkeypatch.setattr(job_db, "proc_started_at", lambda pid: "ts-42")
     jid = _seed_full(conn, slug="orphan", status="running", worker="me",
                      next_fire_at=0, pid=1234, pid_started_at="ts-42")
-    n = job_db.reconcile_startup_orphans(conn, "me")
+    n = job_db.reconcile_orphans(conn, "me")
     assert n == 0
     assert killed == []
     assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "running"
 
 
-def test_report_pid_writes_to_db(conn):
-    jid = _seed_full(conn, slug="s", status="running", worker="me", next_fire_at=0)
-    job_db.report_pid(conn, jid, 5678, "boot-ts")
-    row = conn.execute("SELECT pid, pid_started_at FROM jobs WHERE id=?", (jid,)).fetchone()
+def test_report_pid_writes_to_db_and_flips_to_running(conn):
+    jid = _seed_full(conn, slug="s", status="starting", worker="me", next_fire_at=0)
+    assert job_db.report_pid(conn, jid, 5678, "boot-ts") is True
+    row = conn.execute("SELECT pid, pid_started_at, status FROM jobs WHERE id=?",
+                       (jid,)).fetchone()
     assert row["pid"] == 5678
     assert row["pid_started_at"] == "boot-ts"
+    assert row["status"] == "running"
+
+
+def test_report_pid_does_not_resurrect_a_finished_job(conn):
+    # Der Race, um den es geht (m.rau/bibi#38): report_pid() läuft NACH dem
+    # Popen, ein sehr kurzer Job kann längst 'complete' gemeldet haben. Ein
+    # unbedingtes UPDATE würde ihn auf 'running' zurückwerfen — mit einer PID
+    # ohne Prozess, die die periodische Prüfung als Waise einsammelt. Ein
+    # erfolgreicher Job landete dann als 'killed'.
+    jid = _seed_full(conn, slug="s", status="complete", worker="me", next_fire_at=0)
+    assert job_db.report_pid(conn, jid, 5678, "boot-ts") is False
+    row = conn.execute("SELECT pid, status FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "complete"
+    assert row["pid"] is None
 
 
 def test_proc_started_at_current_process():

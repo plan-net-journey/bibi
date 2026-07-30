@@ -234,7 +234,7 @@ def _pull_for_deploy(sync_lock=None) -> tuple[bool, str | None]:
         return git_ops.integrate(branch, guard_live_paths=False)
 
 
-def _add_daemon_routes(app: FastAPI, *, sync_lock=None) -> None:
+def _add_daemon_routes(app: FastAPI, *, sync_lock=None, worker=None) -> None:
     """``/-/restart`` — bewusst **rollenunabhängig** (m.rau/bibi#39).
 
     Jeder Knoten muss neu startbar sein, nicht nur der Scheduler: der Deploy
@@ -294,10 +294,21 @@ def _add_daemon_routes(app: FastAPI, *, sync_lock=None) -> None:
             boot_signal.request("reset")
             kinds.append("reset")
 
+        # Job-Drain (m.rau/bibi#38) vor dem Beenden: keine neuen Reservierungen
+        # mehr, und die laufende Setup-Phase auswarten. Danach ist jeder
+        # verbliebene Job detacht und überlebt den Neustart — ohne das wäre ein
+        # Restart-Knopf ein Würfelwurf auf das Setup-Fenster, das bei einem
+        # Container-Job mit Image-Build minutenlang offen steht. Gewartet wird
+        # NICHT auf Job-Ende: Agent-Läufe dauern 30 Minuten und mehr.
+        drain: dict = {"drained": True, "starting": 0}
+        if worker is not None:
+            drain = await worker.drain()
+
         activity.emit(log, logging.INFO, "daemon.restart_requested",
                       "Neustart angefordert", role="daemon",
                       kinds=",".join(kinds) or "restart",
-                      pulled=str(pulled).lower())
+                      pulled=str(pulled).lower(),
+                      drained=str(drain["drained"]).lower())
 
         async def _later() -> None:
             await asyncio.sleep(0.5)
@@ -307,8 +318,11 @@ def _add_daemon_routes(app: FastAPI, *, sync_lock=None) -> None:
         note = ("Supervisor startet neu" if not kinds else
                 "Supervisor startet neu; reset braucht einen zweiten Start, "
                 "bevor der Server wieder läuft")
-        return {"restarting": True, "pulled": pulled,
-                "signals": kinds, "note": note}
+        if not drain["drained"]:
+            note += (f" — Achtung: {drain['starting']} Job(s) noch im Setup, "
+                     "sie überstehen den Neustart womöglich nicht")
+        return {"restarting": True, "pulled": pulled, "signals": kinds,
+                "drained": drain["drained"], "note": note}
 
 
 def _add_status_route(app: FastAPI, *, sync_lock=None, synchronizer=None) -> None:
@@ -793,7 +807,7 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
         try:
             row = conn.execute("SELECT status FROM jobs WHERE id=?", (id,)).fetchone()
             out_ref: str | None = None
-            if row is not None and row["status"] in ("running", "awaiting", "deferred"):
+            if row is not None and row["status"] in ("starting", "running", "awaiting", "deferred"):
                 try:
                     out_ref = worker.output_path(id).relative_to(repo.root()).as_posix()
                 except Exception:  # noqa: BLE001 — defensiv (§2.7)
@@ -925,7 +939,7 @@ def create_app(
         try:
             rs = job_db.rescan(conn)
             fired = job_db.fire_startup(conn)
-            orphans = (job_db.reconcile_startup_orphans(conn, worker.worker_name)
+            orphans = (job_db.reconcile_orphans(conn, worker.worker_name)
                        if worker is not None else 0)
             activity.emit(log, logging.INFO, "scheduler.startup", role="scheduler",
                           inserted=rs.get("inserted"), fired=fired, orphans=orphans)
@@ -1422,7 +1436,7 @@ def create_app(
         try:
             active = conn.execute(
                 "SELECT slug, pinned_host FROM jobs WHERE active=1 "
-                "AND status IN ('running','awaiting','deferred')").fetchall()
+                "AND status IN ('starting','running','awaiting','deferred')").fetchall()
         finally:
             conn.close()
         from bibi.daemon.bus import bucket_slug
@@ -1538,7 +1552,7 @@ def create_app(
     # häufigste Adressat ist ein reiner Client (s. _add_daemon_routes()). Der
     # sync_lock wird durchgereicht, damit der Deploy-Pull nicht mit dem
     # Synchronizer ins selbe Repo greift.
-    _add_daemon_routes(app, sync_lock=sync_lock)
+    _add_daemon_routes(app, sync_lock=sync_lock, worker=worker)
 
     # ── Scheduler-Rolle: übrige echte DB-Routen (PLAN-3 §3.1) ───────────────
     # Zuerst registriert ⇒ gewinnen gegen die 3.0-Contract-Stubs für /-/job.

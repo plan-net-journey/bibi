@@ -47,7 +47,11 @@ def test_status_enum_in_schema(client):
     schemas = client.get("/-/openapi.json").json()["components"]["schemas"]
     status_values = set(schemas["Status"]["enum"])
     assert status_values == {
-        "pending", "running", "failed", "error", "deferred",
+        # "starting" (m.rau/bibi#38): reserviert, aber der Wrapper ist noch
+        # nicht gespawnt. Gehört in den Vertrag, weil ein Client den Zustand
+        # unterscheiden können muss — „startet gerade" ist etwas anderes als
+        # „wartet" und etwas anderes als „läuft".
+        "pending", "starting", "running", "failed", "error", "deferred",
         "inactive", "awaiting", "complete", "zombie", "killed",
     }
 

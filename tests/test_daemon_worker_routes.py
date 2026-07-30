@@ -311,10 +311,13 @@ def test_kill_running_job_falls_back_to_db_pid_after_restart(client, monkeypatch
     # Kein In-Memory-Popen (z. B. Job hat einen Daemon-Neustart überlebt, s. A.2) —
     # kill() muss die PID aus der DB reanimieren und SIGTERM senden.
     import os
-    jid = _seed_status("running")
+    # #38: report_pid() schaltet nur aus 'starting' heraus — genau so läuft es
+    # im Betrieb (reserve_next → starting, Spawn, dann report_pid → running).
+    # Auf 'running' geseedet träfe das Update null Zeilen und die PID fehlte.
+    jid = _seed_status("starting")
     conn = job_db.connect()
     try:
-        job_db.report_pid(conn, jid, 4321, "ts-77")
+        assert job_db.report_pid(conn, jid, 4321, "ts-77") is True
     finally:
         conn.close()
     monkeypatch.setattr(job_db, "proc_started_at", lambda pid: "ts-77")

@@ -139,6 +139,11 @@ def test_sweeper_never_reconciles_local_worker_even_if_registry_entry_stale(tmp_
     conn.close()
     reg = WorkerRegistry()
     reg.heartbeat("sarasate", "h", now=0)  # veralteter Fremd-Heartbeat, gleicher Name
+    # pid_check_interval hoch: hier wird ausschließlich der REGISTRY-Pfad
+    # geprüft. Die PID-basierte Prüfung (m.rau/bibi#38) ist ein anderer
+    # Mechanismus und würde diese Zeile zu Recht abräumen — sie trägt keine
+    # gültige PID. Der Unterschied ist der Kern beider Wege: die Registry kann
+    # sich täuschen (zwei Knoten unter demselben Namen), eine tote PID nicht.
     sw = Sweeper(db_path=p, registry=reg, autorun=False, local_worker_name="sarasate")
     assert sw.tick_once()["no_process"] == 0
     conn = job_db.connect(p)
@@ -407,3 +412,122 @@ def test_worker_heartbeat_includes_bundle_when_approved_and_version_differs(sche
     r = sched.post("/-/worker", json={
         "worker": "w", "host": "h", "node_id": "n2", "client_config_version": "stale"})
     assert r.json()["config_bundle"] == {"BIBI_JOB_ENV_FOO": "secret"}
+
+
+def test_sweeper_reaps_local_job_without_live_pid(tmp_path: Path):
+    """Das Gegenstück (m.rau/bibi#38): PID-basiert wird der lokale Worker sehr
+    wohl geprüft — vorher geschah das nur beim Daemon-Start, was bei
+    ``Restart=always`` praktisch „nie" bedeutete.
+
+    Der Unterschied zum Registry-Pfad ist nicht Willkür: die Registry kann sich
+    täuschen (zwei Knoten unter demselben Namen), eine tote PID nicht.
+    """
+    import secrets
+    import time as _t
+
+    from bibi.daemon import job_db
+    from bibi.daemon.sweeper import Sweeper
+    p = tmp_path / "j.sqlite"
+    conn = job_db.connect(p)
+    jid = secrets.token_hex(4)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, worker, "
+        "enqueued_at, next_fire_at) VALUES (?,?,?,?,?, 'running', 'me', ?, 0)",
+        (jid, "x", "x.md", "job", "e", _t.time()))
+    conn.close()
+    # pid_check_interval=0 erzwingt den Check im ersten Tick — im Betrieb
+    # kommt er nach 45 s, weil der Startzeitpunkt bereits von
+    # _scheduler_startup() abgedeckt ist.
+    sw = Sweeper(db_path=p, autorun=False, local_worker_name="me", pid_check_interval=0)
+    assert sw.tick_once()["no_pid"] == 1
+    conn = job_db.connect(p)
+    row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert (row["status"], row["reason"]) == ("killed", "no_process")
+    conn.close()
+
+
+def test_sweeper_leaves_starting_jobs_alone(tmp_path: Path):
+    """``starting`` heißt *gerade im Setup* — Worktree anlegen, Container
+    aufräumen, Image bauen. Das darf Minuten dauern und hat per Konstruktion
+    noch keine PID. Ein laufender Sweep, der es abräumte, würde genau die Jobs
+    töten, die gerade starten (m.rau/bibi#38).
+    """
+    import secrets
+    import time as _t
+
+    from bibi.daemon import job_db
+    from bibi.daemon.sweeper import Sweeper
+    p = tmp_path / "j.sqlite"
+    conn = job_db.connect(p)
+    jid = secrets.token_hex(4)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, worker, "
+        "enqueued_at, next_fire_at) VALUES (?,?,?,?,?, 'starting', 'me', ?, 0)",
+        (jid, "x", "x.md", "job", "e", _t.time()))
+    conn.close()
+    sw = Sweeper(db_path=p, autorun=False, local_worker_name="me", pid_check_interval=0)
+    assert sw.tick_once().get("no_pid", 0) == 0
+    conn = job_db.connect(p)
+    assert conn.execute("SELECT status FROM jobs WHERE id=?",
+                        (jid,)).fetchone()["status"] == "starting"
+    conn.close()
+
+
+def test_sweeper_reaps_jobs_of_blocked_node(tmp_path: Path):
+    """m.rau/bibi#23: die Ban-Semantik war nur halb gebaut — ein blockierter
+    Knoten wird beim Heartbeat abgewiesen, seine laufenden Jobs blieben aber
+    stehen. Ein Bann, der laufende Arbeit weiterlaufen lässt, ist keiner.
+    """
+    import secrets
+    import time as _t
+
+    from bibi.daemon import job_db
+    from bibi.daemon.sweeper import Sweeper
+    p = tmp_path / "j.sqlite"
+    conn = job_db.connect(p)
+    jid = secrets.token_hex(4)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, worker, "
+        "enqueued_at, next_fire_at) VALUES (?,?,?,?,?, 'running', 'baddie', ?, 0)",
+        (jid, "x", "x.md", "job", "e", _t.time()))
+    job_db.set_node_approval(conn, "node-bad", "blocked")
+    conn.commit()
+    conn.close()
+
+    reg = WorkerRegistry()
+    reg.heartbeat("baddie", "h", node_id="node-bad", now=_t.time())
+    sw = Sweeper(db_path=p, registry=reg, autorun=False, local_worker_name="me",
+                 pid_check_interval=0)
+    assert sw.tick_once()["banned"] == 1
+    conn = job_db.connect(p)
+    row = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert (row["status"], row["reason"]) == ("killed", "no_process")
+    conn.close()
+
+
+def test_sweeper_leaves_jobs_of_approved_node_alone(tmp_path: Path):
+    import secrets
+    import time as _t
+
+    from bibi.daemon import job_db
+    from bibi.daemon.sweeper import Sweeper
+    p = tmp_path / "j.sqlite"
+    conn = job_db.connect(p)
+    jid = secrets.token_hex(4)
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, worker, "
+        "enqueued_at, next_fire_at) VALUES (?,?,?,?,?, 'running', 'goodie', ?, 0)",
+        (jid, "x", "x.md", "job", "e", _t.time()))
+    job_db.set_node_approval(conn, "node-ok", "approved")
+    conn.commit()
+    conn.close()
+
+    reg = WorkerRegistry()
+    reg.heartbeat("goodie", "h", node_id="node-ok", now=_t.time())
+    sw = Sweeper(db_path=p, registry=reg, autorun=False, local_worker_name="me",
+                 pid_check_interval=0)
+    assert sw.tick_once().get("banned", 0) == 0
+    conn = job_db.connect(p)
+    assert conn.execute("SELECT status FROM jobs WHERE id=?",
+                        (jid,)).fetchone()["status"] == "running"
+    conn.close()
