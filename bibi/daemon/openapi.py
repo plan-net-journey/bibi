@@ -178,6 +178,16 @@ class WorkerHeartbeat(BaseModel):
     role: str | None = None
     port: int | None = None
     client_config_version: str | None = None
+    # m.rau/bibi#19: ``engine`` ist die Bezeichnung des installierten Stands
+    # (``engine_info.EngineInfo.label()`` — ein Tag wie "v0.2.0", sonst
+    # "dev @ 86ea20e", oder "0.2.1 (editable)" für einen Knoten, der gegen ein
+    # Arbeits-Checkout läuft statt gegen den gepinnten Stand). ``git_commit``
+    # ist der kurze Commit des **Team-Repos**, den ``git_status`` bewusst nicht
+    # trägt: zwei Knoten können beide "synced" melden und doch auf
+    # verschiedenen Commits stehen. Beide optional — ein älterer Client
+    # registriert sich weiterhin ohne 422, sein Eintrag bleibt nur leer.
+    engine: str | None = None
+    git_commit: str | None = None
 
 
 class WorkerView(BaseModel):
@@ -193,6 +203,8 @@ class WorkerView(BaseModel):
     git_user: str | None = None
     role: str | None = None
     port: int | None = None
+    engine: str | None = None       # installierter Engine-Stand (#19)
+    git_commit: str | None = None   # kurzer Commit des Team-Repos (#19)
 
 
 def _todo(endpoint: str) -> JSONResponse:

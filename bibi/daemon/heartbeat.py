@@ -21,6 +21,7 @@ from pathlib import Path
 
 from bibi import config, git_ops, repo
 from bibi.daemon import activity
+from bibi.engine_info import engine_info
 from bibi.git_status import working_tree_status
 
 log = logging.getLogger("bibi.heartbeat")
@@ -56,19 +57,30 @@ class Heartbeat:
         self.last_ok: bool | None = None
         self.last_at: float | None = None
 
-    def _git_status(self) -> str:
-        """Git-Status des Knotens (Branch + Tree + Sync) für den Heartbeat (A12).
+    def _tree_status(self) -> tuple[str, str | None]:
+        """Git-Status des **Team-Repos** (Branch + Tree + Sync) plus Commit für
+        den Heartbeat (A12).
 
         PLAN-18 Stufe 18.0: A12 verspricht, derselbe Heartbeat trage Tree+Sync
         mit hoch zum Scheduler — bisher lieferte diese Methode nur den
         Branch-Namen. Geteilte ``working_tree_status()``-Basis (auch von der
         CLI-Statusline genutzt) behebt das, ohne das Schema zu ändern
-        (``git_status`` bleibt ein einzelner String)."""
+        (``git_status`` bleibt ein einzelner String).
+
+        Der Commit kommt als **zweiter Rückgabewert** dazu (m.rau/bibi#19), nicht
+        im String: zwei Knoten können beide „synced" melden und trotzdem auf
+        verschiedenen Commits stehen, wenn einer vor fünf Minuten gesynct hat —
+        „synced" allein beantwortet also nicht, ob zwei Knoten denselben Stand
+        fahren. Beide Werte stammen aus **einem** ``git status``-Aufruf; der
+        Heartbeat tickt alle 15 s, ein zweiter Aufruf pro Tick wäre reine
+        Verschwendung.
+        """
         root = self.repo_root or repo.root()
         s = working_tree_status(root)
         if s is None:
-            return "n/a"
-        return f"{s.branch or '(detached)'} · {s.tree} · {s.sync}"
+            return "n/a", None
+        label = f"{s.branch or '(detached)'} · {s.tree} · {s.sync}"
+        return label, (s.oid[:7] if s.oid else None)
 
     def _port(self) -> int | None:
         """Batch 9 Punkt 3 (Name+Host-Link im Nodes-Screen): ``BIBI_DAEMON_PORT``
@@ -93,12 +105,19 @@ class Heartbeat:
 
     def _beat(self) -> None:
         try:
+            git_status, git_commit = self._tree_status()
             resp = self.client.register(
-                self.worker_name, self.host, self._git_status(),
+                self.worker_name, self.host, git_status,
                 node_id=self.node_id,
                 git_user=git_ops.git_user_name(self.repo_root or repo.root()),
                 role=self.role, port=self._port(),
-                client_config_version=config.distributed_config_version())
+                client_config_version=config.distributed_config_version(),
+                # m.rau/bibi#19: welche Engine fährt dieser Knoten. Ohne die
+                # Angabe konnte ein Deploy sein eigenes Ergebnis nicht prüfen —
+                # der letzte Nachweis lief über ein Verhaltensmerkmal des neuen
+                # Codes in einer Logzeile, also über Indizien.
+                engine=engine_info().label(),
+                git_commit=git_commit)
             if resp:
                 self._apply_config_bundle(resp)
             self.last_ok = True

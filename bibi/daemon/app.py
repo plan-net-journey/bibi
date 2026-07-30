@@ -473,7 +473,8 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                 raise HTTPException(status_code=401, detail="node blocked by host operator")
         result = registry.heartbeat(hb.worker, hb.host, hb.git_status,
                                     node_id=hb.node_id, git_user=hb.git_user, role=hb.role,
-                                    port=hb.port)
+                                    port=hb.port, engine=hb.engine,
+                                    git_commit=hb.git_commit)
         # PLAN-32 Stufe 32.2: Config-Bundle-Distribution huckepack auf
         # demselben Heartbeat-Roundtrip. config_version reist bei JEDEM
         # Heartbeat mit (paar Bytes, kein Secret) — config_bundle nur, wenn
