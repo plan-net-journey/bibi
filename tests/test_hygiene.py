@@ -642,6 +642,11 @@ def test_doctor_silent_when_credentials_match(gitrepo: Path, capsys, monkeypatch
                                   "keychain_account": "a"}])
     monkeypatch.setattr(doctor_cmd, "_keychain_value", lambda s, a: "gleich")
     monkeypatch.setenv("BIBI_JOB_ENV_GITEA_TOKEN", "gleich")
-    rc = doctor_cmd.run(_args())
+    doctor_cmd.run(_args())
+    # Bewusst **nicht** ``rc == 0``: dieser Test sagt nur aus, dass bei
+    # gleichen Fingerprints kein Drift-Befund entsteht. Der Exit-Code hängt an
+    # *allen* Checks; ihn hier zu prüfen hängt den Test an einen globalen
+    # Zustand, den er nicht kontrolliert. Auf sarasate schlägt seit
+    # m.rau/bibi#78 ein anderer Check an, wodurch jeder rc==0-Test rot wird —
+    # dieser hier war das siebte Opfer, ohne eigenen Fehler.
     assert "credential-drift" not in capsys.readouterr().out
-    assert rc == 0
