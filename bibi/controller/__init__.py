@@ -562,6 +562,27 @@ def add_controller_routes(
         """
         from bibi.daemon import deploy as deploy_mod
         version = await _body_value(request, "version")
+        # Optimistisches Sperren (m.rau/bibi#57): die Seite schickt den Ref mit,
+        # den sie beim Rendern gesehen hat. Weicht der vom tatsächlichen ab, ist
+        # der Tab veraltet — und sein Feld trägt dann einen alten Wert, dessen
+        # Rückschreiben beim nächsten Neustart JEDEN Knoten herabstufen würde.
+        # Am 2026-07-31 um 16:20 genau so passiert, eine Minute nach dem
+        # v0.4.0-Rollout.
+        #
+        # Schärfer als ein ``hx-confirm``, und zwar bewusst: eine Rückfrage
+        # zeigte denselben veralteten Wert und lüde zum Bestätigen ein. Wer
+        # wirklich herabstufen will, sieht nach dem Neuladen den echten Stand
+        # und entscheidet dann.
+        seen = await _body_value(request, "seen")
+        actual = deploy_mod.current_ref()
+        if seen and actual and seen != actual:
+            stale = {"ok": False,
+                     "error": "Seite veraltet — nichts geschrieben",
+                     "detail": f"diese Seite zeigte {seen}, tatsächlich steht "
+                               f"{actual}. Neu laden und erneut versuchen."}
+            workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+            return HTMLResponse(render.clients_fragment(workers,
+                                                        deploy_result=stale))
         res = deploy_mod.set_expected_version(version)
         if res.get("ok") and res.get("changed") and deploy:
             import time as _t

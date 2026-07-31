@@ -30,6 +30,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -104,22 +105,35 @@ def _pull(root: Path, *, quiet: bool = False) -> None:
           f"lokalen Stand.", file=sys.stderr)
 
 
-def _ctrl_binary() -> str:
-    """``bibi-ctrl`` **derselben** Installation, aus der dieser Prozess läuft.
+def _ctrl_prefix(root: Path) -> list[str]:
+    """Womit ``bibi-ctrl`` gestartet wird — und warum das nicht egal ist.
 
-    Über das bin-Verzeichnis von ``sys.executable``, nicht über den PATH: sonst
-    könnte eine Sitzung aus Repo A den Daemon mit der Engine aus Repo B starten
-    — die beiden pinnen über ihre ``uv.lock`` unterschiedliche Stände, und der
-    Fehler wäre praktisch unauffindbar. Der PATH bleibt der Notnagel.
+    **Bevorzugt ``uv run --project <root>``** (m.rau/bibi#56). Der erste Entwurf
+    rief das ``bibi-ctrl`` aus dem bin-Verzeichnis von ``sys.executable`` direkt
+    auf. Die Absicht war richtig — eine Sitzung soll nicht die Engine eines
+    fremden Repos starten — der Nebeneffekt war unbeabsichtigt und teuer: mit
+    ``uv run`` fiel auch der **venv-Sync gegen die Lock** weg, auf den sich die
+    Analyse ausdrücklich verlassen hatte (*„Der Versions-Abgleich passiert von
+    selbst"*). Ein Sitzungsknoten lief damit mit dem venv, das gerade da war,
+    und ein NEED UPDATE (#43) konnte sich nie von selbst auflösen.
+
+    ``--project`` löst dasselbe Problem besser als der direkte Aufruf: der
+    Daemon läuft die Engine, die **dieses Repo** pinnt — nicht die, die zufällig
+    installiert ist. Beides zusammen, Identität und Aktualität.
+
+    Ohne ``uv`` bleibt der direkte Weg als Notnagel; dann eben ohne Sync.
     """
+    uv = shutil.which("uv")
+    if uv:
+        return [uv, "run", "--project", str(root), "bibi-ctrl"]
     candidate = Path(sys.executable).parent / "bibi-ctrl"
     if candidate.exists():
-        return str(candidate)
-    return shutil.which("bibi-ctrl") or "bibi-ctrl"
+        return [str(candidate)]
+    return [shutil.which("bibi-ctrl") or "bibi-ctrl"]
 
 
-def _daemon_argv(args: argparse.Namespace) -> list[str]:
-    argv = [_ctrl_binary(), "daemon", "run",
+def _daemon_argv(args: argparse.Namespace, root: Path) -> list[str]:
+    argv = [*_ctrl_prefix(root), "daemon", "run",
             "--host", "127.0.0.1",
             # Kein fester Port: der Nutzer soll beim Start „so gut wie nix zu
             # tun" haben, und zwei Repos auf einer Maschine müssen sich nicht
@@ -153,9 +167,59 @@ def _start_daemon(args: argparse.Namespace, root: Path) -> subprocess.Popen:
     log_dir = root / "data" / "daemon-log"
     log_dir.mkdir(parents=True, exist_ok=True)
     out = (log_dir / "session.out.log").open("a", encoding="utf-8")
-    return subprocess.Popen(_daemon_argv(args), cwd=root, env=env,
+    return subprocess.Popen(_daemon_argv(args, root), cwd=root, env=env,
                             stdout=out, stderr=subprocess.STDOUT,
                             stdin=subprocess.DEVNULL, start_new_session=True)
+
+
+#: Takt des Wächters. Deutlich enger als der Sitzungs-Zähler aus #46 — der darf
+#: gemächlich sein, weil ein Daemon, der zu lange lebt, niemandem wehtut. Hier
+#: ist es umgekehrt: solange niemand nachsieht, steht das Dashboard still.
+WATCH_INTERVAL_S = 3.0
+
+
+def _watch_daemon(root: Path, args: argparse.Namespace, stop) -> None:
+    """Den selbst gestarteten Daemon am Leben halten (m.rau/bibi#55).
+
+    ``/-/restart`` sagt seine Annahme selbst: *„Es gibt keinen Neustart-Befehl
+    … der Supervisor bringt den Daemon nach drei Sekunden zurück."* Auf einem
+    Sitzungsknoten gibt es keinen Supervisor — der Endpunkt war dort also keine
+    Neustart-, sondern eine Abschalt-Taste. Betroffen war damit auch der frisch
+    gebaute Update-Knopf aus #43, der genau dieses ``/-/restart`` postet.
+
+    Die Sitzung übernimmt die Rolle deshalb selbst, aber **nur für den Daemon,
+    den sie gestartet hat**. Wer sich nur angehängt hat, hat über fremde
+    Prozesse nicht zu verfügen.
+
+    Kein Konflikt mit dem Sitzungs-Zähler aus #46: solange diese Sitzung lebt,
+    ist der Zähler nicht 0, der Daemon fährt also nicht von sich aus herunter.
+    Der Wächter bringt nur zurück, was ein Neustart weggenommen hat.
+    """
+    while not stop.wait(WATCH_INTERVAL_S):
+        if portfile.read() is not None:
+            continue
+        # Kein lebender Daemon mehr für dieses Repo — der Neustart hat den
+        # Prozess beendet und niemanden hinterlassen, der ihn zurückbringt.
+        print("bibi: Daemon ist weg — starte ihn neu.", flush=True)
+        try:
+            proc = _start_daemon(args, root)
+        except Exception as exc:  # noqa: BLE001 — ein Wächter darf nie sterben
+            print(f"bibi: Neustart fehlgeschlagen: {exc}", file=sys.stderr)
+            continue
+        port = None
+        deadline = time.monotonic() + HEALTH_TIMEOUT_S
+        while time.monotonic() < deadline and not stop.is_set():
+            if proc.poll() is not None:
+                break
+            port = portfile.read_port()
+            if port:
+                break
+            time.sleep(0.2)
+        if port and _wait_healthy(port, proc=proc):
+            print(f"bibi: Daemon wieder da (Port {port}).", flush=True)
+        else:
+            print("bibi: Daemon kam nicht zurück — siehe "
+                  "data/daemon-log/session.out.log", file=sys.stderr)
 
 
 def _wait_healthy(port: int, *, timeout: float = HEALTH_TIMEOUT_S,
@@ -283,10 +347,18 @@ def main(argv: list[str] | None = None) -> int:
     # Vor dem Daemon-Start anmelden: so sieht er nie eine Null, die in
     # Wirklichkeit „die erste ist noch nicht da" heißt.
     session_registry.register(label=f"pid {os.getpid()}")
+    stop = threading.Event()
+    watcher = None
     try:
-        port = _ensure_daemon(args, root)
+        port, started = _ensure_daemon(args, root)
         if port is None:
             return 1
+        if started:
+            # Nur für den eigenen Daemon (m.rau/bibi#55) — und als Daemon-Thread,
+            # damit ein hängender Wächter das Sitzungsende nie aufhält.
+            watcher = threading.Thread(target=_watch_daemon,
+                                       args=(root, args, stop), daemon=True)
+            watcher.start()
         url = f"http://127.0.0.1:{port}/-/"
         print(f"bibi: Oberfläche auf {url}", flush=True)
         if not args.no_browser:
@@ -308,11 +380,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"bibi: {exc}", file=sys.stderr)
         return 1
     finally:
+        # Erst den Wächter anhalten, dann abmelden: umgekehrt könnte er den
+        # Daemon noch einmal hochziehen, den der Zähler aus #46 gerade gehen
+        # lassen will.
+        stop.set()
+        if watcher is not None:
+            watcher.join(timeout=WATCH_INTERVAL_S + 2)
         session_registry.unregister()
 
 
-def _ensure_daemon(args: argparse.Namespace, root: Path) -> int | None:
-    """Anhängen, wenn schon einer läuft — sonst starten. Liefert den Port.
+def _ensure_daemon(args: argparse.Namespace, root: Path) -> tuple[int | None, bool]:
+    """Anhängen, wenn schon einer läuft — sonst starten.
+
+    Liefert ``(Port, selbst_gestartet)``. Die zweite Angabe entscheidet, ob
+    diese Sitzung den Daemon bewachen darf (m.rau/bibi#55): über einen fremden
+    Prozess hat sie nicht zu verfügen.
 
     Die Prüfung und der Start liegen zusammen unter der Sperre; getrennt wäre
     genau das Fenster offen, in dem zwei gleichzeitig gestartete Sitzungen
@@ -324,7 +406,7 @@ def _ensure_daemon(args: argparse.Namespace, root: Path) -> int | None:
         if entry is not None:
             print(f"bibi: an laufenden Daemon angehängt (Port {entry['port']}).",
                   flush=True)
-            return entry["port"]
+            return entry["port"], False
         proc = _start_daemon(args, root)
         deadline = time.monotonic() + HEALTH_TIMEOUT_S
         port = None
@@ -338,13 +420,13 @@ def _ensure_daemon(args: argparse.Namespace, root: Path) -> int | None:
         if not port:
             print("bibi: Daemon ist nicht hochgekommen — siehe "
                   "data/daemon-log/session.out.log", file=sys.stderr)
-            return None
+            return None, True
         if not _wait_healthy(port, proc=proc):
             print(f"bibi: Daemon antwortet nicht auf Port {port} — siehe "
                   "data/daemon-log/session.out.log", file=sys.stderr)
-            return None
+            return None, True
         print(f"bibi: Daemon gestartet (Port {port}).", flush=True)
-        return port
+        return port, True
     finally:
         _release(lock)
 

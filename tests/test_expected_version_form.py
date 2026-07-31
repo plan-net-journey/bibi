@@ -95,6 +95,63 @@ def test_a_post_without_a_body_does_not_crash(ui):
     assert seen == [""]
 
 
+# ── Der Klick auf einer veralteten Seite (m.rau/bibi#57) ────────────────────
+
+
+def test_a_stale_page_cannot_downgrade_the_federation(team_repo: Path,
+                                                      monkeypatch: pytest.MonkeyPatch):
+    """Am 2026-07-31 um 16:20 live passiert, eine Minute nach dem Rollout.
+
+    Ein Tab, der vor dem Release geöffnet wurde, trägt im Feld den alten Ref.
+    Ein Klick auf „Setzen" schrieb ihn zurück — und beim nächsten Neustart wäre
+    jeder Knoten herabgestuft gewesen.
+    """
+    _write_dep(team_repo, "http://sarasate:3000/m.rau/bibi.git", "v0.4.0")
+    seen: list[str] = []
+    monkeypatch.setattr(deploy, "set_expected_version",
+                        lambda ref, *a, **kw: (seen.append(ref), {"ok": True})[1])
+    monkeypatch.setattr(deploy, "available_refs", lambda *a, **kw: [])
+    app = create_app(roles.resolve({"controller", "scheduler"}))
+    with TestClient(app) as c:
+        r = c.post("/-/ui/clients/expected-version",
+                   data={"version": "v0.3.0", "seen": "v0.3.0"})
+    assert r.status_code == 200
+    assert seen == []                      # nichts geschrieben
+    assert "Seite veraltet" in r.text
+    assert "v0.3.0" in r.text and "v0.4.0" in r.text
+
+
+def test_a_current_page_may_set_anything(team_repo: Path,
+                                         monkeypatch: pytest.MonkeyPatch):
+    # Wer den echten Stand vor sich hat, darf auch herabstufen — das ist der
+    # Rückweg, nicht ein Versehen.
+    _write_dep(team_repo, "http://sarasate:3000/m.rau/bibi.git", "v0.4.0")
+    seen: list[str] = []
+    monkeypatch.setattr(deploy, "set_expected_version",
+                        lambda ref, *a, **kw: (seen.append(ref), {"ok": True})[1])
+    monkeypatch.setattr(deploy, "available_refs", lambda *a, **kw: [])
+    app = create_app(roles.resolve({"controller", "scheduler"}))
+    with TestClient(app) as c:
+        c.post("/-/ui/clients/expected-version",
+               data={"version": "v0.3.0", "seen": "v0.4.0"})
+    assert seen == ["v0.3.0"]
+
+
+def test_without_a_seen_field_nothing_changes(ui):
+    # Ein Aufruf per curl trägt kein `seen` — der soll weiter funktionieren.
+    c, seen = ui
+    c.post("/-/ui/clients/expected-version", data={"version": "v0.4.0"})
+    assert seen == ["v0.4.0"]
+
+
+def test_form_carries_what_it_rendered(team_repo: Path,
+                                       monkeypatch: pytest.MonkeyPatch):
+    _write_dep(team_repo, "http://sarasate:3000/m.rau/bibi.git", "v0.4.0")
+    monkeypatch.setattr(deploy, "available_refs", lambda *a, **kw: [])
+    html = render._expected_version_form(None)
+    assert '<input type="hidden" name="seen" value="v0.4.0">' in html
+
+
 # ── Die Auswahlliste ────────────────────────────────────────────────────────
 
 
