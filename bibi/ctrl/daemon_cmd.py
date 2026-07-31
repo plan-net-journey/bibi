@@ -261,7 +261,8 @@ def run(args: argparse.Namespace) -> int:
     # dieses Checkouts finden: ``bibi-ctrl status`` im zweiten Terminal, die
     # Statusline, der Browser. Erst hier, nach dem Boot-Signal-Zweig — der kehrt
     # zurück, ohne je einen Server zu starten, ein Eintrag wäre dort gelogen.
-    portfile.write(port, host=args.host, roles=",".join(names))
+    portfile.write(port, host=args.host, roles=",".join(names),
+                   session=bool(getattr(args, "session", False)))
     # timeout_graceful_shutdown: ohne die Frist wartet uvicorn beim SIGTERM
     # unbegrenzt auf offene Verbindungen — und der SSE-Strom /-/events schließt
     # nie von selbst (s. _resolve_shutdown_timeout()).

@@ -219,3 +219,86 @@ def test_status_no_merge_stuck_line_below_threshold(team_repo: Path, capsys):
 def test_status_no_merge_stuck_line_when_none(team_repo: Path, capsys):
     main(["status"])
     assert "merge_stuck" not in capsys.readouterr().out
+
+
+# --- Dritter Block: der LAUFENDE Daemon (m.rau/bibi#59) -----------------------
+#
+# Die beiden Blöcke davor zeigen Soll-Werte: den Repo-State und die Knoten-
+# Config. Was tatsächlich läuft — und unter welcher Adresse man es im Browser
+# findet — stand nirgends. Mit der Port-Automatik aus #45 ist das der Normalfall
+# und nicht mehr der Randfall: der Port wird zur Laufzeit gewählt.
+
+
+def test_status_shows_running_daemon_with_port_and_url(team_repo: Path, cfg_home: Path, capsys):
+    from bibi.daemon import portfile
+    portfile.write(63913, host="127.0.0.1", roles="synchronizer,controller", session=True)
+    main(["status"])
+    out = capsys.readouterr().out
+    # Die URL ist der eigentliche Zweck: kopierbar, mit /-/ Präfix, nicht nur die Zahl.
+    assert "http://localhost:63913/-/" in out
+    assert "63913" in out
+
+
+def test_status_names_the_daemons_origin(team_repo: Path, cfg_home: Path, capsys):
+    """Sitzung oder Unit — der Unterschied entscheidet, ob ein Neustart von
+    außen den Daemon zurückbringt oder eine Sitzung ohne Dashboard hinterlässt."""
+    from bibi.daemon import portfile
+    portfile.write(8769, host="127.0.0.1", roles="worker", session=True)
+    main(["status"])
+    assert "Sitzung" in capsys.readouterr().out
+
+    portfile.write(8769, host="127.0.0.1", roles="worker", session=False)
+    main(["status"])
+    assert "Unit" in capsys.readouterr().out
+
+
+def test_status_says_when_no_daemon_runs(team_repo: Path, cfg_home: Path, capsys):
+    main(["status"])
+    out = capsys.readouterr().out
+    assert "läuft nicht" in out
+
+
+def test_status_ignores_stale_portfile(team_repo: Path, cfg_home: Path, capsys):
+    """Ein ``kill -9`` lässt die Datei stehen. Eine Portnummer ohne
+    Lebendigkeitsprüfung wäre eine Falle, die auf einen toten Port zeigt."""
+    import json
+    from bibi.daemon import portfile
+    p = portfile.port_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    # PID 2**31-1 existiert praktisch nie; write() würde die eigene, lebende setzen.
+    p.write_text(json.dumps({"port": 63913, "pid": 2**31 - 1}), encoding="utf-8")
+    main(["status"])
+    out = capsys.readouterr().out
+    assert "läuft nicht" in out
+    assert "63913" not in out
+
+
+def test_status_separates_configured_from_running_roles(team_repo: Path, cfg_home: Path, capsys):
+    """Der Soll/Ist-Unterschied ist die eigentliche Auskunft und muss im
+    Wortlaut sichtbar sein — ein Daemon kann mit anderen Rollen laufen, als in
+    der ``env`` stehen (etwa ein ``--connect`` der Sitzung)."""
+    from bibi.daemon import portfile
+    config.write_env({"BIBI_ROLE": "synchronizer", "BIBI_SCHEDULER_URL": "http://h:8769"})
+    portfile.write(63913, host="127.0.0.1", roles="synchronizer,controller,connect", session=True)
+    main(["status"])
+    out = capsys.readouterr().out
+    assert "konfiguriert" in out
+    assert "laufend" in out
+    assert "synchronizer,controller,connect" in out
+
+
+def test_status_url_uses_public_host_when_bound_to_all_interfaces(
+        team_repo: Path, cfg_home: Path, monkeypatch, capsys):
+    """An 0.0.0.0 gebunden ist ``localhost`` für einen Remote-Host die falsche
+    Auskunft — dann gilt ``BIBI_PUBLIC_HOST``. Bei 127.0.0.1 dagegen bleibt es
+    bei localhost, auch wenn ein Public-Host gesetzt ist: der Daemon ist von
+    außen dann gar nicht erreichbar."""
+    from bibi.daemon import portfile
+    monkeypatch.setenv("BIBI_PUBLIC_HOST", "sarasate.example")
+    portfile.write(8780, host="0.0.0.0", roles="worker", session=False)
+    main(["status"])
+    assert "http://sarasate.example:8780/-/" in capsys.readouterr().out
+
+    portfile.write(8780, host="127.0.0.1", roles="worker", session=False)
+    main(["status"])
+    assert "http://localhost:8780/-/" in capsys.readouterr().out

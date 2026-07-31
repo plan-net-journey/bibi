@@ -84,6 +84,13 @@ def read(root: Path | None = None) -> dict | None:
         return None
     if not _alive(pid):
         return None
+    # Vor #59 geschriebene Einträge tragen kein ``session``. Sie als Unit zu
+    # lesen wäre bequem und im Sitzungsfall falsch — am 2026-07-31 live an
+    # einem laufenden Sitzungs-Daemon beobachtet, der sich dadurch als Unit
+    # ausgab. ``None`` heißt hier ausdrücklich *unbekannt*, nicht *keine
+    # Sitzung*: eine Auskunft, die falsch sein kann, ist schlechter als keine.
+    # Verschwindet von selbst, sobald der Daemon einmal neu startet.
+    data.setdefault("session", None)
     return data
 
 
@@ -95,18 +102,24 @@ def read_port(root: Path | None = None) -> int | None:
 
 
 def write(port: int, *, host: str | None = None, roles: str | None = None,
-          root: Path | None = None) -> Path | None:
+          session: bool = False, root: Path | None = None) -> Path | None:
     """Den tatsächlichen Bind-Port ablegen. ``None``, wenn kein Repo da ist.
 
     Atomar über eine Temp-Datei, damit ein gleichzeitiger Leser nie einen halb
     geschriebenen Eintrag sieht — dieselbe Vorsicht wie bei ``config.write_env()``.
+
+    ``session`` hält fest, ob dieser Daemon einer Sitzung gehört (#46) oder
+    einem Supervisor. Es ist ein abgelegter Wert und keine Heuristik, weil nur
+    der startende Prozess es sicher weiß — von außen sind die beiden Fälle
+    nicht unterscheidbar, und der Unterschied entscheidet, ob ein Neustart den
+    Daemon zurückbringt oder eine Sitzung ohne Dashboard hinterlässt (#59).
     """
     p = port_file(root)
     if p is None:
         return None
     p.parent.mkdir(parents=True, exist_ok=True)
     payload = {"port": int(port), "pid": os.getpid(), "host": host,
-               "roles": roles, "started_at": time.time()}
+               "roles": roles, "session": bool(session), "started_at": time.time()}
     tmp = p.with_suffix(p.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(p)
