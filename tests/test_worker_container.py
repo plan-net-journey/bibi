@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -144,6 +145,45 @@ def _docker_ok() -> bool:
 docker = pytest.mark.skipif(not _docker_ok(), reason="kein laufendes Docker")
 
 
+#: Frist, in der ein gestoppter Container aus ``docker ps`` verschwunden sein
+#: muss. Grosszügig bemessen: gemessen wurden auf sarasate rund drei Sekunden,
+#: und die Maschine trägt neben dem Testlauf die Produktions-Daemons. Ein
+#: echter Fehler — ``stop`` wirkt gar nicht — kostet damit diese Frist und
+#: fällt trotzdem auf; eine zu knappe Frist dagegen macht aus dem Test einen
+#: Lastmesser (m.rau/bibi#69).
+_GONE_TIMEOUT_S = 20.0
+
+
+def _wait_until_gone(bin_: str, name: str, env: dict) -> str:
+    """Warten, bis der Container aus ``docker ps`` verschwunden ist.
+
+    Gibt die letzte Ausgabe zurück, damit der Aufrufer im Fehlerfall zeigen
+    kann, was stattdessen dastand.
+
+    **Warum überhaupt gewartet wird:** ``docker stop`` kehrt zurück, sobald der
+    Daemon den Auftrag angenommen und der Prozess geendet hat — das Entfernen
+    durch ``--rm`` ist davon entkoppelt und passiert kurz danach. Sofort zu
+    prüfen misst deshalb nicht, ob ``stop`` gewirkt hat, sondern wie schnell
+    der Docker-Daemon gerade aufräumt. Auf sarasate war das reproduzierbar zu
+    langsam (5 von 5 Läufen rot), auf dem Mac schnell genug — derselbe Code,
+    zwei Antworten.
+
+    Das ist kein Aufweichen der Prüfung: verschwindet der Container gar nicht,
+    läuft die Frist ab und der Test schlägt weiterhin fehl. Nur die Frage ist
+    jetzt die richtige — *verschwindet er* statt *ist er schon weg*.
+    """
+    deadline = time.monotonic() + _GONE_TIMEOUT_S
+    out = ""
+    while time.monotonic() < deadline:
+        r = subprocess.run([bin_, "ps", "--filter", f"name={name}", "--format", "{{.Names}}"],
+                           capture_output=True, text=True, env=env, timeout=15)
+        out = r.stdout
+        if name not in out:
+            return out
+        time.sleep(0.2)
+    return out
+
+
 @docker
 def test_smoke_docker_stop_terminates_running_container():
     bin_ = exec_backend.resolve_docker_bin(dict(os.environ))
@@ -154,9 +194,10 @@ def test_smoke_docker_stop_terminates_running_container():
                    check=True, capture_output=True, env=env, timeout=60)
     try:
         worker._docker(["stop", name])  # das, was kill/_terminate intern aufruft
-        r = subprocess.run([bin_, "ps", "--filter", f"name={name}", "--format", "{{.Names}}"],
-                           capture_output=True, text=True, env=env, timeout=15)
-        assert name not in r.stdout      # Container ist weg (gestoppt + --rm)
+        out = _wait_until_gone(bin_, name, env)
+        assert name not in out, (
+            f"Container {name} steht {_GONE_TIMEOUT_S:.0f}s nach `docker stop` "
+            f"noch in `docker ps`: {out!r}")
     finally:
         subprocess.run([bin_, "kill", name], capture_output=True, env=env, timeout=15)
 
