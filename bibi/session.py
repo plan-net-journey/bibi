@@ -132,6 +132,63 @@ def _ctrl_prefix(root: Path) -> list[str]:
     return [shutil.which("bibi-ctrl") or "bibi-ctrl"]
 
 
+def _venv_bin(root: Path) -> Path | None:
+    """Das bin-Verzeichnis, in dem ``bibi-ctrl`` tatsächlich liegt.
+
+    Zwei Kandidaten, in dieser Reihenfolge: das venv **dieses Repos** und das
+    des laufenden Interpreters. Der erste gewinnt aus demselben Grund, aus dem
+    :func:`_ctrl_prefix` ``--project`` setzt — eine Sitzung soll die Engine
+    fahren, die dieses Repo pinnt, nicht die zufällig installierte.
+
+    Geprüft wird auf die Existenz von ``bibi-ctrl``, nicht auf den Ordnernamen:
+    ein Verzeichnis ohne die CLI in den PATH zu hängen, brächte nichts.
+    """
+    for cand in (root / ".venv" / "bin", Path(sys.executable).parent):
+        if (cand / "bibi-ctrl").exists():
+            return cand
+    return None
+
+
+def _child_env(root: Path) -> dict[str, str]:
+    """Umgebung für alles, was diese Sitzung startet (m.rau/bibi#76).
+
+    **Der Befund, der das nötig machte:** die drei Claude-Code-Hooks in
+    ``.claude/settings.json`` rufen ``bibi-ctrl`` ohne Pfad auf. Das setzt eine
+    aktivierte venv voraus — genau das, was vor ``bibi`` der Fall war, wenn ein
+    Mensch Claude aus seiner Shell startete. Die Sitzung erbte ``VIRTUAL_ENV``,
+    ließ ``PATH`` aber unangetastet; jeder Hook scheiterte mit
+    ``bibi-ctrl: command not found``.
+
+    Bitter daran war nicht der Fehler, sondern seine Folgenlosigkeit im Log:
+    er ist laut, die **Wirkung** fehlt still — kein Pull beim Start, kein
+    Auto-Push am Turn-Ende, keine Konflikt-Warnung, kein Turn-Logging. Ein
+    Knoten mit ``auto_sync on`` glaubt, gesichert zu sein, und ist es nicht.
+
+    Gelöst im Engine-Verb statt in den Hooks (Entscheidung m.rau, 2026-07-31):
+    hier erreicht der Fix jedes Team-Repo über den Tag-Pin, während umgeschriebene
+    Hooks in jedem einzeln nachgezogen werden müssten — und bei jedem Aufruf
+    einen venv-Sync kosteten.
+
+    Gilt für **beide** Kinder, Claude und den Daemon: ein Job, den der Daemon
+    startet, ruft ebenso ``bibi-ctrl``.
+    """
+    env = dict(os.environ)
+    bin_dir = _venv_bin(root)
+    if bin_dir is None:
+        return env
+    # Vorn einhängen, Duplikate raus — ein zweiter Eintrag desselben Pfades
+    # ändert nichts und macht ein `echo $PATH` nur unleserlich.
+    parts, seen = [], set()
+    for p in [str(bin_dir), *env.get("PATH", "").split(os.pathsep)]:
+        if p and p not in seen:
+            seen.add(p)
+            parts.append(p)
+    env["PATH"] = os.pathsep.join(parts)
+    # Wie eine Aktivierung: wer das venv sucht, findet dasselbe wie im PATH.
+    env["VIRTUAL_ENV"] = str(bin_dir.parent)
+    return env
+
+
 def _daemon_argv(args: argparse.Namespace, root: Path) -> list[str]:
     argv = [*_ctrl_prefix(root), "daemon", "run",
             "--host", "127.0.0.1",
@@ -162,7 +219,7 @@ def _start_daemon(args: argparse.Namespace, root: Path) -> subprocess.Popen:
     ``CTRL+C`` in Fenster A darf ihr nicht den Boden wegziehen. Wann er endet,
     entscheidet der Sitzungs-Zähler aus #46, nicht die Prozessgruppe.
     """
-    env = dict(os.environ)
+    env = _child_env(root)
     env["BIBI_ROLE"] = SESSION_ROLE  # s. SESSION_ROLE
     log_dir = root / "data" / "daemon-log"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -373,7 +430,9 @@ def main(argv: list[str] | None = None) -> int:
             except (KeyboardInterrupt, AttributeError):
                 pass
             return 0
-        return subprocess.call(_claude_argv(claude_args), cwd=root)
+        # env: damit die Claude-Code-Hooks `bibi-ctrl` finden (#76).
+        return subprocess.call(_claude_argv(claude_args), cwd=root,
+                               env=_child_env(root))
     except KeyboardInterrupt:
         return 130
     except FileNotFoundError as exc:
