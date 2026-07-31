@@ -183,8 +183,14 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .liveterm { max-height: 24rem; overflow-y: auto; }
 .liveterm .lts { color: #888; user-select: none; }
 .liveclock { color: #5fb37a; font-size: .8rem; font-family: ui-monospace, monospace; }
-.statuscards { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+/* m.rau/bibi#62: drei Stufen statt auto-fit — breit 1x4, schmal 2x2, ganz
+   schmal 4x1. Mit `repeat(auto-fit, minmax(9rem, 1fr))` entschied der Browser,
+   wie viele Spalten es gibt, und ergab je nach Fensterbreite auch 3+1 — genau
+   die Anordnung, die die Anforderung ausschliesst. */
+.statuscards { display: grid; grid-template-columns: repeat(4, 1fr);
                gap: .6rem; margin-bottom: 1.2rem; }
+@media (max-width: 60rem) { .statuscards { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 32rem) { .statuscards { grid-template-columns: 1fr; } }
 .card { border: 1px solid #8883; border-radius: .4rem; padding: .55rem .7rem; }
 .card .label { font-size: .72rem; color: #888; text-transform: uppercase; letter-spacing: .03em; }
 .card .value { font-size: 1.05rem; font-weight: 600; margin-top: .1rem; }
@@ -339,7 +345,11 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
              overflow-wrap: anywhere; }
 .frow a.commit { text-decoration: none; }
 .frow a.commit:hover { text-decoration: underline; color: #5a9fe0; }
-.loadmore { display: flex; gap: .5rem; margin: .8rem 0; }
+/* m.rau/bibi#63: in der Karte, an ihrem unteren linken Rand. Der obere
+   Abstand trennt vom Inhalt darueber, der untere entfaellt — die Karte
+   bringt ihr eigenes Padding mit. */
+.loadmore { display: flex; justify-content: flex-start; gap: .5rem;
+            margin: .8rem 0 0; }
 """
 
 
@@ -617,7 +627,11 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
                   if v and v != "alle")
     url = "/-/ui/schedules/list" + (f"?{qs}" if qs else "")
     attrs = (f'id="schedules" data-bus="jobs" data-bus-refetch="{url}"')
-    active_html = (f'<div class="panel-card">'
+    # m.rau/bibi#64: die Filterleiste gehoert IN die Karte, an ihren oberen
+    # linken Rand — vorher stand sie in schedules_page() zwischen Histogramm
+    # und Karte. Sie wandert damit auch durch jeden Bus-Refetch mit, statt beim
+    # Swap des Fragments zurueckzubleiben.
+    active_html = (f'<div class="panel-card">{_filter_bar(typ, status)}'
                   f'{_schedule_active_block(schedules, now, public_host=public_host, sparklines=sparklines)}</div>')
     return f"<div {attrs}>{active_html}</div>"
 
@@ -1549,7 +1563,6 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f"{_header('Jobs', daemon_status)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now)}"
         f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now, bucket_minutes=bucket_minutes)}"
-        f"{_filter_bar(typ, status)}"
         f"{schedules_fragment(schedules, now, typ=typ, status=status, public_host=public_host, sparklines=sparklines)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
@@ -2918,14 +2931,15 @@ def feed_fragment(feed_data: dict, *, days: int | None = None, weeks: int | None
         )
     return (
         '<div id="feedboard">'
-        f'<div class="panel-card">{_heatmap_html(grid, now)}</div>'
-        f"{heatmap_load_more}"
+        # m.rau/bibi#63: beide "mehr laden" stehen jetzt IN ihrer Karte, unten
+        # links — vorher hinter dem schliessenden </div>, also unter der Karte.
+        f'<div class="panel-card">{_heatmap_html(grid, now)}{heatmap_load_more}</div>'
         '<div class="panel-card">'
         '<h2>Änderungen</h2>'
         f"{_feed_filter_bar()}"
         f"{_feed_list(entities, now, commit_base_url=commit_base_url)}"
-        '</div>'
         f"{load_more}"
+        '</div>'
         f"<script>{_FEED_FILTER_JS}</script>"
         "</div>"
     )
