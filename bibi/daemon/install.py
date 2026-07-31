@@ -22,6 +22,13 @@ from bibi import config, repo
 
 SYSTEMD_DIR = Path("/etc/systemd/system")
 
+#: Wie lange der Supervisor auf ein sauberes Ende warten soll, bevor er SIGKILL
+#: schickt (m.rau/bibi#49). Muss über uvicorns Verbindungsfrist **plus** der
+#: Drain-Frist liegen — sonst schneidet der Supervisor genau das ab, wofür der
+#: Drain da ist. Mit den Defaults (10 s + 10 s) ist 90 s reichlich Luft, auch
+#: für ein per ``BIBI_DRAIN_TIMEOUT_S`` hochgesetztes Budget.
+STOP_TIMEOUT_S = 90
+
 
 def _systemd_unit_name(root: Path) -> str:
     """Unit-Name **pro Repo eindeutig** (mehrere bibi-Instanzen je Host, §4.10).
@@ -119,6 +126,13 @@ def systemd_unit_text(*, root: Path, uv: str, port: int, user: str,
         # macOS ist nicht betroffen: launchd kennt kein cgroup-Äquivalent und
         # signalisiert nur den Job-Prozess, dort trägt start_new_session allein.
         "KillMode=process",
+        # Ausdrücklich statt implizit (m.rau/bibi#49): seit dem Drain im
+        # `lifespan`-Finally braucht ein sauberes Ende messbar Zeit — uvicorns
+        # Frist für offene Verbindungen (Default 10 s) plus die Drain-Frist
+        # (Default 10 s). systemds Default wäre mit 90 s zwar großzügig genug,
+        # nur steht er nirgends in der Unit und niemand sieht ihn beim
+        # Nachrechnen. Hier steht er.
+        f"TimeoutStopSec={STOP_TIMEOUT_S}",
         "Restart=always",
         "RestartSec=3",
         "",
@@ -159,6 +173,13 @@ def launchd_plist_text(*, root: Path, uv: str, port: int, label: str,
 {chr(10).join(env)}
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!-- m.rau/bibi#49: launchd killt nach ExitTimeOut, und dessen Default sind
+       20 Sekunden — knapp genug, dass uvicorns Verbindungsfrist plus der
+       Job-Drain hineinlaufen und der Prozess mitten im Drain ein SIGKILL
+       bekommt, also genau den unkontrollierten Abbruch, den der Drain
+       verhindern soll. Anders als unter systemd ist das hier kein Kommentar,
+       sondern eine notwendige Korrektur. -->
+  <key>ExitTimeOut</key><integer>{STOP_TIMEOUT_S}</integer>
   <key>StandardOutPath</key><string>{log_dir}/daemon.out.log</string>
   <key>StandardErrorPath</key><string>{log_dir}/daemon.err.log</string>
 </dict>

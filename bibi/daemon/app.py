@@ -46,6 +46,109 @@ log = logging.getLogger("bibi.daemon")
 #: gegen Verbindungsabrisse bei Sendepausen (s. Route-Kommentar dort).
 EVENTS_PING_S = 15.0
 
+#: Frist des Drains beim **regulären** Herunterfahren (m.rau/bibi#49).
+#:
+#: Deutlich kürzer als die 120 s des Restart-Endpunkts, und der Grund ist keine
+#: Geschmacksfrage: dort läuft der Drain **im Request**, bevor sich der Prozess
+#: selbst SIGTERM schickt — die Uhr des Supervisors tickt da noch gar nicht.
+#: Hier ist sie längst angelaufen. launchd killt nach ``ExitTimeOut`` (Default
+#: **20 s**), systemd nach ``TimeoutStopSec`` (Default 90 s), und davor liegt
+#: noch uvicorns eigene Frist für offene Verbindungen (Default hier 10 s, s.
+#: ``daemon_cmd._resolve_shutdown_timeout()``). Ein Drain, der über das Budget
+#: hinausläuft, endet im SIGKILL — also genau in dem unkontrollierten Abbruch,
+#: den er verhindern soll.
+#:
+#: 10 s deckt den häufigen Fall (Worktree-Setup, Sekunden) und passt auch auf
+#: einem Knoten, dessen Unit noch aus der Zeit vor dieser Änderung stammt.
+#: ``install.py`` setzt die Fristen für neue Units jetzt ausdrücklich auf 90 s —
+#: wer mehr braucht, hebt danach ``BIBI_DRAIN_TIMEOUT_S``.
+DRAIN_TIMEOUT_DEFAULT_S = 10.0
+
+
+def _resolve_drain_timeout() -> float:
+    """``BIBI_DRAIN_TIMEOUT_S`` env > ``~/.config/bibi/env`` > Default.
+
+    Bewusst **kein** :data:`config.KEYS`-Eintrag — niemand soll beim ``init``-
+    Interview eine Drain-Frist eintippen müssen; in der env-Datei wirkt der Wert
+    trotzdem, weil ``read_env()`` ungefiltert parst. Dieselbe Bauart wie
+    ``_resolve_shutdown_timeout()``, aus demselben Grund.
+
+    ``0`` ist gültig (nicht warten). Ungültiges fällt auf den Default zurück.
+    """
+    raw = (os.environ.get("BIBI_DRAIN_TIMEOUT_S", "").strip()
+           or config.read_env().get("BIBI_DRAIN_TIMEOUT_S", "").strip())
+    if raw:
+        try:
+            secs = float(raw)
+        except ValueError:
+            return DRAIN_TIMEOUT_DEFAULT_S
+        if secs >= 0:
+            return secs
+    return DRAIN_TIMEOUT_DEFAULT_S
+
+
+async def _drain_for_shutdown(w, *, timeout: float, label: str) -> dict:
+    """``worker.drain()`` mit einem Ausweg für den Menschen (m.rau/bibi#49).
+
+    Warten ist der Default, Abbruch die ausdrückliche Entscheidung — so hat
+    m.rau die Aufteilung vorgegeben. Nur: ein zweites ``CTRL+C`` reicht dafür
+    nicht von selbst. uvicorns Signal-Handler setzt beim zweiten Signal
+    lediglich ``force_exit``; das bricht keine Coroutine ab, die gerade im
+    ``lifespan``-Finally läuft — der Nutzer drückt also und nichts passiert.
+
+    Deshalb übernimmt dieser Block SIGINT **für die Dauer des Drains** und gibt
+    ihn danach zurück. Das Fenster ist eng und der Handler tut genau eines: ein
+    Event setzen, gegen das der Drain rennt.
+
+    Läuft der Prozess nicht im Haupt-Thread (``TestClient`` fährt den Lifespan
+    in einem eigenen), ist ``signal.signal`` nicht erlaubt — dann eben ohne
+    Abbruchweg, statt am Aufräumen zu scheitern.
+
+    **Wirft nie.** Der Aufrufer ist ein ``finally``-Block, in dem danach noch
+    Heartbeat, Rescanner, Sweeper und Synchronizer gestoppt werden. Eine
+    Exception hier würde all das überspringen — der Drain soll das Aufräumen
+    verbessern, nicht es kippen. Dieselbe Haltung wie beim generischen
+    Exception-Handler der App: ein Fehler in einem Teil darf den Daemon nicht
+    mitnehmen.
+    """
+    if w is None or not hasattr(w, "drain"):
+        return {"drained": True, "starting": 0}
+    loop = asyncio.get_running_loop()
+    interrupted = asyncio.Event()
+    previous = None
+    try:
+        previous = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT,
+                      lambda *_: loop.call_soon_threadsafe(interrupted.set))
+    except (ValueError, OSError):
+        previous = None  # kein Haupt-Thread — kein Übernehmen, kein Zurückgeben
+
+    drain = asyncio.create_task(w.drain(timeout=timeout))
+    waiter = asyncio.create_task(interrupted.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {drain, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        if drain in done:
+            return drain.result()
+        drain.cancel()
+        try:
+            await drain
+        except asyncio.CancelledError:
+            pass
+        activity.emit(log, logging.WARNING, "worker.drain",
+                      "Drain abgebrochen (CTRL+C) — Jobs im Setup überstehen das "
+                      "Ende womöglich nicht", role="worker", which=label)
+        return {"drained": False, "starting": w.starting_count(), "interrupted": True}
+    except Exception as exc:  # noqa: BLE001 — s. „Wirft nie" im Docstring
+        activity.emit(log, logging.WARNING, "worker.drain",
+                      f"Drain fehlgeschlagen, Aufräumen läuft weiter: {exc}",
+                      role="worker", which=label)
+        return {"drained": False, "starting": 0, "error": str(exc)}
+    finally:
+        waiter.cancel()
+        if previous is not None:
+            signal.signal(signal.SIGINT, previous)
+
 
 def _merge_back(branch: str, *, sync_lock=None, synchronizer=None) -> None:
     """``agent/<slug>`` nach trunk mergen (PLAN-6) und — bei Zustimmung — pushen.
@@ -234,7 +337,8 @@ def _pull_for_deploy(sync_lock=None) -> tuple[bool, str | None]:
         return git_ops.integrate(branch, guard_live_paths=False)
 
 
-def _add_daemon_routes(app: FastAPI, *, sync_lock=None, worker=None) -> None:
+def _add_daemon_routes(app: FastAPI, *, sync_lock=None, worker=None,
+                       pinned_worker=None) -> None:
     """``/-/restart`` — bewusst **rollenunabhängig** (m.rau/bibi#39).
 
     Jeder Knoten muss neu startbar sein, nicht nur der Scheduler: der Deploy
@@ -303,6 +407,17 @@ def _add_daemon_routes(app: FastAPI, *, sync_lock=None, worker=None) -> None:
         drain: dict = {"drained": True, "starting": 0}
         if worker is not None:
             drain = await worker.drain()
+        # ``pinned_worker`` dazu (m.rau/bibi#49): er läuft rollenunabhängig auf
+        # jedem Knoten und führt die gepinnten ``/-/run``-Läufe aus — auf einem
+        # reinen Client ist er der einzige Worker überhaupt. Ihn hier auszulassen
+        # war eine Asymmetrie in #38, kein Vorsatz; ein Deploy-Neustart hat auf
+        # dem Mac sonst dieselbe Setup-Lücke, die der Knopf gerade schließen soll.
+        # Kostet nichts, wenn nichts im Setup steht: ``drain()`` kehrt dann sofort
+        # zurück.
+        if pinned_worker is not None:
+            pinned = await pinned_worker.drain()
+            drain = {"drained": drain["drained"] and pinned["drained"],
+                     "starting": drain["starting"] + pinned["starting"]}
 
         activity.emit(log, logging.INFO, "daemon.restart_requested",
                       "Neustart angefordert", role="daemon",
@@ -879,7 +994,7 @@ def create_app(
     roles: Roles, synchronizer=None, worker: Worker | None = None, sweeper=None,
     rescanner=None, controller_client=None, controller_base_url: str | None = None,
     sync_lock=None, heartbeat=None, pinned_worker: Worker | None = None,
-    bus=None, collector=None,
+    bus=None, collector=None, drain_timeout: float | None = None,
 ) -> FastAPI:
     started_at = time.time()
     # FE-Event-Bus (PLAN-36 Stufe 36.1): rollenunabhängig wie pinned_worker —
@@ -968,6 +1083,21 @@ def create_app(
             yield
         finally:
             await collector.stop()
+            # Job-Drain auch auf diesem Weg (m.rau/bibi#49): ein SIGTERM — vom
+            # `systemctl stop`, vom Ende einer Sitzung, vom Restart-Endpunkt —
+            # traf Jobs im Setup bisher genau so unkontrolliert, wie es vor #38
+            # der Neustart tat. Die Zusage „ein Neustart erwischt keinen Job im
+            # Setup" galt nur für einen der beiden Wege, einen Daemon zu beenden.
+            #
+            # Beide Worker, nicht nur der rollengebundene: ``pinned_worker``
+            # läuft rollenunabhängig auf JEDEM Knoten und ist auf einem
+            # Sitzungsknoten (kein `worker` im Profil) der einzige — er führt
+            # dort die `bibi-ctrl run`-Läufe aus, also gerade das, was ohne Host
+            # funktionieren soll. Ihn auszulassen hieße, die Lücke genau dort zu
+            # belassen, wo dieses Release sie schließen will.
+            drain_secs = drain_timeout if drain_timeout is not None else _resolve_drain_timeout()
+            await _drain_for_shutdown(worker, timeout=drain_secs, label="worker")
+            await _drain_for_shutdown(pinned_worker, timeout=drain_secs, label="pinned")
             await pinned_worker.stop()
             if worker is not None:
                 await worker.stop()
@@ -1552,7 +1682,8 @@ def create_app(
     # häufigste Adressat ist ein reiner Client (s. _add_daemon_routes()). Der
     # sync_lock wird durchgereicht, damit der Deploy-Pull nicht mit dem
     # Synchronizer ins selbe Repo greift.
-    _add_daemon_routes(app, sync_lock=sync_lock, worker=worker)
+    _add_daemon_routes(app, sync_lock=sync_lock, worker=worker,
+                       pinned_worker=pinned_worker)
 
     # ── Scheduler-Rolle: übrige echte DB-Routen (PLAN-3 §3.1) ───────────────
     # Zuerst registriert ⇒ gewinnen gegen die 3.0-Contract-Stubs für /-/job.
