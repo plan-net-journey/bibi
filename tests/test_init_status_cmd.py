@@ -16,9 +16,23 @@ def cfg_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def _feed_input(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> None:
-    it = iter(answers)
-    monkeypatch.setattr("builtins.input", lambda *_: next(it))
+def _feed_input(monkeypatch: pytest.MonkeyPatch, answers: dict[str, str]) -> None:
+    """Antworten **nach Prompt-Stichwort**, nicht nach Position.
+
+    Vorher war das eine Liste in Prompt-Reihenfolge. Sie brach, sobald die
+    Reihenfolge sich änderte — bei #61 zog die Rollenfrage nach vorn, und drei
+    Tests scheiterten, die mit der Änderung inhaltlich nichts zu tun hatten.
+    Genau die Fragilität, die ``init_cmd``s Moduldoc für gescriptete
+    Stdin-Eingaben beschreibt („jede Prompt-Reihenfolge-Änderung bricht es
+    leise"); für Tests gilt sie nicht weniger. Nicht getroffene Prompts
+    bekommen den leeren String, also den angebotenen Default.
+    """
+    def _input(prompt: str = "") -> str:
+        for needle, value in answers.items():
+            if needle in prompt:
+                return value
+        return ""
+    monkeypatch.setattr("builtins.input", _input)
 
 
 def test_status_without_config(cfg_home: Path, capsys):
@@ -28,14 +42,19 @@ def test_status_without_config(cfg_home: Path, capsys):
 
 
 def test_init_writes_env(cfg_home: Path, monkeypatch, capsys):
-    _feed_input(monkeypatch, ["http://sarasate:8769", "worker,synchronizer",
-                              "git@x/r.git", "/opt/bin/claude", "sarasate-client",
-                              "sarasate.tail9f9173.ts.net"])
+    _feed_input(monkeypatch, {
+        "Rollen": "worker,synchronizer,connect",
+        "Scheduler": "http://sarasate:8769",
+        "Git-Remote": "git@x/r.git",
+        "claude-Binary": "/opt/bin/claude",
+        "Knoten-Name": "sarasate-client",
+        "erreichbarer": "sarasate.tail9f9173.ts.net",
+    })
     rc = main(["init"])
     assert rc == 0
     env = config.read_env()
     assert env["BIBI_SCHEDULER_URL"] == "http://sarasate:8769"
-    assert env["BIBI_ROLE"] == "worker,synchronizer"
+    assert env["BIBI_ROLE"] == "worker,synchronizer,connect"
     assert env["BIBI_REMOTE"] == "git@x/r.git"
     assert env["BIBI_CLAUDE_BIN"] == "/opt/bin/claude"
     assert env["BIBI_NODE_NAME"] == "sarasate-client"
@@ -43,10 +62,16 @@ def test_init_writes_env(cfg_home: Path, monkeypatch, capsys):
 
 
 def test_init_empty_input_uses_defaults(cfg_home: Path, monkeypatch):
-    _feed_input(monkeypatch, ["", "", "", "", "", ""])
+    _feed_input(monkeypatch, {})   # überall Enter → Defaults
     main(["init"])
     env = config.read_env()
-    assert env["BIBI_SCHEDULER_URL"] == config.KEYS["BIBI_SCHEDULER_URL"]
+    # Die Scheduler-URL ist hier ausdrücklich NICHT dabei: die Default-Rolle
+    # trägt kein `connect`, und ohne das gibt es keinen Scheduler, dessen
+    # Adresse man voreinstellen könnte (m.rau/bibi#61). Wer alles durchklickt,
+    # bekommt einen hostlosen Knoten — und der ist eine gültige Aufstellung,
+    # keine unvollständige.
+    assert env["BIBI_SCHEDULER_URL"] == ""
+    assert "connect" not in config.KEYS["BIBI_ROLE"]
     assert env["BIBI_ROLE"] == config.KEYS["BIBI_ROLE"]
     assert env["BIBI_CLAUDE_BIN"] == config.KEYS["BIBI_CLAUDE_BIN"]
     assert env["BIBI_NODE_NAME"] == config.KEYS["BIBI_NODE_NAME"]
@@ -55,7 +80,7 @@ def test_init_empty_input_uses_defaults(cfg_home: Path, monkeypatch):
 
 def test_init_idempotent_decline_keeps_existing(cfg_home: Path, monkeypatch):
     config.write_env({"BIBI_ROLE": "synchronizer", "BIBI_SCHEDULER_URL": "http://old"})
-    _feed_input(monkeypatch, ["N"])  # Überschreiben? → Nein
+    _feed_input(monkeypatch, {"Überschreiben": "N"})
     rc = main(["init"])
     assert rc == 0
     assert config.read_env()["BIBI_SCHEDULER_URL"] == "http://old"
@@ -63,7 +88,7 @@ def test_init_idempotent_decline_keeps_existing(cfg_home: Path, monkeypatch):
 
 def test_init_force_skips_confirmation(cfg_home: Path, monkeypatch):
     config.write_env({"BIBI_ROLE": "synchronizer"})
-    _feed_input(monkeypatch, ["http://new", "worker", "", "", "", "", "", ""])  # keine j/N-Frage
+    _feed_input(monkeypatch, {"Scheduler": "http://new", "Rollen": "worker,connect"})
     rc = main(["init", "--force"])
     assert rc == 0
     assert config.read_env()["BIBI_SCHEDULER_URL"] == "http://new"
@@ -302,3 +327,64 @@ def test_status_url_uses_public_host_when_bound_to_all_interfaces(
     portfile.write(8780, host="127.0.0.1", roles="worker", session=False)
     main(["status"])
     assert "http://localhost:8780/-/" in capsys.readouterr().out
+
+
+# --- Scheduler-URL nur, wenn es einen Scheduler gibt (m.rau/bibi#61) ---------
+#
+# Gemessen am 2026-07-31, nicht abgeleitet: `init --non-interactive --role
+# "synchronizer,controller"` schrieb bisher still
+# BIBI_SCHEDULER_URL=http://localhost:8769 — eine Adresse, an der nie etwas
+# antwortet. `--connect` ist der einzige Grund, warum die URL existiert.
+
+
+def test_init_leaves_scheduler_url_empty_without_connect(cfg_home: Path):
+    main(["init", "--non-interactive", "--role", "synchronizer,controller"])
+    assert config.read_env().get("BIBI_SCHEDULER_URL") == ""
+
+
+def test_init_applies_the_default_when_connect_is_in_the_roles(cfg_home: Path):
+    main(["init", "--non-interactive", "--role", "synchronizer,connect"])
+    assert config.read_env().get("BIBI_SCHEDULER_URL") == "http://localhost:8769"
+
+
+def test_init_keeps_an_existing_url_when_connect_is_dropped(cfg_home: Path):
+    """Kein Datenverlust: wer die Rollen umstellt, soll seine Adresse nicht
+    verlieren — nur der *Default* wird nicht mehr aufgedrängt."""
+    config.write_env({"BIBI_SCHEDULER_URL": "http://sarasate:8780", "BIBI_ROLE": "connect"})
+    main(["init", "--non-interactive", "--role", "synchronizer"])
+    assert config.read_env().get("BIBI_SCHEDULER_URL") == "http://sarasate:8780"
+
+
+def test_init_explicit_url_wins_without_connect(cfg_home: Path):
+    """Ein ausdrücklich gesetztes Flag ist eine Ansage und wird nicht
+    wegoptimiert — etwa, wenn `connect` erst später dazukommt."""
+    main(["init", "--non-interactive", "--role", "synchronizer",
+          "--scheduler-url", "http://sarasate:8780"])
+    assert config.read_env().get("BIBI_SCHEDULER_URL") == "http://sarasate:8780"
+
+
+def test_init_does_not_prompt_for_the_url_without_connect(cfg_home: Path, monkeypatch):
+    """Interaktiv ist das die eigentliche Auskunft: die erste Frage des
+    Onboardings war bisher die einzige, auf die es hostlos keine richtige
+    Antwort gibt."""
+    asked: list[str] = []
+
+    def _input(prompt: str = "") -> str:
+        asked.append(prompt)
+        return "synchronizer,controller" if "Rollen" in prompt else ""
+
+    monkeypatch.setattr("builtins.input", _input)
+    main(["init"])
+    assert not any("Scheduler" in p for p in asked)
+
+
+def test_init_prompts_for_the_url_with_connect(cfg_home: Path, monkeypatch):
+    asked: list[str] = []
+
+    def _input(prompt: str = "") -> str:
+        asked.append(prompt)
+        return "synchronizer,connect" if "Rollen" in prompt else ""
+
+    monkeypatch.setattr("builtins.input", _input)
+    main(["init"])
+    assert any("Scheduler" in p for p in asked)

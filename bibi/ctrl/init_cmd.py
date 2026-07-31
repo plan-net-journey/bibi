@@ -100,7 +100,22 @@ def run(args: argparse.Namespace) -> int:
                             "falsch für Remote-Zugriff und App-Links)",
     }
     flag_values = {key: getattr(args, flag, None) for flag, key in _FLAG_TO_KEY.items()}
-    for key, fallback in config.KEYS.items():
+
+    # Die Rollen entscheiden, ob nach der Scheduler-URL überhaupt gefragt wird
+    # (m.rau/bibi#61) — und stehen in ``config.KEYS`` **hinter** ihr. Deshalb
+    # hier vorab auflösen, in derselben Reihenfolge wie unten in der Schleife:
+    # Flag > bestehender Wert > Default.
+    _role_value = (flag_values.get("BIBI_ROLE") if non_interactive else None)
+    if _role_value is None:
+        _role_value = existing.get("BIBI_ROLE") or config.KEYS["BIBI_ROLE"]
+
+    # ``BIBI_ROLE`` nach vorn: es entscheidet über die Scheduler-URL, steht in
+    # ``config.KEYS`` aber dahinter. Für den Menschen ist das ohnehin die
+    # bessere Reihenfolge — erst *was ist dieser Knoten*, dann die Details, die
+    # daraus folgen. Die übrigen Schlüssel behalten ihre Reihenfolge.
+    _order = ["BIBI_ROLE", *(k for k in config.KEYS if k != "BIBI_ROLE")]
+    for key in _order:
+        fallback = config.KEYS[key]
         if key == "BIBI_NODE_ID":
             # Bibi4-Iteration: nie abfragen — ein Mensch soll keine UUID
             # eintippen. Bestehenden Wert übernehmen, sonst neu generieren
@@ -110,11 +125,35 @@ def run(args: argparse.Namespace) -> int:
             values[key] = existing.get(key) or uuid.uuid4().hex
             continue
         default = existing.get(key) or fallback
+        explicit = flag_values.get(key)
+
+        # Die Scheduler-URL existiert aus genau einem Grund: ``connect``. Ohne
+        # diese Rolle ist sie ein Feld ohne Bedeutung, und ihr Default
+        # ``http://localhost:8769`` ist eine Adresse, an der nie etwas
+        # antwortet. Schlimmer als nutzlos war er sogar: ``session._host_
+        # configured()`` prüft nur, *ob* die Variable gesetzt ist — jeder
+        # hostlos eingerichtete Knoten hängte deshalb ``--connect`` an und
+        # meldete sich bei einem Scheduler, den es nicht gibt (m.rau/bibi#61).
+        #
+        # Ein **bestehender** Wert bleibt trotzdem stehen: wer die Rollen
+        # umstellt, soll seine Adresse nicht verlieren — unterdrückt wird nur
+        # der aufgedrängte Default. Ein ausdrückliches ``--scheduler-url``
+        # gewinnt ebenfalls; es ist eine Ansage, keine Voreinstellung.
+        if key == "BIBI_SCHEDULER_URL" and "connect" not in _role_value:
+            if explicit is not None:
+                values[key] = explicit
+            else:
+                values[key] = existing.get(key, "")
+            continue
+
         if non_interactive:
-            explicit = flag_values.get(key)
             values[key] = explicit if explicit is not None else default
         else:
             values[key] = _prompt(labels.get(key, key), default)
+            if key == "BIBI_ROLE":
+                # Der Mensch hat die Rollen gerade erst eingegeben — ab jetzt
+                # gilt seine Antwort, nicht der Wert von vorher.
+                _role_value = values[key]
 
     written = config.write_env(values, path)
     print(f"→ geschrieben: {written}")
