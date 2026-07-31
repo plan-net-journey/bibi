@@ -140,6 +140,40 @@ def test_shutdown_drain_uses_the_resolved_timeout(no_boot_signal, team_repo: Pat
     assert w.timeouts == [7.0]
 
 
+def test_shutdown_clears_the_portfile(no_boot_signal, team_repo: Path):
+    """Die Portdatei verschwindet mit dem Herunterfahren (m.rau/bibi#45).
+
+    Warum hier und nicht in einem ``finally`` um ``server.run()``: uvicorn feuert
+    das eingefangene Signal am Ende von ``capture_signals()`` erneut, nachdem es
+    ``SIG_DFL`` wiederhergestellt hat — der Prozess ist damit weg, bevor ein
+    äußeres ``finally`` liefe. Live gefunden beim Rauchtest von #48, wo genau
+    diese Datei liegenblieb.
+    """
+    from bibi.daemon import portfile
+    portfile.write(54321)
+    app = create_app(roles.resolve({"controller"}), drain_timeout=0.0)
+    with TestClient(app):
+        assert portfile.read_port() == 54321
+    assert not (team_repo / "data" / portfile.FILENAME).exists()
+
+
+def test_shutdown_leaves_a_foreign_portfile_alone(no_boot_signal, team_repo: Path):
+    # Zwei Daemons auf einem Checkout sind nicht vorgesehen — passiert es doch,
+    # darf der gehende nicht den Eintrag des bleibenden wegräumen.
+    import json
+    import os as os_mod
+
+    from bibi.daemon import portfile
+    p = team_repo / "data" / portfile.FILENAME
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"port": 54321, "pid": os_mod.getpid() + 1}),
+                 encoding="utf-8")
+    app = create_app(roles.resolve({"controller"}), drain_timeout=0.0)
+    with TestClient(app):
+        pass
+    assert p.exists()
+
+
 def test_shutdown_without_worker_is_a_noop(no_boot_signal, team_repo: Path):
     # Kein Worker ⇒ nichts zu drainen; das Herunterfahren darf daran nicht
     # scheitern (das Default-Profil einer Sitzung trägt keine worker-Rolle).

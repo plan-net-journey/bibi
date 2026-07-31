@@ -76,13 +76,23 @@ class Sweeper:
         # Zähler steht.
         self.session_scoped = session_scoped
         self.on_last_session_gone = on_last_session_gone or _shutdown_self
+        # Startzeit — die erste Zählung kommt nach einem vollen Intervall, und
+        # das IST die Karenz: ein Daemon, der eine Handbreit vor „seiner"
+        # Sitzung hochkommt, wird nicht sofort abgeräumt.
+        #
+        # Der erste Entwurf hatte stattdessen eine Sperre „scharf erst, wenn je
+        # eine Sitzung gesehen wurde". Der Rauchtest von #48 hat sie widerlegt:
+        # wer eine Sitzung öffnet und gleich wieder schließt, ist beim ersten
+        # Blick nach 45 s längst weg — der Daemon hatte dann nie eine Sitzung
+        # gesehen, wurde nie scharf und stand für immer. Genau der Alltagsfall
+        # „kurz reinschauen". Eine Karenz ab Start deckt beide Richtungen ab,
+        # ohne sich zu merken, was sie mal gesehen hat.
+        #
+        # Folge, bewusst in Kauf genommen: ein ``daemon run --session`` ganz
+        # ohne Sitzung beendet sich nach einem Intervall von selbst. Das Flag
+        # sagt „ich gehöre Sitzungen" — sind keine da, ist das die richtige
+        # Antwort und keine Überraschung.
         self._last_session_check = time.time()
-        # Scharf erst, wenn je eine Sitzung gesehen wurde. Ohne diese Sperre
-        # brächte sich ein Daemon um, der eine Handbreit vor „seiner" Sitzung
-        # hochkommt — der Zähler stünde beim ersten Durchlauf auf 0, und das
-        # hieße hier fälschlich „die letzte ist gegangen" statt „die erste ist
-        # noch nicht da".
-        self._sessions_seen = False
         self._task: asyncio.Task | None = None
         self._running = False
 
@@ -138,12 +148,8 @@ class Sweeper:
             return
         self._last_session_check = now
         from bibi.daemon import session_registry
-        n = session_registry.count()
-        if n:
-            self._sessions_seen = True
+        if session_registry.count():
             return
-        if not self._sessions_seen:
-            return  # noch keine Sitzung da gewesen, s. Kommentar im __init__
         activity.emit(log, logging.INFO, "daemon.session_end",
                       "Letzte Sitzung beendet — Daemon fährt herunter",
                       role="daemon")
