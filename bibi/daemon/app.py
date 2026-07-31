@@ -1194,6 +1194,16 @@ def create_app(
             # Knoten ohne connect-Rolle statt des früheren "lokal"-Platzhalters.
             "hostname": socket.gethostname(),
         }
+        # Soll/Ist der Engine (m.rau/bibi#43) — rein lokal abgeleitet, kein
+        # Heartbeat-Feld und keine Host-Abhängigkeit; funktioniert also gerade
+        # dann, wenn der Host nicht erreichbar ist. Defensiv: ein Knoten, der
+        # seine eigene Herkunft nicht ermitteln kann, soll melden was er weiß,
+        # statt /-/status zu verlieren (§2.7).
+        try:
+            from bibi.daemon import deploy as deploy_mod
+            out["engine"] = deploy_mod.update_status()
+        except Exception:  # noqa: BLE001
+            out["engine"] = {"verdict": "unknown", "needs_update": False}
         if synchronizer is not None:
             out["synchronizer"] = synchronizer.status()
         if worker_registry is not None:

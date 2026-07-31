@@ -48,6 +48,94 @@ def current_ref(root: Path | None = None) -> str | None:
     return m.group(2) if m else None
 
 
+#: Was als *Tag* durchgeht. Nur bei einem Tag ist ein reiner Ref-Vergleich
+#: aussagekräftig: ein Tag steht still, ein Branch wandert.
+_TAGGISH = re.compile(r"^v?\d+(?:\.\d+)*$")
+
+
+def _is_tag(ref: str | None) -> bool:
+    return bool(ref and _TAGGISH.match(ref.strip()))
+
+
+def _norm(ref: str) -> str:
+    """``v0.3.0`` und ``0.3.0`` sind derselbe Stand — das ``v`` ist Schreibweise,
+    kein Unterschied. Ohne diese Normalisierung meldete ein Knoten, der aus
+    einem Index statt per VCS-URL installiert wurde, dauerhaft NEED UPDATE:
+    ``engine_info().label()`` liefert dort die nackte Version (``0.3.0``),
+    ``pyproject.toml`` trägt den Tag (``v0.3.0``)."""
+    return ref.strip().lstrip("vV")
+
+
+def update_status(root: Path | None = None, info=None) -> dict:
+    """Liegt dieser Knoten hinter seinem Soll-Stand? (m.rau/bibi#43)
+
+    **Rein lokal.** Beide Angaben liegen ohnehin auf jedem Knoten: das Soll in
+    ``pyproject.toml`` (kommt mit dem Repo über den Synchronizer), das Ist in
+    ``direct_url.json`` im venv. Kein neues Protokollfeld, keine
+    Host-Abhängigkeit — und es funktioniert gerade dann, wenn der Host nicht
+    erreichbar ist. Genau das braucht ein hostloses Team, und genau das ist der
+    Grund, warum es neben dem nicht-blockierenden Pull des Sitzungsbefehls
+    steht: der lässt einen bewusst auf altem Stand starten, hier wird es
+    sichtbar.
+
+    **Der Mismatch ist der Normalzustand nach jedem Deploy-Push**, nicht die
+    Ausnahme: der Synchronizer zieht die neue ``uv.lock`` binnen 180 s auf jeden
+    Knoten, wirksam wird sie aber erst beim Neustart. Zwischen Push und Neustart
+    ist jeder Knoten nachweislich zu alt — und dieser Zustand war bisher
+    unsichtbar.
+
+    ``verdict`` sagt, *warum* das Ergebnis so lautet, statt ein Ja/Nein zu
+    behaupten, das die Datenlage nicht hergibt:
+
+    - ``outdated`` — Soll und Ist sind Tags und verschieden. Der einzige Fall
+      mit ``needs_update``.
+    - ``current`` — Soll und Ist sind derselbe Tag.
+    - ``branch`` — das Pinning zeigt auf einen Branch. Dann ist nur der Commit
+      aussagekräftig, und ob der Branch weitergewandert ist, weiß hier lokal
+      niemand. Lieber „unbestimmt" sagen als raten.
+    - ``editable`` — läuft gegen ein Arbeits-Checkout. Kein Rückstand, sondern
+      eine Absicht; der Nodes-Screen kennzeichnet das ohnehin schon.
+    - ``unknown`` — eine der beiden Seiten fehlt.
+    """
+    from bibi.engine_info import engine_info
+    info = engine_info() if info is None else info
+    expected = current_ref(root)
+    out = {"expected": expected, "running": info.label(),
+           "needs_update": False, "verdict": "unknown"}
+    if info.editable:
+        out["verdict"] = "editable"
+        return out
+    if not expected or not info.ref:
+        return out
+    if not _is_tag(expected):
+        out["verdict"] = "branch"
+        return out
+    if _norm(expected) == _norm(info.ref):
+        out["verdict"] = "current"
+        return out
+    out["verdict"] = "outdated"
+    out["needs_update"] = True
+    return out
+
+
+def label_is_outdated(expected: str | None, label: str | None) -> bool:
+    """Dasselbe Urteil für einen **fremden** Knoten, von dem nur die fertige
+    Bezeichnung bekannt ist (``engine``-Feld des Heartbeats).
+
+    Dass der Soll-Stand für alle Knoten derselbe ist, ist keine Annahme,
+    sondern folgt aus der geteilten ``uv.lock``: ein Knotennetz fährt ein
+    Release. Deshalb genügt hier der Soll-Stand des Hosts.
+
+    Im Zweifel ``False``. Ein falsches NEED UPDATE wäre schlimmer als ein
+    fehlendes — es schickt jemanden los, etwas zu reparieren, das in Ordnung ist.
+    """
+    if not expected or not label or not _is_tag(expected):
+        return False
+    if "(editable)" in label:
+        return False
+    return _norm(label.split()[0]) != _norm(expected)
+
+
 def set_expected_version(ref: str, root: Path | None = None,
                          *, push: bool = True) -> dict:
     """``pyproject.toml`` auf ``ref`` setzen, ``uv.lock`` regenerieren,

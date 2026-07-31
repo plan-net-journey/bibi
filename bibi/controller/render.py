@@ -761,15 +761,21 @@ def _node_git_status_chips(git_status: str | None) -> str:
             f'<span class="{sync_cls}">{_e(sync)}</span>')
 
 
-def _node_engine_cell(engine: str | None) -> str:
-    """Installierter Engine-Stand je Knoten (m.rau/bibi#19).
+def _node_engine_cell(engine: str | None, expected: str | None = None) -> str:
+    """Installierter Engine-Stand je Knoten (m.rau/bibi#19, erweitert #43).
 
     ``engine`` ist die fertige Bezeichnung aus ``engine_info.EngineInfo.label()``
     — hier wird nur dekoriert, nicht interpretiert. Ein Tag ("v0.2.0") steht
     neutral; ein editable install bekommt einen Warn-Chip, denn er ist die
     stille Falle, um die es in dem Issue eigentlich geht: ein Knoten, der gegen
     ein Arbeits-Checkout läuft statt gegen den gepinnten Stand, sah bisher aus
-    wie jeder andere."""
+    wie jeder andere.
+
+    ``expected`` (m.rau/bibi#43) trägt die zweite Hälfte nach: der Screen zeigte
+    bisher, *was läuft*, nicht *was laufen sollte*. Weichen beide ab, kommt ein
+    NEED-UPDATE-Chip dazu. Dass der Soll-Stand für alle Knoten derselbe ist, ist
+    keine Annahme, sondern folgt aus der geteilten ``uv.lock`` — ein Knotennetz
+    fährt ein Release."""
     if not engine:
         return "—"
     if "(editable)" in engine:
@@ -777,7 +783,12 @@ def _node_engine_cell(engine: str | None) -> str:
         return (f'{_e(base)} <span class="chip conflict" '
                 'title="laeuft gegen ein Arbeits-Checkout, nicht gegen den '
                 'gepinnten Stand">editable</span>')
-    return _e(engine)
+    cell = _e(engine)
+    from bibi.daemon import deploy as deploy_mod
+    if deploy_mod.label_is_outdated(expected, engine):
+        cell += (f' <span class="chip conflict" title="expected {_e(expected or "")}">'
+                 "NEED UPDATE</span>")
+    return cell
 
 
 def _node_restart_cell(node_id: str | None, port: int | None) -> str:
@@ -837,7 +848,18 @@ def _node_approval_cell(node_id: str | None, approval_status: str) -> str:
     return f'{chip} {btn}'
 
 
-def _clients_table(workers: list[dict], now: float) -> str:
+def _expected_ref() -> str | None:
+    """Der Soll-Stand aus ``pyproject.toml`` — defensiv (§2.7), er ist Beiwerk
+    und darf den Screen nie kosten."""
+    try:
+        from bibi.daemon import deploy as deploy_mod
+        return deploy_mod.current_ref()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _clients_table(workers: list[dict], now: float,
+                   expected: str | None = None) -> str:
     if not workers:
         return '<p class="out-empty">— keine Knoten —</p>'
     rows = []
@@ -849,7 +871,7 @@ def _clients_table(workers: list[dict], now: float) -> str:
             "<tr>"
             f"<td>{_node_link_cell(w.get('worker'), w.get('host'), w.get('port'))}</td>"
             f"{_role_matrix_cells(w.get('role'))}"
-            f"<td>{_node_engine_cell(w.get('engine'))}</td>"
+            f"<td>{_node_engine_cell(w.get('engine'), expected)}</td>"
             f"<td>{_e(w.get('git_user') or '—')}</td>"
             f"<td>{_node_git_status_chips(w.get('git_status'))}"
             + (f' <code>{_e(w["git_commit"])}</code>' if w.get("git_commit") else "")
@@ -883,11 +905,7 @@ def _expected_version_form(deploy_result: dict | None) -> str:
     zusätzlich den Neustart aller Knoten an. Getrennt, weil man den Lock-Diff
     sehen wollen kann, bevor drei Daemons durchstarten.
     """
-    try:
-        from bibi.daemon import deploy as deploy_mod
-        cur = deploy_mod.current_ref() or "?"
-    except Exception:  # noqa: BLE001 — defensiv (§2.7)
-        cur = "?"
+    cur = _expected_ref() or "?"
     msg = ""
     if deploy_result:
         if deploy_result.get("ok") and deploy_result.get("changed"):
@@ -935,7 +953,7 @@ def clients_fragment(workers: list[dict], now: float | None = None, *,
         'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this">'
         f'Deploy all{_BTN_SPINNER}</button>'
         '</p>'
-        f"{_clients_table(workers, now)}</div>"
+        f"{_clients_table(workers, now, _expected_ref())}</div>"
         "</div>"
     )
 
@@ -1671,6 +1689,37 @@ def _lines_card(label: str, lines: list[str], sub: str | list[str] = "") -> str:
     return f'<div class="card"><div class="label">{_e(label)}</div>{body}{sub_html}</div>'
 
 
+def _engine_update_line(status: dict) -> str:
+    """NEED-UPDATE-Zeile für den **eigenen** Knoten (m.rau/bibi#43).
+
+    Beantwortet die Frage „muss ich hier noch etwas tun?", die man sonst nur
+    durch Vergleichen zweier Dateien beantwortet.
+
+    **Wie laut?** Ein Chip in der Kopf-Kachel, kein durchgehender roter Balken —
+    und nur, wenn Soll und Ist wirklich auseinanderlaufen. Der Mismatch ist nach
+    jedem Deploy-Push der Normalzustand, bis der Neustart kommt; ein Alarm dafür
+    wäre Lärm, und Lärm wird weggeklickt. Dass die Kachel auf jedem Screen
+    steht, macht die dezente Form ausreichend.
+
+    Der Knopf löst den Neustart **lokal über 127.0.0.1** aus — also unabhängig
+    davon, ob dieser Knoten von außen erreichbar ist. Genau daran scheiterte der
+    Restart-Knopf im Nodes-Screen beim Mac (Schwester-Issue): die Bind-Adresse.
+    """
+    eng = status.get("engine") or {}
+    if not eng.get("needs_update"):
+        return ""
+    running = eng.get("running") or "?"
+    expected = eng.get("expected") or "?"
+    return (
+        f'<span class="chip conflict">NEED UPDATE</span> '
+        f'<span class="ts-dim">{_e(running)} → {_e(expected)}</span> '
+        f'<button class="startbtn" hx-post="/-/ui/self/update" '
+        f'hx-confirm="Neuen Stand holen und diesen Knoten neu starten?" '
+        f'hx-target="#feedstatus" hx-swap="outerHTML" hx-disabled-elt="this">'
+        f'Update{_BTN_SPINNER}</button>'
+    )
+
+
 def _host_card(status: dict, host_url: str | None, now: float) -> str:
     """Host- vs. Client-Karte, unterschieden nach Rolle (PLAN-21 Befund 6,
     revidiert PLAN-20 Befund 4 — User-Fund per Screenshot: der bisherige
@@ -1707,7 +1756,11 @@ def _host_card(status: dict, host_url: str | None, now: float) -> str:
             f"{n_clients} clients connected",
             f"next Job {_until(job_stats.get('next_due_at'), now)}, {complete} complete",
         ]
-        return _lines_card("Host", [_e(own)] if own else ["—"], sub=subs)
+        lines = [_e(own)] if own else ["—"]
+        update = _engine_update_line(status)
+        if update:
+            lines.append(update)
+        return _lines_card("Host", lines, sub=subs)
     hostname = None
     if host_url:
         from urllib.parse import urlparse
@@ -1721,7 +1774,14 @@ def _host_card(status: dict, host_url: str | None, now: float) -> str:
     sub = ""
     if conn.get("last_at") is not None:
         sub = f"Heartbeat {_ago(conn['last_at'], now)}"
-    return _lines_card("Client", [link], sub=sub)
+    lines = [link]
+    # Auf einem Client wiegt die Anzeige schwerer als auf dem Host: er wird
+    # nicht bedient, er läuft mit — und ein hostloser Knoten hat gar keinen
+    # Nodes-Screen, auf dem der Rückstand sonst auffiele (m.rau/bibi#43).
+    update = _engine_update_line(status)
+    if update:
+        lines.append(update)
+    return _lines_card("Client", lines, sub=sub)
 
 
 def _kv_card(label: str, rows: list[tuple[str, str, str]], sub: str = "") -> str:
