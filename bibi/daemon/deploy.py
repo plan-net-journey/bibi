@@ -20,8 +20,10 @@ der Weg, der am 2026-07-30 in beide Richtungen erprobt wurde.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from bibi import repo
@@ -46,6 +48,85 @@ def current_ref(root: Path | None = None) -> str | None:
         return None
     m = _DEP_RE.search(text)
     return m.group(2) if m else None
+
+
+def dependency_url(root: Path | None = None) -> str | None:
+    """Die git-URL, auf die das Pinning zeigt — dieselbe Zeile, andere Hälfte.
+
+    Sie ist die einzige Stelle im Team-Repo, die weiß, *wo* die Engine
+    herkommt. Ohne sie müsste eine Liste verfügbarer Versionen geraten oder
+    konfiguriert werden; so kommt sie aus derselben Quelle wie der Soll-Stand
+    selbst.
+    """
+    root = root or repo.root()
+    try:
+        text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = _DEP_RE.search(text)
+    if not m:
+        return None
+    prefix = m.group(1)
+    _, sep, url = prefix.partition("git+")
+    return url.strip() if sep else None
+
+
+#: Wie lange eine einmal geholte Tag-Liste gilt. Der Nodes-Screen rendert bei
+#: jedem Heartbeat neu (alle 15 s je Knoten) — ein ``git ls-remote`` pro
+#: Durchlauf wäre eine Netzwerkrunde für eine Liste, die sich pro Release
+#: einmal ändert.
+_REFS_TTL_S = 300.0
+_refs_cache: dict = {"at": 0.0, "url": None, "refs": []}
+
+#: Sortierschlüssel: ``v0.10.0`` gehört über ``v0.9.0``, nicht darunter — eine
+#: alphabetische Liste hätte genau hier den ersten Fehler gemacht.
+_VERSION_PART = re.compile(r"\d+")
+
+
+def _version_key(tag: str) -> tuple:
+    nums = tuple(int(n) for n in _VERSION_PART.findall(tag))
+    # Erst nach „ist überhaupt eine Version", dann numerisch: ein Tag ohne
+    # Zahlen (``latest``, ``stable``) landet hinten statt die Sortierung zu
+    # kippen.
+    return (1 if nums else 0, nums, tag)
+
+
+def available_refs(root: Path | None = None, *, timeout: float = 6.0,
+                   now: float | None = None, force: bool = False) -> list[str]:
+    """Die Tags des Engine-Repos, neueste zuerst (m.rau/bibi#39-Nachtrag).
+
+    Für die Auswahlliste am Feld „Erwartete Engine-Version": eine Version von
+    Hand einzutippen heißt, sie vorher woanders nachgeschlagen zu haben — und
+    ein Tippfehler kostet einen ``uv lock``-Fehlschlag, bis er auffällt.
+
+    ``git ls-remote`` statt lokaler Tags: das Team-Repo hat die Tags der Engine
+    nicht, es hängt nur per URL an ihr. Bewusst mit ``GIT_TERMINAL_PROMPT=0``
+    — ohne das bliebe der Aufruf auf einem Knoten ohne Zugangsdaten an einer
+    Passwortabfrage hängen, und der Screen mit ihm.
+
+    Nie eine Exception, im Zweifel eine leere Liste. Die Liste ist Komfort; das
+    Feld bleibt ein freies Textfeld, damit ein Branch-Pinning (``dev``) weiter
+    möglich ist.
+    """
+    now = time.time() if now is None else now
+    url = dependency_url(root)
+    if not url:
+        return []
+    if (not force and _refs_cache["url"] == url
+            and now - _refs_cache["at"] < _REFS_TTL_S):
+        return list(_refs_cache["refs"])
+    try:
+        proc = subprocess.run(
+            ["git", "ls-remote", "--tags", "--refs", url],
+            capture_output=True, text=True, check=False, timeout=timeout,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        refs = [ln.split("refs/tags/", 1)[1].strip()
+                for ln in proc.stdout.splitlines() if "refs/tags/" in ln]
+    except (OSError, subprocess.SubprocessError):
+        refs = []
+    refs = sorted(set(refs), key=_version_key, reverse=True)
+    _refs_cache.update(at=now, url=url, refs=refs)
+    return list(refs)
 
 
 #: Was als *Tag* durchgeht. Nur bei einem Tag ist ein reiner Ref-Vergleich

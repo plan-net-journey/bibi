@@ -35,6 +35,35 @@ log = logging.getLogger("bibi.controller")
 __all__ = ["ControllerClient", "add_controller_routes", "render", "service_descriptor"]
 
 
+async def _body_value(request: Request, name: str) -> str:
+    """Einen Formularwert aus einem htmx-POST lesen.
+
+    htmx schickt die Werte von ``hx-include`` bei POST/PUT/PATCH als
+    ``application/x-www-form-urlencoded`` im **Body** — nicht im Query-String,
+    wo FastAPI einen ``str``-Parameter mit Default sucht. Genau daran scheiterte
+    das Versionsfeld (s. ``clients_set_expected_version()``).
+
+    Von Hand geparst statt über ``Form(...)``: das verlangt ``python-multipart``
+    als zusätzliche Laufzeit-Abhängigkeit auf jedem Knoten, und für urlencoded
+    ist ``parse_qs`` der zuständige Parser aus der Standardbibliothek — dieselbe
+    Haltung, mit der der Rest des Codes HTTP über ``urllib`` statt über eine
+    Client-Bibliothek spricht.
+
+    Der Query-String bleibt als Fallback gültig: ein Aufruf per ``curl
+    -d`` und einer per ``?version=…`` sollen beide funktionieren.
+    """
+    from urllib.parse import parse_qs
+    try:
+        raw = (await request.body()).decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 — defensiv (§2.7)
+        raw = ""
+    if raw:
+        values = parse_qs(raw, keep_blank_values=True)
+        if name in values and values[name]:
+            return values[name][0].strip()
+    return (request.query_params.get(name) or "").strip()
+
+
 def _wants_html(request: Request) -> bool:
     """Browser senden ``text/html`` im Accept-Header; Tooling (curl, ``Accept:
     application/json`` oder ``*/*``) nicht. Genau das trennt App von Deskriptor."""
@@ -509,7 +538,7 @@ def add_controller_routes(
         return HTMLResponse(render.clients_fragment(workers))
 
     @app.post("/-/ui/clients/expected-version", include_in_schema=False)
-    def clients_set_expected_version(version: str = "", deploy: bool = False):
+    async def clients_set_expected_version(request: Request, deploy: bool = False):
         """Die erwartete Engine-Version setzen (m.rau/bibi#39).
 
         Das Ändern **ist** der Deploy: `pyproject.toml` schreiben, `uv lock`
@@ -520,8 +549,19 @@ def add_controller_routes(
 
         Der Rollout ist bewusst optional (`deploy`): erst sehen, was die Lock
         sagt, dann ausrollen — oder beides in einem Zug.
+
+        **Der Wert kommt aus dem Request-Body, nicht aus dem Query-String.**
+        Das war der Fehler, den m.rau am 2026-07-31 gemeldet hat: „unzulässiger
+        Ref: ''", obwohl im Feld ``v0.3.0`` stand. Die Signatur lautete
+        ``version: str = ""``, und ein einfacher Default ist in FastAPI ein
+        *Query*-Parameter — htmx packt die Werte von ``hx-include`` bei einem
+        POST aber in den Body (urlencoded). Der Parameter blieb also immer leer:
+        das Feld hat nie funktioniert, seit es existiert. Die bestehenden Tests
+        prüften nur das gerenderte HTML, nie einen echten POST — deshalb fiel es
+        weder beim Bauen noch beim Release auf.
         """
         from bibi.daemon import deploy as deploy_mod
+        version = await _body_value(request, "version")
         res = deploy_mod.set_expected_version(version)
         if res.get("ok") and res.get("changed") and deploy:
             import time as _t

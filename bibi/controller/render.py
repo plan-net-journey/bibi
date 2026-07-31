@@ -904,8 +904,28 @@ def _expected_version_form(deploy_result: dict | None) -> str:
     Zwei Knöpfe: **Setzen** schreibt und pusht, **Setzen + Ausrollen** stößt
     zusätzlich den Neustart aller Knoten an. Getrennt, weil man den Lock-Diff
     sehen wollen kann, bevor drei Daemons durchstarten.
+
+    Die **Auswahlliste** der verfügbaren Releases kam auf Wunsch von m.rau dazu
+    (2026-07-31, zusammen mit dem Fehlerbericht zum leeren Ref). Bewusst ein
+    ``datalist`` und kein ``select``: das Feld bleibt ein freies Textfeld, sonst
+    ginge das Branch-Pinning (``dev``) verloren — und genau das unterscheidet
+    ``update_status()``s Urteil „branch" von „outdated". Eine Version von Hand
+    einzutippen heißt, sie vorher woanders nachgeschlagen zu haben; ein
+    Tippfehler kostet einen ``uv lock``-Fehlschlag, bis er auffällt.
     """
     cur = _expected_ref() or "?"
+    try:
+        from bibi.daemon import deploy as deploy_mod
+        refs = deploy_mod.available_refs()
+    except Exception:  # noqa: BLE001 — defensiv (§2.7); die Liste ist Komfort
+        refs = []
+    datalist = ""
+    list_attr = ""
+    if refs:
+        list_attr = ' list="engine-refs"'
+        datalist = ('<datalist id="engine-refs">'
+                    + "".join(f'<option value="{_e(r)}">' for r in refs)
+                    + "</datalist>")
     msg = ""
     if deploy_result:
         if deploy_result.get("ok") and deploy_result.get("changed"):
@@ -922,7 +942,8 @@ def _expected_version_form(deploy_result: dict | None) -> str:
     return (
         '<p class="handles">'
         '<label>Erwartete Engine-Version '
-        f'<input name="version" value="{_e(cur)}" size="14"></label> '
+        f'<input name="version" value="{_e(cur)}" size="14"{list_attr}></label>'
+        f"{datalist} "
         '<button class="startbtn" hx-post="/-/ui/clients/expected-version" '
         'hx-include="closest p" hx-target="#clientsboard" hx-swap="outerHTML" '
         f'hx-disabled-elt="this">Setzen{_BTN_SPINNER}</button> '
