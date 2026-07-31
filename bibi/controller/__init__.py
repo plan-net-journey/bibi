@@ -818,7 +818,7 @@ def add_controller_routes(
             return []
 
     @app.get("/-/ui/jobs", include_in_schema=False)
-    def jobs_screen():
+    def jobs_screen(request: Request, typ: str | None = None, status: str | None = None):
         # Revert (User-Fund 2026-07-22, live: die Lazy-Variante (19 Pro-Slug-
         # hx-get-Requests + 2s-Self-Poll gleichzeitig) hängte den Browser-Tab
         # komplett auf — reproduziert in mehreren frischen Tabs, Server
@@ -830,10 +830,18 @@ def add_controller_routes(
         from bibi import config
         rows, local_runs = _jobs_data()
         sparklines = _job_sparkline_series(rows)
-        return HTMLResponse(render.jobs_page(
+        # m.rau/bibi#65: dieselbe Filter-Praezedenz wie beim Host — Query-Param
+        # gewinnt, sonst der zuletzt gemerkte Cookie-Wert. Bewusst DIESELBEN
+        # Cookie-Namen: wer auf dem Host nach "failed" filtert und dann auf die
+        # Client-Ansicht wechselt, meint dort dasselbe.
+        eff_typ, eff_status = _effective_filter(request, typ, status)
+        resp = HTMLResponse(render.jobs_page(
             rows, local_runs, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(),
-            public_host=config.public_host(), sparklines=sparklines))
+            public_host=config.public_host(), sparklines=sparklines,
+            typ=eff_typ, status=eff_status))
+        _set_filter_cookies(resp, eff_typ, eff_status)
+        return resp
 
     @app.get("/-/ui/jobs/{slug}/sparkline", include_in_schema=False)
     def jobs_sparkline(slug: str):
@@ -859,12 +867,16 @@ def add_controller_routes(
         return HTMLResponse(render._sparkline_cell(slug, sparklines))
 
     @app.get("/-/ui/jobs/board", include_in_schema=False)
-    def jobs_board():
+    def jobs_board(request: Request, typ: str | None = None, status: str | None = None):
         # Bus-Refetch-Ziel von #jobsboard (Target "jobs").
         from bibi import config
         rows, local_runs = _jobs_data()
-        return HTMLResponse(render.jobs_fragment(
-            rows, local_runs, public_host=config.public_host()))
+        eff_typ, eff_status = _effective_filter(request, typ, status)
+        resp = HTMLResponse(render.jobs_fragment(
+            rows, local_runs, public_host=config.public_host(),
+            typ=eff_typ, status=eff_status))
+        _set_filter_cookies(resp, eff_typ, eff_status)
+        return resp
 
     @app.get("/-/ui/jobs/archive", include_in_schema=False)
     def jobs_archive_screen():

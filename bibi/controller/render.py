@@ -1298,6 +1298,49 @@ def _effective_sched_type(s: dict) -> str:
     return models.effective_kind(s.get("payload"))
 
 
+def client_row_status(row: dict, local_runs: dict[str, dict]) -> str | None:
+    """Der Status, den eine Client-Zeile **anzeigt** (m.rau/bibi#65).
+
+    Dieselbe dreistufige Ermittlung wie in ``_jobs_row()``, nur an einer Stelle
+    statt an zweien: ein laufender Job schlägt den letzten Lauf, sonst gilt der
+    letzte Lauf, sonst gibt es keinen Status ("noch nie lokal gelaufen").
+
+    **Warum das eine eigene Funktion ist und keine Kopie:** Anzeige und Filter
+    müssen denselben Wert benutzen. Täten sie es nicht, filterte der Nutzer
+    nach etwas anderem, als er sieht — und das fiele erst auf, wenn eine Zeile
+    unerklärlich verschwindet. Genau deshalb ruft ``_jobs_row()`` sie ebenfalls
+    auf, statt die Logik ein zweites Mal zu schreiben.
+    """
+    live = row.get("live")
+    if live:
+        # Ein Live-Eintrag ohne eigenen Status heisst laufend — dieselbe
+        # Auslegung wie in der Statuszelle.
+        return live.get("status") or "running"
+    lr = local_runs.get(row.get("slug"))
+    return lr.get("status") if lr else None
+
+
+def enrich_client_rows(rows: list[dict], local_runs: dict[str, dict]) -> list[dict]:
+    """Client-Zeilen um ``last_status`` ergänzen, damit ``filter_schedules()``
+    unverändert auf ihnen arbeitet (m.rau/bibi#65).
+
+    Die Host-Zeile trägt diesen Schlüssel aus der Scheduler-DB; die Client-Zeile
+    kommt aus der lokalen MD-Discovery und trägt ihn nicht. Ohne die Angleichung
+    liesse sich der gemeinsame Filter zwar aufrufen, er griffe aber nie — ein
+    Bedienelement, das sichtbar da ist und nichts tut.
+
+    Die Alternative wäre eine zweite Filterfunktion für die Client-Seite
+    gewesen. Dagegen spricht, dass die Statuswerte dieselben sind und sich nur
+    ihr Ablageort unterscheidet: das ist kein fachlicher Grund für zwei
+    Wahrheiten, die auseinanderlaufen können.
+    """
+    out = []
+    for row in rows:
+        st = client_row_status(row, local_runs)
+        out.append({**row, "last_status": st} if st else dict(row))
+    return out
+
+
 def filter_schedules(schedules: list[dict], *, typ: str | None = None,
                      status: str | None = None, now: float | None = None) -> list[dict]:
     """Schedules nach Typ und Status filtern (rein). ``alle``/leer = kein Filter;
@@ -1339,7 +1382,9 @@ def _cookie_filter_value(cookie: str | None, valid: tuple[str, ...]) -> str | No
     return None
 
 
-def _filter_bar(typ: str | None, status: str | None) -> str:
+def _filter_bar(typ: str | None, status: str | None, *,
+                url: str = "/-/ui/schedules/list",
+                target: str = "#schedules") -> str:
     def _opts(values: tuple, cur: str | None) -> str:
         cur = cur or "alle"
         # value bleibt "alle" (interner Sentinel, s. filter_schedules()), nur
@@ -1349,7 +1394,10 @@ def _filter_bar(typ: str | None, status: str | None) -> str:
             parts.append(f'<option value="{v}"{" selected" if cur == v else ""}>{v}</option>')
         return "".join(parts)
 
-    common = ('hx-get="/-/ui/schedules/list" hx-target="#schedules" hx-swap="outerHTML" '
+    # Ziel und Target sind Parameter, seit die Leiste auch auf der Client-Seite
+    # steht (m.rau/bibi#65). Fest verdrahtet wuerde ein Klick dort ein Fragment
+    # austauschen, das es auf dem Client gar nicht gibt.
+    common = (f'hx-get="{url}" hx-target="{target}" hx-swap="outerHTML" '
               'hx-include="[name=\'typ\'],[name=\'status\']"')
     return (
         '<div class="logbar">'
@@ -2288,6 +2336,8 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
         cls, label = _GIT_STATUS_LABEL.get(git_status, ("chip", _e(str(git_status))))
         slug_cell += f' <span class="{cls}">{label}</span>'
 
+    # m.rau/bibi#65: derselbe Wert, nach dem die Filterleiste filtert —
+    # client_row_status() ist die eine Quelle fuer beide.
     if live:
         # PLAN-27 Befund 4, User-Fund: "der Status awaiting wird in /ui/jobs
         # nicht angezeigt" — live["status"] kommt jetzt aus local_runs_live()
@@ -2299,7 +2349,7 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
         # "running", obwohl live["status"] den echten Wert (deferred/failed,
         # seit dem _PINNED_LIVE_STATUSES-Fix hier überhaupt erst sichtbar)
         # längst trägt.
-        st = live.get("status") or "running"
+        st = client_row_status(row, local_runs) or "running"
         status_cell = (f'<a class="rowlink" href="/-/ui/jobs/detail/{s}">'
                        f'<span class="st {st}">{st}</span></a>')
         started_at = live.get("started_at")
@@ -2342,6 +2392,7 @@ def jobs_fragment(
     *, now: float | None = None, public_host: str = "localhost",
     sparklines: dict[str, list[int]] | None = None,
     lazy_sparklines: bool = False,
+    typ: str | None = None, status: str | None = None,
 ) -> str:
     """Der austauschbare Jobs-Kern (``#jobsboard``): lokale Job-MDs + Git-
     Status + letzter Start/Ende/Laufzeit je Zeile (PLAN-21 Befund 10 — löst
@@ -2368,9 +2419,20 @@ def jobs_fragment(
     beim Reload immer") — der initiale Seitenaufbau selbst rechnet die Serie
     nicht mehr, sondern rendert nur noch Platzhalter, s. ``_sparkline_cell_lazy()``."""
     now = time.time() if now is None else now
+    # m.rau/bibi#65: dieselbe Filterleiste und dieselbe Filterfunktion wie beim
+    # Host. Moeglich wird das erst durch enrich_client_rows() — die Client-Zeile
+    # traegt `last_status` nicht von sich aus, und ohne ihn griffe der
+    # Status-Filter nie.
+    rows = enrich_client_rows(rows, local_runs)
+    rows = filter_schedules(rows, typ=typ, status=status, now=now)
+    qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status))
+                  if v and v != "alle")
+    url = "/-/ui/jobs/board" + (f"?{qs}" if qs else "")
+    bar = _filter_bar(typ, status, url="/-/ui/jobs/board", target="#jobsboard")
     return (
-        '<div id="jobsboard" data-bus="jobs" data-bus-refetch="/-/ui/jobs/board">'
+        f'<div id="jobsboard" data-bus="jobs" data-bus-refetch="{url}">'
         '<div class="panel-card"><h2>Jobs</h2>'
+        f"{bar}"
         f"{_jobs_table(rows, local_runs, now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines)}</div>"
         "</div>"
     )
@@ -2478,6 +2540,7 @@ def jobs_page(
     now: float | None = None, public_host: str = "localhost",
     sparklines: dict[str, list[int]] | None = None,
     lazy_sparklines: bool = False,
+    typ: str | None = None, status: str | None = None,
 ) -> str:
     """Jobs-Screen (PLAN-17 Stufe 17.2, umgebaut PLAN-21 Befund 10): lokale
     Repository-Realität + Git-Status + letzter Start/Ende/Laufzeit je Zeile.
@@ -2501,7 +2564,7 @@ def jobs_page(
         f"{_header('Jobs', status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, client_rows=rows)}"
-        f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines)}"
+        f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines, typ=typ, status=status)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
