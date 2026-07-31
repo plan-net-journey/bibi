@@ -445,3 +445,97 @@ def test_bibi_is_declared_as_a_console_script():
     scripts = data["project"]["scripts"]
     assert scripts["bibi"] == "bibi.session:main"
     assert scripts["bibi-ctrl"] == "bibi.ctrl:main"
+
+
+# ── Die Umgebung für Kindprozesse (m.rau/bibi#76) ───────────────────────────
+
+
+@pytest.fixture()
+def venv_in_repo(team_repo: Path) -> Path:
+    """Ein venv im Team-Repo, so wie `uv sync` es anlegt."""
+    bin_dir = team_repo / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "bibi-ctrl").write_text("#!/bin/sh\n")
+    (bin_dir / "bibi-ctrl").chmod(0o755)
+    return bin_dir
+
+
+def test_claude_finds_bibi_ctrl_on_its_path(team_repo: Path, venv_in_repo: Path,
+                                            monkeypatch: pytest.MonkeyPatch):
+    """Der Fehler, der das Issue ausgelöst hat, in seiner ursprünglichen Form.
+
+    Die drei Hooks in `.claude/settings.json` rufen `bibi-ctrl` ohne Pfad auf.
+    Ohne diese Umgebung scheiterte jeder von ihnen mit `command not found` —
+    laut im Log, still in der Wirkung: kein Pull, kein Auto-Push, keine
+    Konflikt-Warnung.
+    """
+    seen: dict = {}
+    monkeypatch.setattr(session.subprocess, "call",
+                        lambda argv, **kw: (seen.update(kw), 0)[1])
+    monkeypatch.setattr(session, "_pull", lambda root, **kw: None)
+    monkeypatch.setattr(session, "_ensure_daemon", lambda a, r: (54321, False))
+    monkeypatch.setattr(session.webbrowser, "open", lambda u: None)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    assert session.main(["--no-browser"]) == 0
+
+    path = seen["env"]["PATH"].split(os.pathsep)
+    assert path[0] == str(venv_in_repo), "venv-bin gehört nach vorn, nicht irgendwohin"
+    assert "/usr/bin" in path, "der geerbte PATH bleibt erhalten"
+    assert seen["env"]["VIRTUAL_ENV"] == str(venv_in_repo.parent)
+
+
+def test_daemon_child_gets_the_same_path(team_repo: Path, venv_in_repo: Path,
+                                         monkeypatch: pytest.MonkeyPatch):
+    """Nicht nur Claude — ein Job, den der Daemon startet, ruft ebenso `bibi-ctrl`."""
+    seen: dict = {}
+
+    class _Popen:
+        def __init__(self, argv, **kw):
+            seen.update(kw)
+
+    monkeypatch.setattr(session.subprocess, "Popen", _Popen)
+    monkeypatch.setenv("PATH", "/usr/bin")
+    args = session._parse([])[0]
+
+    session._start_daemon(args, team_repo)
+
+    assert seen["env"]["PATH"].split(os.pathsep)[0] == str(venv_in_repo)
+    assert seen["env"]["BIBI_ROLE"] == session.SESSION_ROLE, "das Rollenprofil bleibt"
+
+
+def test_path_entry_is_not_duplicated(team_repo: Path, venv_in_repo: Path,
+                                      monkeypatch: pytest.MonkeyPatch):
+    """Eine Sitzung in einer bereits aktivierten venv verdoppelt den Eintrag nicht."""
+    monkeypatch.setenv("PATH", f"{venv_in_repo}{os.pathsep}/usr/bin")
+    path = session._child_env(team_repo)["PATH"].split(os.pathsep)
+    assert path.count(str(venv_in_repo)) == 1
+    assert path == [str(venv_in_repo), "/usr/bin"]
+
+
+def test_env_is_untouched_without_a_venv(team_repo: Path,
+                                         monkeypatch: pytest.MonkeyPatch):
+    """Kein auffindbares `bibi-ctrl` — dann lieber nichts anfassen als raten.
+
+    Der Fall ist real: eine global installierte Engine ohne Repo-venv. Ein
+    erfundener Pfad im PATH wäre schlechter als der Status quo.
+    """
+    monkeypatch.setattr(session.sys, "executable", "/usr/bin/python3")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    env = session._child_env(team_repo)
+    assert env["PATH"] == "/usr/bin:/bin"
+
+
+def test_repo_venv_wins_over_the_running_interpreter(team_repo: Path, venv_in_repo: Path,
+                                                     tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch):
+    """Dieselbe Regel wie bei `_ctrl_prefix`: die Engine, die *dieses* Repo pinnt.
+
+    Ein `bibi`, das aus einem fremden venv gestartet wurde, darf die Sitzung
+    nicht auf dessen Engine umlenken.
+    """
+    other = tmp_path / "other" / "bin"
+    other.mkdir(parents=True)
+    (other / "bibi-ctrl").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(session.sys, "executable", str(other / "python3"))
+    assert session._venv_bin(team_repo) == venv_in_repo
