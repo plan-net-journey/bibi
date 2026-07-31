@@ -26,6 +26,8 @@ class Finding:
                  # | "claude-auth-missing" | "public-host-missing"
                  # | "legacy-job-env-name" (PLAN-32 Stufe 32.0)
                  # | "legacy-node-name" (PLAN-34)
+                 # | "credential-drift" (dasselbe Geheimnis an zwei Orten,
+                 #   unbemerkt auseinandergelaufen)
     path: str    # betroffener Pfad ("" = global)
     detail: str
 
@@ -301,4 +303,47 @@ def check_markdown_hardwrap(path: str, text: str) -> list[Finding]:
             run_start = i
         run_len += 1
     flush()
+    return out
+
+
+@dataclass(frozen=True)
+class CredentialPair:
+    """Ein Geheimnis, das an zwei Orten gehalten wird — als **Fingerprint**,
+    nie als Wert. ``None`` heißt „an diesem Ort nicht vorhanden“."""
+    label: str
+    keychain_fp: str | None
+    env_fp: str | None
+
+
+def check_credential_drift(pairs) -> list[Finding]:
+    """Dasselbe Credential an zwei Orten, unbemerkt auseinandergelaufen.
+
+    Hintergrund (live gefunden 2026-07-31, Case 20260729.bibi4DesignStudie):
+    der Gitea-Token liegt sowohl im macOS-Keychain (für interaktive Aufrufe am
+    Mac) als auch als ``BIBI_JOB_ENV_*`` im Verteilweg (für Jobs auf den
+    Knoten) — so trennt es das Team-Repo bewusst, weil der Verteilweg
+    ungescoped ist. Beide Kopien werden aber von niemandem verglichen: der
+    Token wurde neu erzeugt, der Verteilweg nachgezogen, der Keychain nicht.
+    Aufgefallen ist es erst Wochen später bei einem interaktiven API-Aufruf,
+    weil die Jobs unbeirrt weiterliefen.
+
+    Nicht die Doppelhaltung ist der Fehler — die hat ihren Grund —, sondern
+    dass ihr Auseinanderlaufen unsichtbar bleibt. Genau das meldet dieser
+    Check.
+
+    Gemeldet wird **nur**, wenn beide Orte einen Wert führen und die
+    Fingerprints differieren. Fehlt einer, ist das kein Fund: nicht jeder
+    Knoten pflegt jeden Ort (Linux hat keinen Keychain), und ein fehlender
+    Eintrag ist eine Entscheidung, kein Widerspruch.
+    """
+    out: list[Finding] = []
+    for p in pairs:
+        if not p.keychain_fp or not p.env_fp:
+            continue
+        if p.keychain_fp != p.env_fp:
+            out.append(Finding(
+                "credential-drift", p.label,
+                f"Keychain ({p.keychain_fp}) und Verteilweg ({p.env_fp}) tragen "
+                "verschiedene Werte — eine Kopie ist veraltet; die interaktive "
+                "Nutzung schlägt fehl, während Jobs weiterlaufen"))
     return out
