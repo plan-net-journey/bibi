@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import pytest
@@ -215,12 +216,31 @@ def test_resolve_shutdown_timeout_invalid_falls_back_to_default(
             == daemon_cmd.SHUTDOWN_TIMEOUT_DEFAULT_S)
 
 
+def _capture_server(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """``uvicorn.Server.run`` abfangen statt ``uvicorn.run``.
+
+    Seit der Port-Automatik (m.rau/bibi#45) baut ``run()`` ``Config``+``Server``
+    selbst, weil nur ``Server.run()`` einen vorgebundenen Socket entgegennimmt —
+    ein Patch auf ``uvicorn.run`` liefe daran vorbei, ein echter Server ginge
+    hoch und der Test hinge (genau so gefunden).
+    """
+    import uvicorn
+    captured: dict = {}
+
+    def _fake_run(self, sockets=None):
+        captured["timeout_graceful_shutdown"] = self.config.timeout_graceful_shutdown
+        captured["port"] = self.config.port
+        captured["host"] = self.config.host
+        captured["sockets"] = sockets
+
+    monkeypatch.setattr(uvicorn.Server, "run", _fake_run)
+    return captured
+
+
 def test_run_passes_shutdown_timeout_to_uvicorn(
     env_iso, monkeypatch: pytest.MonkeyPatch
 ):
-    import uvicorn
-    captured: dict = {}
-    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: captured.update(kw))
+    captured = _capture_server(monkeypatch)
     monkeypatch.setenv("BIBI_SHUTDOWN_TIMEOUT_S", "4")
     # run() verankert den Bind-Port absichtlich im echten os.environ (PLAN-30
     # Ebene 1 v2, für Wrapper-Subprozesse) — hier vorab durch monkeypatch
@@ -233,6 +253,64 @@ def test_run_passes_shutdown_timeout_to_uvicorn(
 
     assert rc == 0
     assert captured["timeout_graceful_shutdown"] == 4
+    assert captured["port"] == 8769
+    assert captured["sockets"] is None  # kein Auto-Port ⇒ uvicorn bindet selbst
+
+
+# ── Port-Automatik im Startpfad (m.rau/bibi#45) ──────────────────────────────
+
+
+def test_run_with_auto_port_binds_and_hands_socket_to_uvicorn(
+    env_iso, monkeypatch: pytest.MonkeyPatch
+):
+    from bibi.daemon import portfile
+    captured = _capture_server(monkeypatch)
+    # Durch monkeypatch geschleust, obwohl der Wert hier gar nicht gelesen wird
+    # (das Flag gewinnt): run() überschreibt die Variable im ECHTEN os.environ,
+    # und nur ein vorheriges setenv sorgt dafür, dass monkeypatch sie danach
+    # wieder entfernt. Ein delenv(raising=False) auf eine ohnehin fehlende
+    # Variable merkt sich nichts — der gefundene Leckweg nach test_heartbeat,
+    # das BIBI_DAEMON_PORT ungesetzt erwartet.
+    monkeypatch.setenv("BIBI_DAEMON_PORT", "")
+
+    rc = daemon_cmd.run(_args(controller=True, host="127.0.0.1", port="auto",
+                              log_level=None))
+
+    assert rc == 0
+    # Ein echter, freier Port — und der Socket wird durchgereicht, statt uvicorn
+    # die Nummer erneut binden zu lassen. Das ist das Rennen, das die Automatik
+    # gerade vermeiden soll.
+    assert captured["port"] > 0
+    assert captured["sockets"] is not None
+    assert captured["sockets"][0].getsockname()[1] == captured["port"]
+    captured["sockets"][0].close()
+    # …und derselbe Port steht im Prozess-Env, das Heartbeat und Wrapper lesen.
+    assert os.environ["BIBI_DAEMON_PORT"] == str(captured["port"])
+    # Aufgeräumt: die Portdatei überlebt das Ende des Servers nicht.
+    assert portfile.read_port() is None
+
+
+def test_run_writes_portfile_while_serving(env_iso, monkeypatch: pytest.MonkeyPatch):
+    import uvicorn
+
+    from bibi.daemon import portfile
+    seen: dict = {}
+
+    def _fake_run(self, sockets=None):
+        # Während der Server läuft, MUSS der Port auffindbar sein — genau darum
+        # geht es: ein zweites Terminal soll den Daemon finden können.
+        seen["port"] = portfile.read_port()
+        if sockets:
+            sockets[0].close()
+
+    monkeypatch.setattr(uvicorn.Server, "run", _fake_run)
+    monkeypatch.setenv("BIBI_DAEMON_PORT", "")  # s. Kommentar im Test darüber
+
+    daemon_cmd.run(_args(controller=True, host="127.0.0.1", port="auto",
+                         log_level=None))
+
+    assert seen["port"] is not None
+    assert portfile.read_port() is None
 
 
 def test_run_returns_2_on_validation_error(env_iso):

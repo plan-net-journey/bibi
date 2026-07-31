@@ -55,13 +55,27 @@ DAEMON_PORT_DEFAULT = 8769
 
 
 def daemon_port() -> int:
-    """Lauschport des Daemons: ``BIBI_DAEMON_PORT`` env > Port aus
+    """Lauschport des Daemons: ``BIBI_DAEMON_PORT`` env > **tatsächlicher Port
+    eines hier laufenden Daemons** (``data/daemon-port.json``) > Port aus
     ``BIBI_SCHEDULER_URL`` (env oder ``~/.config/bibi/env``) > Default 8769.
 
     Ohne den ``BIBI_SCHEDULER_URL``-Fallback liefen ``bibi-ctrl job``/
     ``daemon status`` ohne ``--port``-Flag an per ``init`` konfigurierten
     Instanzen (z. B. Port 8780) vorbei — silent gegen einen Fremdprozess
     am Default-Port statt gegen den eigentlich gemeinten Daemon.
+
+    Die Portdatei (m.rau/bibi#45) ist die einzige Stufe, die kein
+    *Konfigurations*wert ist, sondern ein **Live-Befund**: sie existiert nur,
+    solange ein Daemon in diesem Checkout läuft, und trägt den Port, den er
+    wirklich bekommen hat. Deshalb steht sie vor ``BIBI_SCHEDULER_URL`` — was
+    tatsächlich lauscht, schlägt eine Vermutung aus der Config.
+
+    Sie steht dagegen bewusst **hinter** ``BIBI_DAEMON_PORT``: das ist der
+    explizite „sprich mit DIESEM Daemon"-Override (s. ``scheduler_base_url()``),
+    und ein Mehrfach-Instanz-Setup, das zwei Daemons auf einen Checkout legt,
+    hängt genau daran. Beide würden dieselbe Datei schreiben — der Override
+    bleibt dort der verlässliche Weg, und er wird durch diese Stufe nicht
+    schwächer.
     """
     raw = os.environ.get("BIBI_DAEMON_PORT", "").strip()
     if raw:
@@ -69,6 +83,13 @@ def daemon_port() -> int:
             return int(raw)
         except ValueError:
             pass
+
+    # Lazy: ``portfile`` zieht ``bibi.repo`` (git-Aufruf) nach — das gehört nicht
+    # in den Import-Pfad jedes Moduls, das nur ``config`` braucht.
+    from bibi.daemon import portfile
+    live = portfile.read_port()
+    if live:
+        return live
 
     scheduler_url = (os.environ.get("BIBI_SCHEDULER_URL", "").strip()
                       or read_env().get("BIBI_SCHEDULER_URL", "").strip())

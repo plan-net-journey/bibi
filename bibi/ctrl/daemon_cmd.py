@@ -77,6 +77,37 @@ def _resolve_worker_name() -> str | None:
     return name or None
 
 
+#: ``--port auto`` / ``BIBI_DAEMON_PORT=auto`` — der Daemon sucht sich seinen
+#: Port selbst (m.rau/bibi#45).
+AUTO_PORT = "auto"
+
+
+def _is_auto_port(value: str | int | None) -> bool:
+    """Soll der Port automatisch gesucht werden?
+
+    Das Flag gewinnt über die Umgebung; ohne Flag zählt ``BIBI_DAEMON_PORT=auto``,
+    damit eine Autostart-Unit dieselbe Wahl treffen kann, ohne dass ihr Aufrufer
+    eine Zahl kennt. Getrennt von ``run()`` gehalten, damit ohne echten
+    uvicorn-Start testbar (wie ``_resolve_shutdown_timeout``).
+    """
+    raw = "" if value is None else str(value).strip().lower()
+    if raw:
+        return raw == AUTO_PORT
+    return os.environ.get("BIBI_DAEMON_PORT", "").strip().lower() == AUTO_PORT
+
+
+def _explicit_port(value: str | int | None) -> int:
+    """``--port <n>`` als Zahl. ``0`` bei fehlendem/ungültigem Wert — der
+    Aufrufer fällt dann auf ``config.daemon_port()`` zurück, unverändert zum
+    Verhalten vor der Port-Automatik."""
+    if value is None:
+        return 0
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return 0
+
+
 SHUTDOWN_TIMEOUT_DEFAULT_S = 10
 
 
@@ -166,10 +197,22 @@ def run(args: argparse.Namespace) -> int:
 
     import uvicorn
 
+    from bibi.daemon import portfile
     from bibi.daemon.app import create_app
     # Controller ruft die /-/-API über HTTP am **tatsächlichen** Bind-Port auf
     # (nicht config.daemon_port() — sonst zeigt --port ins Leere/auf einen Fremd-Daemon).
-    port = args.port or config.daemon_port()
+    #
+    # ``--port auto`` (m.rau/bibi#45): der Daemon sucht sich selbst einen freien
+    # Port. Der Socket bleibt dabei offen und wird an uvicorn durchgereicht —
+    # sonst gäbe es zwischen „Nummer gelesen" und „uvicorn bindet" ein Fenster,
+    # in dem ein anderer Prozess denselben Port belegen kann. Genau der Fall,
+    # für den die Automatik da ist (zwei Instanzen auf einer Maschine), ist auch
+    # der Fall, in dem sich zwei Starts überschneiden können.
+    sock = None
+    if _is_auto_port(getattr(args, "port", None)):
+        sock, port = portfile.bind_free(args.host)
+    else:
+        port = _explicit_port(getattr(args, "port", None)) or config.daemon_port()
     # PLAN-30 Ebene 1 v2 (Fund Review-Runde 2, 2026-07-15): den tatsächlichen
     # Bind-Port hier im Prozess-Environment verankern, BEVOR irgendein Worker/
     # Wrapper-Subprozess gespawnt wird — der Wrapper braucht ihn für seinen
@@ -206,11 +249,30 @@ def run(args: argparse.Namespace) -> int:
     # läuft mit dem neuen Stand, weil `uv run` das venv beim Hochfahren gegen
     # die inzwischen gepullte Lock synct.
     if boot_signal.apply_and_clear():
+        if sock is not None:
+            sock.close()
         return 0
+    # Den tatsächlichen Port ablegen (m.rau/bibi#45), damit ihn andere Prozesse
+    # dieses Checkouts finden: ``bibi-ctrl status`` im zweiten Terminal, die
+    # Statusline, der Browser. Erst hier, nach dem Boot-Signal-Zweig — der kehrt
+    # zurück, ohne je einen Server zu starten, ein Eintrag wäre dort gelogen.
+    portfile.write(port, host=args.host, roles=",".join(names))
     # timeout_graceful_shutdown: ohne die Frist wartet uvicorn beim SIGTERM
     # unbegrenzt auf offene Verbindungen — und der SSE-Strom /-/events schließt
     # nie von selbst (s. _resolve_shutdown_timeout()).
-    uvicorn.run(app, host=args.host, port=port, timeout_graceful_shutdown=grace)
+    #
+    # ``Config``+``Server`` statt ``uvicorn.run()``: das ist dessen Innenleben
+    # (``uvicorn.run`` baut genau diese beiden, plus Reload/Worker-Zweige, die
+    # hier nie greifen) — nur nimmt ``Server.run()`` einen vorgebundenen Socket
+    # entgegen, und den braucht die Port-Automatik oben.
+    server = uvicorn.Server(uvicorn.Config(
+        app, host=args.host, port=port, timeout_graceful_shutdown=grace))
+    try:
+        server.run(sockets=[sock] if sock is not None else None)
+    finally:
+        # Aufräumen im Normalfall; ein SIGKILL kommt hier nie an — dagegen hilft
+        # die PID-Prüfung beim Lesen, nicht ein zweites finally.
+        portfile.clear()
     return 0
 
 
@@ -268,7 +330,9 @@ def register(sub: argparse._SubParsersAction) -> None:
 
     pr = dsub.add_parser("run", help="Daemon im Vordergrund starten")
     pr.add_argument("--host", default="127.0.0.1")
-    pr.add_argument("--port", type=int, default=0, help="0 = aus BIBI_DAEMON_PORT/Default")
+    pr.add_argument("--port", default=None,
+                    help="Portnummer, 'auto' = freien Port suchen und ablegen "
+                         "(m.rau/bibi#45); ohne Angabe BIBI_DAEMON_PORT/Default")
     pr.add_argument("--synchronizer", action="store_true")
     pr.add_argument("--scheduler", action="store_true")
     pr.add_argument("--worker", action="store_true")
