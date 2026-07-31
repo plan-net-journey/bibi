@@ -186,6 +186,12 @@ def update_status(root: Path | None = None, info=None) -> dict:
     if info.editable:
         out["verdict"] = "editable"
         return out
+    if info.local:
+        # Eigenes Urteil statt „unknown" (m.rau/bibi#58): unbekannt sagt zu
+        # wenig über einen Zustand, den man kennt — hier läuft nachweislich
+        # nicht der gepinnte Stand, sondern eine Kopie eines Verzeichnisses.
+        out["verdict"] = "local"
+        return out
     if not expected or not info.ref:
         return out
     if not _is_tag(expected):
@@ -212,7 +218,10 @@ def label_is_outdated(expected: str | None, label: str | None) -> bool:
     """
     if not expected or not label or not _is_tag(expected):
         return False
-    if "(editable)" in label:
+    if "(editable)" in label or "(local)" in label:
+        # Beide tragen im Screen ihren eigenen Chip (m.rau/bibi#58). Ein
+        # NEED UPDATE daneben wäre irreführend: ein Neustart holt keinen
+        # gepinnten Stand, wenn das venv aus einem Verzeichnis kommt.
         return False
     return _norm(label.split()[0]) != _norm(expected)
 

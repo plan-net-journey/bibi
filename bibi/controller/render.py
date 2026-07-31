@@ -778,11 +778,18 @@ def _node_engine_cell(engine: str | None, expected: str | None = None) -> str:
     fährt ein Release."""
     if not engine:
         return "—"
-    if "(editable)" in engine:
-        base = engine.replace("(editable)", "").strip()
-        return (f'{_e(base)} <span class="chip conflict" '
-                'title="laeuft gegen ein Arbeits-Checkout, nicht gegen den '
-                'gepinnten Stand">editable</span>')
+    for marker, title in (
+            ("(editable)", "laeuft gegen ein Arbeits-Checkout, nicht gegen den "
+                           "gepinnten Stand"),
+            # m.rau/bibi#58: eine Kopie eines Verzeichnisses sieht aus wie ein
+            # Release und ist keins — derselbe Unterschied zum gepinnten Stand
+            # wie beim editable install, nur schlechter zu bemerken.
+            ("(local)", "aus einem lokalen Verzeichnis installiert, nicht aus "
+                        "dem gepinnten Tag")):
+        if marker in engine:
+            base = engine.replace(marker, "").strip()
+            return (f'{_e(base)} <span class="chip conflict" title="{title}">'
+                    f'{marker.strip("()")}</span>')
     cell = _e(engine)
     from bibi.daemon import deploy as deploy_mod
     if deploy_mod.label_is_outdated(expected, engine):
@@ -943,6 +950,13 @@ def _expected_version_form(deploy_result: dict | None) -> str:
         '<p class="handles">'
         '<label>Erwartete Engine-Version '
         f'<input name="version" value="{_e(cur)}" size="14"{list_attr}></label>'
+        # Der Stand, den DIESE Seite beim Rendern gesehen hat (m.rau/bibi#57).
+        # Ein Tab, der vor einem Release geöffnet wurde, trägt im Feld oben den
+        # alten Ref; ein Klick auf „Setzen" schriebe ihn zurück und stufte beim
+        # nächsten Neustart jeden Knoten herab. Genau das ist am 2026-07-31 um
+        # 16:20 passiert. Der Server vergleicht dieses Feld gegen den
+        # tatsächlichen Stand und schreibt bei Abweichung nicht.
+        f'<input type="hidden" name="seen" value="{_e(cur)}">'
         f"{datalist} "
         '<button class="startbtn" hx-post="/-/ui/clients/expected-version" '
         'hx-include="closest p" hx-target="#clientsboard" hx-swap="outerHTML" '

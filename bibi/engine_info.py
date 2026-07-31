@@ -36,16 +36,34 @@ class EngineInfo:
     def short_commit(self) -> str | None:
         return self.commit[:7] if self.commit else None
 
+    @property
+    def local(self) -> bool:
+        """Aus einem **Verzeichnis** installiert statt aus einer VCS-URL, ohne
+        editable zu sein (m.rau/bibi#58).
+
+        Der Unterschied zum editable install ist nur die Auffindbarkeit, und
+        zwar zu Ungunsten dieses Falls: ein editable install ist wenigstens
+        offensichtlich, wenn man ihn sucht. Eine Kopie ist eingefroren und trägt
+        keinen Hinweis auf ihre Herkunft — sie sieht aus wie ein Release und ist
+        keins. Live gefunden am 2026-07-31: ein Knoten meldete ``0.4.0`` und
+        lief gegen eine Kopie des Arbeits-Checkouts, samt uncommitteter
+        Änderungen, die nie in einem Release waren.
+        """
+        return bool(self.url and self.url.startswith("file://")
+                    and not self.editable)
+
     def label(self) -> str:
         """Eine Zeile für Menschen — die Bezeichnung, nicht die Rohdaten.
 
         Ein Tag ist die beste Auskunft („v0.2.0"), ein Branch die zweitbeste
         („dev @ 86ea20e" — der Name allein sagt bei einem wandernden Branch
-        nichts). Ein editable install wird ausdrücklich benannt, weil er der
-        Grund ist, warum es dieses Modul gibt.
+        nichts). Ein editable install und ein lokaler Build werden ausdrücklich
+        benannt, weil sie der Grund sind, warum es dieses Modul gibt.
         """
         if self.editable:
             return f"{self.version or '?'} (editable)"
+        if self.local:
+            return f"{self.version or '?'} (local)"
         if self.ref and self.version and self.ref.lstrip("v") == self.version:
             # Tag-Pinning: Ref und Version sagen dasselbe, einmal genügt.
             return self.ref
