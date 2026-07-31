@@ -269,6 +269,35 @@ def add_controller_routes(
             _status(), _feed_git_status(), _scheduler_url(), time.time(),
             client_rows=_client_rows_for_status()))
 
+    @app.post("/-/ui/self/update", include_in_schema=False)
+    def self_update():
+        """Diesen Knoten auf den Soll-Stand bringen (m.rau/bibi#43).
+
+        Über ``127.0.0.1``, nicht über die von außen gemeldete Adresse: der
+        Knopf sitzt in der eigenen Oberfläche dieses Knotens, und ob er von
+        außen erreichbar ist, spielt dafür keine Rolle. Genau daran scheiterte
+        der Restart-Knopf im Nodes-Screen beim Mac — an der Bind-Adresse.
+
+        ``deployment=True``: erst pullen, dann neu starten. Ohne den Pull wäre
+        der Neustart nur Ausfallzeit — der Knoten käme auf demselben Stand
+        zurück, und der Knopf verspricht das Gegenteil. Schlägt der Pull fehl,
+        antwortet ``/-/restart`` mit 409 und startet **nicht** neu; dann bleibt
+        es beim alten Stand und die Kachel sagt weiterhin NEED UPDATE — was
+        dann auch stimmt.
+        """
+        from bibi import config as config_mod
+        try:
+            client.restart_node("127.0.0.1", config_mod.daemon_port(),
+                                deployment=True)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        # Kurz warten, damit die neu gerenderte Kachel nicht noch den alten
+        # Zustand zeigt und der Knopf folgenlos wirkt (wie bei den Node-Verben).
+        time.sleep(1.0)
+        return HTMLResponse(render.feed_status_fragment(
+            _status(), _feed_git_status(), _scheduler_url(), time.time(),
+            client_rows=_client_rows_for_status()))
+
     @app.get("/-/ui/feed/jobstatus", include_in_schema=False)
     def feed_jobstatus():
         # Bus-Refetch-Ziel von #jobstatuscard (Target "jobs") — eigenes
