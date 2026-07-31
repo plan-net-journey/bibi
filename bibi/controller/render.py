@@ -191,6 +191,12 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
                gap: .6rem; margin-bottom: 1.2rem; }
 @media (max-width: 60rem) { .statuscards { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 32rem) { .statuscards { grid-template-columns: 1fr; } }
+/* m.rau/bibi#66: Sortier-Koepfe. Der Link erbt die Kopf-Farbe — er soll wie
+   eine Spalte aussehen, nicht wie ein Verweis; erst der Zeiger verraet, dass
+   man klicken kann. Die aktive Spalte traegt zusaetzlich den Pfeil. */
+th a { color: inherit; text-decoration: none; cursor: pointer; }
+th a:hover { text-decoration: underline; }
+th.sorted { font-weight: 700; }
 .card { border: 1px solid #8883; border-radius: .4rem; padding: .55rem .7rem; }
 .card .label { font-size: .72rem; color: #888; text-transform: uppercase; letter-spacing: .03em; }
 .card .value { font-size: 1.05rem; font-weight: 600; margin-top: .1rem; }
@@ -554,26 +560,33 @@ def _sched_row(s: dict, now: float, *, public_host: str = "localhost",
 
 
 def _sched_table(items: list[dict], now: float, *, public_host: str = "localhost",
-                 sparklines: dict[str, list[int]] | None = None) -> str:
+                 sparklines: dict[str, list[int]] | None = None,
+                 sort: str | None = None, direction: str | None = None,
+                 sort_url: str = "/-/ui/schedules/list",
+                 sort_target: str = "#schedules") -> str:
     # Bibi4-Iteration, Seitenabgleich (User-Fund): Spaltenkopf war "Schedule",
     # der Client sagt für dieselbe Spalte schon "Slug" (_jobs_table()) — auch
     # dein ursprünglicher Batch-1-Spaltenplan für den Host wollte "Slug" als
     # erste Spalte, das war nie nachgezogen worden.
     rows = "".join(_sched_row(s, now, public_host=public_host, sparklines=sparklines)
                   for s in items)
-    return ('<table class="sched"><thead><tr><th>Slug</th><th>Type</th><th>Status</th>'
-            '<th>last / since</th><th>next</th><th>Activity</th></tr></thead>'
-            f"<tbody>{rows}</tbody></table>")
+    head = _sortable_head(
+        [("Slug", "slug"), ("Type", "type"), ("Status", "status"),
+         ("last / since", "last"), ("next", "next"), ("Activity", None)],
+        sort=sort, direction=direction, url=sort_url, target=sort_target)
+    return f'<table class="sched">{head}<tbody>{rows}</tbody></table>'
 
 
 def _schedule_active_block(schedules: list[dict], now: float,
-                           *, public_host: str = "localhost",
+                           *, sort: str | None = None, direction: str | None = None,
+                           public_host: str = "localhost",
                            sparklines: dict[str, list[int]] | None = None) -> str:
     head = f'<h2>Schedules ({len(schedules)})</h2>'
     if not schedules:
         return head + '<p class="out-empty">— no schedules —</p>'
     active, _archive, _journaled = _group_schedules(schedules)
-    body = (_sched_table(active, now, public_host=public_host, sparklines=sparklines) if active
+    body = (_sched_table(active, now, public_host=public_host, sparklines=sparklines,
+                         sort=sort, direction=direction) if active
             else '<p class="out-empty">— no active schedules —</p>')
     return head + body
 
@@ -610,7 +623,8 @@ def schedule_list(schedules: list[dict], now: float | None = None,
 def schedules_fragment(schedules: list[dict], now: float | None = None,
                        *, typ: str | None = None, status: str | None = None,
                        public_host: str = "localhost",
-                       sparklines: dict[str, list[int]] | None = None) -> str:
+                       sparklines: dict[str, list[int]] | None = None,
+                       sort: str | None = None, direction: str | None = None) -> str:
     """Bus-getriebener Wrapper (Target ``jobs``) um die (bereits gefilterte)
     aktive Schedule-Liste. Der Refetch-Link trägt den aktiven Filter in der
     URL, damit er den Swap überlebt. Ziel = ``/-/ui/schedules/list`` (das Fragment;
@@ -623,7 +637,9 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
     Bus-Refetch (``schedules_list_fragment()``) übergibt ``None``, analog zu
     ``jobs_fragment()``/``jobs_board()``."""
     now = time.time() if now is None else now
-    qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status))
+    schedules = sort_rows(schedules, sort, direction)   # m.rau/bibi#66
+    qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status),
+                                          ("sort", sort), ("dir", direction))
                   if v and v != "alle")
     url = "/-/ui/schedules/list" + (f"?{qs}" if qs else "")
     attrs = (f'id="schedules" data-bus="jobs" data-bus-refetch="{url}"')
@@ -632,7 +648,7 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
     # und Karte. Sie wandert damit auch durch jeden Bus-Refetch mit, statt beim
     # Swap des Fragments zurueckzubleiben.
     active_html = (f'<div class="panel-card">{_filter_bar(typ, status)}'
-                  f'{_schedule_active_block(schedules, now, public_host=public_host, sparklines=sparklines)}</div>')
+                  f'{_schedule_active_block(schedules, now, public_host=public_host, sparklines=sparklines, sort=sort, direction=direction)}</div>')
     return f"<div {attrs}>{active_html}</div>"
 
 
@@ -1298,6 +1314,88 @@ def _effective_sched_type(s: dict) -> str:
     return models.effective_kind(s.get("payload"))
 
 
+#: Sortierschlüssel → wie der Wert aus einer Zeile kommt (m.rau/bibi#66).
+#: Die Schlüssel sind bewusst die Spalten**bedeutungen**, nicht Feldnamen: Host-
+#: und Client-Zeilen tragen dieselbe Information unter teils anderen Namen, und
+#: der Nutzer sortiert nach dem, was in der Spalte steht.
+_SORT_KEYS: dict[str, "callable"] = {
+    "slug": lambda r: (r.get("slug") or "").lower(),
+    # Nach dem *angezeigten* Typ, nicht nach dem rohen Payload — sonst
+    # sortierte die Spalte nach etwas anderem, als in ihr steht.
+    "type": lambda r: _effective_sched_type(r),
+    "status": lambda r: (r.get("last_status") or r.get("row_status") or ""),
+    "last": lambda r: r.get("finished_at") if r.get("finished_at") is not None
+                      else r.get("started_at"),
+    "runtime": lambda r: r.get("runtime"),
+    "next": lambda r: r.get("next_fire_at"),
+}
+
+
+def sort_rows(rows: list[dict], sort: str | None,
+              direction: str | None = "asc") -> list[dict]:
+    """Zeilen serverseitig sortieren (m.rau/bibi#66).
+
+    **Serverseitig und nicht in JS**, weil der Event-Bus die Region neu rendert:
+    eine clientseitige Sortierung wäre beim nächsten Refetch weg. Das Issue
+    nennt genau diesen Grund, und er wiegt schwerer als der Geschwindigkeits-
+    vorteil — die Tabellen haben Dutzende Zeilen, nicht Tausende.
+
+    Ein unbekannter Schlüssel lässt die Reihenfolge unangetastet, statt zu
+    werfen oder zu leeren: er kann aus einem alten Cookie oder einer von Hand
+    zusammengesetzten URL kommen, und beides darf keinen Screen kosten.
+
+    ``None``-Werte landen **immer am Ende**, in beide Richtungen. „Kein Wert"
+    heisst *gibt es nicht*, nicht *ganz früh* — beim Umdrehen füllten sie sonst
+    den Anfang und verdrängten genau das, wonach jemand gerade sucht.
+    """
+    fn = _SORT_KEYS.get(sort or "")
+    if fn is None:
+        return rows
+    rev = (direction or "asc") == "desc"
+
+    def _key(r: dict):
+        v = fn(r)
+        if v is None:
+            # Erstes Tupelglied: fehlende Werte hinten, unabhängig von rev.
+            return (1, 0) if not rev else (-1, 0)
+        return (0, v) if not rev else (0, v)
+
+    missing = [r for r in rows if fn(r) is None]
+    present = [r for r in rows if fn(r) is not None]
+    present.sort(key=fn, reverse=rev)
+    return present + missing
+
+
+def _sortable_head(columns: list[tuple[str, str | None]], *, sort: str | None,
+                   direction: str | None, url: str, target: str) -> str:
+    """``<thead>`` mit klickbaren Spalten (m.rau/bibi#66).
+
+    Ein Klick auf die aktive Spalte dreht die Richtung um, ein Klick auf eine
+    andere startet aufsteigend — das ist die Erwartung, die jede Tabelle
+    irgendeiner Oberfläche bedient, und eine Abweichung davon müsste man
+    erklären.
+
+    Spalten ohne Schlüssel (``None``) bleiben gewöhnliche Köpfe. „Activity" ist
+    eine Sparkline; ein Sortier-Link darauf wäre ein Angebot, das nichts
+    einlöst.
+    """
+    cells = []
+    for label, key in columns:
+        if key is None:
+            cells.append(f"<th>{_e(label)}</th>")
+            continue
+        active = key == sort
+        nxt = "desc" if active and (direction or "asc") == "asc" else "asc"
+        arrow = "" if not active else (" ▾" if (direction or "asc") == "desc" else " ▴")
+        cls = ' class="sorted"' if active else ""
+        href = f"{url}{'&' if '?' in url else '?'}sort={key}&dir={nxt}"
+        cells.append(
+            f'<th{cls}><a href="#" hx-get="{_e(href)}" hx-target="{_e(target)}" '
+            f'hx-swap="outerHTML" hx-include="[name=\'typ\'],[name=\'status\']">'
+            f"{_e(label)}{arrow}</a></th>")
+    return "<thead><tr>" + "".join(cells) + "</tr></thead>"
+
+
 def client_row_status(row: dict, local_runs: dict[str, dict]) -> str | None:
     """Der Status, den eine Client-Zeile **anzeigt** (m.rau/bibi#65).
 
@@ -1584,7 +1682,8 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
                    git_status: dict | None = None, host_url: str | None = None,
                    bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES,
                    public_host: str = "localhost",
-                   sparklines: dict[str, list[int]] | None = None) -> str:
+                   sparklines: dict[str, list[int]] | None = None,
+                   sort: str | None = None, direction: str | None = None) -> str:
     """Der Schedules-Screen: Nav + Ops-Handles (RESCAN/MAINT, User-Feedback
     2026-07-03) + Status-Kacheln (Host/Mode/Git/Job-Status, User-Fund: "diesen
     Header möchte ich auch im /-/ui/schedules haben" — dieselbe
@@ -1611,7 +1710,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f"{_header('Jobs', daemon_status)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now)}"
         f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now, bucket_minutes=bucket_minutes)}"
-        f"{schedules_fragment(schedules, now, typ=typ, status=status, public_host=public_host, sparklines=sparklines)}"
+        f"{schedules_fragment(schedules, now, typ=typ, status=status, public_host=public_host, sparklines=sparklines, sort=sort, direction=direction)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
@@ -2374,17 +2473,20 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
 
 def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
                 *, public_host: str = "localhost", sparklines: dict[str, list[int]] | None = None,
-                lazy_sparklines: bool = False) -> str:
+                lazy_sparklines: bool = False,
+                sort: str | None = None, direction: str | None = None,
+                sort_url: str = "/-/ui/jobs/board",
+                sort_target: str = "#jobsboard") -> str:
     if not rows:
         return '<p class="out-empty">— keine Job-MDs im Repository gefunden —</p>'
     body = "".join(_jobs_row(r, local_runs, now, public_host=public_host, sparklines=sparklines,
                             lazy_sparklines=lazy_sparklines, index=i)
                   for i, r in enumerate(rows))
-    return (
-        '<table><thead><tr><th>Slug</th><th>Type</th><th>Status</th>'
-        '<th>last / since</th><th>Runtime</th><th>Activity</th></tr></thead>'
-        f"<tbody>{body}</tbody></table>"
-    )
+    head = _sortable_head(
+        [("Slug", "slug"), ("Type", "type"), ("Status", "status"),
+         ("last / since", "last"), ("Runtime", "runtime"), ("Activity", None)],
+        sort=sort, direction=direction, url=sort_url, target=sort_target)
+    return f"<table>{head}<tbody>{body}</tbody></table>"
 
 
 def jobs_fragment(
@@ -2393,6 +2495,7 @@ def jobs_fragment(
     sparklines: dict[str, list[int]] | None = None,
     lazy_sparklines: bool = False,
     typ: str | None = None, status: str | None = None,
+    sort: str | None = None, direction: str | None = None,
 ) -> str:
     """Der austauschbare Jobs-Kern (``#jobsboard``): lokale Job-MDs + Git-
     Status + letzter Start/Ende/Laufzeit je Zeile (PLAN-21 Befund 10 — löst
@@ -2425,15 +2528,19 @@ def jobs_fragment(
     # Status-Filter nie.
     rows = enrich_client_rows(rows, local_runs)
     rows = filter_schedules(rows, typ=typ, status=status, now=now)
-    qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status))
+    # m.rau/bibi#66: serverseitig sortiert, und die Sortierung reist in der
+    # Refetch-URL mit — sonst spraenge sie beim naechsten Bus-Ereignis zurueck.
+    rows = sort_rows(rows, sort, direction)
+    qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status),
+                                          ("sort", sort), ("dir", direction))
                   if v and v != "alle")
     url = "/-/ui/jobs/board" + (f"?{qs}" if qs else "")
     bar = _filter_bar(typ, status, url="/-/ui/jobs/board", target="#jobsboard")
     return (
-        f'<div id="jobsboard" data-bus="jobs" data-bus-refetch="{url}">'
+        f'<div id="jobsboard" data-bus="jobs" data-bus-refetch="{_e(url)}">'
         '<div class="panel-card"><h2>Jobs</h2>'
         f"{bar}"
-        f"{_jobs_table(rows, local_runs, now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines)}</div>"
+        f"{_jobs_table(rows, local_runs, now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines, sort=sort, direction=direction)}</div>"
         "</div>"
     )
 
@@ -2479,13 +2586,18 @@ def _client_archive_row(r: dict, now: float) -> str:
     )
 
 
-def _client_archive_table(runs: list[dict], now: float) -> str:
+def _client_archive_table(runs: list[dict], now: float, *,
+                          sort: str | None = None, direction: str | None = None,
+                          sort_url: str = "/-/ui/jobs/archive/list",
+                          sort_target: str = "#jobsarchive") -> str:
     if not runs:
         return '<p class="out-empty">— keine lokalen Läufe —</p>'
     rows = "".join(_client_archive_row(r, now) for r in runs)
-    return ('<table class="sched"><thead><tr><th>Slug</th><th>Type</th><th>Status</th>'
-            f'<th>last/since</th><th>runtime</th><th>next</th></tr></thead>'
-            f'<tbody>{rows}</tbody></table>')
+    head = _sortable_head(
+        [("Slug", "slug"), ("Type", "type"), ("Status", "status"),
+         ("last/since", "last"), ("runtime", "runtime"), ("next", "next")],
+        sort=sort, direction=direction, url=sort_url, target=sort_target)
+    return f'<table class="sched">{head}<tbody>{rows}</tbody></table>'
 
 
 def jobs_archive_fragment(runs: list[dict], now: float | None = None) -> str:
@@ -2541,6 +2653,7 @@ def jobs_page(
     sparklines: dict[str, list[int]] | None = None,
     lazy_sparklines: bool = False,
     typ: str | None = None, status: str | None = None,
+    sort: str | None = None, direction: str | None = None,
 ) -> str:
     """Jobs-Screen (PLAN-17 Stufe 17.2, umgebaut PLAN-21 Befund 10): lokale
     Repository-Realität + Git-Status + letzter Start/Ende/Laufzeit je Zeile.
@@ -2564,7 +2677,7 @@ def jobs_page(
         f"{_header('Jobs', status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, client_rows=rows)}"
-        f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines, typ=typ, status=status)}"
+        f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines, typ=typ, status=status, sort=sort, direction=direction)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"

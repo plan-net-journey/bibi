@@ -352,6 +352,26 @@ def add_controller_routes(
             request.cookies.get("bibi_sched_status"), render._SCHED_STATUSES)
         return eff_typ, eff_status
 
+    def _effective_sort(request: Request, sort: str | None, direction: str | None):
+        """Sortierung wie der Filter: Query-Param gewinnt, sonst Cookie
+        (m.rau/bibi#66). Ein Sortierzustand, der bei jedem Bus-Refetch
+        zurueckspraenge, waere aergerlicher als keiner — so das Issue."""
+        eff_sort = sort if sort is not None else (
+            request.cookies.get("bibi_sort") or None)
+        eff_dir = direction if direction is not None else (
+            request.cookies.get("bibi_dir") or None)
+        if eff_sort not in render._SORT_KEYS:
+            eff_sort = None          # alter Cookie / manipulierte URL
+        if eff_dir not in ("asc", "desc"):
+            eff_dir = None
+        return eff_sort, eff_dir
+
+    def _set_sort_cookies(resp: HTMLResponse, sort: str | None, direction: str | None) -> None:
+        resp.set_cookie("bibi_sort", sort or "", max_age=60 * 60 * 24 * 365,
+                        samesite="lax")
+        resp.set_cookie("bibi_dir", direction or "", max_age=60 * 60 * 24 * 365,
+                        samesite="lax")
+
     def _set_filter_cookies(resp: HTMLResponse, typ: str | None, status: str | None) -> None:
         resp.set_cookie("bibi_sched_typ", typ or "alle",
                         max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
@@ -374,12 +394,14 @@ def add_controller_routes(
 
     @app.get("/-/ui/schedules", include_in_schema=False)
     def schedules_screen(request: Request, typ: str | None = None, status: str | None = None,
+                         sort: str | None = None, dir: str | None = None,
                          res: int | None = None):
         # Der Schedules-Screen (Seite): Nav + Ops-Handles + Status-Kacheln
         # (Host/Mode/Git/Job-Status, wie /-/) + Stat-Grid/Landungs-Histogramm
         # (PLAN-21 Befund 11) + Filter + gefilterte, self-pollende Liste.
         from bibi import config
         eff_typ, eff_status = _effective_filter(request, typ, status)
+        eff_sort, eff_dir = _effective_sort(request, sort, dir)
         eff_res = _effective_resolution(request, res)
         all_scheds = _schedules()
         items = render.filter_schedules(all_scheds, typ=eff_typ, status=eff_status)
@@ -392,22 +414,28 @@ def add_controller_routes(
             items, typ=eff_typ, status=eff_status, daemon_status=_status(),
             landings=_landings(), git_status=_feed_git_status(), host_url=_scheduler_url(),
             bucket_minutes=eff_res,
-            public_host=config.public_host(), sparklines=sparklines))
+            public_host=config.public_host(), sparklines=sparklines,
+            sort=eff_sort, direction=eff_dir))
         _set_filter_cookies(resp, eff_typ, eff_status)
+        _set_sort_cookies(resp, eff_sort, eff_dir)
         _set_resolution_cookie(resp, eff_res)
         return resp
 
     @app.get("/-/ui/schedules/list", include_in_schema=False)
-    def schedules_list_fragment(request: Request, typ: str | None = None, status: str | None = None):
+    def schedules_list_fragment(request: Request, typ: str | None = None, status: str | None = None,
+                                sort: str | None = None, dir: str | None = None):
         # Filter-fähiges Fragment — Self-Poll-Ziel + Ziel der Filter-Dropdowns
         # (der tatsächliche Request beim Ändern eines Filters, s.
         # _set_filter_cookies oben).
         from bibi import config
         eff_typ, eff_status = _effective_filter(request, typ, status)
+        eff_sort, eff_dir = _effective_sort(request, sort, dir)
         items = render.filter_schedules(_schedules(), typ=eff_typ, status=eff_status)
         resp = HTMLResponse(render.schedules_fragment(
-            items, typ=eff_typ, status=eff_status, public_host=config.public_host()))
+            items, typ=eff_typ, status=eff_status, public_host=config.public_host(),
+            sort=eff_sort, direction=eff_dir))
         _set_filter_cookies(resp, eff_typ, eff_status)
+        _set_sort_cookies(resp, eff_sort, eff_dir)
         return resp
 
     @app.get("/-/ui/archive", include_in_schema=False)
@@ -818,7 +846,8 @@ def add_controller_routes(
             return []
 
     @app.get("/-/ui/jobs", include_in_schema=False)
-    def jobs_screen(request: Request, typ: str | None = None, status: str | None = None):
+    def jobs_screen(request: Request, typ: str | None = None, status: str | None = None,
+                    sort: str | None = None, dir: str | None = None):
         # Revert (User-Fund 2026-07-22, live: die Lazy-Variante (19 Pro-Slug-
         # hx-get-Requests + 2s-Self-Poll gleichzeitig) hängte den Browser-Tab
         # komplett auf — reproduziert in mehreren frischen Tabs, Server
@@ -835,12 +864,14 @@ def add_controller_routes(
         # Cookie-Namen: wer auf dem Host nach "failed" filtert und dann auf die
         # Client-Ansicht wechselt, meint dort dasselbe.
         eff_typ, eff_status = _effective_filter(request, typ, status)
+        eff_sort, eff_dir = _effective_sort(request, sort, dir)
         resp = HTMLResponse(render.jobs_page(
             rows, local_runs, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(),
             public_host=config.public_host(), sparklines=sparklines,
-            typ=eff_typ, status=eff_status))
+            typ=eff_typ, status=eff_status, sort=eff_sort, direction=eff_dir))
         _set_filter_cookies(resp, eff_typ, eff_status)
+        _set_sort_cookies(resp, eff_sort, eff_dir)
         return resp
 
     @app.get("/-/ui/jobs/{slug}/sparkline", include_in_schema=False)
@@ -867,15 +898,18 @@ def add_controller_routes(
         return HTMLResponse(render._sparkline_cell(slug, sparklines))
 
     @app.get("/-/ui/jobs/board", include_in_schema=False)
-    def jobs_board(request: Request, typ: str | None = None, status: str | None = None):
+    def jobs_board(request: Request, typ: str | None = None, status: str | None = None,
+                   sort: str | None = None, dir: str | None = None):
         # Bus-Refetch-Ziel von #jobsboard (Target "jobs").
         from bibi import config
         rows, local_runs = _jobs_data()
         eff_typ, eff_status = _effective_filter(request, typ, status)
+        eff_sort, eff_dir = _effective_sort(request, sort, dir)
         resp = HTMLResponse(render.jobs_fragment(
             rows, local_runs, public_host=config.public_host(),
-            typ=eff_typ, status=eff_status))
+            typ=eff_typ, status=eff_status, sort=eff_sort, direction=eff_dir))
         _set_filter_cookies(resp, eff_typ, eff_status)
+        _set_sort_cookies(resp, eff_sort, eff_dir)
         return resp
 
     @app.get("/-/ui/jobs/archive", include_in_schema=False)

@@ -147,7 +147,7 @@ def test_sched_row_has_kind_and_last_status():
     items = [_sched("nightly", payload="claude: tu was", last_status="complete",
                     last_run_at=100.0, next_fire_at=200.0)]
     html = render.schedule_list(items, now=300.0)
-    assert '<th>Type</th>' in html
+    assert '>Type' in html
     assert '>claude<' in html
     assert 'class="st complete">complete<' in html
 

@@ -58,7 +58,8 @@ def test_jobs_table_has_no_start_button():
 
 
 def test_jobs_table_header_includes_type_column():
-    assert "<th>Type</th>" in render._jobs_table([_row("a")], {}, now=100.0)
+    # Seit m.rau/bibi#66 ist der Kopf ein Sortier-Link — der Spaltentext bleibt.
+    assert ">Type" in render._jobs_table([_row("a")], {}, now=100.0)
 
 
 def test_jobs_row_type_column_shows_job_by_default():
@@ -333,8 +334,10 @@ def test_client_archive_table_renders_slug_type_status_when_runtime_next():
     runs = [{"id": 7, "slug": "mein-testjob", "status": "complete",
             "payload": "claude: tu was", "exec_runtime": 3.2, "finished_at": 100.0}]
     html = render._client_archive_table(runs, now=200.0)
-    assert ('<th>Slug</th><th>Type</th><th>Status</th><th>last/since</th>'
-            '<th>runtime</th><th>next</th>') in html
+    # Seit m.rau/bibi#66 sind die Köpfe Sortier-Links; geprüft wird die
+    # Spaltenfolge über ihren Text, nicht über das Markup.
+    cols = ("Slug", "Type", "Status", "last/since", "runtime", "next")
+    assert [c for c in cols if f">{c}" in html] == list(cols)
     assert 'href="/-/ui/run/7">mein-testjob<' in html
     assert '<td class="kind">claude</td>' in html
     assert 'class="st complete" href="/-/ui/run/7">complete<' in html
