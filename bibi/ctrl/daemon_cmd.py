@@ -228,7 +228,12 @@ def run(args: argparse.Namespace) -> int:
     os.environ["BIBI_DAEMON_PORT"] = str(port)
     app = create_app(r, synchronizer=synchronizer, worker=worker, heartbeat=heartbeat,
                      controller_base_url=f"http://{args.host}:{port}",
-                     sync_lock=sync_lock)
+                     sync_lock=sync_lock,
+                     # m.rau/bibi#46: --session sagt „dieser Daemon gehört
+                     # Sitzungen und endet mit der letzten". Ein Daemon aus
+                     # einer Autostart-Unit trägt das Flag nie und wird deshalb
+                     # von keiner Sitzung gestoppt, egal wie der Zähler steht.
+                     session_scoped=bool(getattr(args, "session", False)))
     # Aktivitätslog verdrahten (§5.1): JSONL unter gitignored data/ + Klartext auf
     # stdout → der Vordergrund-Startschirm *ist* der Live-Tail.
     names = r.active_names() or ["idle"]
@@ -340,6 +345,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     pr.add_argument("--connect", action="store_true")
     pr.add_argument("--pull", action="store_true")
     pr.add_argument("--push", action="store_true")
+    pr.add_argument("--session", action="store_true",
+                    help="dieser Daemon gehört Sitzungen und fährt herunter, "
+                         "wenn die letzte endet (m.rau/bibi#46)")
     pr.add_argument("--log-level", default=None,
                     help="debug|info|warning|error (sonst BIBI_LOG_LEVEL, Default info)")
     pr.set_defaults(func=run)

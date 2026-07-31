@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
 import time
 from pathlib import Path
 
@@ -21,11 +23,23 @@ from bibi.daemon import activity, job_db
 log = logging.getLogger("bibi.sweeper")
 
 
+def _shutdown_self() -> None:
+    """Sich selbst beenden, wenn die letzte Sitzung gegangen ist (#46).
+
+    Über SIGTERM, nicht ``os._exit()`` — genau wie beim Restart-Endpunkt: nur so
+    greifen uvicorns ``timeout_graceful_shutdown`` und das ``lifespan``-Finally
+    mit dem Job-Drain (#49). Ein harter Abbruch hebelte beide Zusagen aus.
+    """
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
 class Sweeper:
     def __init__(self, *, db_path: Path | None = None, interval: float = 2.0,
                  autorun: bool = True, registry=None,
                  local_worker_name: str | None = None,
-                 pid_check_interval: float = 45.0) -> None:
+                 pid_check_interval: float = 45.0,
+                 session_scoped: bool = False,
+                 on_last_session_gone=None) -> None:
         self.db_path = db_path
         self.interval = interval
         # Eigenes, gröberes Intervall für die PID-Prüfung (m.rau/bibi#38, so von
@@ -55,6 +69,20 @@ class Sweeper:
         # Registry-Eintrag sonst fälschlich die eigenen laufenden Jobs killen —
         # live gefunden 2026-07-11 (sarasate Host+Client-Deploy).
         self.local_worker_name = local_worker_name
+        # Sitzungs-Registry (m.rau/bibi#46) — im selben groben Takt wie die
+        # PID-Prüfung oben, aus demselben Grund: es ist nicht dringend, nur
+        # verlässlich. Nur ein von einer Sitzung gestarteter Daemon fährt
+        # dadurch herunter; einer aus einer Autostart-Unit NIE, egal wie der
+        # Zähler steht.
+        self.session_scoped = session_scoped
+        self.on_last_session_gone = on_last_session_gone or _shutdown_self
+        self._last_session_check = time.time()
+        # Scharf erst, wenn je eine Sitzung gesehen wurde. Ohne diese Sperre
+        # brächte sich ein Daemon um, der eine Handbreit vor „seiner" Sitzung
+        # hochkommt — der Zähler stünde beim ersten Durchlauf auf 0, und das
+        # hieße hier fälschlich „die letzte ist gegangen" statt „die erste ist
+        # noch nicht da".
+        self._sessions_seen = False
         self._task: asyncio.Task | None = None
         self._running = False
 
@@ -90,9 +118,36 @@ class Sweeper:
                         conn, self.registry.list(now=now))
             if any(out.values()):  # nur wenn wirklich etwas terminalisiert wurde
                 activity.emit(log, logging.INFO, "sweeper.reap", role="scheduler", **out)
+            # Sitzungs-Zählung (m.rau/bibi#46) NACH dem Reap-Log: sie ist keine
+            # Terminalisierung und gehört nicht in dessen Zeile.
+            self._check_sessions(now)
             return out
         finally:
             conn.close()
+
+    def _check_sessions(self, now: float) -> None:
+        """Fährt der Daemon herunter, weil die letzte Sitzung gegangen ist?
+
+        Getrennt von ``tick_once()``s Job-Aufräumen gehalten: das eine ist
+        Datenpflege, das andere beendet den Prozess — die beiden sollen sich
+        beim Lesen nicht vermischen.
+        """
+        if not self.session_scoped:
+            return
+        if now - self._last_session_check < self.pid_check_interval:
+            return
+        self._last_session_check = now
+        from bibi.daemon import session_registry
+        n = session_registry.count()
+        if n:
+            self._sessions_seen = True
+            return
+        if not self._sessions_seen:
+            return  # noch keine Sitzung da gewesen, s. Kommentar im __init__
+        activity.emit(log, logging.INFO, "daemon.session_end",
+                      "Letzte Sitzung beendet — Daemon fährt herunter",
+                      role="daemon")
+        self.on_last_session_gone()
 
     async def _loop(self) -> None:
         # Bugfix (User-Fund via Testfehlschlag: der jetzt rollenunabhängig

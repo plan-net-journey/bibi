@@ -1027,6 +1027,7 @@ def create_app(
     rescanner=None, controller_client=None, controller_base_url: str | None = None,
     sync_lock=None, heartbeat=None, pinned_worker: Worker | None = None,
     bus=None, collector=None, drain_timeout: float | None = None,
+    session_scoped: bool = False,
 ) -> FastAPI:
     started_at = time.time()
     # FE-Event-Bus (PLAN-36 Stufe 36.1): rollenunabhängig wie pinned_worker —
@@ -1074,7 +1075,10 @@ def create_app(
     if sweeper is None:
         from bibi.daemon.sweeper import Sweeper
         sweeper = Sweeper(registry=worker_registry,
-                          local_worker_name=worker.worker_name if worker is not None else None)
+                          local_worker_name=worker.worker_name if worker is not None else None,
+                          # m.rau/bibi#46: nur ein von einer Sitzung gestarteter
+                          # Daemon zählt Sitzungen und fährt bei 0 herunter.
+                          session_scoped=session_scoped)
     if rescanner is None and roles.scheduler:
         from bibi.daemon.rescanner import Rescanner
         rescanner = Rescanner()
