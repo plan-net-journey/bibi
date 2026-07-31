@@ -1145,6 +1145,19 @@ def create_app(
                 await sweeper.stop()
             if synchronizer is not None:
                 await synchronizer.stop()
+            # Portdatei HIER räumen, nicht erst nach ``server.run()``
+            # (m.rau/bibi#45). Live gefunden beim Rauchtest von #48: uvicorn
+            # feuert in ``capture_signals()`` das eingefangene Signal am Ende
+            # erneut — und da es den ursprünglichen Handler (``SIG_DFL``) davor
+            # wiederherstellt, beendet dieses zweite SIGTERM den Prozess sofort.
+            # Jedes ``finally`` um ``server.run()`` herum ist auf dem Signalweg
+            # damit toter Code, und genau der ist der Normalfall: Sitzungsende,
+            # ``systemctl stop``, Restart-Endpunkt. Hier drin läuft es
+            # nachweislich (die Zeile „Application shutdown complete" steht im
+            # Log davor). ``clear()`` fasst nur den EIGENEN Eintrag an, ist also
+            # auch dann harmlos, wenn dieser Prozess gar keinen geschrieben hat.
+            from bibi.daemon import portfile
+            portfile.clear()
 
     app = FastAPI(
         title="bibi · daemon",

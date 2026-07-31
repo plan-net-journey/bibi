@@ -275,8 +275,13 @@ def run(args: argparse.Namespace) -> int:
     try:
         server.run(sockets=[sock] if sock is not None else None)
     finally:
-        # Aufräumen im Normalfall; ein SIGKILL kommt hier nie an — dagegen hilft
-        # die PID-Prüfung beim Lesen, nicht ein zweites finally.
+        # Netz für die Wege, die den Server nie erreichen (Bind schlägt fehl,
+        # Konfigurationsfehler). Der Normalfall — SIGTERM — kommt hier NICHT an:
+        # uvicorn feuert das eingefangene Signal am Ende von ``capture_signals()``
+        # erneut, nachdem es ``SIG_DFL`` wiederhergestellt hat, und der Prozess
+        # ist damit sofort weg. Deshalb räumt der ``lifespan``-Finally die
+        # Portdatei (s. dort); diese Zeile ist der Gürtel dazu, nicht der
+        # Hosenträger. Gegen SIGKILL hilft ohnehin nur die PID-Prüfung beim Lesen.
         portfile.clear()
     return 0
 

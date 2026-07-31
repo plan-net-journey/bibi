@@ -145,13 +145,25 @@ def test_sweeper_waits_for_the_LAST_session(team_repo: Path):
     assert s.shutdowns == [1]
 
 
-def test_sweeper_does_not_shut_down_before_any_session_appeared(team_repo: Path):
-    # Startet der Daemon eine Handbreit vor „seiner" Sitzung, stünde der Zähler
-    # beim ersten Durchlauf auf 0 — das heißt „die erste ist noch nicht da",
-    # nicht „die letzte ist gegangen".
+def test_sweeper_notices_a_session_that_ended_before_the_first_check(team_repo: Path):
+    """Der Fall, der beim Rauchtest von #48 einen Daemon zurückließ.
+
+    Wer eine Sitzung öffnet und gleich wieder schließt, ist beim ersten Blick
+    nach 45 s längst weg. Der erste Entwurf wurde erst „scharf", wenn er einmal
+    eine Sitzung gesehen hatte — hier sah er nie eine und stand für immer.
+    """
+    s = _sweeper()                       # Sitzung lebte nur zwischen Start
+    s.tick_once(now=_t(100))             # und erster Prüfung
+    assert s.shutdowns == [1]
+
+
+def test_sweeper_grants_a_grace_period_after_start(team_repo: Path):
+    # Startet der Daemon eine Handbreit vor „seiner" Sitzung, darf ihn die
+    # Null nicht sofort umbringen. Die Karenz ist das erste volle Intervall.
     s = _sweeper()
-    s.tick_once(now=_t(100))
-    s.tick_once(now=_t(200))
+    s.tick_once(now=_t(5))
+    s.tick_once(now=_t(20))
+    s.tick_once(now=_t(40))
     assert s.shutdowns == []
 
 
