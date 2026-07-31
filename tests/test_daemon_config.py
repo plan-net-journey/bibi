@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bibi import config, state
+from bibi import config, repo, state
 
 
 @pytest.fixture
@@ -18,6 +18,12 @@ def cfg_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("BIBI_DAEMON_PORT", raising=False)
     monkeypatch.delenv("BIBI_SCHEDULER_URL", raising=False)
     monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
+    # …und gegen die Portdatei-Stufe (m.rau/bibi#45): hier steht die reine
+    # Konfigurations-Kette auf dem Prüfstand. Ohne die Neutralisierung hinge ihr
+    # Ergebnis davon ab, ob im Entwickler-Checkout gerade ein Daemon läuft —
+    # genau die Rechnerabhängigkeit, die der Kommentar oben schon einmal
+    # beseitigt hat. Die Stufe selbst prüft test_daemon_portfile.py.
+    monkeypatch.setattr(repo, "root_or_none", lambda: None)
     return tmp_path
 
 
