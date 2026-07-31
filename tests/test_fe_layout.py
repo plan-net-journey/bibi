@@ -81,3 +81,86 @@ def test_schedules_page_does_not_render_the_bar_twice():
     Bus-Refetch eine zweite Leiste da."""
     html = render.schedules_page([], now=0.0, daemon_status={}, typ=None, status=None)
     assert html.count('class="logbar"') == 1
+
+
+# --- #65: Filter auch in der Client-Ansicht ----------------------------------
+#
+# Die im Issue geforderte Prüfung ("ob Typ und Status auf der Client-Seite
+# dieselbe Wertemenge haben") fiel gegen die Annahme aus: die Host-Zeile trägt
+# `last_status`, die Client-Zeile holt ihren Status aus `local_runs[slug]` bzw.
+# aus `row["live"]`. `filter_schedules()` hätte dort aufgerufen werden können,
+# ohne dass etwas bricht — der Status-Filter hätte nur nie gegriffen. Ein
+# Bedienelement, das sichtbar da ist und nichts tut, ist der schlechtere
+# Zustand als gar keins.
+
+
+def test_client_status_follows_the_live_run_first():
+    """Dieselbe dreistufige Logik, die die Tabelle anzeigt — live schlägt den
+    letzten Lauf, sonst gibt es keinen Status."""
+    row = {"slug": "a", "live": {"status": "deferred"}}
+    assert render.client_row_status(row, {"a": {"status": "complete"}}) == "deferred"
+
+
+def test_client_status_falls_back_to_the_last_run():
+    assert render.client_row_status({"slug": "a"}, {"a": {"status": "failed"}}) == "failed"
+
+
+def test_client_status_is_none_when_never_run():
+    assert render.client_row_status({"slug": "a"}, {}) is None
+
+
+def test_client_live_without_status_reads_as_running():
+    """Ein Live-Eintrag ohne eigenes Statusfeld heisst laufend — genau wie in
+    der Zelle.
+
+    Ein **leeres** Dict ist dagegen kein Live-Eintrag: `_jobs_row()` prüft mit
+    `if live:`, und dort ist `{}` falsy. Die geteilte Funktion muss sich
+    genauso verhalten, sonst filtert der Screen anders, als er anzeigt — beim
+    Schreiben dieses Tests zunächst falsch angenommen.
+    """
+    assert render.client_row_status({"slug": "a", "live": {"started_at": 1.0}}, {}) == "running"
+    assert render.client_row_status({"slug": "a", "live": {}}, {}) is None
+
+
+def test_client_rows_are_enriched_for_the_shared_filter():
+    """Die Anreicherung ist der ganze Trick: danach trägt `filter_schedules()`
+    unverändert, und es gibt weiterhin **eine** Filterfunktion statt zweier,
+    die auseinanderlaufen können."""
+    rows = [{"slug": "a", "kind": "job", "job": "x"},
+            {"slug": "b", "kind": "job", "job": "y", "live": {"status": "running"}}]
+    local_runs = {"a": {"status": "failed"}}
+    enriched = render.enrich_client_rows(rows, local_runs)
+    assert [r["last_status"] for r in enriched] == ["failed", "running"]
+    assert render.filter_schedules(enriched, status="failed") == [enriched[0]]
+
+
+def test_client_filter_bar_targets_the_client_board():
+    """Die Leiste ist dieselbe Funktion, aber sie darf nicht auf die Host-Route
+    zeigen — sonst tauscht ein Klick auf der Client-Seite ein Fragment aus, das
+    es dort gar nicht gibt."""
+    bar = render._filter_bar(None, None, url="/-/ui/jobs/board", target="#jobsboard")
+    assert "/-/ui/jobs/board" in bar and "#jobsboard" in bar
+    assert "/-/ui/schedules/list" not in bar
+
+
+def test_client_jobs_card_carries_the_filter_bar():
+    html = render.jobs_fragment([], {}, now=0.0, typ=None, status=None)
+    card = html.index('<div class="panel-card">')
+    bar = html.index('class="logbar"')
+    assert card < bar
+
+
+def test_client_type_filter_reads_the_same_field_as_the_host():
+    """Der Typ-Filter arbeitet auf ``payload`` — und genau dieses Feld liefert
+    ``_local_schedules()`` auch für die Client-Seite.
+
+    Festgehalten, weil die Frage beim Bauen zweimal aufkam: ein Ad-hoc-Versuch
+    mit ``job:`` statt ``payload:`` lieferte eine leere Trefferliste und sah
+    einen Moment lang wie ein Fehler in der Filterung aus. Er war keiner — die
+    Zeile war falsch gebaut. Dieser Test hält fest, welches Feld gilt.
+    """
+    rows = [{"slug": "a", "kind": "job", "payload": "echo x"},
+            {"slug": "b", "kind": "job", "payload": "claude: fasse zusammen"}]
+    e = render.enrich_client_rows(rows, {})
+    assert [r["slug"] for r in render.filter_schedules(e, typ="claude")] == ["b"]
+    assert [r["slug"] for r in render.filter_schedules(e, typ="job")] == ["a"]
