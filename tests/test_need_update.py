@@ -78,6 +78,44 @@ def test_editable_is_an_intention_not_a_lag(team_repo: Path):
     assert out["needs_update"] is False
 
 
+def test_a_local_build_gets_its_own_verdict(team_repo: Path):
+    """Live gefunden am 2026-07-31 (m.rau/bibi#58).
+
+    Der Mac meldete `0.4.0` und sah aus wie ein sauberes Release — lief aber
+    gegen eine Kopie des Arbeits-Checkouts, samt uncommitteter Änderungen. Vor
+    diesem Urteil war das schlicht `unknown`, und „unbekannt" sagt zu wenig über
+    einen Zustand, den man kennt.
+    """
+    _repo_with_ref(team_repo, "v0.4.0")
+    info = EngineInfo(version="0.4.0", url="file:///Users/mrau/Project/bibi")
+    assert info.local is True
+    assert info.label() == "0.4.0 (local)"
+    out = deploy.update_status(info=info)
+    assert out["verdict"] == "local"
+    assert out["needs_update"] is False
+
+
+def test_editable_is_not_counted_as_local():
+    # Der editable install hat sein eigenes Urteil und seinen eigenen Chip.
+    info = EngineInfo(version="0.4.0", url="file:///x", editable=True)
+    assert info.local is False
+    assert info.label() == "0.4.0 (editable)"
+
+
+def test_a_vcs_install_is_not_local():
+    info = EngineInfo(version="0.4.0", ref="v0.4.0",
+                      url="http://sarasate:3000/m.rau/bibi.git")
+    assert info.local is False
+
+
+def test_local_build_is_flagged_in_the_nodes_screen():
+    html = render._node_engine_cell("0.4.0 (local)", "v0.4.0")
+    assert "local" in html and "chip conflict" in html
+    # Kein NEED UPDATE daneben: ein Neustart holt keinen gepinnten Stand, wenn
+    # das venv aus einem Verzeichnis kommt.
+    assert "NEED UPDATE" not in html
+
+
 def test_unknown_without_an_expected_ref(team_repo: Path):
     # pyproject ohne bibi-Abhängigkeit (Skelett, fremdes Repo).
     out = deploy.update_status(info=EngineInfo(version="0.4.0", ref="v0.4.0"))

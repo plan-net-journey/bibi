@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -170,8 +171,9 @@ def _args(**kw):
 def test_daemon_argv_is_the_session_profile(team_repo: Path,
                                             monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("BIBI_SCHEDULER_URL", raising=False)
-    argv = session._daemon_argv(_args())
-    assert argv[1:] == ["daemon", "run", "--host", "127.0.0.1",
+    argv = session._daemon_argv(_args(), team_repo)
+    i = argv.index("daemon")
+    assert argv[i:] == ["daemon", "run", "--host", "127.0.0.1",
                         "--port", "auto", "--session",
                         "--synchronizer", "--controller"]
 
@@ -180,7 +182,7 @@ def test_daemon_argv_connects_when_a_host_is_configured(
     team_repo: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://sarasate:8780")
-    assert "--connect" in session._daemon_argv(_args())
+    assert "--connect" in session._daemon_argv(_args(), team_repo)
 
 
 def test_daemon_argv_has_no_worker_by_default(team_repo: Path,
@@ -188,8 +190,8 @@ def test_daemon_argv_has_no_worker_by_default(team_repo: Path,
     # Eine flüchtige Sitzung, die Jobs annimmt, ließe sie beim Beenden fallen.
     # Job-Annahme hängt an der worker-Rolle, nicht an --connect.
     monkeypatch.delenv("BIBI_SCHEDULER_URL", raising=False)
-    assert "--worker" not in session._daemon_argv(_args())
-    assert "--worker" in session._daemon_argv(_args(worker=True))
+    assert "--worker" not in session._daemon_argv(_args(), team_repo)
+    assert "--worker" in session._daemon_argv(_args(worker=True), team_repo)
 
 
 def test_start_daemon_pins_the_role_explicitly(team_repo: Path,
@@ -298,13 +300,110 @@ def test_claude_binary_is_configurable(team_repo: Path, monkeypatch: pytest.Monk
     assert session._claude_argv([])[0] == "/opt/claude/bin/claude"
 
 
-def test_ctrl_binary_prefers_the_own_installation():
-    # Über sys.executable statt PATH: sonst könnte eine Sitzung aus Repo A den
-    # Daemon mit der Engine aus Repo B starten.
-    import sys
-    expected = Path(sys.executable).parent / "bibi-ctrl"
-    got = session._ctrl_binary()
-    assert got == str(expected) or Path(got).name == "bibi-ctrl"
+def test_ctrl_prefix_syncs_the_venv_against_the_lock(team_repo: Path,
+                                                     monkeypatch: pytest.MonkeyPatch):
+    """Über ``uv run --project``, nicht über das venv-Binary (m.rau/bibi#56).
+
+    Der direkte Aufruf hatte den venv-Sync gegen die Lock mitgenommen — ein
+    Sitzungsknoten lief damit mit dem venv, das gerade da war, und ein
+    NEED UPDATE konnte sich nie von selbst auflösen.
+    """
+    monkeypatch.setattr(session.shutil, "which",
+                        lambda n: "/opt/homebrew/bin/uv" if n == "uv" else None)
+    assert session._ctrl_prefix(team_repo) == [
+        "/opt/homebrew/bin/uv", "run", "--project", str(team_repo), "bibi-ctrl"]
+
+
+def test_ctrl_prefix_falls_back_without_uv(team_repo: Path,
+                                           monkeypatch: pytest.MonkeyPatch):
+    # Ohne uv bleibt der direkte Weg — dann eben ohne Sync, statt gar nicht.
+    monkeypatch.setattr(session.shutil, "which", lambda n: None)
+    prefix = session._ctrl_prefix(team_repo)
+    assert len(prefix) == 1
+    assert Path(prefix[0]).name == "bibi-ctrl"
+
+
+# ── Der Wächter über dem eigenen Daemon (m.rau/bibi#55) ─────────────────────
+
+
+def test_watcher_restarts_a_daemon_that_went_away(team_repo: Path,
+                                                  monkeypatch: pytest.MonkeyPatch):
+    """Der Fall, den `/-/restart` auf einem Sitzungsknoten auslöst.
+
+    Der Endpunkt beendet den Prozess und verlässt sich darauf, dass ein
+    Supervisor ihn zurückbringt. Auf einem Sitzungsknoten gibt es keinen — er
+    war dort also keine Neustart-, sondern eine Abschalt-Taste. Das traf auch
+    den Update-Knopf aus #43.
+    """
+    import threading
+    starts: list[int] = []
+
+    def _start(a, r):
+        starts.append(1)
+        return _FakeProc(54321)          # schreibt die Portdatei
+
+    monkeypatch.setattr(session, "_start_daemon", _start)
+    monkeypatch.setattr(session, "_wait_healthy", lambda *a, **kw: True)
+    monkeypatch.setattr(session, "WATCH_INTERVAL_S", 0.05)
+
+    stop = threading.Event()
+    t = threading.Thread(target=session._watch_daemon,
+                         args=(team_repo, _args(), stop), daemon=True)
+    t.start()
+    try:
+        portfile.write(54321)            # es läuft einer
+        time.sleep(0.2)
+        assert starts == []              # …also nichts zu tun
+        portfile.clear()                 # jetzt ist er weg
+        deadline = time.monotonic() + 5
+        while not starts and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert starts == [1]
+    finally:
+        stop.set()
+        t.join(timeout=5)
+
+
+def test_watcher_only_guards_a_daemon_we_started(team_repo: Path,
+                                                 monkeypatch: pytest.MonkeyPatch):
+    # Wer sich nur angehängt hat, hat über fremde Prozesse nicht zu verfügen.
+    started: list = []
+    portfile.write(54321)                # es läuft schon einer
+    monkeypatch.setattr(session, "_start_daemon",
+                        lambda a, r: started.append(1))
+    monkeypatch.setattr(session, "_wait_healthy", lambda *a, **kw: True)
+    threads: list = []
+    monkeypatch.setattr(session.threading, "Thread",
+                        lambda **kw: (threads.append(kw), _NoThread())[1])
+    monkeypatch.setattr(session.subprocess, "call", lambda argv, **kw: 0)
+    monkeypatch.setattr(session, "_pull", lambda root, **kw: None)
+    monkeypatch.setattr(session.webbrowser, "open", lambda u: None)
+
+    session.main(["--no-browser"])
+    assert threads == []                 # kein Wächter aufgesetzt
+    assert started == []
+
+
+class _NoThread:
+    def start(self): pass
+    def join(self, timeout=None): pass
+
+
+def test_watcher_is_set_up_for_an_own_daemon(team_repo: Path,
+                                             monkeypatch: pytest.MonkeyPatch):
+    threads: list = []
+    monkeypatch.setattr(session, "_start_daemon", lambda a, r: _FakeProc(54321))
+    monkeypatch.setattr(session, "_wait_healthy", lambda *a, **kw: True)
+    monkeypatch.setattr(session.threading, "Thread",
+                        lambda **kw: (threads.append(kw), _NoThread())[1])
+    monkeypatch.setattr(session.subprocess, "call", lambda argv, **kw: 0)
+    monkeypatch.setattr(session, "_pull", lambda root, **kw: None)
+    monkeypatch.setattr(session.webbrowser, "open", lambda u: None)
+
+    session.main(["--no-browser"])
+    assert len(threads) == 1
+    assert threads[0]["target"] is session._watch_daemon
+    assert threads[0]["daemon"] is True   # darf das Sitzungsende nie aufhalten
 
 
 # ── Die Startsperre ─────────────────────────────────────────────────────────
@@ -346,3 +445,97 @@ def test_bibi_is_declared_as_a_console_script():
     scripts = data["project"]["scripts"]
     assert scripts["bibi"] == "bibi.session:main"
     assert scripts["bibi-ctrl"] == "bibi.ctrl:main"
+
+
+# ── Die Umgebung für Kindprozesse (m.rau/bibi#76) ───────────────────────────
+
+
+@pytest.fixture()
+def venv_in_repo(team_repo: Path) -> Path:
+    """Ein venv im Team-Repo, so wie `uv sync` es anlegt."""
+    bin_dir = team_repo / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "bibi-ctrl").write_text("#!/bin/sh\n")
+    (bin_dir / "bibi-ctrl").chmod(0o755)
+    return bin_dir
+
+
+def test_claude_finds_bibi_ctrl_on_its_path(team_repo: Path, venv_in_repo: Path,
+                                            monkeypatch: pytest.MonkeyPatch):
+    """Der Fehler, der das Issue ausgelöst hat, in seiner ursprünglichen Form.
+
+    Die drei Hooks in `.claude/settings.json` rufen `bibi-ctrl` ohne Pfad auf.
+    Ohne diese Umgebung scheiterte jeder von ihnen mit `command not found` —
+    laut im Log, still in der Wirkung: kein Pull, kein Auto-Push, keine
+    Konflikt-Warnung.
+    """
+    seen: dict = {}
+    monkeypatch.setattr(session.subprocess, "call",
+                        lambda argv, **kw: (seen.update(kw), 0)[1])
+    monkeypatch.setattr(session, "_pull", lambda root, **kw: None)
+    monkeypatch.setattr(session, "_ensure_daemon", lambda a, r: (54321, False))
+    monkeypatch.setattr(session.webbrowser, "open", lambda u: None)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    assert session.main(["--no-browser"]) == 0
+
+    path = seen["env"]["PATH"].split(os.pathsep)
+    assert path[0] == str(venv_in_repo), "venv-bin gehört nach vorn, nicht irgendwohin"
+    assert "/usr/bin" in path, "der geerbte PATH bleibt erhalten"
+    assert seen["env"]["VIRTUAL_ENV"] == str(venv_in_repo.parent)
+
+
+def test_daemon_child_gets_the_same_path(team_repo: Path, venv_in_repo: Path,
+                                         monkeypatch: pytest.MonkeyPatch):
+    """Nicht nur Claude — ein Job, den der Daemon startet, ruft ebenso `bibi-ctrl`."""
+    seen: dict = {}
+
+    class _Popen:
+        def __init__(self, argv, **kw):
+            seen.update(kw)
+
+    monkeypatch.setattr(session.subprocess, "Popen", _Popen)
+    monkeypatch.setenv("PATH", "/usr/bin")
+    args = session._parse([])[0]
+
+    session._start_daemon(args, team_repo)
+
+    assert seen["env"]["PATH"].split(os.pathsep)[0] == str(venv_in_repo)
+    assert seen["env"]["BIBI_ROLE"] == session.SESSION_ROLE, "das Rollenprofil bleibt"
+
+
+def test_path_entry_is_not_duplicated(team_repo: Path, venv_in_repo: Path,
+                                      monkeypatch: pytest.MonkeyPatch):
+    """Eine Sitzung in einer bereits aktivierten venv verdoppelt den Eintrag nicht."""
+    monkeypatch.setenv("PATH", f"{venv_in_repo}{os.pathsep}/usr/bin")
+    path = session._child_env(team_repo)["PATH"].split(os.pathsep)
+    assert path.count(str(venv_in_repo)) == 1
+    assert path == [str(venv_in_repo), "/usr/bin"]
+
+
+def test_env_is_untouched_without_a_venv(team_repo: Path,
+                                         monkeypatch: pytest.MonkeyPatch):
+    """Kein auffindbares `bibi-ctrl` — dann lieber nichts anfassen als raten.
+
+    Der Fall ist real: eine global installierte Engine ohne Repo-venv. Ein
+    erfundener Pfad im PATH wäre schlechter als der Status quo.
+    """
+    monkeypatch.setattr(session.sys, "executable", "/usr/bin/python3")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    env = session._child_env(team_repo)
+    assert env["PATH"] == "/usr/bin:/bin"
+
+
+def test_repo_venv_wins_over_the_running_interpreter(team_repo: Path, venv_in_repo: Path,
+                                                     tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch):
+    """Dieselbe Regel wie bei `_ctrl_prefix`: die Engine, die *dieses* Repo pinnt.
+
+    Ein `bibi`, das aus einem fremden venv gestartet wurde, darf die Sitzung
+    nicht auf dessen Engine umlenken.
+    """
+    other = tmp_path / "other" / "bin"
+    other.mkdir(parents=True)
+    (other / "bibi-ctrl").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(session.sys, "executable", str(other / "python3"))
+    assert session._venv_bin(team_repo) == venv_in_repo
