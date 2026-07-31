@@ -613,3 +613,16 @@ def test_attaching_session_stays_quiet_without_name(team_repo: Path, capsys):
     portfile.write(51234, host="127.0.0.1", roles="controller", session=True)
     session._ensure_daemon(_args(), team_repo)
     assert "--name" not in capsys.readouterr().out
+
+
+def test_hostless_node_starts_without_connect(team_repo: Path, monkeypatch, tmp_path):
+    """Die eigentliche Folge von #61, hier festgehalten: ``_host_configured()``
+    prüft nur, *ob* eine Scheduler-URL gesetzt ist. Solange ``init`` sie
+    unbedingt schrieb, hängte jeder frisch eingerichtete Knoten ``--connect``
+    an — und meldete sich bei einem Scheduler auf ``localhost:8769``, den es
+    nicht gibt."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("BIBI_SCHEDULER_URL", raising=False)
+    from bibi.ctrl import main as ctrl_main
+    ctrl_main(["init", "--non-interactive", "--role", "synchronizer,controller"])
+    assert "--connect" not in session._daemon_argv(_args(), team_repo)
