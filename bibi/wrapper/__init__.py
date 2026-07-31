@@ -168,14 +168,28 @@ def _claude_argv(env: dict[str, str]) -> list[str]:
     soul_prompt = _resolve_soul_prompt(env)
     if soul_prompt:
         argv += ["--append-system-prompt", soul_prompt]
-    # Container ohne ~/.claude-Settings: claude würde bei Tool-Nutzung (Datei
-    # schreiben) nachfragen und headless hängen. ``acceptEdits`` erlaubt Datei-Edits
-    # ohne Prompt und funktioniert als root (``--dangerously-skip-permissions`` ist
-    # als root verboten). Deckt vault-schreibende Jobs. Host-Modus unverändert
-    # (Nutzer-Settings gelten). Volle Autonomie (bash etc.) bräuchte einen non-root
-    # Container — späterer Ausbau (PLAN-8 D9).
-    if (env.get("BIBI_EXEC_MODE") or "").strip().lower() == "container":
-        argv += ["--permission-mode", "acceptEdits"]
+    # IMMER setzen, nicht nur im Container: headless (``claude -p``) sitzt per
+    # Definition niemand davor, der eine Freigabe erteilen könnte. Ohne Modus
+    # beantwortet die CLI jede Rückfrage selbst mit ``user-rejected`` — der Job
+    # läuft danach mit exit 0 weiter und hat stumm nichts getan. Genau das
+    # passierte den Witz-Läufen ab 2026-07-27, nachdem der Job vom Container- in
+    # den Host-Modus gewechselt war und hier bis dahin nichts gesetzt wurde.
+    # Der Ausführungsort ändert nichts daran, dass niemand antwortet.
+    #
+    # ``bypassPermissions`` statt ``acceptEdits``: letzteres endet an der
+    # cwd-Grenze — ein Schreibzugriff ausserhalb des Arbeitsverzeichnisses wird
+    # abgelehnt (gemessen). Der frühere Einwand "als root verboten" trägt nicht
+    # mehr: die CLI prüft in ``refuseBypassUnderRoot`` auf ``getuid() == 0``, und
+    # der Container läuft seit PLAN-24 Befund 5 unter ``--user <host-uid>:0``,
+    # also nie mit uid 0. ``--dangerously-skip-permissions`` wäre dasselbe Flag
+    # (die CLI mappt es intern auf genau diesen Modus), nur unschärfer benannt.
+    #
+    # ACHTUNG, verbleibende Sollbruchstelle: ``permissions.disableBypassPermissions
+    # Mode: "disable"`` in einer settings.json — oder eine Org-Policy — kippt den
+    # Modus still zurück auf ``default``; die CLI meldet das nur als Warnung und
+    # der Job scheitert danach wieder lautlos. Das ``init``-Event des Streams führt
+    # den tatsächlich aktiven ``permissionMode``; ein Abgleich dagegen fehlt noch.
+    argv += ["--permission-mode", "bypassPermissions"]
     session = env.get("BIBI_JOB_SESSION")
     if session:  # Dialog fortsetzen (§5.3)
         argv += ["--resume", session]
