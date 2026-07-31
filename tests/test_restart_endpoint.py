@@ -219,9 +219,14 @@ def test_restart_drains_before_killing(tmp_path: Path, monkeypatch):
     app = create_app(roles.resolve({"controller"}), worker=w)
     with TestClient(app) as c:
         r = c.post("/-/restart", json={})
-    assert r.status_code == 200
-    assert w.calls == 1
-    assert r.json()["drained"] is True
+        assert r.status_code == 200
+        assert w.calls == 1                 # der Endpunkt hat gedraint
+        assert r.json()["drained"] is True
+    # …und das Herunterfahren drainet seit m.rau/bibi#49 noch einmal. Doppelt
+    # ist kein Fehler, sondern die Folge davon, dass jetzt BEIDE Wege die Zusage
+    # aus #38 halten: der Endpunkt schickt sich SIGTERM, und der landet im
+    # lifespan-Finally. Der zweite Drain findet nichts mehr vor und kostet nichts.
+    assert w.calls == 2
 
 
 def test_restart_warns_when_drain_times_out(tmp_path: Path, monkeypatch):
