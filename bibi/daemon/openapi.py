@@ -188,6 +188,9 @@ class WorkerHeartbeat(BaseModel):
     # registriert sich weiterhin ohne 422, sein Eintrag bleibt nur leer.
     engine: str | None = None
     git_commit: str | None = None
+    # m.rau/bibi#67: clean/modified des Engine-Checkouts. Optional — ein
+    # aelterer Client sendet es nicht, dann entfaellt der Chip im Screen.
+    engine_tree: str | None = None
 
 
 class RestartRequest(BaseModel):
@@ -226,6 +229,7 @@ class WorkerView(BaseModel):
     port: int | None = None
     engine: str | None = None       # installierter Engine-Stand (#19)
     git_commit: str | None = None   # kurzer Commit des Team-Repos (#19)
+    engine_tree: str | None = None  # clean/modified des Engine-Checkouts (#67)
 
 
 def _todo(endpoint: str) -> JSONResponse:

@@ -117,6 +117,11 @@ class Heartbeat:
                 # der letzte Nachweis lief über ein Verhaltensmerkmal des neuen
                 # Codes in einer Logzeile, also über Indizien.
                 engine=engine_info().label(),
+                # m.rau/bibi#67: der Arbeitsbaum des Engine-Checkouts, damit
+                # die Engine-Zelle dieselbe dreiteilige Auskunft geben kann
+                # wie die Repo-Zelle. None bei einem VCS-Pin — dort gibt es
+                # keinen Arbeitsbaum, und der Chip entfaellt.
+                engine_tree=engine_info().tree_status(),
                 git_commit=git_commit)
             if resp:
                 self._apply_config_bundle(resp)

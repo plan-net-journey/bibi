@@ -65,6 +65,7 @@ class LocalScheduler:
                  role: str | None = None, port: int | None = None,
                  client_config_version: str | None = None,
                  engine: str | None = None,
+                 engine_tree: str | None = None,
                  git_commit: str | None = None) -> dict | None:
         return None  # Single-Node: keine Anmeldung, kein Bundle zu holen
 
@@ -116,6 +117,7 @@ class RemoteScheduler:
                  role: str | None = None, port: int | None = None,
                  client_config_version: str | None = None,
                  engine: str | None = None,
+                 engine_tree: str | None = None,
                  git_commit: str | None = None) -> dict | None:
         # PLAN-32 Stufe 32.1/32.2: liefert jetzt die volle Host-Antwort zurück
         # (approval_status-Nebeneffekte + config_version/config_bundle) —
@@ -131,6 +133,8 @@ class RemoteScheduler:
             # ignoriert sie einfach (FastAPI verwirft unbekannte Felder nicht
             # mit 422, solange das Modell sie nicht verbietet).
             "engine": engine, "git_commit": git_commit,
+            # m.rau/bibi#67, ebenso optional: ein aelterer Host ignoriert es.
+            "engine_tree": engine_tree,
         })
         if code != 200:
             raise RuntimeError(f"heartbeat rejected: HTTP {code}")
