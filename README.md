@@ -72,3 +72,10 @@ Vorlagen liegen unter `.gitea/ISSUE_TEMPLATE/` (`bug.yaml`, `feat.yaml`). Die
 Bug-Vorlage folgt der Struktur Symptom → Root Cause → Live-Befund, die sich in
 den früheren Vault-Dossiers bewährt hat; die Root-Cause-Angabe nennt Datei und
 Zeilenbereich, nicht nur den Modulnamen.
+
+## Lizenz
+
+MIT — der vollständige Text steht in [`LICENSE`](LICENSE), er passt auf eine
+Bildschirmseite. Copyright bei Michael Rau und Plan.Net Journey. Wer die Engine
+weitergibt oder verändert, legt Copyright-Hinweis und Lizenztext bei; das ist
+die einzige Bedingung, die MIT stellt.
