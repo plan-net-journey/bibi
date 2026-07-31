@@ -288,7 +288,8 @@ def run(args: argparse.Namespace) -> int:
 
 def install_cmd(args: argparse.Namespace) -> int:
     from bibi.daemon import install
-    print(install.install(role=args.role, connect=args.connect))
+    print(install.install(role=args.role, connect=args.connect,
+                          port=getattr(args, "port", None) or None))
     return 0
 
 
@@ -358,6 +359,11 @@ def register(sub: argparse._SubParsersAction) -> None:
     pr.set_defaults(func=run)
 
     pi = dsub.add_parser("install", help="Autostart-Unit/Plist schreiben")
+    pi.add_argument("--port", type=int, default=0,
+                    help="fester Lauschport der Unit (m.rau/bibi#15); ohne "
+                         "Angabe aus BIBI_DAEMON_PORT/BIBI_SCHEDULER_URL/Default. "
+                         "Kein 'auto': eine Unit braucht eine Nummer, die auch "
+                         "morgen noch gilt")
     pi.add_argument("--role", default=None, help="BIBI_ROLE für die Unit (sonst aus env)")
     pi.add_argument("--connect", action="store_true",
                     help="Heartbeat/--connect für die Unit aktivieren (kein BIBI_ROLE-Mitglied)")

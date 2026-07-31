@@ -76,6 +76,10 @@ def daemon_port() -> int:
     hängt genau daran. Beide würden dieselbe Datei schreiben — der Override
     bleibt dort der verlässliche Weg, und er wird durch diese Stufe nicht
     schwächer.
+
+    **Wer einen Port festschreibt statt einen laufenden zu finden, nimmt
+    :func:`configured_daemon_port`** — die Portdatei beantwortet „wo lauscht
+    es gerade", nicht „wo soll es künftig lauschen".
     """
     raw = os.environ.get("BIBI_DAEMON_PORT", "").strip()
     if raw:
@@ -98,6 +102,36 @@ def daemon_port() -> int:
         if port:
             return port
 
+    return DAEMON_PORT_DEFAULT
+
+
+def configured_daemon_port() -> int:
+    """Wie :func:`daemon_port`, aber **ohne** die Portdatei-Stufe (m.rau/bibi#15).
+
+    Für alles, was einen Port *festschreibt* statt einen laufenden zu finden —
+    konkret: die Autostart-Unit. Der Unterschied ist keine Feinheit, sondern ein
+    Fehler, der ohne diese Trennung entstünde: läuft während eines
+    ``daemon install`` gerade ein Sitzungs-Daemon (m.rau/bibi#45), lieferte
+    ``daemon_port()`` dessen **flüchtigen** Port — und der stünde danach
+    dauerhaft in der Unit, obwohl ihn nie jemand gewählt hat und er beim
+    nächsten Sitzungsstart schon ein anderer wäre.
+
+    Live-Befund ist eine gute Auskunft über *jetzt* und eine schlechte über
+    *künftig*. Deshalb zwei Funktionen statt eines Flags: der Aufrufer muss
+    sich entscheiden, welche der beiden Fragen er stellt.
+    """
+    raw = os.environ.get("BIBI_DAEMON_PORT", "").strip()
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    scheduler_url = (os.environ.get("BIBI_SCHEDULER_URL", "").strip()
+                      or read_env().get("BIBI_SCHEDULER_URL", "").strip())
+    if scheduler_url:
+        port = urlparse(scheduler_url).port
+        if port:
+            return port
     return DAEMON_PORT_DEFAULT
 
 
