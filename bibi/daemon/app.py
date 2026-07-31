@@ -742,6 +742,38 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
             conn.close()
         return {"node_id": node_id, "status": "blocked"}
 
+    @app.post("/-/worker/{node_id}/disconnect", tags=["worker"],
+              dependencies=[Depends(_require_approved_or_local)])
+    def worker_disconnect(node_id: str,
+                          x_bibi_node_id: str | None = Header(default=None)):
+        """Ein Knoten meldet sich planmäßig ab (m.rau/bibi#47).
+
+        **Die Richtung ist der Punkt:** abmelden muss der Host, der gehende
+        Knoten kann nur Bescheid sagen. Deshalb liegt die Route hier und nicht
+        beim Client.
+
+        Zwei Schranken davor, und beide braucht es. Die Approval-Prüfung, damit
+        nicht irgendwer die Registry leert — und darüber hinaus die
+        Selbst-Bedingung: ein Knoten meldet **sich** ab, nicht andere. Ohne die
+        zweite dürfte jeder approvte Knoten jeden anderen aus dem Nodes-Screen
+        werfen; „approved" heißt „darf mitarbeiten", nicht „darf über fremde
+        Einträge verfügen". Lokal ohne Header bleibt der Weg für den
+        Host-Operator offen — für den eigenen Daemon gibt es kein Node-Konzept
+        (s. ``_require_approved_or_local``).
+
+        Die 60-Sekunden-Stale-Erkennung bleibt daneben bestehen: sie ist das
+        Netz für Absturz, Netzverlust und ``kill -9``. Der Endpunkt macht nur
+        den Normalfall sauber.
+        """
+        if x_bibi_node_id and x_bibi_node_id != node_id:
+            raise HTTPException(status_code=403,
+                                detail="a node may only deregister itself")
+        removed = registry.remove(node_id)
+        activity.emit(log, logging.INFO, "worker.disconnect",
+                      "Knoten abgemeldet" if removed else "Knoten war nicht registriert",
+                      role="scheduler", node_id=node_id, removed=str(removed).lower())
+        return {"node_id": node_id, "removed": removed}
+
     @app.get("/-/worker", response_model=list[WorkerView], tags=["worker"])
     def worker_list():
         return registry.list()

@@ -68,6 +68,9 @@ class LocalScheduler:
                  git_commit: str | None = None) -> dict | None:
         return None  # Single-Node: keine Anmeldung, kein Bundle zu holen
 
+    def deregister(self, node_id: str) -> bool:
+        return False  # Single-Node: nie angemeldet, also nichts abzumelden
+
 
 class RemoteScheduler:
     """Verbundener Worker — HTTP gegen den entfernten Scheduler (``--connect``)."""
@@ -77,11 +80,14 @@ class RemoteScheduler:
         self.secret = secret
         self.timeout = timeout
 
-    def _post(self, path: str, payload: dict) -> tuple[int, object]:
+    def _post(self, path: str, payload: dict, *,
+              extra_headers: dict[str, str] | None = None) -> tuple[int, object]:
         data = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if self.secret:
             headers[SECRET_HEADER] = self.secret
+        if extra_headers:
+            headers.update(extra_headers)
         req = urllib.request.Request(self.base + path, data=data, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310
@@ -129,6 +135,25 @@ class RemoteScheduler:
         if code != 200:
             raise RuntimeError(f"heartbeat rejected: HTTP {code}")
         return body if isinstance(body, dict) else None
+
+    def deregister(self, node_id: str) -> bool:
+        """Beim Host abmelden (m.rau/bibi#47) — ``True`` bei HTTP 200.
+
+        Der ``X-Bibi-Node-Id``-Header ist hier nicht Beiwerk, sondern der
+        Nachweis: die Route lässt einen Knoten nur **sich selbst** abmelden und
+        vergleicht Header gegen Pfad. Ohne ihn käme ein 403 zurück, und zwar
+        zu Recht.
+
+        Wirft nie. Der Aufrufer ist ein Shutdown-Pfad; ein Host, der gerade
+        nicht erreichbar ist, darf das Beenden nicht aufhalten — dafür gibt es
+        die Stale-Erkennung als Netz.
+        """
+        try:
+            code, _ = self._post(f"/-/worker/{node_id}/disconnect", {},
+                                 extra_headers={"X-Bibi-Node-Id": node_id})
+        except Exception:  # noqa: BLE001 — Netz weg, Host weg, DNS weg
+            return False
+        return code == 200
 
     def _get(self, path: str) -> object:
         headers = {"Accept": "application/json"}

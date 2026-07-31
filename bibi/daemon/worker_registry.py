@@ -58,6 +58,22 @@ class WorkerRegistry:
             self._w[key] = entry
             return dict(entry)
 
+    def remove(self, key: str) -> bool:
+        """Einen Eintrag abmelden (m.rau/bibi#47). ``True``, wenn es ihn gab.
+
+        Der Schlüssel ist derselbe wie bei :meth:`heartbeat` — die ``node_id``,
+        sonst der Anzeigename. Ein flüchtiger Knoten kommt und geht mehrmals
+        täglich; ohne diesen Weg bleibt er nach jedem Gehen 60 Sekunden lang als
+        „frisch" gemeldet und danach dauerhaft als veraltete Zeile stehen, bis
+        der Host-Daemon selbst neu startet.
+
+        Die Stale-Erkennung daneben bleibt bestehen und wird **nicht** ersetzt:
+        sie ist das Netz für Absturz, Netzverlust und ``kill -9``. Diese Methode
+        macht nur den Normalfall sauber.
+        """
+        with self._lock:
+            return self._w.pop(key, None) is not None
+
     def list(self, *, stale_after: float = STALE_AFTER, now: float | None = None) -> list[dict]:
         now = time.time() if now is None else now
         with self._lock:

@@ -142,6 +142,28 @@ class Heartbeat:
         self._beat()  # sofort An-/Abmelden, wie zuvor Worker.start() (synchron)
         self._task = asyncio.create_task(self._loop())
 
+    def _deregister(self) -> bool:
+        """Dem Host sagen, dass dieser Knoten geht (m.rau/bibi#47).
+
+        Blockierendes HTTP, deshalb aus dem Executor gerufen — und defensiv wie
+        ``_beat()``: ein nicht erreichbarer Host darf das Beenden nicht
+        aufhalten. Kommt die Abmeldung nicht an, greift die 60-Sekunden-Stale-
+        Erkennung wie bisher.
+        """
+        deregister = getattr(self.client, "deregister", None)
+        if deregister is None:  # älterer/anderer Client-Typ
+            return False
+        try:
+            ok = bool(deregister(self.node_id))
+        except Exception:  # noqa: BLE001
+            ok = False
+        activity.emit(log, logging.INFO if ok else logging.DEBUG,
+                      "connect.disconnect",
+                      "Beim Host abgemeldet" if ok else
+                      "Abmeldung beim Host nicht bestätigt — Stale-Frist greift",
+                      role="connect", worker=self.worker_name)
+        return ok
+
     async def stop(self) -> None:
         self._running = False
         if self._task is not None:
@@ -151,3 +173,7 @@ class Heartbeat:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        # Erst die Schleife anhalten, dann abmelden — umgekehrt könnte ein Tick
+        # dazwischenfunken und den Knoten sofort wieder anmelden.
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._deregister)
