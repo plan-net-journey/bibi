@@ -1,6 +1,6 @@
 [project]
 name = "bibi"
-version = "0.3.0"
+version = "0.4.0"
 description = "bibi — deploybare Engine (bibi-ctrl + Skills/Agents) für Markdown-geführte Team-Repos"
 requires-python = ">=3.11"
 dependencies = [
@@ -20,6 +20,8 @@ daemon = [
 ]
 
 [project.scripts]
+# bibi startet, bibi-ctrl steuert (m.rau/bibi#48).
+bibi = "bibi.session:main"
 bibi-ctrl = "bibi.ctrl:main"
 
 [dependency-groups]

@@ -20,8 +20,10 @@ der Weg, der am 2026-07-30 in beide Richtungen erprobt wurde.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from bibi import repo
@@ -46,6 +48,173 @@ def current_ref(root: Path | None = None) -> str | None:
         return None
     m = _DEP_RE.search(text)
     return m.group(2) if m else None
+
+
+def dependency_url(root: Path | None = None) -> str | None:
+    """Die git-URL, auf die das Pinning zeigt — dieselbe Zeile, andere Hälfte.
+
+    Sie ist die einzige Stelle im Team-Repo, die weiß, *wo* die Engine
+    herkommt. Ohne sie müsste eine Liste verfügbarer Versionen geraten oder
+    konfiguriert werden; so kommt sie aus derselben Quelle wie der Soll-Stand
+    selbst.
+    """
+    root = root or repo.root()
+    try:
+        text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = _DEP_RE.search(text)
+    if not m:
+        return None
+    prefix = m.group(1)
+    _, sep, url = prefix.partition("git+")
+    return url.strip() if sep else None
+
+
+#: Wie lange eine einmal geholte Tag-Liste gilt. Der Nodes-Screen rendert bei
+#: jedem Heartbeat neu (alle 15 s je Knoten) — ein ``git ls-remote`` pro
+#: Durchlauf wäre eine Netzwerkrunde für eine Liste, die sich pro Release
+#: einmal ändert.
+_REFS_TTL_S = 300.0
+_refs_cache: dict = {"at": 0.0, "url": None, "refs": []}
+
+#: Sortierschlüssel: ``v0.10.0`` gehört über ``v0.9.0``, nicht darunter — eine
+#: alphabetische Liste hätte genau hier den ersten Fehler gemacht.
+_VERSION_PART = re.compile(r"\d+")
+
+
+def _version_key(tag: str) -> tuple:
+    nums = tuple(int(n) for n in _VERSION_PART.findall(tag))
+    # Erst nach „ist überhaupt eine Version", dann numerisch: ein Tag ohne
+    # Zahlen (``latest``, ``stable``) landet hinten statt die Sortierung zu
+    # kippen.
+    return (1 if nums else 0, nums, tag)
+
+
+def available_refs(root: Path | None = None, *, timeout: float = 6.0,
+                   now: float | None = None, force: bool = False) -> list[str]:
+    """Die Tags des Engine-Repos, neueste zuerst (m.rau/bibi#39-Nachtrag).
+
+    Für die Auswahlliste am Feld „Erwartete Engine-Version": eine Version von
+    Hand einzutippen heißt, sie vorher woanders nachgeschlagen zu haben — und
+    ein Tippfehler kostet einen ``uv lock``-Fehlschlag, bis er auffällt.
+
+    ``git ls-remote`` statt lokaler Tags: das Team-Repo hat die Tags der Engine
+    nicht, es hängt nur per URL an ihr. Bewusst mit ``GIT_TERMINAL_PROMPT=0``
+    — ohne das bliebe der Aufruf auf einem Knoten ohne Zugangsdaten an einer
+    Passwortabfrage hängen, und der Screen mit ihm.
+
+    Nie eine Exception, im Zweifel eine leere Liste. Die Liste ist Komfort; das
+    Feld bleibt ein freies Textfeld, damit ein Branch-Pinning (``dev``) weiter
+    möglich ist.
+    """
+    now = time.time() if now is None else now
+    url = dependency_url(root)
+    if not url:
+        return []
+    if (not force and _refs_cache["url"] == url
+            and now - _refs_cache["at"] < _REFS_TTL_S):
+        return list(_refs_cache["refs"])
+    try:
+        proc = subprocess.run(
+            ["git", "ls-remote", "--tags", "--refs", url],
+            capture_output=True, text=True, check=False, timeout=timeout,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        refs = [ln.split("refs/tags/", 1)[1].strip()
+                for ln in proc.stdout.splitlines() if "refs/tags/" in ln]
+    except (OSError, subprocess.SubprocessError):
+        refs = []
+    refs = sorted(set(refs), key=_version_key, reverse=True)
+    _refs_cache.update(at=now, url=url, refs=refs)
+    return list(refs)
+
+
+#: Was als *Tag* durchgeht. Nur bei einem Tag ist ein reiner Ref-Vergleich
+#: aussagekräftig: ein Tag steht still, ein Branch wandert.
+_TAGGISH = re.compile(r"^v?\d+(?:\.\d+)*$")
+
+
+def _is_tag(ref: str | None) -> bool:
+    return bool(ref and _TAGGISH.match(ref.strip()))
+
+
+def _norm(ref: str) -> str:
+    """``v0.3.0`` und ``0.3.0`` sind derselbe Stand — das ``v`` ist Schreibweise,
+    kein Unterschied. Ohne diese Normalisierung meldete ein Knoten, der aus
+    einem Index statt per VCS-URL installiert wurde, dauerhaft NEED UPDATE:
+    ``engine_info().label()`` liefert dort die nackte Version (``0.3.0``),
+    ``pyproject.toml`` trägt den Tag (``v0.3.0``)."""
+    return ref.strip().lstrip("vV")
+
+
+def update_status(root: Path | None = None, info=None) -> dict:
+    """Liegt dieser Knoten hinter seinem Soll-Stand? (m.rau/bibi#43)
+
+    **Rein lokal.** Beide Angaben liegen ohnehin auf jedem Knoten: das Soll in
+    ``pyproject.toml`` (kommt mit dem Repo über den Synchronizer), das Ist in
+    ``direct_url.json`` im venv. Kein neues Protokollfeld, keine
+    Host-Abhängigkeit — und es funktioniert gerade dann, wenn der Host nicht
+    erreichbar ist. Genau das braucht ein hostloses Team, und genau das ist der
+    Grund, warum es neben dem nicht-blockierenden Pull des Sitzungsbefehls
+    steht: der lässt einen bewusst auf altem Stand starten, hier wird es
+    sichtbar.
+
+    **Der Mismatch ist der Normalzustand nach jedem Deploy-Push**, nicht die
+    Ausnahme: der Synchronizer zieht die neue ``uv.lock`` binnen 180 s auf jeden
+    Knoten, wirksam wird sie aber erst beim Neustart. Zwischen Push und Neustart
+    ist jeder Knoten nachweislich zu alt — und dieser Zustand war bisher
+    unsichtbar.
+
+    ``verdict`` sagt, *warum* das Ergebnis so lautet, statt ein Ja/Nein zu
+    behaupten, das die Datenlage nicht hergibt:
+
+    - ``outdated`` — Soll und Ist sind Tags und verschieden. Der einzige Fall
+      mit ``needs_update``.
+    - ``current`` — Soll und Ist sind derselbe Tag.
+    - ``branch`` — das Pinning zeigt auf einen Branch. Dann ist nur der Commit
+      aussagekräftig, und ob der Branch weitergewandert ist, weiß hier lokal
+      niemand. Lieber „unbestimmt" sagen als raten.
+    - ``editable`` — läuft gegen ein Arbeits-Checkout. Kein Rückstand, sondern
+      eine Absicht; der Nodes-Screen kennzeichnet das ohnehin schon.
+    - ``unknown`` — eine der beiden Seiten fehlt.
+    """
+    from bibi.engine_info import engine_info
+    info = engine_info() if info is None else info
+    expected = current_ref(root)
+    out = {"expected": expected, "running": info.label(),
+           "needs_update": False, "verdict": "unknown"}
+    if info.editable:
+        out["verdict"] = "editable"
+        return out
+    if not expected or not info.ref:
+        return out
+    if not _is_tag(expected):
+        out["verdict"] = "branch"
+        return out
+    if _norm(expected) == _norm(info.ref):
+        out["verdict"] = "current"
+        return out
+    out["verdict"] = "outdated"
+    out["needs_update"] = True
+    return out
+
+
+def label_is_outdated(expected: str | None, label: str | None) -> bool:
+    """Dasselbe Urteil für einen **fremden** Knoten, von dem nur die fertige
+    Bezeichnung bekannt ist (``engine``-Feld des Heartbeats).
+
+    Dass der Soll-Stand für alle Knoten derselbe ist, ist keine Annahme,
+    sondern folgt aus der geteilten ``uv.lock``: ein Knotennetz fährt ein
+    Release. Deshalb genügt hier der Soll-Stand des Hosts.
+
+    Im Zweifel ``False``. Ein falsches NEED UPDATE wäre schlimmer als ein
+    fehlendes — es schickt jemanden los, etwas zu reparieren, das in Ordnung ist.
+    """
+    if not expected or not label or not _is_tag(expected):
+        return False
+    if "(editable)" in label:
+        return False
+    return _norm(label.split()[0]) != _norm(expected)
 
 
 def set_expected_version(ref: str, root: Path | None = None,

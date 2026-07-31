@@ -45,6 +45,35 @@ def root() -> Path:
     return _root_of(str(Path.cwd().resolve()))
 
 
+def root_or_none() -> Path | None:
+    """git-Toplevel — ``None`` statt Prozessabbruch, wenn hier kein Repo ist.
+
+    :func:`root` beendet mit Code 2, und das ist für ``open``/``save`` richtig:
+    ohne Repo gibt es dort nichts zu tun. Für einen Leser, der ein Repo nur
+    *versucht*, ist es falsch — ``config.daemon_port()`` läuft laut Modul-
+    Docstring ausdrücklich auch außerhalb (``bibi-ctrl status``/``init``
+    brauchen kein Repo), und seit m.rau/bibi#45 sieht es dabei unter ``data/``
+    nach, welcher Daemon gerade läuft.
+
+    **Warum hier kein ``git rev-parse`` und kein Cache.** Beides hätte
+    :func:`_root_of` geliefert, aber diese Funktion wird über
+    ``config.daemon_port()`` auch aus der Statusline gerufen, also bei jedem
+    Prompt — ein Subprozess dafür wäre zu teuer, und ein zweiter ``lru_cache``
+    daneben müsste in gut zwanzig Test-Fixtures zusätzlich invalidiert werden,
+    die heute nur ``_root_of.cache_clear()`` rufen (eine vergessene Stelle wäre
+    ein stiller, schwer zu findender Testfehler). Das Hochlaufen nach ``.git``
+    ist billig genug, um ohne Cache auszukommen, und liefert dasselbe Ergebnis:
+    ``.exists()`` deckt auch die *Datei* ``.git`` ab, die ein git-Worktree dort
+    ablegt — dessen Toplevel ist das Worktree-Verzeichnis, genau wie bei
+    ``git rev-parse --show-toplevel``.
+    """
+    cwd = Path.cwd().resolve()
+    for candidate in (cwd, *cwd.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
 def vault() -> Path:
     return root() / "vault"
 
