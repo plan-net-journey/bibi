@@ -52,6 +52,40 @@ class EngineInfo:
         return bool(self.url and self.url.startswith("file://")
                     and not self.editable)
 
+    def checkout_dir(self):
+        """Das Verzeichnis, aus dem diese Engine installiert ist — oder ``None``.
+
+        Nur ein editable install und ein lokaler Build zeigen auf ein
+        Verzeichnis; ein VCS-Pin hat keins. Der Unterschied ist der Grund,
+        warum der Arbeitsbaum-Chip im Nodes-Screen bei einem Pin **entfällt**
+        statt ``clean`` zu behaupten (m.rau/bibi#67).
+        """
+        if not self.url or not self.url.startswith("file://"):
+            return None
+        from pathlib import Path
+        from urllib.parse import unquote, urlparse
+        return Path(unquote(urlparse(self.url).path))
+
+    def tree_status(self) -> str | None:
+        """``"clean"`` / ``"modified"`` des Engine-Checkouts, sonst ``None``.
+
+        Dieselbe Auskunft, die die Repo-Spalte des Nodes-Screens längst gibt,
+        nur für die andere Hälfte der Zeile — und über dieselbe Funktion
+        (``git_status.working_tree_status``), damit beide nicht auseinander
+        laufen können.
+
+        Bewusst kein ``sync``: ein Engine-Checkout hat kein sinnvolles
+        Gegenstück zum ``synced``/``behind`` der Repo-Seite, weil die
+        Aktualität dort aus dem Vergleich mit dem gepinnten Tag kommt und
+        nicht aus dem Abstand zu einem Remote.
+        """
+        path = self.checkout_dir()
+        if path is None:
+            return None
+        from bibi.git_status import working_tree_status
+        st = working_tree_status(path)
+        return st.tree if st else None
+
     def label(self) -> str:
         """Eine Zeile für Menschen — die Bezeichnung, nicht die Rohdaten.
 

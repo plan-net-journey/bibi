@@ -24,7 +24,8 @@ class WorkerRegistry:
         self, worker: str, host: str, git_status: str | None = None, *,
         node_id: str | None = None, git_user: str | None = None,
         role: str | None = None, port: int | None = None, now: float | None = None,
-        engine: str | None = None, git_commit: str | None = None,
+        engine: str | None = None, engine_tree: str | None = None,
+        git_commit: str | None = None,
     ) -> dict:
         """``node_id`` (Bibi4-Iteration, User-Fund: derselbe physische Client
         tauchte je nach Netzwerk mit unterschiedlichem ``worker``-Namen auf,
@@ -53,7 +54,8 @@ class WorkerRegistry:
             entry = self._w.get(key) or {"connected_at": now}
             entry.update(worker=worker, host=host, git_status=git_status,
                          node_id=node_id, git_user=git_user, role=role, port=port,
-                         engine=engine, git_commit=git_commit,
+                         engine=engine, engine_tree=engine_tree,
+                         git_commit=git_commit,
                          last_heartbeat=now)
             self._w[key] = entry
             return dict(entry)

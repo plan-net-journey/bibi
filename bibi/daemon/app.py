@@ -711,6 +711,7 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
         result = registry.heartbeat(hb.worker, hb.host, hb.git_status,
                                     node_id=hb.node_id, git_user=hb.git_user, role=hb.role,
                                     port=hb.port, engine=hb.engine,
+                                    engine_tree=hb.engine_tree,
                                     git_commit=hb.git_commit)
         # PLAN-32 Stufe 32.2: Config-Bundle-Distribution huckepack auf
         # demselben Heartbeat-Roundtrip. config_version reist bei JEDEM

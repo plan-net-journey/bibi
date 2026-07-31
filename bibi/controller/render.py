@@ -761,7 +761,22 @@ def _node_git_status_chips(git_status: str | None) -> str:
             f'<span class="{sync_cls}">{_e(sync)}</span>')
 
 
-def _node_engine_cell(engine: str | None, expected: str | None = None) -> str:
+#: Aktualitäts-Chip der Engine-Zelle. Die Wörter sind bewusst die der
+#: Repo-Zelle (``synced``/``behind``) statt der internen Verdict-Namen aus
+#: ``deploy.update_state()`` — nebeneinander gelesen sollen beide Zeilen
+#: dieselbe Sprache sprechen (m.rau/bibi#67).
+_NODE_ENGINE_VERDICT: dict[str, tuple[str, str]] = {
+    "current": ("chip clean", "läuft auf dem erwarteten Tag"),
+    "behind": ("chip conflict", "ein neuerer Stand ist gepinnt"),
+    "branch": ("chip modified",
+               "an einen Branch gepinnt — ob er weitergewandert ist, "
+               "weiß dieser Knoten nicht"),
+    "unknown": ("chip", "Soll- oder Ist-Stand fehlt"),
+}
+
+
+def _node_engine_cell(engine: str | None, expected: str | None = None,
+                      tree: str | None = None) -> str:
     """Installierter Engine-Stand je Knoten (m.rau/bibi#19, erweitert #43).
 
     ``engine`` ist die fertige Bezeichnung aus ``engine_info.EngineInfo.label()``
@@ -778,6 +793,20 @@ def _node_engine_cell(engine: str | None, expected: str | None = None) -> str:
     fährt ein Release."""
     if not engine:
         return "—"
+
+    def _tree_chip() -> str:
+        """Arbeitsbaum-Chip — **nur wo es einen Arbeitsbaum gibt.**
+
+        Ein VCS-Pin hat keinen. Dort ``clean`` zu zeigen wäre eine Aussage, die
+        niemand geprüft hat; der Chip entfällt stattdessen ganz. Dieselbe
+        Zurückhaltung, mit der ``update_state()`` bei einem Branch-Pin lieber
+        „unbestimmt" sagt als zu raten.
+        """
+        if not tree:
+            return ""
+        cls = _NODE_TREE_CHIP_CLASS.get(tree, "chip")
+        return f' <span class="{cls}">{_e(tree)}</span>'
+
     for marker, title in (
             ("(editable)", "laeuft gegen ein Arbeits-Checkout, nicht gegen den "
                            "gepinnten Stand"),
@@ -788,11 +817,17 @@ def _node_engine_cell(engine: str | None, expected: str | None = None) -> str:
                         "dem gepinnten Tag")):
         if marker in engine:
             base = engine.replace(marker, "").strip()
-            return (f'{_e(base)} <span class="chip conflict" title="{title}">'
+            return (f'{_e(base)}{_tree_chip()} '
+                    f'<span class="chip conflict" title="{title}">'
                     f'{marker.strip("()")}</span>')
-    cell = _e(engine)
+
     from bibi.daemon import deploy as deploy_mod
-    if deploy_mod.label_is_outdated(expected, engine):
+    verdict = deploy_mod.label_verdict(expected, engine)
+    cls, title = _NODE_ENGINE_VERDICT.get(
+        verdict, ("chip", "Stand nicht bestimmbar"))
+    cell = f'{_e(engine)}{_tree_chip()}'
+    cell += f' <span class="{cls}" title="{_e(title)}">{_e(verdict)}</span>'
+    if verdict == "behind":
         cell += (f' <span class="chip conflict" title="expected {_e(expected or "")}">'
                  "NEED UPDATE</span>")
     return cell
@@ -878,7 +913,7 @@ def _clients_table(workers: list[dict], now: float,
             "<tr>"
             f"<td>{_node_link_cell(w.get('worker'), w.get('host'), w.get('port'))}</td>"
             f"{_role_matrix_cells(w.get('role'))}"
-            f"<td>{_node_engine_cell(w.get('engine'), expected)}</td>"
+            f"<td>{_node_engine_cell(w.get('engine'), expected, w.get('engine_tree'))}</td>"
             f"<td>{_e(w.get('git_user') or '—')}</td>"
             f"<td>{_node_git_status_chips(w.get('git_status'))}"
             + (f' <code>{_e(w["git_commit"])}</code>' if w.get("git_commit") else "")
