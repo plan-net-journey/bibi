@@ -193,9 +193,31 @@ def _plist_path(label: str) -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
 
 
-def install(role: str | None = None, connect: bool = False) -> str:
+def install(role: str | None = None, connect: bool = False,
+            port: int | None = None) -> str:
+    """Autostart-Unit schreiben.
+
+    ``port`` (m.rau/bibi#15): explizit, sonst aus der **Konfiguration**. Beides
+    ist neu und gehört zusammen.
+
+    Das Flag, weil eine Maschine mehrere Instanzen tragen kann und jede einen
+    eigenen, festen Port braucht (sarasate: Host 8780, Client 8781, Testknoten
+    8782). Bisher war ``BIBI_DAEMON_PORT=… bibi-ctrl daemon install`` der einzige
+    Weg dorthin — eine Umgebungsvariable als Pflichtargument getarnt.
+
+    Und ``configured_daemon_port()`` statt ``daemon_port()``, weil die
+    Port-Automatik aus #45 sonst hier hereinregierte: läuft während des
+    ``install`` gerade ein Sitzungs-Daemon, lieferte ``daemon_port()`` dessen
+    flüchtigen Port — und der stünde danach dauerhaft in der Unit. Eine Unit
+    beschreibt, wo künftig gelauscht werden soll; die Portdatei sagt, wo gerade
+    gelauscht wird. Das sind zwei Fragen.
+
+    Damit ist #15 **nicht** von #45 miterledigt, anders als beim Planen
+    vermutet: die Automatik löst den interaktiven Start, nicht den festen
+    Dienst — der braucht eine Nummer, die auch morgen noch gilt.
+    """
     root = repo.root()
-    port = config.daemon_port()
+    port = port or config.configured_daemon_port()
     uv = _nonsnap_uv()
     if sys.platform == "darwin":
         label = _label(root)
