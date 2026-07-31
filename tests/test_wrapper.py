@@ -94,14 +94,18 @@ def test_claude_argv_no_session_no_resume():
     assert "--resume" not in argv
 
 
-def test_claude_argv_permission_mode_only_in_container():
-    # Host (Default): keine Permission-Übersteuerung (Nutzer-Settings gelten).
+def test_claude_argv_permission_mode_always_bypass():
+    # Headless kann niemand eine Rückfrage beantworten — der Modus wird in BEIDEN
+    # Ausführungsarten gesetzt. Zuvor blieb der Host-Modus ohne Flag; die CLI
+    # beantwortete Freigaben dann selbst mit user-rejected und der Job lief stumm
+    # mit exit 0 durch (Witz-Läufe ab 2026-07-27).
     host = wrapper.REGISTRY["claude"].build_command({"BIBI_JOB_PROMPT": "hi"})
-    assert "--permission-mode" not in host
-    # Container: acceptEdits (schreibt headless ohne Prompt, geht als root).
+    i = host.index("--permission-mode")
+    assert host[i + 1] == "bypassPermissions"
     cont = wrapper.REGISTRY["claude"].build_command(
         {"BIBI_JOB_PROMPT": "hi", "BIBI_EXEC_MODE": "container"})
-    assert "--permission-mode" in cont and "acceptEdits" in cont
+    j = cont.index("--permission-mode")
+    assert cont[j + 1] == "bypassPermissions"
 
 
 # ── PLAN-12 Stufe 12.2 — Streaming-Default ──────────────────────────────────
@@ -140,7 +144,7 @@ def test_claude_argv_partial_messages_coexists_with_container_permission_mode():
     argv = wrapper.REGISTRY["claude"].build_command(
         {"BIBI_JOB_PROMPT": "hi", "BIBI_EXEC_MODE": "container"})
     assert "--include-partial-messages" in argv
-    assert "--permission-mode" in argv and "acceptEdits" in argv
+    assert "--permission-mode" in argv and "bypassPermissions" in argv
 
 
 # ── PLAN-12 Stufe 12.3 — soul:-Frontmatter wirkt jetzt ──────────────────────
