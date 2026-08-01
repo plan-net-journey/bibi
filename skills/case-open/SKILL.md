@@ -27,9 +27,16 @@ each writing its own marker.
 
 Still `cd` into the folder: it keeps relative paths working and makes the active
 case obvious in the shell. But you no longer lose the case when a later command
-`cd`s elsewhere, when two parallel Bash calls overwrite each other's cwd, or when
-the session restarts. `bibi-ctrl status` prints where the case is coming from
-(`cwd` or `session`).
+`cd`s elsewhere, or when two parallel Bash calls overwrite each other's cwd.
+`bibi-ctrl status` prints where the case is coming from (`cwd` or `session`).
+
+**A reconnect does lose it, and that is worth knowing** (m.rau/bibi#97). The
+marker is keyed to `CLAUDE_CODE_SESSION_ID`, and that id changes when a session
+reconnects — the old marker stays behind and belongs to nobody. `bibi-ctrl
+status` then shows `path: (none)` plus a `park_foreign:` line naming the case,
+and `save` refuses the repo scope rather than guessing it (exit code 2). The way
+back is this command: run `/open` on the same case again and it parks under the
+new id.
 
 ## Effect
 

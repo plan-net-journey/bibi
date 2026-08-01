@@ -22,6 +22,27 @@ allowed-tools:
 Check which one applies with `bibi-ctrl status` — its `path:` line names the
 case and where it comes from (`cwd` or `session`).
 
+`bibi-ctrl save` also prints the scope it is about to use, with the file count,
+**before** it commits. Read that line: it is the one chance to notice that a run
+is about to take the whole repository.
+
+## Refused scope (exit code 2)
+
+`save` exits **2** — neither success nor a failed commit — when no case is
+active but a park marker of *another* session points at an existing case. That
+happens after every reconnect: the session id changes and the old marker is left
+behind. The repo scope would then be a guess rather than a finding, and in a
+shared checkout a repo-wide commit can pick up half-finished work from parallel
+agent jobs.
+
+Nothing has been written when this happens. Two ways forward, and the choice
+belongs to the user — ask, do not pick one:
+
+- `bibi-ctrl open "<case>"` — re-park the case, then save again (case scope).
+- `bibi-ctrl save --repo` — the whole repository really is what was meant.
+
+`bibi-ctrl status` shows the same state as a `park_foreign:` line.
+
 ## Steps
 
 1. **If a case is active:** read its `README.md` and append two tight sections
