@@ -151,6 +151,22 @@ def auto_commit_message() -> str:
     return f"auto: {ts} | {user} | {platform.node()}"
 
 
+def git_user_email(cwd: Path | None = None) -> str | None:
+    """Die konfigurierte ``git config user.email`` — Gegenstück zu
+    :func:`git_user_name` (m.rau/bibi#18).
+
+    Getrennt abgefragt und nicht aus dem Namen abgeleitet: git löst beide
+    unabhängig über lokal > global > System auf, und genau die Hälfte davon zu
+    haben ist der häufigere Fall. ``None`` statt leerem String, wenn nichts
+    konfiguriert ist.
+    """
+    proc = subprocess.run(
+        ["git", "-c", "core.quotepath=false", "config", "user.email"],
+        cwd=cwd or repo.root(), capture_output=True, text=True, check=False,
+    )
+    return proc.stdout.strip() or None
+
+
 def git_user_name(cwd: Path | None = None) -> str | None:
     """Der lokal konfigurierte ``git config user.name`` (ambiente Identität,
     fällt heute auf `~/.gitconfig` zurück, solange kein Repository Identität-

@@ -181,6 +181,36 @@ def check_legacy_worker_name(cfg_and_env: dict[str, str]) -> list[Finding]:
     return []
 
 
+def check_git_identity(*, name: str | None, email: str | None) -> list[Finding]:
+    """Fehlende git-Identität auf diesem Knoten (m.rau/bibi#18).
+
+    **Warum das ein Befund ist und keine Kleinigkeit:** fehlt ``user.name`` oder
+    ``user.email``, rät git eine Identität aus Benutzer- und Hostnamen zusammen
+    und schreibt sie mit einer Warnung in den Commit — die im Log eines
+    Hintergrund-Jobs niemand liest. In einem Team-Repo tragen Beiträge dann
+    ``mmu@sarasate`` statt eines Namens, und wer das später gerade zieht,
+    schreibt Historie um.
+
+    Aufgekommen beim Onboarding des ersten fremden Knotens: dort stand die
+    Identität am Ende korrekt, aber **von Hand gesetzt** — weder ``/bibi-setup``
+    noch ``bibi-ctrl init`` kümmern sich darum. Für den nächsten fremden Client
+    wäre die Lücke also wieder offen gewesen; dieser Check macht sie sichtbar,
+    statt sie zu dokumentieren.
+
+    Der Synchronizer ist davon nicht betroffen — er committet mit einer festen
+    Bot-Identität (``bibi/sync``). Es geht um die Commits des **Menschen** und
+    um ``bibi-ctrl save``, das die ambiente Identität verwendet.
+    """
+    missing = [k for k, v in (("user.name", name), ("user.email", email))
+               if not (v or "").strip()]
+    if not missing:
+        return []
+    return [Finding(
+        "git-identity", ", ".join(missing),
+        "nicht gesetzt — git rät sonst Benutzer@Host und schreibt das in jeden "
+        "Commit. Setzen mit: git config user.name \"…\" && git config user.email \"…\"")]
+
+
 # ── PLAN-15: Markdown-Hygiene (kaputte Platzhalter-Tags, Hartumbruch) ────────
 
 _TAG_RE = re.compile(r"<([a-zA-Z/][^<>\n]{0,40})>")
