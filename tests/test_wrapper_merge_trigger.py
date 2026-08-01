@@ -93,23 +93,34 @@ def _seed(root: Path, rel: str, body: str) -> None:
     _git(root, "commit", "-q", "-m", f"seed {rel}")
 
 
-def _wait_terminal(jid: str, timeout: float = 10.0) -> dict:
-    deadline = time.monotonic() + timeout
+def _wait_terminal(jid: str, timeout: float = 30.0) -> dict:
+    """Wie der gleichnamige Helfer in ``test_worker.py`` — und mit demselben
+    Fehler behaftet gewesen (m.rau/bibi#87): beim Ablauf der Frist gab er still
+    die letzte Zeile zurück, und der Test scheiterte danach an seiner eigenen
+    Assertion, als wäre das Ergebnis falsch statt die Zeit zu knapp.
+
+    Beide Tests dieser Datei waren am 2026-07-31 auf dem Mac rot, während sie
+    auf sarasate grün blieben — dieselbe Klasse Befund, nur andersherum verteilt
+    als bei den Container-Tests.
+    """
+    started = time.monotonic()
+    deadline = started + timeout
+    last: dict = {}
     while time.monotonic() < deadline:
         conn = job_db.connect()
         try:
             row = conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
         finally:
             conn.close()
-        if row and row["status"] in _TERMINAL:
-            return dict(row)
+        if row:
+            last = dict(row)
+            if row["status"] in _TERMINAL:
+                return last
         time.sleep(0.05)
-    conn = job_db.connect()
-    try:
-        row = conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
-    finally:
-        conn.close()
-    return dict(row) if row else {}
+    raise AssertionError(
+        f"Job {jid} wurde nach {time.monotonic() - started:.1f}s nicht terminal — "
+        f"Status: {last.get('status', '(keine Zeile)')}. Abgelaufene Wartefrist, "
+        "kein falsches Ergebnis.")
 
 
 def _wait_trunk_advances(root: Path, before: str, timeout: float = 8.0) -> str:

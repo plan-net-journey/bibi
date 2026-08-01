@@ -64,24 +64,49 @@ def _worker(root: Path) -> Worker:
 _TERMINAL = frozenset({"complete", "error", "killed", "zombie", "inactive"})
 
 
-def _wait_terminal(root: Path, jid: str, timeout: float = 10.0) -> dict:
-    """Warten bis Job-Status terminal ist (Wrapper meldet async via SQLite)."""
+#: Wartefrist für einen terminalen Job-Status. Grosszügig, weil die Maschine,
+#: die die --slow-Suite fährt, zugleich die Produktions-Daemons trägt: der
+#: CI-Lauf konkurriert mit ihnen um CPU und Platte (m.rau/bibi#41, #87). Eine
+#: knappe Frist macht aus diesen Tests einen Lastmesser — dieselbe Abwägung
+#: wie bei #69, nur an der anderen Stelle der Suite.
+_TERMINAL_TIMEOUT_S = 30.0
+
+
+def _wait_terminal(root: Path, jid: str, timeout: float = _TERMINAL_TIMEOUT_S) -> dict:
+    """Warten bis Job-Status terminal ist (Wrapper meldet async via SQLite).
+
+    **Schlägt beim Ablauf der Frist fehl, statt still die letzte Zeile
+    zurückzugeben** (m.rau/bibi#87). Vorher tat er genau das — der aufrufende
+    Test scheiterte danach an seiner eigenen Assertion, mit einer Meldung wie
+    ``assert 'running' == 'killed'``, die wie ein Logikfehler aussieht, obwohl
+    es ein Lastproblem war.
+
+    Genau daran hing der wandernde Fehler: in drei aufeinanderfolgenden
+    CI-Läufen war jedes Mal ein anderer Test dieser Datei rot, und welcher, war
+    Zufall — der langsamste des jeweiligen Laufs. Für den CI-Melder hiess das
+    eine bei jedem Lauf andere Fehlermenge und damit einen neuen Fingerabdruck:
+    ein eigenes Ticket pro Lauf (#83).
+    """
     db = root / "data" / "jobs.sqlite"
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    deadline = started + timeout
+    last: dict = {}
     while time.monotonic() < deadline:
         conn = job_db.connect(db)
         try:
             row = conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
         finally:
             conn.close()
-        if row and row["status"] in _TERMINAL:
-            return dict(row)
+        if row:
+            last = dict(row)
+            if row["status"] in _TERMINAL:
+                return last
         time.sleep(0.05)
-    conn = job_db.connect(db)
-    try:
-        return dict(conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone() or {})
-    finally:
-        conn.close()
+    raise AssertionError(
+        f"Job {jid} wurde nach {time.monotonic() - started:.1f}s nicht terminal — "
+        f"Status: {last.get('status', '(keine Zeile)')}, reason: {last.get('reason')}. "
+        "Das ist eine abgelaufene Wartefrist, kein falsches Ergebnis: unter Last "
+        "dauert der Lauf länger als erwartet.")
 
 
 @pytest.mark.slow
@@ -181,7 +206,7 @@ def test_wall_time_kills_job(gitrepo: Path):
     jid = _seed(gitrepo, "slow/README.md",
                 '---\nschedule: now\njob: "sleep 30"\nwall_time: 1\n---\n')
     _worker(gitrepo).tick_once()
-    row = _wait_terminal(gitrepo, jid, timeout=15.0)
+    row = _wait_terminal(gitrepo, jid)
     assert row["status"] == "killed" and row["reason"] == "by_wall_time"
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     try:
@@ -195,7 +220,7 @@ def test_silence_zombies_job(gitrepo: Path):
     jid = _seed(gitrepo, "hang/README.md",
                 '---\nschedule: now\njob: "sleep 30"\nsilence_timeout: 1\n---\n')
     _worker(gitrepo).tick_once()
-    row = _wait_terminal(gitrepo, jid, timeout=15.0)
+    row = _wait_terminal(gitrepo, jid)
     assert row["status"] == "zombie" and row["reason"] == "silence"
 
 
@@ -1293,3 +1318,23 @@ def test_loop_does_not_tick_immediately_on_start(monkeypatch):
 
     asyncio.run(run())
     assert calls == []
+
+
+# --- Der Warte-Helfer darf nicht stumm aufgeben (m.rau/bibi#87) --------------
+
+def test_wait_terminal_names_the_timeout(gitrepo: Path):
+    """**Der eigentliche Befund hinter dem wandernden Timing-Test.**
+
+    `_wait_terminal()` gab beim Ablauf der Frist still die letzte Zeile zurück.
+    Der Test scheiterte danach an seiner eigenen Assertion — mit einer Meldung
+    wie ``assert 'running' == 'killed'``, die wie ein Logikfehler aussieht,
+    obwohl es ein Lastproblem war. In drei aufeinanderfolgenden CI-Läufen traf
+    es jedes Mal einen anderen Test aus dieser Datei; welchen, war Zufall.
+
+    Ein Timeout muss sich als Timeout melden. Sonst sucht man den Fehler im
+    Code, wo keiner ist — und das kostet mehr als die Wartezeit selbst.
+    """
+    jid = _seed(gitrepo, "nie/README.md",
+                '---\nschedule: never\njob: "echo unerreichbar"\n---\n')
+    with pytest.raises(AssertionError, match="terminal"):
+        _wait_terminal(gitrepo, jid, timeout=0.3)

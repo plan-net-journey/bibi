@@ -2664,9 +2664,17 @@ def jobs_page(
     Header soll auch auf der Client Job Seite angezeigt werden" — PLAN-27
     Befund 2 hatte das nur fürs Live-Log erledigt). Lokale Lauf-Historie lebt
     seit der Bibi4-Iteration auf ``jobs_archive_page()``, s. dortiger
-    Docstring."""
+    Docstring.
+
+    ``status`` ist — wie bei ``schedules_page()`` — der **Filterwert** (z. B.
+    "failed"), nicht zu verwechseln mit ``daemon_status`` (``/-/status``-JSON).
+    m.rau/bibi#90: genau diese Verwechslung stand hier bis 2026-08-01, das
+    lokale ``status = daemon_status or {}`` verdrängte den Filterwert. Das Dict
+    reiste von hier nach ``filter_schedules()``, galt dort als aktiver Filter
+    und verglich einen String gegen ein Dict — jede Zeile fiel weg, der Screen
+    war beim Seitenaufbau immer leer."""
     now = time.time() if now is None else now
-    status = daemon_status or {}
+    daemon_status = daemon_status or {}
     return (
         "<!DOCTYPE html>\n"
         '<html lang="de"><head><meta charset="utf-8">'
@@ -2674,9 +2682,9 @@ def jobs_page(
         "<title>bibi · Jobs</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Jobs', status)}"
+        f"{_header('Jobs', daemon_status)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"{feed_status_fragment(status, git_status, host_url, now, client_rows=rows)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, client_rows=rows)}"
         f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines, typ=typ, status=status, sort=sort, direction=direction)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"

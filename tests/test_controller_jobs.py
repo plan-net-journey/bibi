@@ -396,6 +396,47 @@ def test_jobs_page_has_status_cards_header():
     assert 'id="feedstatus"' in html
 
 
+# ── m.rau/bibi#90: daemon_status darf den Status-Filter nicht verdrängen ────
+#
+# `status` trug in jobs_page() zwei Bedeutungen: den Filterwert der Signatur
+# und — lokal überschrieben — das Daemon-Status-Dict. Letzteres landete über
+# jobs_fragment() in filter_schedules(), das ein nichtleeres Dict als aktiven
+# Filter las und dann einen String gegen ein Dict verglich: jede Zeile fiel
+# weg. Der Client-Jobs-Screen war damit beim Seitenaufbau immer leer, sobald
+# überhaupt ein daemon_status anlag — also live auf jedem Knoten.
+#
+# Dass es nie eine Suite reissen liess, liegt an der Aufruf-Form: jeder
+# bestehende jobs_page()-Test laesst daemon_status weg, dann ist der
+# ueberschriebene Wert {} und damit falsy — der Filter greift zufaellig
+# nicht. Genau deshalb geben die beiden Tests hier daemon_status explizit
+# mit; ohne das laufen sie am Fehler vorbei.
+#
+# schedules_page() (Host) macht es seit jeher richtig und warnt im Docstring
+# ausdruecklich vor der Verwechslung — jobs_page() war die einzige Stelle,
+# die beide Bedeutungen auf einem Namen fuehrte.
+
+
+def test_jobs_page_daemon_status_does_not_shadow_status_filter():
+    html = render.jobs_page(
+        [_row("a"), _row("b")], {}, now=100.0,
+        daemon_status={"roles": ["synchronizer", "controller", "connect"]})
+    assert "keine Job-MDs im Repository gefunden" not in html
+    assert 'href="/-/ui/jobs/detail/a"' in html
+    assert 'href="/-/ui/jobs/detail/b"' in html
+
+
+def test_jobs_page_status_filter_still_applies_with_daemon_status():
+    # Gegenprobe zum Test darueber: der echte Filterwert muss weiterhin
+    # durchgreifen, auch wenn gleichzeitig ein daemon_status anliegt.
+    html = render.jobs_page(
+        [_row("a"), _row("b")], {"a": {"id": 1, "status": "complete"},
+                                 "b": {"id": 2, "status": "failed"}},
+        now=100.0, status="failed",
+        daemon_status={"roles": ["synchronizer", "controller", "connect"]})
+    assert 'href="/-/ui/jobs/detail/b"' in html
+    assert 'href="/-/ui/jobs/detail/a"' not in html
+
+
 def test_jobs_route_has_status_cards_header(team_repo: Path, app_with):
     app, _ = app_with(_FakeClient())
     with TestClient(app) as c:
