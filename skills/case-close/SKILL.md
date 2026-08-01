@@ -39,7 +39,7 @@ active case (parked cwd or the session's park marker).
 
    Sets README frontmatter `status: paused`, commits the case scope, integrates,
    pushes per the sync matrix (add `--push` to force when `auto_sync` is off),
-   then clears the `path` display mirror.
+   then un-parks the session.
 
 4. **Un-park the shell.** `cd` into the path printed on the `cd:` line (the repo
    root) — this deactivates the case.

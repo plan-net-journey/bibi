@@ -42,14 +42,14 @@ def run(args: argparse.Namespace) -> int:
             return 2
         case_store.set_status(m.folder, "open")
         rel = f"{case_name}/{m.folder_name}"
-        state.set_path(rel)  # nur Display-Mirror
+        state.set_path(rel)  # parkt die Session auf den Case
         print(f"reaktiviert: {rel} (status: open)")
         print(f"cd: {m.folder.resolve()}")
         return 0
 
     folder = case_store.create_case(topic)
     rel = f"{case_name}/{folder.name}"
-    state.set_path(rel)  # nur Display-Mirror
+    state.set_path(rel)  # parkt die Session auf den Case
     print(f"erstellt: {rel}")
     print(f"cd: {folder.resolve()}")
     return 0

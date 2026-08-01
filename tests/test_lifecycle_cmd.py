@@ -13,6 +13,14 @@ import pytest
 pytestmark = pytest.mark.slow
 
 
+@pytest.fixture(autouse=True)
+def _session(monkeypatch):
+    """Diese Tests prüfen Parken und Un-Parken — beides lebt seit
+    m.rau/bibi#99 ausschließlich in der Park-Marke, und die gibt es nur mit
+    einer Session-ID."""
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-lifecycle")
+
+
 def _sh(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True,
                           capture_output=True, text=True).stdout
@@ -27,7 +35,7 @@ def _local_head(root: Path) -> str:
 
 
 def _activate(root: Path, topic: str) -> Path:
-    """Case anlegen, cwd hineinparken, Display-Mirror setzen (wie /open)."""
+    """Case anlegen, cwd hineinparken, Park-Marke setzen (wie /open)."""
     folder = case_store.create_case(topic)
     state.set_path(f"case/{folder.name}")
     os.chdir(folder)
@@ -66,7 +74,7 @@ def test_close_pauses_clears_path_unparks(repo_with_origin, capsys):
     rc = main(["close", "--push"])
     assert rc == 0
     assert case_store.get_status(folder) == "paused"
-    assert "path" not in state.read()                 # Mirror geleert
+    assert not state.park_file().exists()             # Marke weg
     assert _local_head(root) == f"close: {folder.name}"
     assert f"cd: {root.resolve()}" in capsys.readouterr().out  # un-park
 
@@ -77,7 +85,7 @@ def test_close_repo_busy_does_not_unpark(repo_with_origin, capsys):
     _open_unrelated_merge_conflict(root)
     rc = main(["close", "--push"])
     assert rc == 1
-    assert state.read().get("path") == f"case/{folder.name}"  # Mirror unangetastet
+    assert state.park_file().read_text() == f"case/{folder.name}"  # noch geparkt
     assert "cd:" not in capsys.readouterr().out                # kein Un-Park-Signal
     assert (root / ".git" / "MERGE_HEAD").exists()              # Konflikt unangetastet
 
@@ -104,7 +112,7 @@ def test_done_closes_final(repo_with_origin):
     assert rc == 0
     assert case_store.get_status(folder) == "closed"
     assert _origin_head(origin) == f"done: {folder.name}"
-    assert "path" not in state.read()
+    assert not state.park_file().exists()
 
 
 # --- delete ---
@@ -123,7 +131,7 @@ def test_delete_tracked_folder_and_unparks(repo_with_origin, capsys):
     assert rc == 0
     assert not folder.exists()                        # Ordner weg
     assert _origin_head(origin) == f"delete: {folder.name}"
-    assert "path" not in state.read()
+    assert not state.park_file().exists()
     assert f"cd: {root.resolve()}" in capsys.readouterr().out
 
 
@@ -134,7 +142,7 @@ def test_delete_repo_busy_does_not_unpark(repo_with_origin, capsys):
     rc = main(["delete", "--push"])
     assert rc == 1
     assert folder.exists()                                      # nichts gelöscht
-    assert state.read().get("path") == f"case/{folder.name}"    # Mirror unangetastet
+    assert state.park_file().read_text() == f"case/{folder.name}"  # noch geparkt
     assert "cd:" not in capsys.readouterr().out                  # kein Un-Park-Signal
     assert (root / ".git" / "MERGE_HEAD").exists()                # Konflikt unangetastet
 

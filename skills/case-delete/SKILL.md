@@ -37,7 +37,7 @@ think«, silence) — abort.
 3. Commits `delete: <folder>`, integrates, pushes per the sync matrix (`--push`
    forces when `auto_sync` is off). A never-saved (untracked) case is removed with
    nothing to commit.
-4. Clears the `path` display mirror and prints a `cd:` line (repo root) to un-park.
+4. Removes the session's park marker and prints a `cd:` line (repo root) to un-park.
 
 ## When
 

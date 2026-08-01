@@ -32,7 +32,7 @@ def _do_push(args: argparse.Namespace) -> bool:
 
 
 def _finish(ok: bool, log: list[str], kind: str | None, root: Path) -> int:
-    """Log ausgeben, Konflikt markieren, Display-Mirror leeren, un-parken.
+    """Log ausgeben, Konflikt markieren, un-parken.
 
     Review-Runde 7, Fund 4: bei ``kind == "repo_busy"`` hat der Guard JEDE
     Änderung verweigert, bevor sie überhaupt versucht wurde (s.
