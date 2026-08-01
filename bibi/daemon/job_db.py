@@ -1025,13 +1025,37 @@ def report_status(
     if target is Status.PENDING or (target is Status.KILLED and current is Status.COMPLETE):
         assignments += ", fire=fire+1"
     fields["id"] = job_id
-    conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
 
     # Terminal-Übergang → eine Journal-Zeile (disponierte Domäne, §1.4). complete
     # rearmt NICHT mehr sofort hier — das übernimmt reserve_next() lazy, sobald der
     # nächste next_fire_at-Tick tatsächlich fällig ist (siehe Kommentar oben).
-    if target in lifecycle.TERMINAL:
+    #
+    # **Status und Journal-Zeile sind EIN Vorgang** (m.rau/bibi#95). Ohne Klammer
+    # committen sie einzeln (``connect()``: „übrige Schreibpfade committen je
+    # Statement") — und dazwischen liegt ein Fenster, in dem jeder Leser einen
+    # terminalen Job ohne Journal-Zeile sieht. Das trifft nicht nur die Suite:
+    # FE, CLI und jeder andere Knoten lesen dieselbe DB. „Fertig" ist logisch
+    # ein Vorgang und darf nicht als zwei sichtbar werden.
+    #
+    # Nur der terminale Fall wird geklammert: sonst ist das UPDATE ein einzelnes
+    # Statement und für sich atomar. Eine fremde Transaktion wird nicht
+    # angetastet — dann committet der Aufrufer.
+    if target not in lifecycle.TERMINAL:
+        conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
+        return "ok"
+
+    own_tx = not conn.in_transaction
+    if own_tx:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
         _write_journal(conn, job_id, now, commit_sha=commit_sha, branch=branch)
+    except BaseException:
+        if own_tx:
+            conn.execute("ROLLBACK")
+        raise
+    if own_tx:
+        conn.execute("COMMIT")
     return "ok"
 
 

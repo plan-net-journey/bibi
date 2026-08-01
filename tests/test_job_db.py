@@ -1031,3 +1031,64 @@ def test_list_journal_respects_limit_and_offset(conn):
     assert [r["run_id"] for r in page2] == ["a:2", "a:3"]
     assert len(job_db.list_journal(conn, limit=2, offset=4)) == 1
     assert len(job_db.list_journal(conn)) == 5  # ohne limit weiterhin unbegrenzt
+
+
+# --- Terminaler Übergang und Journal-Zeile sind ein Vorgang (m.rau/bibi#95) ---
+
+def test_terminal_status_is_never_visible_without_its_journal_row(tmp_path: Path):
+    """**Ein Leser darf nie einen terminalen Job ohne Journal-Zeile sehen.**
+
+    ``report_status()`` schreibt beides nacheinander (Status-UPDATE, dann
+    ``_write_journal()``), und die Verbindung laeuft in Autocommit — jedes
+    Statement committet einzeln. Dazwischen liegt ein Fenster, in dem der Job
+    fertig aussieht und im Journal nicht vorkommt.
+
+    Das trifft nicht nur die Suite: FE, CLI und jeder andere Knoten lesen
+    dieselbe DB. „Fertig" ist logisch ein Vorgang und darf nicht als zwei
+    sichtbar werden.
+
+    Gemessen wird mit einer **zweiten Verbindung**, genau in dem Moment, in dem
+    die schreibende gerade die Journal-Zeile einfuegt: was sieht ein
+    Nebenlaeufiger jetzt? Vor dem Fix bereits `complete` — der Beweis, dass das
+    Fenster offen steht.
+
+    Gefunden am 2026-08-01, nachdem der Fix zu #91 90 Sekunden Leerlauf aus der
+    Suite genommen hatte. Drei verschiedene Tests in zwei CI-Laeufen, immer
+    dieselbe Stelle. Der #91-Fix hat nichts kaputtgemacht: er hat eine
+    Wartezeit entfernt, die diesen Fehler verdeckt hat.
+    """
+    db = tmp_path / "jobs.sqlite"
+    conn = job_db.connect(db)
+    try:
+        _write(tmp_path / "case" / "atomar.md",
+               '---\nschedule: never\njob: "echo x"\n---\n')
+        job_db.rescan(conn, vault_root=tmp_path / "case")
+        jid = conn.execute("SELECT id FROM jobs WHERE slug='atomar'").fetchone()["id"]
+        job_db.report_status(conn, jid, status="starting")
+        job_db.report_status(conn, jid, status="running")
+
+        seen: dict = {}
+
+        def spy(sql: str) -> None:
+            # Beim Einfuegen der Journal-Zeile: was sieht ein anderer Leser?
+            if "journal" in sql.lower() and sql.lstrip().upper().startswith("INSERT"):
+                other = sqlite3.connect(db)
+                try:
+                    row = other.execute(
+                        "SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
+                    seen["status"] = row[0] if row else None
+                finally:
+                    other.close()
+
+        conn.set_trace_callback(spy)
+        try:
+            job_db.report_status(conn, jid, status="complete")
+        finally:
+            conn.set_trace_callback(None)
+
+        assert "status" in seen, "Journal-Zeile wurde nie geschrieben"
+        assert seen["status"] != "complete", (
+            "Ein nebenlaeufiger Leser sieht den Job als 'complete', waehrend die "
+            "Journal-Zeile noch nicht committet ist — genau das Fenster aus #95.")
+    finally:
+        conn.close()
