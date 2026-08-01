@@ -122,6 +122,70 @@ def _path_from_park() -> str | None:
     return rel
 
 
+def foreign_parks() -> dict[str, int]:
+    """Case-Pfade, auf die Park-Marken **anderer** Sessions zeigen — je mit der
+    Zahl der Marken (m.rau/bibi#97).
+
+    Der Unterschied, den ``get_path()`` allein nicht ausdrücken kann: es liefert
+    ``None`` sowohl für *„nie geparkt"* (kein Case gemeint, Repo-Scope ist
+    richtig) als auch für *„geparkt, aber unter einer anderen Session-ID"* (ein
+    Case ist gemeint, wird nur nicht gefunden). Die zweite Lage ist der
+    Normalfall nach jeder Wiederverbindung — ``CLAUDE_CODE_SESSION_ID`` wechselt
+    dabei, die alte Marke bleibt liegen. Am 2026-08-01 zeigten in ``bibi-notes``
+    vier Marken auf denselben Case.
+
+    Die Zahl steht bewusst mit im Ergebnis: eine einzelne fremde Marke könnte
+    eine parallel laufende Sitzung sein, vier hintereinander sind die Spur einer
+    einzigen, mehrfach neu verbundenen. Ein Pfad, dessen Ordner nicht (mehr)
+    existiert, zählt nicht — dieselbe Vorsicht wie in ``_path_from_park()``.
+    """
+    own = park_file()
+    try:
+        entries = sorted((repo.data() / "park").iterdir())
+    except OSError:
+        return {}
+    out: dict[str, int] = {}
+    for p in entries:
+        if p == own or not p.is_file():
+            continue
+        try:
+            rel = p.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if not rel or not (repo.vault() / rel).is_dir():
+            continue
+        out[rel] = out.get(rel, 0) + 1
+    return out
+
+
+def _forget_case_markers(rel: str) -> None:
+    """Alle Marken löschen, die auf ``rel`` zeigen — nicht nur die eigene.
+
+    Ein Case wird von ``/close``/``/done``/``/delete`` für **alle** Sessions
+    beendet, nicht nur für die zufällig gerade laufende. Bliebe die Marke einer
+    früheren, längst getrennten Sitzung liegen, meldete ``save`` den Case danach
+    für immer als „fremd geparkt" (die Marken sterben erst nach ``PARK_TTL_S``,
+    30 Tagen) — und ein Warnhinweis, der nie mehr weggeht, wird nach dem zweiten
+    Mal überlesen. Genau daran wäre die Meldung aus #97 gescheitert.
+
+    Der Preis ist benannt und in Kauf genommen: arbeitet eine wirklich parallele
+    Sitzung am selben Case, verliert sie ihre Marke, wenn hier jemand schließt.
+    Sie steht dann da, wo jede Sitzung ohne Marke steht — das cwd trägt sie
+    weiter, und ein erneutes ``/open`` parkt neu. Ein Case, den jemand gerade
+    geschlossen hat, soll ohnehin nicht anderswo als aktiv weiterlaufen.
+    """
+    try:
+        entries = list((repo.data() / "park").iterdir())
+    except OSError:
+        return
+    for p in entries:
+        try:
+            if p.is_file() and p.read_text(encoding="utf-8").strip() == rel:
+                p.unlink()
+        except OSError:
+            pass
+
+
 def get_path() -> str | None:
     """Vault-relativer Pfad des aktiven Case, z. B. 'case/20260517.foo-abc'.
 
@@ -156,12 +220,18 @@ def set_path(value: str | None) -> None:
     Kontexte ohne Session-ID). Ohne Session-ID bleibt es beim Mirror allein —
     dann verhält sich alles wie vor der Park-Marke.
     """
+    # Welcher Case gerade verlassen wird, muss VOR dem Schreiben feststehen —
+    # danach ist weder Marke noch Mirror noch da (m.rau/bibi#97).
+    leaving = get_path() if value is None else None
     patch(path=value)
     pf = park_file()
-    if pf is None:
-        return
     if value is None:
-        pf.unlink(missing_ok=True)
+        if pf is not None:
+            pf.unlink(missing_ok=True)
+        if leaving:
+            _forget_case_markers(leaving)
+        return
+    if pf is None:
         return
     pf.parent.mkdir(parents=True, exist_ok=True)
     pf.write_text(value, encoding="utf-8")

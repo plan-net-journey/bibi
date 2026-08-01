@@ -88,6 +88,37 @@ def _print_live_paths(*, stream=sys.stdout) -> None:
         print(f"  {path}", file=stream)
 
 
+def _report_orphaned_branches() -> None:
+    """Nach einem erfolgreichen Rebase: welche ``agent/*``-Branches der Rebase
+    gerade verwaist hat (m.rau/bibi#13).
+
+    Der Rebase, mit dem ``/sync`` eine Divergenz auflöst, schreibt trunk um —
+    jeder ``agent/*``-Branch, dessen Commits vorher literal auf trunk lagen,
+    zeigt danach auf ersetzte SHAs. Der Worker verweigert dort den ``-B``-Reset
+    (korrekt), der Merge-Sweep kann nichts holen (auch korrekt), und beide
+    zeigen aufeinander. **Erfahren hat das bisher nur, wer zufällig einen Job
+    startete, der darüber stolperte** — dabei ist der Rebase, der es auslöst,
+    genau der Vorgang, der hier gerade gelaufen ist.
+
+    Gemeldet, nicht repariert: ob ein Branch echte Arbeit trägt, kann nur ein
+    Mensch entscheiden. Die Liste enthält deshalb ausschließlich Branches, bei
+    denen ein Reset nachweislich nichts verliert (jeder Commit steckt
+    inhaltlich schon in trunk) — bei einem Teil-Rewrite bleibt es still, dort
+    wäre der genannte Handgriff falsch.
+    """
+    orphans = mergeback.orphaned_agent_branches(repo_root=repo.root())
+    if not orphans:
+        return
+    head = ("Ein agent/*-Branch zeigt" if len(orphans) == 1
+            else f"{len(orphans)} agent/*-Branches zeigen")
+    print(f"⚠ {head} nach dem Rebase auf ersetzte Commits — der Inhalt steckt "
+          f"vollständig in trunk:")
+    for branch in orphans:
+        print(f"  {branch} — zurücksetzen mit: git branch -f {branch} trunk")
+    print("Nicht automatisch zurückgesetzt: ob ein Branch echte Arbeit trägt, "
+          "entscheidet ein Mensch.")
+
+
 def _resolve_stuck_merge_branches() -> int | None:
     """PLAN-30 Ebene 3 + Nachtrag 2026-07-16 (/sync-Erweiterung): JEDEN
     unmergten ``agent/*``-Branch anfassen, nicht mehr nur eskalierte
@@ -304,6 +335,7 @@ def _run_sync_apply() -> int:
             print(f"Abgleich fehlgeschlagen: {kind}", file=sys.stderr)
         return 1
     print("integrated")
+    _report_orphaned_branches()
 
     pok, pmsg, pkind = git_ops.push(branch)
     if not pok:
@@ -367,6 +399,10 @@ def run_continue(_: argparse.Namespace) -> int:
         print(line)
     if ok:
         state.set_sync_conflict(False)
+        # Der gerade abgeschlossene Rebase ist genau der Vorgang, der
+        # agent/*-Branches verwaist (m.rau/bibi#13) — hier ist der eine Moment,
+        # in dem jemand hinsieht.
+        _report_orphaned_branches()
         return 0
     if kind == "conflict":
         _print_conflicts()

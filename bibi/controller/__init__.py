@@ -496,7 +496,18 @@ def add_controller_routes(
             engine = None
         raw_port = os.environ.get("BIBI_DAEMON_PORT")
         _env = config.read_env()
+        # m.rau/bibi#44: derselbe Wert, den andere Knoten per Heartbeat melden —
+        # für den Host selbst steht er in seiner eigenen Portdatei. Ohne ihn
+        # bliebe ausgerechnet die Zeile ohne Warnung, die man am ehesten
+        # anklickt: die eigene. ``None`` bei einem Daemon, der vor #59 startete;
+        # dann verhält sich der Knopf wie bisher (s. ``portfile.read()``).
+        try:
+            from bibi.daemon import portfile
+            session = (portfile.read() or {}).get("session")
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            session = None
         return {
+            "session": session,
             "worker": _env.get("BIBI_NODE_NAME") or _env.get("BIBI_WORKER_NAME") or socket.gethostname(),
             "host": socket.gethostname(),
             "role": ",".join(roles.active_names()),

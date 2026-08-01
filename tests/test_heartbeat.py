@@ -227,3 +227,16 @@ def test_beat_does_not_write_when_response_is_none(gitrepo: Path):
     asyncio.run(hb.start())
     asyncio.run(hb.stop())
     assert config.read_distributed_env() == {}
+
+
+def test_heartbeat_reports_whether_it_runs_in_a_session(gitrepo: Path):
+    """m.rau/bibi#44: der Host kann von außen nicht sehen, ob ein Knoten einen
+    Supervisor hat — nur der startende Prozess weiß es. Also meldet er es."""
+    c = _FakeClient()
+    hb = Heartbeat(client=c, repo_root=gitrepo, worker_name="w", session=True)
+    hb._beat()
+    assert c.last_kwargs["session"] is True
+
+    c2 = _FakeClient()
+    Heartbeat(client=c2, repo_root=gitrepo, worker_name="w")._beat()
+    assert c2.last_kwargs["session"] is False

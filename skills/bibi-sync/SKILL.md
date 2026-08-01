@@ -76,6 +76,21 @@ A rebase/merge already open from an earlier `--apply` run is not something
 the preview can predict around — both bare `sync` and `sync --apply` report
 it immediately and point to `sync continue`/`sync abort`.
 
+## Orphaned `agent/*` branches after a rebase
+
+After a successful rebase — in `--apply` as well as in `sync continue` — the
+engine reports which `agent/*` branches now point at replaced commits. The
+rebase itself causes this: a branch whose commits sat literally on trunk before
+now points at SHAs that are gone from trunk, although their content is not.
+
+**It reports, it does not repair**, and the report is not a to-do list to work
+off. Only a human can decide whether a branch still carries work worth keeping.
+Show the list, name the handle the engine printed (`git branch -f <branch>
+trunk`), and let the user decide per branch. Listed are only branches where a
+reset provably loses nothing — every commit is already in trunk under a
+different SHA. A branch with a partial rewrite stays silent, because there a
+reset would throw work away.
+
 ## Conflict resolution (A8/A11 — shared)
 
 This is the one shared resolution path; `/save`, `/close`, `/done` route their

@@ -453,3 +453,61 @@ def test_merge_back_handles_non_ascii_path_overlap(repo: Path):
     assert res.status == "live_edit"
     assert _git(repo, "rev-parse", "HEAD") == head_before
     assert (repo / "Kündigung.md").read_text(encoding="utf-8") == "dirty lokal\n"
+
+
+# ── m.rau/bibi#13: verwaiste agent/*-Branches erkennen ─────────────────────
+
+def _rewrite_trunk_over(repo: Path, branch: str) -> None:
+    """Was ein Rebase von trunk anrichtet: der Inhalt von ``branch`` steckt
+    danach inhaltlich in trunk, aber unter einem ANDEREN SHA. Ein Cherry-Pick
+    erzeugt die Lage exakt (dieselbe Technik wie in ``test_worktree.py``)."""
+    _git(repo, "cherry-pick", _git(repo, "rev-parse", branch))
+
+
+def test_orphaned_branches_empty_without_any_branch(repo: Path):
+    assert mergeback.orphaned_agent_branches(repo_root=repo) == []
+
+
+def test_orphaned_branches_ignores_genuine_work(repo: Path):
+    """Der Normalfall — echte, nirgends vorhandene Arbeit. Sie ist nicht
+    verwaist, sondern wartet auf den Merge-Sweep; wer sie hier mitmeldete,
+    forderte einen Reset, der echte Ergebnisse wegwürfe."""
+    _run_in_worktree(repo, "run1", "note.md", "echte Arbeit\n")
+    assert mergeback.unmerged_agent_branches(repo_root=repo) == ["agent/run1"]
+    assert mergeback.orphaned_agent_branches(repo_root=repo) == []
+
+
+def test_orphaned_branches_names_a_branch_after_a_trunk_rewrite(repo: Path):
+    """Der Zustand aus dem Vorfall: nach dem Rebase zeigt der Branch auf
+    ersetzte Commits. ``--no-merged`` sieht ihn weiter als ungemergt, zu holen
+    gibt es aber nichts — der Sweep kann das grundsätzlich nicht heilen."""
+    _run_in_worktree(repo, "run1", "note.md", "vom Job\n")
+    _rewrite_trunk_over(repo, "agent/run1")
+    assert mergeback.orphaned_agent_branches(repo_root=repo) == ["agent/run1"]
+
+
+def test_orphaned_branches_ignores_a_partial_rewrite(repo: Path):
+    """Zwei Commits, nur einer inhaltlich in trunk: hier steckt noch echte
+    Arbeit drin. Ein Reset verlöre sie — also nicht melden."""
+    work = repo / "data" / "worktrees"
+    path = wt.prepare(repo_root=repo, work_dir=work, slug="run1")
+    (path / "a.md").write_text("eins\n")
+    wt.commit(worktree=path, message="run1: eins", slug="run1")
+    (path / "b.md").write_text("zwei\n")
+    wt.commit(worktree=path, message="run1: zwei", slug="run1")
+    _git(repo, "cherry-pick", "agent/run1~1")          # nur der erste wandert
+
+    assert wt.ahead_counts(repo_root=repo, branch="agent/run1") == (2, 1)
+    assert mergeback.orphaned_agent_branches(repo_root=repo) == []
+
+
+def test_orphaned_branches_separates_the_two_kinds(repo: Path):
+    """Der eigentliche Punkt des Vorfalls: von vier Branches trug einer echte
+    Arbeit, drei nur Reste. Die Unterscheidung ist genau das, was ein Mensch
+    zum Entscheiden braucht."""
+    _run_in_worktree(repo, "echt", "echt.md", "245 Zeilen\n")
+    _run_in_worktree(repo, "rest", "rest.md", "probe.log\n")
+    _rewrite_trunk_over(repo, "agent/rest")
+
+    assert mergeback.orphaned_agent_branches(repo_root=repo) == ["agent/rest"]
+    assert "agent/echt" in mergeback.unmerged_agent_branches(repo_root=repo)

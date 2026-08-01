@@ -193,7 +193,11 @@ def run(args: argparse.Namespace) -> int:
             secret=os.environ.get("BIBI_CONNECT_SECRET"),
         )
         heartbeat = Heartbeat(client=hb_client, repo_root=repo.root(), worker_name=worker_name,
-                              role=",".join(r.active_names()))
+                              role=",".join(r.active_names()),
+                              # m.rau/bibi#44: dieselbe Quelle wie für
+                              # create_app()/portfile.write() unten — der
+                              # startende Prozess ist der einzige, der es weiß.
+                              session=bool(getattr(args, "session", False)))
 
     import uvicorn
 
