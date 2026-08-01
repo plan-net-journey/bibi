@@ -3,7 +3,13 @@
 Liest Claudes JSON-Payload (model, ctx%) von stdin und kombiniert ihn mit dem
 bibi-Repo-State (`.claude/.state.md` + git) zu einer Zeile:
 
-    <tree> · <sync> │ <branch> │ <model> │ ctx:<pct>% [│ <case> │ proto:<state>] │ sync:<state>
+    [<upgrade> │] <tree> · <sync> │ <branch> │ <model> │ ctx:<pct>% [│ <case> │ proto:<state>] │ sync:<state>
+
+`<upgrade>` steht ganz vorn und nur dann, wenn auf einem **Sitzungs**-Knoten
+ein Upgrade wartet (m.rau/bibi#94). Es ist das einzige Segment, das eine
+Aufforderung ist und keine Information — deshalb der Vorrang und die inverse
+Darstellung, und deshalb verschwindet es wieder, sobald der Neustart gelaufen
+ist. Ein Knoten mit Supervisor sieht es nie: dort ist der Restart-Knopf der Weg.
 
 `<tree>` ist clean|modified, `<sync>` ist synced|ahead|behind|diverged — zwei
 orthogonale Dimensionen, beide sichtbar; nur der Happy Path `clean · synced`
@@ -39,7 +45,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from bibi import case_store, git_ops, repo, state
+from bibi import case_store, git_ops, repo, state, upgrade_notice
 from bibi.git_status import working_tree_status
 
 R = "\033[0m"
@@ -97,6 +103,18 @@ def _proto_state(folder: Path) -> str:
 
 def render(payload: dict[str, Any]) -> str:
     parts: list[str] = []
+
+    # Ein wartendes Upgrade steht VOR allem anderen (m.rau/bibi#94) — es ist
+    # eine Aufforderung, keine Information, und eingereiht zwischen Branch und
+    # ctx% wäre es ein Segment unter sechsen. Voranstellen statt Verdrängen:
+    # die übrigen Segmente bleiben, sonst wäre der Nutzer für die Dauer eines
+    # wartenden Upgrades blind.
+    try:
+        up = upgrade_notice.pending()
+        if up:
+            parts.append(upgrade_notice.segment(up))
+    except (Exception, SystemExit):
+        pass
 
     # git-Segmente — repo-abhängig, defensiv (Statusleiste darf nie crashen;
     # repo.root() beendet außerhalb eines git-Repos mit SystemExit).
