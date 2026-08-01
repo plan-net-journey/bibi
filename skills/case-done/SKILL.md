@@ -35,7 +35,7 @@ a resume note. Requires an active case (parked cwd or the session's park marker)
    ```
 
    Sets `status: closed`, commits the case scope, integrates, pushes per the sync
-   matrix (`--push` forces when `auto_sync` is off), clears the `path` mirror.
+   matrix (`--push` forces when `auto_sync` is off), un-parks the session.
 
 4. **Un-park the shell.** `cd` into the path printed on the `cd:` line (repo root).
 

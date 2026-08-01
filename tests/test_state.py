@@ -1,4 +1,4 @@
-"""Tests für bibi.state (cwd + Session-Park-Marke + .state.md-Mirror)."""
+"""Tests für bibi.state (cwd + Session-Park-Marke; repo-globale .state.md-Felder)."""
 
 from __future__ import annotations
 
@@ -29,15 +29,33 @@ def test_get_path_inside_case(team_repo: Path):
     assert state.get_path() == "case/20260624.Foo-deadbeef"
 
 
-def test_set_path_writes_mirror(team_repo: Path):
-    state.set_path("case/foo-123")
-    assert state.read()["path"] == "case/foo-123"
+def test_set_path_writes_no_state_md_mirror(team_repo: Path, monkeypatch):
+    """``set_path`` schreibt nur die Park-Marke, keinen ``path:``-Mirror mehr.
 
-
-def test_set_path_none_removes_mirror(team_repo: Path):
+    Der Mirror war nach der Ablösung durch die Park-Marke ein zweiter,
+    **geteilter** Speicher für einen pro-Session-Zustand — mit genau einem
+    Leser: der Statusleiste ohne ``session_id``. Dieser Fall tritt im Betrieb
+    nie ein, Claude Code liefert das Feld immer (m.rau/bibi#99).
+    """
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-A")
+    _mkcase(team_repo, "foo-123")  # get_path() meldet nur existierende Cases
     state.set_path("case/foo-123")
-    state.set_path(None)
     assert "path" not in state.read()
+    assert state.get_path() == "case/foo-123"  # die Marke trägt den Zustand
+
+
+def test_set_path_without_session_id_is_a_noop(team_repo: Path, monkeypatch):
+    """Ohne Session-ID gibt es nichts zu parken — und nichts zu spiegeln.
+
+    Früher blieb hier der Mirror als Ersatz; jetzt bleibt der Zustand schlicht
+    leer, statt einen Case zu behaupten, den keine Session halten kann.
+    """
+    monkeypatch.delenv("BIBI_SESSION_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    state.adopt_session(None)
+    state.set_path("case/foo-123")
+    assert "path" not in state.read()
+    assert state.get_path() is None
 
 
 # --- Session-Park-Marke: der Case überlebt den Verlust des cwd ---

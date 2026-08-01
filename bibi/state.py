@@ -9,9 +9,9 @@ Zwei Geltungsbereiche, zwei Speicher:
   Bash-Calls, die sich gegenseitig überschreiben, Hintergrund-Shells,
   Session-Neustarts und Subprozesse ohne Sicht aufs cwd (Hooks, Statusleiste).
   Die Session-ID isoliert parallele Sessions genauso zuverlässig wie früher das
-  cwd — jede schreibt ihre eigene Marke. Das ``path:``-Feld in
-  ``.claude/.state.md`` bleibt als **Fallback-Mirror** für Kontexte ohne
-  Session-ID.
+  cwd — jede schreibt ihre eigene Marke. Ein ``path:``-Mirror in
+  ``.claude/.state.md`` existierte bis m.rau/bibi#99 als Fallback und ist
+  entfallen: pro-Session-Zustand gehört nicht in eine geteilte Datei.
 - **Repo-globale Felder** (``auto_sync``, ``sync_conflict``) — liegen in der
   geteilten, gitignoreten ``.claude/.state.md``.
 """
@@ -215,15 +215,17 @@ def path_source() -> str | None:
 def set_path(value: str | None) -> None:
     """Aktiven Case dieser Session setzen; ``None`` un-parkt sie.
 
-    Schreibt beides: die **Park-Marke** ``data/park/<session_id>`` (die Quelle,
-    s. ``get_path``) und den ``path:``-**Mirror** in ``.state.md`` (Fallback für
-    Kontexte ohne Session-ID). Ohne Session-ID bleibt es beim Mirror allein —
-    dann verhält sich alles wie vor der Park-Marke.
+    Schreibt die **Park-Marke** ``data/park/<session_id>`` — die einzige Quelle
+    (s. ``get_path``). Ohne Session-ID passiert nichts: der aktive Case gehört
+    einer Session, und ohne sie ist keine gemeint. Bis m.rau/bibi#99 wurde er
+    zusätzlich als ``path:`` nach ``.state.md`` gespiegelt; dieser Mirror hatte
+    zuletzt einen einzigen Leser — die Statusleiste ohne ``session_id``, ein
+    Fall, der im Betrieb nie eintritt — und beantwortete als **geteilte** Datei
+    die Frage nach dem Case einer Session mit dem einer beliebigen anderen.
     """
     # Welcher Case gerade verlassen wird, muss VOR dem Schreiben feststehen —
-    # danach ist weder Marke noch Mirror noch da (m.rau/bibi#97).
+    # danach ist die Marke nicht mehr da (m.rau/bibi#97).
     leaving = get_path() if value is None else None
-    patch(path=value)
     pf = park_file()
     if value is None:
         if pf is not None:

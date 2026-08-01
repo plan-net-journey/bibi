@@ -45,7 +45,7 @@ def patch(file: Path, /, **updates: Any) -> None:
     """Patch frontmatter fields atomically. Keys with value=None are removed.
 
     `file` is positional-only so that `**updates` may contain a field named
-    `path` (e.g. for `.state.md::path`) without colliding with the parameter.
+    `path` without colliding with the parameter.
     """
     text = file.read_text(encoding="utf-8") if file.exists() else ""
     fm, body = split(text)

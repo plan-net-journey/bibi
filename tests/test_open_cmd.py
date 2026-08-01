@@ -4,8 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from bibi import case_store, frontmatter, state
 from bibi.ctrl import main
+
+
+@pytest.fixture(autouse=True)
+def _session(monkeypatch):
+    """`/open` parkt die Session; ohne Session-ID gäbe es seit m.rau/bibi#99
+    nichts mehr zu beobachten (der `path:`-Mirror ist entfallen)."""
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-open")
 
 
 def test_open_creates_new_case(team_repo: Path, capsys):
@@ -17,9 +26,12 @@ def test_open_creates_new_case(team_repo: Path, capsys):
     assert len(case_store.find_matches("alpha")) == 1
 
 
-def test_open_sets_path_mirror(team_repo: Path, capsys):
+def test_open_parks_the_session(team_repo: Path, capsys):
+    """`/open` parkt die Session auf den Case — die Park-Marke ist seit
+    m.rau/bibi#99 der einzige Speicher dafür (kein `path:`-Mirror mehr)."""
     main(["open", "Alpha"])
-    assert state.read()["path"].startswith("case/")
+    assert state.park_file().read_text().startswith("case/")
+    assert "path" not in state.read()
 
 
 def test_open_reactivates_paused(team_repo: Path, capsys):
@@ -82,7 +94,7 @@ def test_open_reactivates_nested_case(team_repo: Path, capsys):
     out = capsys.readouterr().out
     assert f"reaktiviert: case/2026/06/{folder.name}" in out
     assert f"cd: {moved.resolve()}" in out
-    assert state.read()["path"] == f"case/2026/06/{folder.name}"
+    assert state.park_file().read_text() == f"case/2026/06/{folder.name}"
 
 
 def test_open_reactivates_legacy_case_without_short_suffix(team_repo: Path, capsys):
@@ -100,4 +112,4 @@ def test_open_reactivates_legacy_case_without_short_suffix(team_repo: Path, caps
     assert case_store.get_status(legacy_dir) == "open"
     out = capsys.readouterr().out
     assert "reaktiviert: case/2026/20260531.LegacyThing" in out
-    assert state.read()["path"] == "case/2026/20260531.LegacyThing"
+    assert state.park_file().read_text() == "case/2026/20260531.LegacyThing"

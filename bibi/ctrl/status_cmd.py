@@ -3,8 +3,9 @@
 Drei Blöcke, und die Reihenfolge ist die Aussage — von der Absicht zur
 Wirklichkeit:
 
-- **Repo-State** (cwd-abgeleitet + ``.state.md``): path, auto_sync,
-  sync_conflict, protocol (letzteres nur wenn ein Case aktiv ist).
+- **Repo-State**: path (cwd bzw. Park-Marke der Session) sowie auto_sync,
+  sync_conflict, protocol aus ``.state.md`` (letzteres nur wenn ein Case aktiv
+  ist).
 - **Knoten-Config** (``~/.config/bibi/env``): Rolle, Remote, Scheduler-URL —
   **Soll-Werte**, das, was beim nächsten Start gelten soll.
 - **Daemon** (``data/daemon-port.json``): was **tatsächlich** läuft, unter
