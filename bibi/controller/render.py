@@ -863,7 +863,8 @@ def _node_engine_cell(engine: str | None, expected: str | None = None,
     return cell
 
 
-def _node_restart_cell(node_id: str | None, port: int | None) -> str:
+def _node_restart_cell(node_id: str | None, port: int | None,
+                       session: bool | None = None) -> str:
     """Neustart-Knöpfe je Knoten (m.rau/bibi#39).
 
     Zwei getrennte Verben statt eines mit Häkchen: **Restart** beendet nur den
@@ -878,15 +879,39 @@ def _node_restart_cell(node_id: str | None, port: int | None) -> str:
     ``hx-confirm`` bei beiden: ein Klick, der einen laufenden Knoten beendet,
     darf nicht versehentlich passieren. Der Drain (#38) macht ihn verantwortbar,
     nicht folgenlos.
+
+    ``session=True`` ändert Chip, Verb und Rückfrage (m.rau/bibi#44). Der
+    Endpunkt beendet den Prozess und verlässt sich auf einen Supervisor — den
+    ein Sitzungs-Daemon nicht hat. Das erst im Ergebnis zu erwähnen wäre zu
+    spät: wer den Knopf für seinen eigenen Knoten drückt, hat dann bereits
+    seine Sitzung abgeschossen. Deshalb steht es **vor** dem Klick da, und
+    zwar zweimal — als Chip für den, der die Tabelle überfliegt, und in der
+    Rückfrage für den, der schon klickt.
+
+    ``session=None`` heißt *unbekannt* (Client älter als diese Änderung) und
+    verhält sich unverändert wie bisher: eine Behauptung über die Herkunft
+    wäre hier schlechter als keine.
     """
     if not node_id or not port:
         return "—"
-    base = (f'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this"')
+    base = 'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this"'
+    nid = _e(node_id)
+    if session:
+        warn = ("This node runs inside a session — it will stop and nobody "
+                "brings it back. Start it again with: bibi")
+        return (
+            f'<span class="chip modified" title="no supervisor">session</span> '
+            f'<button class="killbtn" hx-post="/-/ui/clients/{nid}/restart" '
+            f'hx-confirm="{_e(warn)}" {base}>Stop{_BTN_SPINNER}</button> '
+            f'<button class="killbtn" hx-post="/-/ui/clients/{nid}/deploy" '
+            f'hx-confirm="{_e("Pull the new state, then stop. " + warn)}" {base}>'
+            f'Deploy + stop{_BTN_SPINNER}</button>'
+        )
     return (
-        f'<button class="startbtn" hx-post="/-/ui/clients/{_e(node_id)}/restart" '
-        f'hx-confirm="Diesen Knoten neu starten?" {base}>Restart{_BTN_SPINNER}</button> '
-        f'<button class="startbtn" hx-post="/-/ui/clients/{_e(node_id)}/deploy" '
-        f'hx-confirm="Neuen Stand holen und neu starten?" {base}>'
+        f'<button class="startbtn" hx-post="/-/ui/clients/{nid}/restart" '
+        f'hx-confirm="Restart this node?" {base}>Restart{_BTN_SPINNER}</button> '
+        f'<button class="startbtn" hx-post="/-/ui/clients/{nid}/deploy" '
+        f'hx-confirm="Pull the new state and restart?" {base}>'
         f'Deploy{_BTN_SPINNER}</button>'
     )
 
@@ -950,7 +975,7 @@ def _clients_table(workers: list[dict], now: float,
             + "</td>"
             f"<td>{status_html}</td>"
             f"<td>{_node_approval_cell(w.get('node_id'), w.get('approval_status', 'pending'))}</td>"
-            f"<td>{_node_restart_cell(w.get('node_id'), w.get('port'))}</td>"
+            f"<td>{_node_restart_cell(w.get('node_id'), w.get('port'), w.get('session'))}</td>"
             f"<td>{_abs_datetime(w.get('connected_at'), now)}</td>"
             f"<td>{_ago(w.get('last_heartbeat'), now)}</td>"
             "</tr>"

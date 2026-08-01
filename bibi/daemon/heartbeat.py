@@ -35,7 +35,7 @@ class Heartbeat:
     def __init__(
         self, *, client, worker_name: str | None = None,
         repo_root: Path | None = None, interval: float = 15.0,
-        role: str | None = None,
+        role: str | None = None, session: bool = False,
     ) -> None:
         self.client = client
         self.worker_name = worker_name or socket.gethostname()
@@ -50,6 +50,12 @@ class Heartbeat:
         # dort schon den aufgelösten Roles.active_names(), genauer als hier
         # erneut BIBI_ROLE zu parsen), nicht pro Beat neu ermittelt.
         self.role = role
+        # m.rau/bibi#44: gehört dieser Daemon einer Sitzung (kein Supervisor)
+        # oder einer Unit? Vom startenden Prozess übergeben, wie ``role`` —
+        # **von außen ist das nicht feststellbar**, und genau deshalb muss es
+        # mitreisen: der Nodes-Screen des Hosts entscheidet daran, was der
+        # Restart-Knopf für diesen Knoten verspricht.
+        self.session = session
         self.repo_root = repo_root
         self.interval = interval
         self._task: asyncio.Task | None = None
@@ -122,6 +128,9 @@ class Heartbeat:
                 # wie die Repo-Zelle. None bei einem VCS-Pin — dort gibt es
                 # keinen Arbeitsbaum, und der Chip entfaellt.
                 engine_tree=engine_info().tree_status(),
+                # m.rau/bibi#44: ob ein Neustart-Knopf für diesen Knoten
+                # überhaupt einen Neustart bedeutet.
+                session=self.session,
                 git_commit=git_commit)
             if resp:
                 self._apply_config_bundle(resp)

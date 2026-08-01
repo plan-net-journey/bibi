@@ -338,7 +338,7 @@ def _pull_for_deploy(sync_lock=None) -> tuple[bool, str | None]:
 
 
 def _add_daemon_routes(app: FastAPI, *, sync_lock=None, worker=None,
-                       pinned_worker=None) -> None:
+                       pinned_worker=None, session_scoped: bool = False) -> None:
     """``/-/restart`` — bewusst **rollenunabhängig** (m.rau/bibi#39).
 
     Jeder Knoten muss neu startbar sein, nicht nur der Scheduler: der Deploy
@@ -346,6 +346,12 @@ def _add_daemon_routes(app: FastAPI, *, sync_lock=None, worker=None,
     ``_add_scheduler_routes()`` und war damit auf einem reinen Client (Mac:
     ``synchronizer,controller,connect``) gar nicht vorhanden — genau dort, wo
     sie am häufigsten gebraucht wird.
+
+    ``session_scoped`` entscheidet, **was die Route versprechen darf**
+    (m.rau/bibi#44): sie beendet den Prozess und verlässt sich auf einen
+    Supervisor — den ein Sitzungs-Daemon nicht hat. Der Wert kommt vom
+    startenden Prozess (``bibi``/``--session``) und ist keine Heuristik: von
+    außen sind die beiden Fälle nicht unterscheidbar.
     """
 
     @app.post("/-/restart", tags=["daemon"])
@@ -357,6 +363,16 @@ def _add_daemon_routes(app: FastAPI, *, sync_lock=None, worker=None,
         ``uv run bibi-ctrl daemon run``. **Ein sauberes Prozessende genügt
         also** — der Supervisor bringt den Daemon nach drei Sekunden mit einem
         gegen die Lock gesyncten venv zurück.
+
+        **Für einen Sitzungs-Daemon gilt der zweite Satz nicht** (m.rau/bibi#44).
+        Er läuft unter ``bibi`` im Terminal eines Menschen, ohne Supervisor; das
+        Prozessende ist dort das Ende, nicht der Anfang eines Neustarts. Die
+        Route beendet ihn trotzdem — so entschieden am 2026-08-01 — aber sie
+        sagt es: ``supervised: false`` und eine Notiz, die den Weg zurück nennt
+        statt einen Neustart zu versprechen, der nicht kommt. Bis dahin meldete
+        sie „Supervisor startet neu" und war damit eine Erfolgsmeldung für
+        etwas, das nicht stattfindet — dieselbe Fehlerform wie in #88 und #90,
+        nur mit Schaden statt bloßem Schweigen.
 
         ``deployment`` pullt **hier, synchron**: damit liegt die neue Lock schon
         vor dem Neustart und ein Durchlauf genügt. Schlägt der Pull fehl, wird
@@ -430,14 +446,24 @@ def _add_daemon_routes(app: FastAPI, *, sync_lock=None, worker=None,
             os.kill(os.getpid(), signal.SIGTERM)
 
         asyncio.create_task(_later())
-        note = ("Supervisor startet neu" if not kinds else
-                "Supervisor startet neu; reset braucht einen zweiten Start, "
-                "bevor der Server wieder läuft")
+        if session_scoped:
+            # Kein Versprechen, das niemand einlöst: für diesen Knoten ist der
+            # Neustart eine Aufforderung an den Menschen, kein Vorgang an der
+            # Maschine (#44/#94).
+            note = ("Der Daemon endet — er läuft in einer Sitzung, kein "
+                    "Supervisor bringt ihn zurück. Neu starten mit: bibi")
+            if kinds:
+                note += " (reset wirkt beim nächsten Start)"
+        else:
+            note = ("Supervisor startet neu" if not kinds else
+                    "Supervisor startet neu; reset braucht einen zweiten Start, "
+                    "bevor der Server wieder läuft")
         if not drain["drained"]:
             note += (f" — Achtung: {drain['starting']} Job(s) noch im Setup, "
                      "sie überstehen den Neustart womöglich nicht")
         return {"restarting": True, "pulled": pulled, "signals": kinds,
-                "drained": drain["drained"], "note": note}
+                "drained": drain["drained"], "supervised": not session_scoped,
+                "note": note}
 
 
 def _add_status_route(app: FastAPI, *, sync_lock=None, synchronizer=None) -> None:
@@ -712,6 +738,7 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                                     node_id=hb.node_id, git_user=hb.git_user, role=hb.role,
                                     port=hb.port, engine=hb.engine,
                                     engine_tree=hb.engine_tree,
+                                    session=hb.session,
                                     git_commit=hb.git_commit)
         # PLAN-32 Stufe 32.2: Config-Bundle-Distribution huckepack auf
         # demselben Heartbeat-Roundtrip. config_version reist bei JEDEM
@@ -1743,7 +1770,7 @@ def create_app(
     # sync_lock wird durchgereicht, damit der Deploy-Pull nicht mit dem
     # Synchronizer ins selbe Repo greift.
     _add_daemon_routes(app, sync_lock=sync_lock, worker=worker,
-                       pinned_worker=pinned_worker)
+                       pinned_worker=pinned_worker, session_scoped=session_scoped)
 
     # ── Scheduler-Rolle: übrige echte DB-Routen (PLAN-3 §3.1) ───────────────
     # Zuerst registriert ⇒ gewinnen gegen die 3.0-Contract-Stubs für /-/job.

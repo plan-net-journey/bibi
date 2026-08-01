@@ -243,3 +243,55 @@ def test_restart_warns_when_drain_times_out(tmp_path: Path, monkeypatch):
     assert body["restarting"] is True      # kein Abbruch
     assert body["drained"] is False
     assert "2 Job(s) noch im Setup" in body["note"]
+
+
+# ── m.rau/bibi#44: ohne Supervisor kommt niemand zurück ────────────────────
+
+
+def test_supervised_daemon_keeps_the_supervisor_promise(harness):
+    # Der unveränderte Normalfall: systemd/launchd tragen Restart=always bzw.
+    # KeepAlive, ein sauberes Prozessende genügt wirklich.
+    app, _killed, _pulls = harness
+    with TestClient(app) as c:
+        body = c.post("/-/restart", json={}).json()
+    assert body["supervised"] is True
+    assert "Supervisor startet neu" in body["note"]
+
+
+def test_session_daemon_does_not_promise_a_supervisor(tmp_path: Path, monkeypatch):
+    """Der Befund von m.rau am 2026-08-01: am Mac ist seit `v0.5.1` kein
+    ``com.bibi.*`` mehr geladen. Der Knopf beendete den Daemon und meldete
+    „Supervisor startet neu" — eine Erfolgsmeldung für etwas, das nicht
+    stattfindet, dieselbe Fehlerform wie in #88, #90 und #95.
+
+    Entschieden ist: der Knopf beendet **und sagt es ehrlich**. Nicht: der Mac
+    bekommt seinen launchd-Dienst zurück."""
+    monkeypatch.setattr("bibi.daemon.app.os.kill", lambda pid, sig: None)
+    monkeypatch.setattr(boot_signal, "_dir", lambda root=None: tmp_path / "boot")
+    app = create_app(roles.resolve({"controller"}), session_scoped=True)
+    with TestClient(app) as c:
+        r = c.post("/-/restart", json={})
+    assert r.status_code == 200                       # er endet trotzdem
+    body = r.json()
+    assert body["restarting"] is True
+    assert body["supervised"] is False
+    assert "Supervisor startet neu" not in body["note"]   # kein falsches Versprechen
+    assert "kein Supervisor" in body["note"]              # sondern der wahre Grund
+    assert "bibi" in body["note"]                         # und der Weg zurück
+
+
+def test_session_daemon_still_pulls_for_a_deployment(tmp_path: Path, monkeypatch):
+    """Ein Deploy auf einem Sitzungs-Knoten bleibt sinnvoll: die neue Lock liegt
+    danach im Checkout, der nächste ``bibi``-Start zieht sie. Nur das Versprechen
+    ändert sich, nicht der Vorgang."""
+    pulls: list[object] = []
+    monkeypatch.setattr("bibi.daemon.app.os.kill", lambda pid, sig: None)
+    monkeypatch.setattr(app_mod, "_pull_for_deploy",
+                        lambda lock=None: (pulls.append(lock), (True, None))[1])
+    monkeypatch.setattr(boot_signal, "_dir", lambda root=None: tmp_path / "boot")
+    app = create_app(roles.resolve({"controller"}), session_scoped=True)
+    with TestClient(app) as c:
+        body = c.post("/-/restart", json={"deployment": True}).json()
+    assert body["pulled"] is True
+    assert len(pulls) == 1
+    assert body["supervised"] is False

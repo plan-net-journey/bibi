@@ -25,7 +25,7 @@ class WorkerRegistry:
         node_id: str | None = None, git_user: str | None = None,
         role: str | None = None, port: int | None = None, now: float | None = None,
         engine: str | None = None, engine_tree: str | None = None,
-        git_commit: str | None = None,
+        git_commit: str | None = None, session: bool | None = None,
     ) -> dict:
         """``node_id`` (Bibi4-Iteration, User-Fund: derselbe physische Client
         tauchte je nach Netzwerk mit unterschiedlichem ``worker``-Namen auf,
@@ -47,7 +47,13 @@ class WorkerRegistry:
         Verhaltensmerkmale des neuen Codes zu erschließen. Beide werden
         unverändert durchgereicht; ein Client, der sie nicht sendet, hinterlässt
         sie leer statt einen alten Wert zu konservieren (sonst zeigte der Screen
-        nach einem Downgrade des Clients dauerhaft den letzten bekannten Stand)."""
+        nach einem Downgrade des Clients dauerhaft den letzten bekannten Stand).
+
+        ``session`` (m.rau/bibi#44): ob der sendende Daemon einer Sitzung gehört
+        (kein Supervisor) oder einer Unit. ``None`` heißt *unbekannt* — ein
+        Client, der es nicht sendet, ist älter als diese Änderung; der
+        Nodes-Screen verhält sich für ihn wie bisher, statt eine Herkunft zu
+        behaupten, die er nicht kennt."""
         now = time.time() if now is None else now
         key = node_id or worker
         with self._lock:
@@ -55,7 +61,7 @@ class WorkerRegistry:
             entry.update(worker=worker, host=host, git_status=git_status,
                          node_id=node_id, git_user=git_user, role=role, port=port,
                          engine=engine, engine_tree=engine_tree,
-                         git_commit=git_commit,
+                         git_commit=git_commit, session=session,
                          last_heartbeat=now)
             self._w[key] = entry
             return dict(entry)
