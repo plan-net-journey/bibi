@@ -182,6 +182,30 @@ def test_status_shows_path_none(team_repo: Path, capsys):
     assert "path: (none)" in capsys.readouterr().out
 
 
+def test_status_names_markers_of_other_sessions(team_repo: Path, monkeypatch, capsys):
+    """m.rau/bibi#97: ``path: (none)`` allein verschweigt, dass daneben Marken
+    auf einen Case zeigen — und genau daran ist am 2026-08-01 nichts aufgefallen."""
+    folder = case_store.create_case("Testfall")
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-alt")
+    state.set_path(f"case/{folder.name}")
+
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-neu")   # Wiederverbindung
+    main(["status"])
+    out = capsys.readouterr().out
+    assert "path: (none)" in out
+    assert "park_foreign:" in out
+    assert folder.name in out
+
+
+def test_status_stays_quiet_when_nothing_was_ever_parked(team_repo: Path, monkeypatch, capsys):
+    """Die Gegenprobe: „nie geparkt" bleibt eine stille, normale Lage."""
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-neu")
+    main(["status"])
+    out = capsys.readouterr().out
+    assert "path: (none)" in out
+    assert "park_foreign:" not in out
+
+
 def test_status_shows_auto_sync_on(team_repo: Path, capsys):
     state.set_auto_sync(True)
     main(["status"])

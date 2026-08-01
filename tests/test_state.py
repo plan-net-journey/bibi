@@ -151,6 +151,97 @@ def test_stale_markers_are_pruned_on_write(team_repo: Path, monkeypatch):
     assert state.park_file().exists()
 
 
+# --- m.rau/bibi#97: „nie geparkt" ist etwas anderes als „fremd geparkt" ---
+
+def test_no_foreign_parks_when_nothing_was_ever_parked(team_repo: Path, monkeypatch):
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-A")
+    assert state.foreign_parks() == {}
+
+
+def test_foreign_parks_names_the_case_of_another_session(team_repo: Path, monkeypatch):
+    """Der Kern von #97: die Session-ID wechselt bei jeder Wiederverbindung, die
+    Marke der vorigen bleibt liegen. ``get_path()`` sagt dann dasselbe wie bei
+    „nie geparkt" — obwohl ein Case gemeint ist."""
+    _mkcase(team_repo)
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-alt")
+    state.set_path("case/20260624.Foo-deadbeef")
+
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-neu")   # Wiederverbindung
+    assert state.get_path() is None
+    assert state.path_source() is None
+    assert state.foreign_parks() == {"case/20260624.Foo-deadbeef": 1}
+
+
+def test_foreign_parks_ignores_the_own_marker(team_repo: Path, monkeypatch):
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-A")
+    _mkcase(team_repo)
+    state.set_path("case/20260624.Foo-deadbeef")
+    assert state.foreign_parks() == {}
+
+
+def test_foreign_parks_counts_sessions_per_case(team_repo: Path, monkeypatch):
+    """Der Live-Befund am 2026-08-01: vier Session-IDs, ein Case. Die Zahl ist
+    die Aussage — sie zeigt, dass es der Normalfall ist und kein Ausrutscher."""
+    _mkcase(team_repo)
+    for sid in ("s1", "s2", "s3", "s4"):
+        monkeypatch.setenv("BIBI_SESSION_ID", sid)
+        state.set_path("case/20260624.Foo-deadbeef")
+
+    monkeypatch.setenv("BIBI_SESSION_ID", "s5")
+    assert state.foreign_parks() == {"case/20260624.Foo-deadbeef": 4}
+
+
+def test_foreign_parks_ignores_a_case_that_is_gone(team_repo: Path, monkeypatch):
+    """Dieselbe Vorsicht wie in ``_path_from_park()``: ein gelöschter Case ist
+    kein Hinweis, sondern nur ein Rest."""
+    case = _mkcase(team_repo)
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-alt")
+    state.set_path("case/20260624.Foo-deadbeef")
+    case.rmdir()
+
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-neu")
+    assert state.foreign_parks() == {}
+
+
+def test_foreign_parks_without_session_id(team_repo: Path, monkeypatch):
+    """Ohne eigene Session-ID (Cron, fremde Shell) sind ALLE Marken fremd — es
+    gibt keine eigene, gegen die abzugrenzen wäre."""
+    _mkcase(team_repo)
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-A")
+    state.set_path("case/20260624.Foo-deadbeef")
+    monkeypatch.delenv("BIBI_SESSION_ID")
+    assert state.foreign_parks() == {"case/20260624.Foo-deadbeef": 1}
+
+
+def test_unparking_clears_every_marker_of_that_case(team_repo: Path, monkeypatch):
+    """``/close``/``/done`` beenden einen Case für alle Sessions, nicht nur für
+    die zufällig gerade laufende. Bliebe die Marke einer früheren liegen, meldete
+    ``save`` den Case danach für immer als „fremd geparkt" — ein Warnhinweis, der
+    nie mehr weggeht, wird ignoriert."""
+    _mkcase(team_repo)
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-alt")
+    state.set_path("case/20260624.Foo-deadbeef")
+
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-neu")
+    state.set_path("case/20260624.Foo-deadbeef")
+    state.set_path(None)
+
+    assert state.foreign_parks() == {}
+
+
+def test_unparking_leaves_markers_of_other_cases_alone(team_repo: Path, monkeypatch):
+    _mkcase(team_repo)
+    _mkcase(team_repo, "20260625.Bar-cafe1234")
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-alt")
+    state.set_path("case/20260625.Bar-cafe1234")
+
+    monkeypatch.setenv("BIBI_SESSION_ID", "sess-neu")
+    state.set_path("case/20260624.Foo-deadbeef")
+    state.set_path(None)
+
+    assert state.foreign_parks() == {"case/20260625.Bar-cafe1234": 1}
+
+
 def test_read_defaults_without_file(team_repo: Path):
     s = state.read()
     assert s["auto_sync"] == "off"
