@@ -87,6 +87,30 @@ def _wait_terminal(root: Path, jid: str, timeout: float = _TERMINAL_TIMEOUT_S) -
     eine bei jedem Lauf andere Fehlermenge und damit einen neuen Fingerabdruck:
     ein eigenes Ticket pro Lauf (#83).
     """
+    return _wait_row(root, jid, lambda s: s in _TERMINAL, "terminal", timeout)
+
+
+def _wait_status(root: Path, jid: str, want: str,
+                 timeout: float = _TERMINAL_TIMEOUT_S) -> dict:
+    """Warten bis Job-Status **genau** ``want`` ist — auch nicht-terminal.
+
+    Für die Zwischenzustände der Retry-Kette (m.rau/bibi#91). ``failed`` steht
+    nicht in ``_TERMINAL``: der Job wartet dort auf seinen nächsten Versuch,
+    das ist ein Zwischenzustand und kein Ergebnis. Wer ihn mit
+    ``_wait_terminal()`` abwartet, wartet auf etwas, das per Definition nie
+    eintritt — und bekommt seit `#87` eine Meldung, die Last als Ursache nennt,
+    wo keine ist.
+    """
+    return _wait_row(root, jid, lambda s: s == want, want, timeout)
+
+
+def _wait_row(root: Path, jid: str, hit, what: str, timeout: float) -> dict:
+    """Gemeinsamer Kern: pollt die Job-Zeile, bis ``hit(status)`` zutrifft.
+
+    Beim Ablauf der Frist wird **gemeldet, worauf gewartet wurde** — ein
+    Timeout, der nur „hat nicht geklappt" sagt, schickt den Leser in den Code
+    statt auf die Uhr (m.rau/bibi#87).
+    """
     db = root / "data" / "jobs.sqlite"
     started = time.monotonic()
     deadline = started + timeout
@@ -99,14 +123,15 @@ def _wait_terminal(root: Path, jid: str, timeout: float = _TERMINAL_TIMEOUT_S) -
             conn.close()
         if row:
             last = dict(row)
-            if row["status"] in _TERMINAL:
+            if hit(row["status"]):
                 return last
         time.sleep(0.05)
     raise AssertionError(
-        f"Job {jid} wurde nach {time.monotonic() - started:.1f}s nicht terminal — "
+        f"Job {jid} wurde nach {time.monotonic() - started:.1f}s nicht {what} — "
         f"Status: {last.get('status', '(keine Zeile)')}, reason: {last.get('reason')}. "
-        "Das ist eine abgelaufene Wartefrist, kein falsches Ergebnis: unter Last "
-        "dauert der Lauf länger als erwartet.")
+        "Das ist eine abgelaufene Wartefrist, kein falsches Ergebnis: entweder "
+        "dauert der Lauf unter Last länger als erwartet, oder es wird auf einen "
+        "Zustand gewartet, den dieser Job gar nicht erreicht.")
 
 
 @pytest.mark.slow
@@ -242,8 +267,8 @@ def test_retry_then_error(gitrepo: Path, monkeypatch):
     dbp = gitrepo / "data" / "jobs.sqlite"
 
     assert w.tick_once() is True        # Versuch 1 → failed (attempt 1)
-    row = _wait_terminal(gitrepo, jid)
-    assert row["status"] == "failed" and row["attempt"] == 1
+    row = _wait_status(gitrepo, jid, "failed")   # nicht terminal, s. #91
+    assert row["attempt"] == 1
 
     # failed → wieder reservierbar (next_fire_at=now mit base=0)
     conn = job_db.connect(dbp)
@@ -252,8 +277,8 @@ def test_retry_then_error(gitrepo: Path, monkeypatch):
     conn.close()
 
     assert w.tick_once() is True        # Versuch 2 (failed→running) → failed (attempt 2, letzter gewaehrter Versuch)
-    row = _wait_terminal(gitrepo, jid)
-    assert row["status"] == "failed" and row["attempt"] == 2
+    row = _wait_status(gitrepo, jid, "failed")   # nicht terminal, s. #91
+    assert row["attempt"] == 2
 
     # failed (attempt==attempts) → weiterhin reservierbar, kein Sweep noetig
     conn = job_db.connect(dbp)
@@ -309,9 +334,13 @@ def test_retry_exponential_3x_to_error(gitrepo: Path, monkeypatch):
 
     for attempt_n in (1, 2, 3, 4):
         assert w.tick_once() is True
-        row = _wait_terminal(gitrepo, jid)
+        # Versuch 1–3 enden in `failed` — einem Zwischenzustand, den
+        # `_wait_terminal()` nie sieht (m.rau/bibi#91). Erst der vierte
+        # erschöpft synchron zu `error` und ist damit terminal.
+        row = (_wait_status(gitrepo, jid, "failed") if attempt_n < 4
+               else _wait_terminal(gitrepo, jid))
         if attempt_n < 4:
-            assert row["status"] == "failed" and row["attempt"] == attempt_n
+            assert row["attempt"] == attempt_n
             # Slot nach FAILED sofort frei (Wrapper exitiert, _procs wird geleert)
             import time as _time
             deadline = _time.time() + 5.0
@@ -1338,3 +1367,46 @@ def test_wait_terminal_names_the_timeout(gitrepo: Path):
                 '---\nschedule: never\njob: "echo unerreichbar"\n---\n')
     with pytest.raises(AssertionError, match="terminal"):
         _wait_terminal(gitrepo, jid, timeout=0.3)
+
+
+def test_wait_status_sees_nonterminal_states(gitrepo: Path):
+    """**Was `#87` sichtbar gemacht, aber nicht behoben hat (m.rau/bibi#91).**
+
+    ``failed`` steht nicht in ``_TERMINAL`` — der Job wartet dort auf seinen
+    nächsten Versuch, das ist ein Zwischenzustand und kein Ergebnis. Drei Tests
+    der Retry-Kette prüfen aber genau diesen Zwischenzustand und warteten dafür
+    mit ``_wait_terminal()``. Der Aufruf konnte nie erfolgreich sein: er lief
+    zwangsläufig in die volle Frist.
+
+    Vor `#87` fiel das nicht auf, weil der Helfer beim Ablauf still die letzte
+    Zeile zurückgab — und die trug ``failed``, also passte die Assertion
+    danach. Die Tests waren grün und kosteten trotzdem jeder 30 Sekunden.
+    Seit `#87` meldet der Helfer den Ablauf, und damit wurden sie rot.
+
+    **Die Meldung führte dabei selbst in die Irre**: sie nennt Last als Grund,
+    wo ein Test auf einen Zustand wartet, der per Definition nie eintritt.
+    Deshalb hier ein eigener Helfer statt einer größeren Frist.
+    """
+    jid = _seed(gitrepo, "zwischen/README.md",
+                '---\nschedule: never\njob: "exit 1"\n---\n')
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    try:
+        conn.execute("UPDATE jobs SET status='failed', reason='nonzero_exit' "
+                     "WHERE id=?", (jid,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Der terminale Helfer kann diesen Zustand nicht sehen — das ist der Fehler.
+    with pytest.raises(AssertionError, match="terminal"):
+        _wait_terminal(gitrepo, jid, timeout=0.3)
+
+    # Der neue sieht ihn sofort.
+    row = _wait_status(gitrepo, jid, "failed", timeout=0.3)
+    assert row["status"] == "failed"
+    assert row["reason"] == "nonzero_exit"
+
+    # Und er meldet seine Frist ebenso ehrlich wie der terminale — mit dem
+    # Status im Text, sonst steht da nur „hat nicht geklappt".
+    with pytest.raises(AssertionError, match="killed"):
+        _wait_status(gitrepo, jid, "killed", timeout=0.3)
