@@ -44,6 +44,33 @@ _CLAUDE_PREFIX_RE = re.compile(r"^\s*claude\s*:\s*(.+)", re.DOTALL)
 #: Spezialwerte von ``schedule:`` (§5.2) — keine cron-Ausdrücke.
 SPECIAL_SCHEDULES: frozenset[str] = frozenset({"now", "startup", "never", "on_demand", "autostart"})
 
+#: Schreibweisen, die auf denselben Trigger hinauslaufen (m.rau/bibi#50).
+#: ``autostart`` stand seit jeher in ``SPECIAL_SCHEDULES`` und wurde deshalb
+#: klaglos angenommen -- ausgewertet wurde aber nur ``startup``
+#: (``job_db.py``: ``WHERE schedule='startup'``). Ein Job mit diesem Wert
+#: startete also nie und meldete auch keinen Fehler; ``DESIGN.md`` §5.3
+#: empfiehlt ihn zugleich ausdruecklich fuer langlaufende Server. Die
+#: Aufloesung passiert hier beim Parsen, damit alle nachgelagerten Stellen
+#: weiterhin genau einen Wert kennen muessen.
+_SCHEDULE_ALIASES: dict[str, str] = {"autostart": "startup"}
+
+
+def _strip_comment(value):
+    """Alles ab dem ersten ``#`` abschneiden (m.rau/bibi#50).
+
+    Damit kann ein Cron-Ausdruck seine eigene Erklaerung tragen
+    (``0 * * * *  # stuendlich``). **Nur der Trigger** -- eine Ebene hoeher im
+    Frontmatter fraesse dieselbe Regel Rauten in Prompts, Pfaden und
+    ``docker_args``.
+
+    Nicht-Strings (``~`` wird zu ``None``) gehen unveraendert durch; ueber sie
+    entscheidet der Aufrufer.
+    """
+    if not isinstance(value, str):
+        return value
+    return value.split("#", 1)[0]
+
+
 #: Dateinamen, bei denen der Ordnername den Slug bestimmt (§6.6).
 SCHEDULE_FILENAMES: frozenset[str] = frozenset({"README.md", "SCHEDULE.md"})
 
@@ -149,9 +176,28 @@ def parse_text(
     schedule_val: str | None = None
     at_val: str | None = None
     if has_schedule:
-        raw = fm["schedule"]
-        if isinstance(raw, str) and raw.strip() in SPECIAL_SCHEDULES:
-            schedule_val = raw.strip()
+        original = fm["schedule"]
+        raw = _strip_comment(original)
+        # Unterscheidung VOR dem Abschneiden: ein leerer Wert ist eine Aussage
+        # ("dieser Job ruht"), ein weggeschnittener Kommentar ein Versehen
+        # ("schedule: # todo"). Nach dem Abschneiden sehen beide gleich aus.
+        if (isinstance(original, str) and original.strip()
+                and isinstance(raw, str) and not raw.strip()):
+            return ParseResult(
+                schedule_ref=schedule_ref,
+                error="schedule: nach dem Kommentar bleibt kein Trigger übrig — "
+                      "für ruhende Jobs genügt ein leerer Wert oder never")
+        # Ein leerer Wert und ``~`` (YAML-Null) heissen ``never``
+        # (m.rau/bibi#50). Vorher liefen beide in den Fehlerausgang -- und
+        # genau dieser Ausgang wurde in der Praxis benutzt, um einen Job aus
+        # der Discovery zu nehmen, ohne die MD zu loeschen. Als anerkannte
+        # Schreibweise wird aus dem Versteck eine Aussage: der Screen zeigt
+        # Absicht statt Defekt, und was in der Fehlerliste bleibt, sind
+        # wirklich Fehler.
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            schedule_val = "never"
+        elif isinstance(raw, str) and raw.strip() in SPECIAL_SCHEDULES:
+            schedule_val = _SCHEDULE_ALIASES.get(raw.strip(), raw.strip())
         else:
             err = _validate_cron(raw)
             if err:

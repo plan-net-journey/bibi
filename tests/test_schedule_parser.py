@@ -53,10 +53,15 @@ def test_old_claude_key_rejected():
 
 
 def test_special_schedules_not_cron_validated():
-    for val in ("now", "startup", "never", "autostart"):
+    for val in ("now", "startup", "never"):
         r = _parse(f'---\nschedule: {val}\njob: "echo hi"\n---\n')
         assert r.is_ok, val
         assert r.spec.schedule == val
+    # `autostart` wird seit m.rau/bibi#50 beim Parsen zu `startup` aufgelöst,
+    # damit alle nachgelagerten Stellen genau einen Wert kennen müssen — siehe
+    # test_autostart_is_an_alias_of_startup unten.
+    r = _parse('---\nschedule: autostart\njob: "echo hi"\n---\n')
+    assert r.is_ok and r.spec.schedule == "startup"
 
 
 def test_at_iso_normalised_to_naive():
@@ -229,3 +234,60 @@ def test_docker_args_rejects_non_list():
 def test_docker_args_rejects_non_string_entries():
     r = _parse('---\nschedule: now\njob: "echo hi"\ndocker_args:\n  - 8780\n---\n')
     assert r.error is not None and "docker_args" in r.error
+
+
+# --- Trigger-Schreibweisen (m.rau/bibi#50) -----------------------------------
+#
+# Entscheidung m.rau 2026-07-31: „geht beides, autostart und startup. Genauso
+# wie never und "" oder "~" auch gehen sollte. Und es wäre schön, wenn beim
+# Parsen alles nach '#' ignoriert wird."
+
+
+def test_autostart_is_an_alias_of_startup():
+    """`autostart` stand seit jeher in SPECIAL_SCHEDULES und wurde deshalb
+    klaglos angenommen — ausgewertet wurde nur `startup` (`job_db.py`). Ein Job
+    mit diesem Wert startete also nie und sagte auch nicht warum: die stillste
+    Fehlerklasse, die es gibt. Verschärfend, weil `DESIGN.md` §5.3 ihn
+    ausdrücklich für langlaufende Server empfiehlt."""
+    r = _parse("---\nschedule: autostart\njob: echo hi\n---\n")
+    assert r.is_ok and r.spec.schedule == "startup"
+
+
+def test_empty_and_tilde_read_as_never():
+    """Beide liefen bisher in den Fehlerausgang („muss ein nicht-leerer String
+    sein") — und genau dieser Ausgang wird benutzt, um einen Job aus der
+    Discovery zu nehmen, ohne die MD zu löschen. Als `never` wird aus dem
+    Versteck eine Aussage: `doctor` und der Schedules-Screen zeigen Absicht
+    statt Defekt, und was in der Fehlerliste bleibt, sind wirklich Fehler."""
+    for value in ('""', "~", "''"):
+        r = _parse(f"---\nschedule: {value}\njob: echo hi\n---\n")
+        assert r.is_ok, f"{value!r} sollte gültig sein"
+        assert r.spec.schedule == "never", value
+
+
+def test_a_comment_after_the_cron_expression_is_ignored():
+    """Ein Cron-Ausdruck darf seine Erklärung tragen."""
+    r = _parse("---\nschedule: \"0 * * * *  # stündlich zur vollen Stunde\"\njob: echo hi\n---\n")
+    assert r.is_ok, r.error
+    assert r.spec.schedule.strip() == "0 * * * *"
+
+
+def test_a_comment_after_a_special_value_is_ignored_too():
+    r = _parse("---\nschedule: \"never  # entwaffnet, siehe README\"\njob: echo hi\n---\n")
+    assert r.is_ok and r.spec.schedule == "never"
+
+
+def test_a_comment_only_value_is_still_an_error():
+    """Nur ein Kommentar ist kein Trigger — nach dem Abschneiden bleibt nichts,
+    und „nichts" ist hier nicht `never`, sondern eine unvollständige Angabe.
+    Der Unterschied zu `""` ist Absicht: der leere Wert ist eine Aussage, ein
+    weggeschnittener Kommentar ein Versehen."""
+    r = _parse("---\nschedule: \"# nur ein Kommentar\"\njob: echo hi\n---\n")
+    assert r.is_error
+
+
+def test_the_comment_rule_does_not_touch_the_payload():
+    """Nur der Trigger. Eine Ebene höher frässe die Regel Rauten in Prompts,
+    Pfaden und docker_args."""
+    r = _parse('---\nschedule: never\njob: "echo \'#hashtag\'"\n---\n')
+    assert r.is_ok and "#hashtag" in r.spec.payload
