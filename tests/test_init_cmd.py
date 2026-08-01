@@ -49,10 +49,16 @@ def test_init_never_prompts_for_node_id(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(init_cmd, "_prompt", _tracking_prompt)
     rc = init_cmd.run(_args())
     assert rc == 0
-    # Ein _prompt()-Aufruf pro KEYS-Eintrag außer BIBI_NODE_ID (special-cased,
-    # nie über _prompt()) — dieselbe Zahl beweist, dass der continue-Zweig
-    # tatsächlich greift, nicht nur, dass kein Label dafür existiert.
-    assert len(calls) == len(config.KEYS) - 1
+    # Ein _prompt()-Aufruf pro KEYS-Eintrag außer **zwei** übersprungenen, und
+    # die beiden werden aus verschiedenen Gründen ausgelassen:
+    #   BIBI_NODE_ID       — nie abfragbar, ein Mensch tippt keine UUID.
+    #   BIBI_SCHEDULER_URL — nur bei `connect` in den Rollen (m.rau/bibi#61);
+    #                        die Default-Rolle trägt es nicht.
+    # Die Zahl beweist, dass beide continue-Zweige tatsächlich greifen; die
+    # Label-Prüfung darunter sagt, welcher davon welcher ist.
+    assert len(calls) == len(config.KEYS) - 2
+    assert not any("Scheduler" in label for label in calls)
+    assert not any("NODE_ID" in label or "node_id" in label for label in calls)
     node_id = config.read_env()["BIBI_NODE_ID"]
     assert node_id and len(node_id) == 32
 

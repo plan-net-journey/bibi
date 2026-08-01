@@ -218,3 +218,28 @@ def _dead_pid() -> int:
     p = subprocess.Popen(["true"])
     p.wait()
     return p.pid
+
+
+def test_write_records_origin(tmp_path, monkeypatch):
+    """``session`` gehört in die Ablage, nicht in eine Heuristik: nur der
+    Daemon selbst weiß, ob er einer Sitzung gehört (m.rau/bibi#59)."""
+    from bibi.daemon import portfile
+    portfile.write(1234, host="127.0.0.1", roles="worker", session=True, root=tmp_path)
+    assert portfile.read(tmp_path)["session"] is True
+    portfile.write(1234, host="127.0.0.1", roles="worker", root=tmp_path)
+    assert portfile.read(tmp_path)["session"] is False
+
+
+def test_read_leaves_pre_59_entries_unknown(tmp_path):
+    """Ein Eintrag ohne ``session`` stammt von einem Daemon, der vor #59
+    gestartet wurde — und über den ist die Herkunft schlicht *nicht bekannt*.
+    Ihn als Unit zu lesen wäre bequem und im Sitzungsfall falsch; live
+    beobachtet am 2026-07-31 an einem laufenden Sitzungs-Daemon, der sich
+    dadurch als Unit ausgab."""
+    import json
+    import os
+    from bibi.daemon import portfile
+    p = portfile.port_file(tmp_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"port": 8769, "pid": os.getpid()}), encoding="utf-8")
+    assert portfile.read(tmp_path)["session"] is None

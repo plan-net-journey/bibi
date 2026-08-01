@@ -1,9 +1,20 @@
-"""``bibi-ctrl status`` — Repo-State + Knoten-Konfiguration anzeigen.
+"""``bibi-ctrl status`` — Repo-State, Knoten-Konfiguration, laufender Daemon.
 
-Zwei Blöcke:
+Drei Blöcke, und die Reihenfolge ist die Aussage — von der Absicht zur
+Wirklichkeit:
+
 - **Repo-State** (cwd-abgeleitet + ``.state.md``): path, auto_sync,
   sync_conflict, protocol (letzteres nur wenn ein Case aktiv ist).
-- **Knoten-Config** (``~/.config/bibi/env``): Rolle, Remote, Scheduler-URL.
+- **Knoten-Config** (``~/.config/bibi/env``): Rolle, Remote, Scheduler-URL —
+  **Soll-Werte**, das, was beim nächsten Start gelten soll.
+- **Daemon** (``data/daemon-port.json``): was **tatsächlich** läuft, unter
+  welcher Adresse, mit welchen Rollen (m.rau/bibi#59).
+
+Die letzten beiden Blöcke können auseinanderfallen, und genau dann ist die
+Auskunft wertvoll: ein Daemon läuft mit den Rollen, mit denen er gestartet
+wurde, nicht mit denen, die inzwischen in der ``env`` stehen. Deshalb tragen
+beide das Wort dazu — ``konfiguriert`` gegen ``laufend`` — statt zweimal
+schlicht „Rollen".
 """
 
 from __future__ import annotations
@@ -52,8 +63,48 @@ def run(args: argparse.Namespace) -> int:
     env = config.read_env(env_path)
     if not env:
         print(f"Keine Konfiguration ({env_path}). 'bibi-ctrl init' ausführen.")
+        _print_daemon()
         return 0
-    print(f"  Scheduler-URL: {env.get('BIBI_SCHEDULER_URL', '—')}")
-    print(f"  Rollen:        {env.get('BIBI_ROLE', '—')}")
-    print(f"  Git-Remote:    {env.get('BIBI_REMOTE', '—') or '—'}")
+    print(f"  Scheduler-URL:        {env.get('BIBI_SCHEDULER_URL', '—')}")
+    print(f"  Rollen (konfiguriert): {env.get('BIBI_ROLE', '—')}")
+    print(f"  Git-Remote:           {env.get('BIBI_REMOTE', '—') or '—'}")
+
+    # --- Laufender Daemon ---
+    _print_daemon()
     return 0
+
+
+def _fe_url(entry: dict) -> str:
+    """Die Adresse, unter der das FE dieses Daemons erreichbar ist.
+
+    Der Bind-Host entscheidet, nicht die Konfiguration: an ``127.0.0.1``
+    gebunden ist der Daemon von außen grundsätzlich nicht erreichbar, und ein
+    gesetztes ``BIBI_PUBLIC_HOST`` wäre dann eine Adresse, die niemanden
+    erreicht. Erst wenn er auf allen Interfaces lauscht, ist der öffentliche
+    Name die richtige Auskunft — dieselbe Unterscheidung, die
+    ``config.public_host()`` für App-Links trifft.
+    """
+    host = (entry.get("host") or "127.0.0.1").strip()
+    shown = config.public_host() if host in ("0.0.0.0", "::", "") else "localhost"
+    return f"http://{shown}:{entry['port']}/-/"
+
+
+def _print_daemon() -> None:
+    """Der dritte Block. Bewusst auch dann eine Zeile, wenn nichts läuft — die
+    Abwesenheit einer Auskunft ist hier selbst die Auskunft, und ein stiller
+    Block ließe den Leser rätseln, ob er nur nicht hinsieht."""
+    try:
+        from bibi.daemon import portfile
+        entry = portfile.read()
+    except Exception:  # außerhalb eines Repos, unlesbare Ablage — still bleiben
+        entry = None
+    if entry is None:
+        print("Daemon: läuft nicht")
+        return
+    print("Daemon:")
+    print(f"  FE:               {_fe_url(entry)}")
+    print(f"  Port:             {entry['port']}")
+    origin = {True: "Sitzung", False: "Unit"}.get(
+        entry.get("session"), "unbekannt (Daemon startete vor #59)")
+    print(f"  Herkunft:         {origin} (PID {entry.get('pid')})")
+    print(f"  Rollen (laufend): {entry.get('roles') or '—'}")

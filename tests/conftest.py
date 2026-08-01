@@ -8,12 +8,47 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from bibi import repo
+
+
+#: Präfix aller Engine-Variablen. Sie in die Suite zu erben ist der Unterschied
+#: zwischen „der Code ist grün" und „der Code ist auf diesem Rechner grün".
+_ENV_PREFIX = "BIBI_"
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_env(tmp_path_factory, monkeypatch: pytest.MonkeyPatch):
+    """Jeder Test startet ohne Engine-Umgebung (m.rau/bibi#75).
+
+    Zwei Kanäle tragen den Rechner in die Suite, und beide werden hier
+    geschlossen:
+
+    1. **``BIBI_*``-Variablen.** ``worker.py`` reicht mit ``os.environ.copy()``
+       die komplette Daemon-Umgebung in jeden Job weiter — ein als bibi-Job
+       gestarteter Testlauf sieht damit ``BIBI_DAEMON_PORT``, ``BIBI_ROLE``,
+       ``BIBI_JOB_ENV_*`` und alles Übrige. ``test_heartbeat.py`` behauptete
+       wörtlich, ``BIBI_DAEMON_PORT`` sei „in der Test-Umgebung nicht gesetzt";
+       auf einem Knoten mit Unit stimmte das nie.
+
+    2. **Die echte Knoten-Konfiguration.** ``config.env_path()`` fällt ohne
+       ``XDG_CONFIG_HOME`` auf ``~/.config/bibi/env`` zurück — die Datei des
+       ausführenden Nutzers, samt Credentials. Die ``doctor``/``hygiene``-Tests
+       lasen sie und meldeten Befunde, die vom Rechner stammten, nicht vom Code.
+
+    Autouse und function-scoped: ein Test, der eine dieser Variablen braucht,
+    setzt sie selbst — dann steht sie im Test und nicht in der Umgebung dessen,
+    der ihn startet. Explizit angeforderte Fixtures (``cfg_home``, ``team_repo``)
+    laufen nach dieser und dürfen ``XDG_CONFIG_HOME`` weiter überschreiben.
+    """
+    for key in [k for k in os.environ if k.startswith(_ENV_PREFIX)]:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("cfg")))
 
 
 def pytest_addoption(parser):

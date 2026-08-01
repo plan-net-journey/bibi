@@ -12,17 +12,22 @@ Claude-Auth-Token trotz vorhandener ``claude:``-Jobs, (j) fehlendes
 ``BIBI_PUBLIC_HOST`` trotz vorhandener App-Jobs (sonst zeigen App-Links nur
 ``localhost``, s. ``config.public_host()``), (k) veraltete bare
 ``ANTHROPIC_API_KEY``/``CLAUDE_CODE_OAUTH_TOKEN``-Namen ohne ``BIBI_JOB_ENV_``-
-Präfix (PLAN-32 Stufe 32.0 — Fallback bleibt funktional, aber veraltet). Exit 1
-bei Befunden (pre-commit/CI-tauglich), sonst 0. Reine Prüflogik: ``hygiene``.
+Präfix (PLAN-32 Stufe 32.0 — Fallback bleibt funktional, aber veraltet),
+(l) Credential-Drift: dasselbe Geheimnis in Keychain UND Verteilweg mit
+verschiedenen Werten (konfiguriert über ``[[tool.bibi.credential_checks]]``).
+Exit 1 bei Befunden (pre-commit/CI-tauglich), sonst 0. Reine Prüflogik:
+``hygiene``.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
+import shutil
 import subprocess
 
-from bibi import config, hygiene, repo
+from bibi import config, git_ops, hygiene, repo
 from bibi.daemon import job_db
 from bibi.schedule import discovery
 from bibi.schedule.models import is_claude_payload
@@ -64,6 +69,53 @@ def _known_slugs(root) -> set[str]:
         return job_db.active_worktree_slugs(conn)
     finally:
         conn.close()
+
+
+def _fingerprint(value: str | None) -> str | None:
+    """Kurzer, stabiler Fingerabdruck — nie der Wert selbst.
+
+    ``doctor`` läuft in Terminals, CI-Logs und pre-commit-Hooks; ein
+    Credential darf dort unter keinen Umständen landen. Zwölf Hex-Zeichen
+    SHA-256 reichen, um „gleich oder nicht“ zu entscheiden, und erlauben
+    keinen Rückschluss auf den Wert."""
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _keychain_value(service: str, account: str) -> str | None:
+    """Wert aus dem macOS-Keychain, oder ``None``.
+
+    Auf Nicht-macOS gibt es ``security`` nicht — dann existiert der Ort
+    schlicht nicht und es ist kein Fund (s. ``check_credential_drift``).
+    Ein nicht gefundener Eintrag (Exit ≠ 0) ist ebenfalls kein Fehler."""
+    if not shutil.which("security"):
+        return None
+    r = subprocess.run(
+        ["security", "find-generic-password", "-a", account, "-s", service, "-w"],
+        capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def _credential_pairs(cfg_and_env: dict[str, str]) -> list[hygiene.CredentialPair]:
+    """Baut die Vergleichspaare aus ``[[tool.bibi.credential_checks]]``.
+
+    Die Verteilweg-Seite akzeptiert beide Schreibweisen (mit und ohne
+    ``BIBI_JOB_ENV_``-Präfix), damit dieselbe Konfiguration vor und nach der
+    PLAN-32-Umbenennung trägt — dieselbe Nachsicht wie ``token_present``."""
+    pairs: list[hygiene.CredentialPair] = []
+    for spec in repo.credential_checks():
+        env_name = spec["env"]
+        env_value = (cfg_and_env.get(f"BIBI_JOB_ENV_{env_name}")
+                     or cfg_and_env.get(env_name))
+        kc_value = _keychain_value(spec["keychain_service"], spec["keychain_account"])
+        pairs.append(hygiene.CredentialPair(
+            label=env_name,
+            keychain_fp=_fingerprint(kc_value),
+            env_fp=_fingerprint(env_value)))
+    return pairs
 
 
 def _markdown_style_findings(vault_root) -> list[hygiene.Finding]:
@@ -131,6 +183,12 @@ def run(args: argparse.Namespace) -> int:
             has_apps=has_apps, public_host_set=public_host_set)
         + hygiene.check_legacy_job_env_names(cfg_and_env)
         + hygiene.check_legacy_worker_name(cfg_and_env)
+        + hygiene.check_credential_drift(_credential_pairs(cfg_and_env))
+        # m.rau/bibi#18: fehlende git-Identität. Aus dem Repo gelesen, nicht aus
+        # der Knoten-Config — git löst sie selbst über lokal > global > System
+        # auf, und genau diese Auflösung soll der Befund abbilden.
+        + hygiene.check_git_identity(name=git_ops.git_user_name(),
+                                     email=git_ops.git_user_email())
     )
     if not findings:
         print("doctor: keine Hygiene-Probleme ✓")

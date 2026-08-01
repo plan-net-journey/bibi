@@ -107,3 +107,41 @@ def case_dir_name() -> str:
 def case_dir() -> Path:
     """Absoluter Pfad zum Case-Verzeichnis (``vault/<case_dir_name>``)."""
     return vault() / case_dir_name()
+
+
+def credential_checks() -> list[dict[str, str]]:
+    """Geheimnisse, die an zwei Orten liegen und nicht auseinanderlaufen dürfen.
+
+    Aus pyproject ``[[tool.bibi.credential_checks]]``::
+
+        [[tool.bibi.credential_checks]]
+        env = "GITEA_TOKEN"                    # ohne BIBI_JOB_ENV_-Präfix
+        keychain_service = "sarasate-gitea"
+        keychain_account = "gitea-bibi-issues"
+
+    Bewusst im Team-Repo konfiguriert, nicht in der Engine fest verdrahtet:
+    *welches* Credential doppelt gehalten wird und unter welchem
+    Keychain-Namen, ist eine Eigenschaft der Instanz. Die Engine liefert nur
+    den Mechanismus. Die Angaben sind keine Geheimnisse (Dienst- und
+    Kontoname), gehören also in ein committetes pyproject — die Werte selbst
+    liest ``doctor`` zur Laufzeit und gibt sie nie aus.
+    """
+    pyproject = root() / "pyproject.toml"
+    if not pyproject.exists():
+        return []
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError):
+        return []
+    raw = data.get("tool", {}).get("bibi", {}).get("credential_checks") or []
+    out: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        env = str(entry.get("env", "")).strip()
+        service = str(entry.get("keychain_service", "")).strip()
+        account = str(entry.get("keychain_account", "")).strip()
+        if env and service and account:
+            out.append({"env": env, "keychain_service": service,
+                        "keychain_account": account})
+    return out

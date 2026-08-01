@@ -160,9 +160,15 @@ def test_registers_before_the_daemon_starts(team_repo: Path, no_side_effects,
 
 
 def _args(**kw):
-    import argparse
-    ns = argparse.Namespace(worker=False, no_browser=False, no_pull=False,
-                            no_claude=False)
+    """Realistischer Namespace — **aus dem echten Parser**, nicht von Hand.
+
+    Vorher stand hier eine handgepflegte Liste der Flags. Sie musste bei jedem
+    neuen Flag nachgezogen werden, und ein vergessenes Nachziehen erschien als
+    ``AttributeError`` mitten in einem Test, der mit dem neuen Flag gar nichts
+    zu tun hat — beim Bau von ``--name`` (#60) genau so passiert. Der Parser
+    ist die einzige Stelle, die alle Flags kennt; ihn zu fragen kostet nichts.
+    """
+    ns, _rest = session._parse([])
     for k, v in kw.items():
         setattr(ns, k, v)
     return ns
@@ -539,3 +545,84 @@ def test_repo_venv_wins_over_the_running_interpreter(team_repo: Path, venv_in_re
     (other / "bibi-ctrl").write_text("#!/bin/sh\n")
     monkeypatch.setattr(session.sys, "executable", str(other / "python3"))
     assert session._venv_bin(team_repo) == venv_in_repo
+
+
+# --- `bibi --name`: Anzeigename dieser Sitzung (m.rau/bibi#60) ----------------
+#
+# Der Name kam bisher ausschliesslich aus `BIBI_NODE_NAME` in
+# ~/.config/bibi/env, sonst dem rohen Hostnamen. Beides ist Konfiguration pro
+# Nutzer und Maschine — eine einzelne Sitzung konnte davon nicht abweichen,
+# ohne die Datei zu aendern. Live sichtbar am Mac, der sich als
+# "Mac.fritz.box" meldete.
+
+
+def test_parse_accepts_name():
+    args, _rest = session._parse(["--name", "LHG-Laptop"])
+    assert args.name == "LHG-Laptop"
+
+
+def test_name_is_optional():
+    args, _rest = session._parse([])
+    assert args.name is None
+
+
+def test_name_reaches_the_daemon_via_environment(tmp_path, monkeypatch):
+    """Der Daemon liest ``BIBI_NODE_NAME`` aus seiner Prozess-Umgebung, und
+    genau dort setzt die Sitzung den Wert — damit ergibt sich die Kette
+    Flag > env-Variable > Config-Datei > Hostname von selbst, ohne dass
+    irgendwo eine zweite Auflösungsreihenfolge gepflegt werden muss."""
+    args, _ = session._parse(["--name", "LHG-Laptop"])
+    env = session._session_env(args, tmp_path)
+    assert env["BIBI_NODE_NAME"] == "LHG-Laptop"
+
+
+def test_without_name_the_session_does_not_touch_the_variable(tmp_path, monkeypatch):
+    """Ohne Flag darf die Sitzung ``BIBI_NODE_NAME`` nicht setzen — sonst
+    überschriebe ein leerer Wert die Config-Datei und jeder Knoten hiesse
+    wieder wie sein Hostname."""
+    monkeypatch.delenv("BIBI_NODE_NAME", raising=False)
+    args, _ = session._parse([])
+    env = session._session_env(args, tmp_path)
+    assert "BIBI_NODE_NAME" not in env
+
+
+def test_name_is_not_written_back_to_the_config_file(tmp_path, monkeypatch):
+    """Der Wert gilt für diese Sitzung, nicht für die Maschine. Schriebe ihn
+    die Sitzung in die ``env``, hiesse der Knoten auch nach ihrem Ende noch so."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from bibi import config
+    config.write_env({"BIBI_NODE_NAME": "vorher"})
+    args, _ = session._parse(["--name", "nachher"])
+    session._session_env(args, tmp_path)
+    assert config.read_env().get("BIBI_NODE_NAME") == "vorher"
+
+
+def test_attaching_session_says_that_name_has_no_effect(team_repo: Path, capsys):
+    """Hängt sich die Sitzung an einen laufenden Daemon, kommt ``--name`` zu
+    spät — der Name steckt im Prozess, der schon läuft. Das still zu übergehen
+    wäre die unangenehmste Variante: der Nutzer tippt das Flag, im Nodes-Screen
+    ändert sich nichts, und nichts sagt ihm warum."""
+    portfile.write(51234, host="127.0.0.1", roles="controller", session=True)
+    port, started = session._ensure_daemon(_args(name="LHG-Laptop"), team_repo)
+    assert (port, started) == (51234, False)
+    out = capsys.readouterr().out
+    assert "--name" in out and "läuft bereits" in out
+
+
+def test_attaching_session_stays_quiet_without_name(team_repo: Path, capsys):
+    portfile.write(51234, host="127.0.0.1", roles="controller", session=True)
+    session._ensure_daemon(_args(), team_repo)
+    assert "--name" not in capsys.readouterr().out
+
+
+def test_hostless_node_starts_without_connect(team_repo: Path, monkeypatch, tmp_path):
+    """Die eigentliche Folge von #61, hier festgehalten: ``_host_configured()``
+    prüft nur, *ob* eine Scheduler-URL gesetzt ist. Solange ``init`` sie
+    unbedingt schrieb, hängte jeder frisch eingerichtete Knoten ``--connect``
+    an — und meldete sich bei einem Scheduler auf ``localhost:8769``, den es
+    nicht gibt."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("BIBI_SCHEDULER_URL", raising=False)
+    from bibi.ctrl import main as ctrl_main
+    ctrl_main(["init", "--non-interactive", "--role", "synchronizer,controller"])
+    assert "--connect" not in session._daemon_argv(_args(), team_repo)

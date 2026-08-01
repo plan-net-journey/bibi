@@ -183,8 +183,20 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .liveterm { max-height: 24rem; overflow-y: auto; }
 .liveterm .lts { color: #888; user-select: none; }
 .liveclock { color: #5fb37a; font-size: .8rem; font-family: ui-monospace, monospace; }
-.statuscards { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+/* m.rau/bibi#62: drei Stufen statt auto-fit — breit 1x4, schmal 2x2, ganz
+   schmal 4x1. Mit `repeat(auto-fit, minmax(9rem, 1fr))` entschied der Browser,
+   wie viele Spalten es gibt, und ergab je nach Fensterbreite auch 3+1 — genau
+   die Anordnung, die die Anforderung ausschliesst. */
+.statuscards { display: grid; grid-template-columns: repeat(4, 1fr);
                gap: .6rem; margin-bottom: 1.2rem; }
+@media (max-width: 60rem) { .statuscards { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 32rem) { .statuscards { grid-template-columns: 1fr; } }
+/* m.rau/bibi#66: Sortier-Koepfe. Der Link erbt die Kopf-Farbe — er soll wie
+   eine Spalte aussehen, nicht wie ein Verweis; erst der Zeiger verraet, dass
+   man klicken kann. Die aktive Spalte traegt zusaetzlich den Pfeil. */
+th a { color: inherit; text-decoration: none; cursor: pointer; }
+th a:hover { text-decoration: underline; }
+th.sorted { font-weight: 700; }
 .card { border: 1px solid #8883; border-radius: .4rem; padding: .55rem .7rem; }
 .card .label { font-size: .72rem; color: #888; text-transform: uppercase; letter-spacing: .03em; }
 .card .value { font-size: 1.05rem; font-weight: 600; margin-top: .1rem; }
@@ -339,7 +351,11 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
              overflow-wrap: anywhere; }
 .frow a.commit { text-decoration: none; }
 .frow a.commit:hover { text-decoration: underline; color: #5a9fe0; }
-.loadmore { display: flex; gap: .5rem; margin: .8rem 0; }
+/* m.rau/bibi#63: in der Karte, an ihrem unteren linken Rand. Der obere
+   Abstand trennt vom Inhalt darueber, der untere entfaellt — die Karte
+   bringt ihr eigenes Padding mit. */
+.loadmore { display: flex; justify-content: flex-start; gap: .5rem;
+            margin: .8rem 0 0; }
 """
 
 
@@ -544,26 +560,33 @@ def _sched_row(s: dict, now: float, *, public_host: str = "localhost",
 
 
 def _sched_table(items: list[dict], now: float, *, public_host: str = "localhost",
-                 sparklines: dict[str, list[int]] | None = None) -> str:
+                 sparklines: dict[str, list[int]] | None = None,
+                 sort: str | None = None, direction: str | None = None,
+                 sort_url: str = "/-/ui/schedules/list",
+                 sort_target: str = "#schedules") -> str:
     # Bibi4-Iteration, Seitenabgleich (User-Fund): Spaltenkopf war "Schedule",
     # der Client sagt für dieselbe Spalte schon "Slug" (_jobs_table()) — auch
     # dein ursprünglicher Batch-1-Spaltenplan für den Host wollte "Slug" als
     # erste Spalte, das war nie nachgezogen worden.
     rows = "".join(_sched_row(s, now, public_host=public_host, sparklines=sparklines)
                   for s in items)
-    return ('<table class="sched"><thead><tr><th>Slug</th><th>Type</th><th>Status</th>'
-            '<th>last / since</th><th>next</th><th>Activity</th></tr></thead>'
-            f"<tbody>{rows}</tbody></table>")
+    head = _sortable_head(
+        [("Slug", "slug"), ("Type", "type"), ("Status", "status"),
+         ("last / since", "last"), ("next", "next"), ("Activity", None)],
+        sort=sort, direction=direction, url=sort_url, target=sort_target)
+    return f'<table class="sched">{head}<tbody>{rows}</tbody></table>'
 
 
 def _schedule_active_block(schedules: list[dict], now: float,
-                           *, public_host: str = "localhost",
+                           *, sort: str | None = None, direction: str | None = None,
+                           public_host: str = "localhost",
                            sparklines: dict[str, list[int]] | None = None) -> str:
     head = f'<h2>Schedules ({len(schedules)})</h2>'
     if not schedules:
         return head + '<p class="out-empty">— no schedules —</p>'
     active, _archive, _journaled = _group_schedules(schedules)
-    body = (_sched_table(active, now, public_host=public_host, sparklines=sparklines) if active
+    body = (_sched_table(active, now, public_host=public_host, sparklines=sparklines,
+                         sort=sort, direction=direction) if active
             else '<p class="out-empty">— no active schedules —</p>')
     return head + body
 
@@ -600,7 +623,8 @@ def schedule_list(schedules: list[dict], now: float | None = None,
 def schedules_fragment(schedules: list[dict], now: float | None = None,
                        *, typ: str | None = None, status: str | None = None,
                        public_host: str = "localhost",
-                       sparklines: dict[str, list[int]] | None = None) -> str:
+                       sparklines: dict[str, list[int]] | None = None,
+                       sort: str | None = None, direction: str | None = None) -> str:
     """Bus-getriebener Wrapper (Target ``jobs``) um die (bereits gefilterte)
     aktive Schedule-Liste. Der Refetch-Link trägt den aktiven Filter in der
     URL, damit er den Swap überlebt. Ziel = ``/-/ui/schedules/list`` (das Fragment;
@@ -613,12 +637,18 @@ def schedules_fragment(schedules: list[dict], now: float | None = None,
     Bus-Refetch (``schedules_list_fragment()``) übergibt ``None``, analog zu
     ``jobs_fragment()``/``jobs_board()``."""
     now = time.time() if now is None else now
-    qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status))
+    schedules = sort_rows(schedules, sort, direction)   # m.rau/bibi#66
+    qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status),
+                                          ("sort", sort), ("dir", direction))
                   if v and v != "alle")
     url = "/-/ui/schedules/list" + (f"?{qs}" if qs else "")
     attrs = (f'id="schedules" data-bus="jobs" data-bus-refetch="{url}"')
-    active_html = (f'<div class="panel-card">'
-                  f'{_schedule_active_block(schedules, now, public_host=public_host, sparklines=sparklines)}</div>')
+    # m.rau/bibi#64: die Filterleiste gehoert IN die Karte, an ihren oberen
+    # linken Rand — vorher stand sie in schedules_page() zwischen Histogramm
+    # und Karte. Sie wandert damit auch durch jeden Bus-Refetch mit, statt beim
+    # Swap des Fragments zurueckzubleiben.
+    active_html = (f'<div class="panel-card">{_filter_bar(typ, status)}'
+                  f'{_schedule_active_block(schedules, now, public_host=public_host, sparklines=sparklines, sort=sort, direction=direction)}</div>')
     return f"<div {attrs}>{active_html}</div>"
 
 
@@ -761,7 +791,22 @@ def _node_git_status_chips(git_status: str | None) -> str:
             f'<span class="{sync_cls}">{_e(sync)}</span>')
 
 
-def _node_engine_cell(engine: str | None, expected: str | None = None) -> str:
+#: Aktualitäts-Chip der Engine-Zelle. Die Wörter sind bewusst die der
+#: Repo-Zelle (``synced``/``behind``) statt der internen Verdict-Namen aus
+#: ``deploy.update_state()`` — nebeneinander gelesen sollen beide Zeilen
+#: dieselbe Sprache sprechen (m.rau/bibi#67).
+_NODE_ENGINE_VERDICT: dict[str, tuple[str, str]] = {
+    "current": ("chip clean", "läuft auf dem erwarteten Tag"),
+    "behind": ("chip conflict", "ein neuerer Stand ist gepinnt"),
+    "branch": ("chip modified",
+               "an einen Branch gepinnt — ob er weitergewandert ist, "
+               "weiß dieser Knoten nicht"),
+    "unknown": ("chip", "Soll- oder Ist-Stand fehlt"),
+}
+
+
+def _node_engine_cell(engine: str | None, expected: str | None = None,
+                      tree: str | None = None) -> str:
     """Installierter Engine-Stand je Knoten (m.rau/bibi#19, erweitert #43).
 
     ``engine`` ist die fertige Bezeichnung aus ``engine_info.EngineInfo.label()``
@@ -778,6 +823,20 @@ def _node_engine_cell(engine: str | None, expected: str | None = None) -> str:
     fährt ein Release."""
     if not engine:
         return "—"
+
+    def _tree_chip() -> str:
+        """Arbeitsbaum-Chip — **nur wo es einen Arbeitsbaum gibt.**
+
+        Ein VCS-Pin hat keinen. Dort ``clean`` zu zeigen wäre eine Aussage, die
+        niemand geprüft hat; der Chip entfällt stattdessen ganz. Dieselbe
+        Zurückhaltung, mit der ``update_state()`` bei einem Branch-Pin lieber
+        „unbestimmt" sagt als zu raten.
+        """
+        if not tree:
+            return ""
+        cls = _NODE_TREE_CHIP_CLASS.get(tree, "chip")
+        return f' <span class="{cls}">{_e(tree)}</span>'
+
     for marker, title in (
             ("(editable)", "laeuft gegen ein Arbeits-Checkout, nicht gegen den "
                            "gepinnten Stand"),
@@ -788,11 +847,17 @@ def _node_engine_cell(engine: str | None, expected: str | None = None) -> str:
                         "dem gepinnten Tag")):
         if marker in engine:
             base = engine.replace(marker, "").strip()
-            return (f'{_e(base)} <span class="chip conflict" title="{title}">'
+            return (f'{_e(base)}{_tree_chip()} '
+                    f'<span class="chip conflict" title="{title}">'
                     f'{marker.strip("()")}</span>')
-    cell = _e(engine)
+
     from bibi.daemon import deploy as deploy_mod
-    if deploy_mod.label_is_outdated(expected, engine):
+    verdict = deploy_mod.label_verdict(expected, engine)
+    cls, title = _NODE_ENGINE_VERDICT.get(
+        verdict, ("chip", "Stand nicht bestimmbar"))
+    cell = f'{_e(engine)}{_tree_chip()}'
+    cell += f' <span class="{cls}" title="{_e(title)}">{_e(verdict)}</span>'
+    if verdict == "behind":
         cell += (f' <span class="chip conflict" title="expected {_e(expected or "")}">'
                  "NEED UPDATE</span>")
     return cell
@@ -878,7 +943,7 @@ def _clients_table(workers: list[dict], now: float,
             "<tr>"
             f"<td>{_node_link_cell(w.get('worker'), w.get('host'), w.get('port'))}</td>"
             f"{_role_matrix_cells(w.get('role'))}"
-            f"<td>{_node_engine_cell(w.get('engine'), expected)}</td>"
+            f"<td>{_node_engine_cell(w.get('engine'), expected, w.get('engine_tree'))}</td>"
             f"<td>{_e(w.get('git_user') or '—')}</td>"
             f"<td>{_node_git_status_chips(w.get('git_status'))}"
             + (f' <code>{_e(w["git_commit"])}</code>' if w.get("git_commit") else "")
@@ -1249,6 +1314,131 @@ def _effective_sched_type(s: dict) -> str:
     return models.effective_kind(s.get("payload"))
 
 
+#: Sortierschlüssel → wie der Wert aus einer Zeile kommt (m.rau/bibi#66).
+#: Die Schlüssel sind bewusst die Spalten**bedeutungen**, nicht Feldnamen: Host-
+#: und Client-Zeilen tragen dieselbe Information unter teils anderen Namen, und
+#: der Nutzer sortiert nach dem, was in der Spalte steht.
+_SORT_KEYS: dict[str, "callable"] = {
+    "slug": lambda r: (r.get("slug") or "").lower(),
+    # Nach dem *angezeigten* Typ, nicht nach dem rohen Payload — sonst
+    # sortierte die Spalte nach etwas anderem, als in ihr steht.
+    "type": lambda r: _effective_sched_type(r),
+    "status": lambda r: (r.get("last_status") or r.get("row_status") or ""),
+    "last": lambda r: r.get("finished_at") if r.get("finished_at") is not None
+                      else r.get("started_at"),
+    "runtime": lambda r: r.get("runtime"),
+    "next": lambda r: r.get("next_fire_at"),
+}
+
+
+def sort_rows(rows: list[dict], sort: str | None,
+              direction: str | None = "asc") -> list[dict]:
+    """Zeilen serverseitig sortieren (m.rau/bibi#66).
+
+    **Serverseitig und nicht in JS**, weil der Event-Bus die Region neu rendert:
+    eine clientseitige Sortierung wäre beim nächsten Refetch weg. Das Issue
+    nennt genau diesen Grund, und er wiegt schwerer als der Geschwindigkeits-
+    vorteil — die Tabellen haben Dutzende Zeilen, nicht Tausende.
+
+    Ein unbekannter Schlüssel lässt die Reihenfolge unangetastet, statt zu
+    werfen oder zu leeren: er kann aus einem alten Cookie oder einer von Hand
+    zusammengesetzten URL kommen, und beides darf keinen Screen kosten.
+
+    ``None``-Werte landen **immer am Ende**, in beide Richtungen. „Kein Wert"
+    heisst *gibt es nicht*, nicht *ganz früh* — beim Umdrehen füllten sie sonst
+    den Anfang und verdrängten genau das, wonach jemand gerade sucht.
+    """
+    fn = _SORT_KEYS.get(sort or "")
+    if fn is None:
+        return rows
+    rev = (direction or "asc") == "desc"
+
+    def _key(r: dict):
+        v = fn(r)
+        if v is None:
+            # Erstes Tupelglied: fehlende Werte hinten, unabhängig von rev.
+            return (1, 0) if not rev else (-1, 0)
+        return (0, v) if not rev else (0, v)
+
+    missing = [r for r in rows if fn(r) is None]
+    present = [r for r in rows if fn(r) is not None]
+    present.sort(key=fn, reverse=rev)
+    return present + missing
+
+
+def _sortable_head(columns: list[tuple[str, str | None]], *, sort: str | None,
+                   direction: str | None, url: str, target: str) -> str:
+    """``<thead>`` mit klickbaren Spalten (m.rau/bibi#66).
+
+    Ein Klick auf die aktive Spalte dreht die Richtung um, ein Klick auf eine
+    andere startet aufsteigend — das ist die Erwartung, die jede Tabelle
+    irgendeiner Oberfläche bedient, und eine Abweichung davon müsste man
+    erklären.
+
+    Spalten ohne Schlüssel (``None``) bleiben gewöhnliche Köpfe. „Activity" ist
+    eine Sparkline; ein Sortier-Link darauf wäre ein Angebot, das nichts
+    einlöst.
+    """
+    cells = []
+    for label, key in columns:
+        if key is None:
+            cells.append(f"<th>{_e(label)}</th>")
+            continue
+        active = key == sort
+        nxt = "desc" if active and (direction or "asc") == "asc" else "asc"
+        arrow = "" if not active else (" ▾" if (direction or "asc") == "desc" else " ▴")
+        cls = ' class="sorted"' if active else ""
+        href = f"{url}{'&' if '?' in url else '?'}sort={key}&dir={nxt}"
+        cells.append(
+            f'<th{cls}><a href="#" hx-get="{_e(href)}" hx-target="{_e(target)}" '
+            f'hx-swap="outerHTML" hx-include="[name=\'typ\'],[name=\'status\']">'
+            f"{_e(label)}{arrow}</a></th>")
+    return "<thead><tr>" + "".join(cells) + "</tr></thead>"
+
+
+def client_row_status(row: dict, local_runs: dict[str, dict]) -> str | None:
+    """Der Status, den eine Client-Zeile **anzeigt** (m.rau/bibi#65).
+
+    Dieselbe dreistufige Ermittlung wie in ``_jobs_row()``, nur an einer Stelle
+    statt an zweien: ein laufender Job schlägt den letzten Lauf, sonst gilt der
+    letzte Lauf, sonst gibt es keinen Status ("noch nie lokal gelaufen").
+
+    **Warum das eine eigene Funktion ist und keine Kopie:** Anzeige und Filter
+    müssen denselben Wert benutzen. Täten sie es nicht, filterte der Nutzer
+    nach etwas anderem, als er sieht — und das fiele erst auf, wenn eine Zeile
+    unerklärlich verschwindet. Genau deshalb ruft ``_jobs_row()`` sie ebenfalls
+    auf, statt die Logik ein zweites Mal zu schreiben.
+    """
+    live = row.get("live")
+    if live:
+        # Ein Live-Eintrag ohne eigenen Status heisst laufend — dieselbe
+        # Auslegung wie in der Statuszelle.
+        return live.get("status") or "running"
+    lr = local_runs.get(row.get("slug"))
+    return lr.get("status") if lr else None
+
+
+def enrich_client_rows(rows: list[dict], local_runs: dict[str, dict]) -> list[dict]:
+    """Client-Zeilen um ``last_status`` ergänzen, damit ``filter_schedules()``
+    unverändert auf ihnen arbeitet (m.rau/bibi#65).
+
+    Die Host-Zeile trägt diesen Schlüssel aus der Scheduler-DB; die Client-Zeile
+    kommt aus der lokalen MD-Discovery und trägt ihn nicht. Ohne die Angleichung
+    liesse sich der gemeinsame Filter zwar aufrufen, er griffe aber nie — ein
+    Bedienelement, das sichtbar da ist und nichts tut.
+
+    Die Alternative wäre eine zweite Filterfunktion für die Client-Seite
+    gewesen. Dagegen spricht, dass die Statuswerte dieselben sind und sich nur
+    ihr Ablageort unterscheidet: das ist kein fachlicher Grund für zwei
+    Wahrheiten, die auseinanderlaufen können.
+    """
+    out = []
+    for row in rows:
+        st = client_row_status(row, local_runs)
+        out.append({**row, "last_status": st} if st else dict(row))
+    return out
+
+
 def filter_schedules(schedules: list[dict], *, typ: str | None = None,
                      status: str | None = None, now: float | None = None) -> list[dict]:
     """Schedules nach Typ und Status filtern (rein). ``alle``/leer = kein Filter;
@@ -1290,7 +1480,9 @@ def _cookie_filter_value(cookie: str | None, valid: tuple[str, ...]) -> str | No
     return None
 
 
-def _filter_bar(typ: str | None, status: str | None) -> str:
+def _filter_bar(typ: str | None, status: str | None, *,
+                url: str = "/-/ui/schedules/list",
+                target: str = "#schedules") -> str:
     def _opts(values: tuple, cur: str | None) -> str:
         cur = cur or "alle"
         # value bleibt "alle" (interner Sentinel, s. filter_schedules()), nur
@@ -1300,7 +1492,10 @@ def _filter_bar(typ: str | None, status: str | None) -> str:
             parts.append(f'<option value="{v}"{" selected" if cur == v else ""}>{v}</option>')
         return "".join(parts)
 
-    common = ('hx-get="/-/ui/schedules/list" hx-target="#schedules" hx-swap="outerHTML" '
+    # Ziel und Target sind Parameter, seit die Leiste auch auf der Client-Seite
+    # steht (m.rau/bibi#65). Fest verdrahtet wuerde ein Klick dort ein Fragment
+    # austauschen, das es auf dem Client gar nicht gibt.
+    common = (f'hx-get="{url}" hx-target="{target}" hx-swap="outerHTML" '
               'hx-include="[name=\'typ\'],[name=\'status\']"')
     return (
         '<div class="logbar">'
@@ -1487,7 +1682,8 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
                    git_status: dict | None = None, host_url: str | None = None,
                    bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES,
                    public_host: str = "localhost",
-                   sparklines: dict[str, list[int]] | None = None) -> str:
+                   sparklines: dict[str, list[int]] | None = None,
+                   sort: str | None = None, direction: str | None = None) -> str:
     """Der Schedules-Screen: Nav + Ops-Handles (RESCAN/MAINT, User-Feedback
     2026-07-03) + Status-Kacheln (Host/Mode/Git/Job-Status, User-Fund: "diesen
     Header möchte ich auch im /-/ui/schedules haben" — dieselbe
@@ -1514,8 +1710,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f"{_header('Jobs', daemon_status)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now)}"
         f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now, bucket_minutes=bucket_minutes)}"
-        f"{_filter_bar(typ, status)}"
-        f"{schedules_fragment(schedules, now, typ=typ, status=status, public_host=public_host, sparklines=sparklines)}"
+        f"{schedules_fragment(schedules, now, typ=typ, status=status, public_host=public_host, sparklines=sparklines, sort=sort, direction=direction)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
@@ -2240,6 +2435,8 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
         cls, label = _GIT_STATUS_LABEL.get(git_status, ("chip", _e(str(git_status))))
         slug_cell += f' <span class="{cls}">{label}</span>'
 
+    # m.rau/bibi#65: derselbe Wert, nach dem die Filterleiste filtert —
+    # client_row_status() ist die eine Quelle fuer beide.
     if live:
         # PLAN-27 Befund 4, User-Fund: "der Status awaiting wird in /ui/jobs
         # nicht angezeigt" — live["status"] kommt jetzt aus local_runs_live()
@@ -2251,7 +2448,7 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
         # "running", obwohl live["status"] den echten Wert (deferred/failed,
         # seit dem _PINNED_LIVE_STATUSES-Fix hier überhaupt erst sichtbar)
         # längst trägt.
-        st = live.get("status") or "running"
+        st = client_row_status(row, local_runs) or "running"
         status_cell = (f'<a class="rowlink" href="/-/ui/jobs/detail/{s}">'
                        f'<span class="st {st}">{st}</span></a>')
         started_at = live.get("started_at")
@@ -2276,17 +2473,20 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
 
 def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
                 *, public_host: str = "localhost", sparklines: dict[str, list[int]] | None = None,
-                lazy_sparklines: bool = False) -> str:
+                lazy_sparklines: bool = False,
+                sort: str | None = None, direction: str | None = None,
+                sort_url: str = "/-/ui/jobs/board",
+                sort_target: str = "#jobsboard") -> str:
     if not rows:
         return '<p class="out-empty">— keine Job-MDs im Repository gefunden —</p>'
     body = "".join(_jobs_row(r, local_runs, now, public_host=public_host, sparklines=sparklines,
                             lazy_sparklines=lazy_sparklines, index=i)
                   for i, r in enumerate(rows))
-    return (
-        '<table><thead><tr><th>Slug</th><th>Type</th><th>Status</th>'
-        '<th>last / since</th><th>Runtime</th><th>Activity</th></tr></thead>'
-        f"<tbody>{body}</tbody></table>"
-    )
+    head = _sortable_head(
+        [("Slug", "slug"), ("Type", "type"), ("Status", "status"),
+         ("last / since", "last"), ("Runtime", "runtime"), ("Activity", None)],
+        sort=sort, direction=direction, url=sort_url, target=sort_target)
+    return f"<table>{head}<tbody>{body}</tbody></table>"
 
 
 def jobs_fragment(
@@ -2294,6 +2494,8 @@ def jobs_fragment(
     *, now: float | None = None, public_host: str = "localhost",
     sparklines: dict[str, list[int]] | None = None,
     lazy_sparklines: bool = False,
+    typ: str | None = None, status: str | None = None,
+    sort: str | None = None, direction: str | None = None,
 ) -> str:
     """Der austauschbare Jobs-Kern (``#jobsboard``): lokale Job-MDs + Git-
     Status + letzter Start/Ende/Laufzeit je Zeile (PLAN-21 Befund 10 — löst
@@ -2320,10 +2522,25 @@ def jobs_fragment(
     beim Reload immer") — der initiale Seitenaufbau selbst rechnet die Serie
     nicht mehr, sondern rendert nur noch Platzhalter, s. ``_sparkline_cell_lazy()``."""
     now = time.time() if now is None else now
+    # m.rau/bibi#65: dieselbe Filterleiste und dieselbe Filterfunktion wie beim
+    # Host. Moeglich wird das erst durch enrich_client_rows() — die Client-Zeile
+    # traegt `last_status` nicht von sich aus, und ohne ihn griffe der
+    # Status-Filter nie.
+    rows = enrich_client_rows(rows, local_runs)
+    rows = filter_schedules(rows, typ=typ, status=status, now=now)
+    # m.rau/bibi#66: serverseitig sortiert, und die Sortierung reist in der
+    # Refetch-URL mit — sonst spraenge sie beim naechsten Bus-Ereignis zurueck.
+    rows = sort_rows(rows, sort, direction)
+    qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status),
+                                          ("sort", sort), ("dir", direction))
+                  if v and v != "alle")
+    url = "/-/ui/jobs/board" + (f"?{qs}" if qs else "")
+    bar = _filter_bar(typ, status, url="/-/ui/jobs/board", target="#jobsboard")
     return (
-        '<div id="jobsboard" data-bus="jobs" data-bus-refetch="/-/ui/jobs/board">'
+        f'<div id="jobsboard" data-bus="jobs" data-bus-refetch="{_e(url)}">'
         '<div class="panel-card"><h2>Jobs</h2>'
-        f"{_jobs_table(rows, local_runs, now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines)}</div>"
+        f"{bar}"
+        f"{_jobs_table(rows, local_runs, now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines, sort=sort, direction=direction)}</div>"
         "</div>"
     )
 
@@ -2369,13 +2586,18 @@ def _client_archive_row(r: dict, now: float) -> str:
     )
 
 
-def _client_archive_table(runs: list[dict], now: float) -> str:
+def _client_archive_table(runs: list[dict], now: float, *,
+                          sort: str | None = None, direction: str | None = None,
+                          sort_url: str = "/-/ui/jobs/archive/list",
+                          sort_target: str = "#jobsarchive") -> str:
     if not runs:
         return '<p class="out-empty">— keine lokalen Läufe —</p>'
     rows = "".join(_client_archive_row(r, now) for r in runs)
-    return ('<table class="sched"><thead><tr><th>Slug</th><th>Type</th><th>Status</th>'
-            f'<th>last/since</th><th>runtime</th><th>next</th></tr></thead>'
-            f'<tbody>{rows}</tbody></table>')
+    head = _sortable_head(
+        [("Slug", "slug"), ("Type", "type"), ("Status", "status"),
+         ("last/since", "last"), ("runtime", "runtime"), ("next", "next")],
+        sort=sort, direction=direction, url=sort_url, target=sort_target)
+    return f'<table class="sched">{head}<tbody>{rows}</tbody></table>'
 
 
 def jobs_archive_fragment(runs: list[dict], now: float | None = None) -> str:
@@ -2430,6 +2652,8 @@ def jobs_page(
     now: float | None = None, public_host: str = "localhost",
     sparklines: dict[str, list[int]] | None = None,
     lazy_sparklines: bool = False,
+    typ: str | None = None, status: str | None = None,
+    sort: str | None = None, direction: str | None = None,
 ) -> str:
     """Jobs-Screen (PLAN-17 Stufe 17.2, umgebaut PLAN-21 Befund 10): lokale
     Repository-Realität + Git-Status + letzter Start/Ende/Laufzeit je Zeile.
@@ -2453,7 +2677,7 @@ def jobs_page(
         f"{_header('Jobs', status)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, client_rows=rows)}"
-        f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines)}"
+        f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines, typ=typ, status=status, sort=sort, direction=direction)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
@@ -2883,14 +3107,15 @@ def feed_fragment(feed_data: dict, *, days: int | None = None, weeks: int | None
         )
     return (
         '<div id="feedboard">'
-        f'<div class="panel-card">{_heatmap_html(grid, now)}</div>'
-        f"{heatmap_load_more}"
+        # m.rau/bibi#63: beide "mehr laden" stehen jetzt IN ihrer Karte, unten
+        # links — vorher hinter dem schliessenden </div>, also unter der Karte.
+        f'<div class="panel-card">{_heatmap_html(grid, now)}{heatmap_load_more}</div>'
         '<div class="panel-card">'
         '<h2>Änderungen</h2>'
         f"{_feed_filter_bar()}"
         f"{_feed_list(entities, now, commit_base_url=commit_base_url)}"
-        '</div>'
         f"{load_more}"
+        '</div>'
         f"<script>{_FEED_FILTER_JS}</script>"
         "</div>"
     )

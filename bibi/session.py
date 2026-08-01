@@ -206,6 +206,27 @@ def _daemon_argv(args: argparse.Namespace, root: Path) -> list[str]:
     return argv
 
 
+def _session_env(args: argparse.Namespace, root: Path) -> dict[str, str]:
+    """``_child_env()`` plus das, was **diese Sitzung** über sich selbst sagt.
+
+    Aktuell genau ein Wert: der Anzeigename aus ``--name`` (m.rau/bibi#60). Er
+    wird als Umgebungsvariable weitergereicht und **nicht** in
+    ``~/.config/bibi/env`` geschrieben — der Name gilt für diese Sitzung, nicht
+    für die Maschine. Ein zurückgeschriebener Wert hiesse: der Knoten trägt ihn
+    auch morgen noch, obwohl niemand das verlangt hat.
+
+    Ohne Flag wird die Variable **nicht gesetzt**, nicht auf leer gesetzt. Der
+    Unterschied ist der ganze Mechanismus: ``daemon_cmd._resolve_worker_name()``
+    fragt die Umgebung zuerst und fällt sonst auf die Config-Datei und den
+    Hostnamen zurück — ein leerer Eintrag würde diese Kette an ihrer ersten
+    Stufe abschneiden und jeden Knoten wieder nach seinem Hostnamen benennen.
+    """
+    env = _child_env(root)
+    if args.name and args.name.strip():
+        env["BIBI_NODE_NAME"] = args.name.strip()
+    return env
+
+
 def _host_configured() -> bool:
     return bool((os.environ.get("BIBI_SCHEDULER_URL", "").strip()
                  or config.read_env().get("BIBI_SCHEDULER_URL", "").strip()))
@@ -219,7 +240,7 @@ def _start_daemon(args: argparse.Namespace, root: Path) -> subprocess.Popen:
     ``CTRL+C`` in Fenster A darf ihr nicht den Boden wegziehen. Wann er endet,
     entscheidet der Sitzungs-Zähler aus #46, nicht die Prozessgruppe.
     """
-    env = _child_env(root)
+    env = _session_env(args, root)
     env["BIBI_ROLE"] = SESSION_ROLE  # s. SESSION_ROLE
     log_dir = root / "data" / "daemon-log"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -384,6 +405,10 @@ def _parse(argv: list[str] | None) -> tuple[argparse.Namespace, list[str]]:
     p.add_argument("--worker", action="store_true",
                    help="Jobs annehmen (Default: nein — eine flüchtige Sitzung "
                         "ließe zugeteilte Jobs beim Beenden fallen)")
+    p.add_argument("--name", default=None, metavar="NAME",
+                   help="Anzeigename dieses Knotens für diese Sitzung "
+                        "(Kette: Flag > BIBI_NODE_NAME > Hostname). Wird nicht "
+                        "in die Konfiguration zurückgeschrieben")
     return p.parse_known_args(argv)
 
 
@@ -465,6 +490,14 @@ def _ensure_daemon(args: argparse.Namespace, root: Path) -> tuple[int | None, bo
         if entry is not None:
             print(f"bibi: an laufenden Daemon angehängt (Port {entry['port']}).",
                   flush=True)
+            # Der Name steckt im Prozess, der schon läuft — ein Flag kann ihn
+            # nicht mehr ändern. Still darüber hinwegzugehen wäre die
+            # unangenehmste Variante: das Flag ist getippt, im Nodes-Screen
+            # ändert sich nichts, und nichts sagt warum (m.rau/bibi#60).
+            if getattr(args, "name", None):
+                print("bibi: --name bleibt ohne Wirkung — der Daemon läuft "
+                      "bereits. Erst nach seinem Ende greift ein neuer Name.",
+                      flush=True)
             return entry["port"], False
         proc = _start_daemon(args, root)
         deadline = time.monotonic() + HEALTH_TIMEOUT_S

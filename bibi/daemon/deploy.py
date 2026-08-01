@@ -205,6 +205,39 @@ def update_status(root: Path | None = None, info=None) -> dict:
     return out
 
 
+def label_verdict(expected: str | None, label: str | None) -> str:
+    """Aktualitäts-Urteil für einen **fremden** Knoten, von dem nur die fertige
+    Bezeichnung bekannt ist — dieselbe Frage wie ``update_state()``, nur ohne
+    Zugriff auf dessen ``EngineInfo`` (m.rau/bibi#67).
+
+    Die Wörter sind die der Repo-Zelle im Nodes-Screen (``current``/``behind``),
+    nicht die internen Verdict-Namen: nebeneinander gelesen sollen Engine- und
+    Repo-Zeile dieselbe Sprache sprechen. ``branch`` bleibt, weil es keine
+    Entsprechung hat und auch keine braucht — bei einem Branch-Pin weiß hier
+    niemand, ob der Branch weitergewandert ist.
+
+    ``unknown`` statt eines Ratens, wenn eine Seite fehlt. Dieselbe
+    Zurückhaltung wie in ``label_is_outdated()``: ein falsches Urteil schickt
+    jemanden los, etwas zu reparieren, das in Ordnung ist.
+    """
+    if not expected or not label:
+        return "unknown"
+    if "(editable)" in label or "(local)" in label:
+        # Beide tragen ihren eigenen Chip; ein Aktualitäts-Urteil daneben wäre
+        # bedeutungslos — ein Neustart holt keinen gepinnten Stand, wenn das
+        # venv aus einem Verzeichnis kommt.
+        return "unknown"
+    if not _is_tag(expected):
+        return "branch"
+    # Ein Branch-Pin auf der Ist-Seite („dev @ 86ea20e") ist ebenso unbestimmt,
+    # auch wenn der Soll-Stand ein Tag ist: der Commit sagt nichts darüber, ob
+    # der Branch inzwischen weiter ist.
+    running = label.split()[0]
+    if " @ " in label and not _is_tag(running):
+        return "branch"
+    return "current" if _norm(running) == _norm(expected) else "behind"
+
+
 def label_is_outdated(expected: str | None, label: str | None) -> bool:
     """Dasselbe Urteil für einen **fremden** Knoten, von dem nur die fertige
     Bezeichnung bekannt ist (``engine``-Feld des Heartbeats).

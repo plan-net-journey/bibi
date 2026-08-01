@@ -95,3 +95,37 @@ def test_claude_auth_finding_absent_without_claude_jobs(team_repo, tmp_path, mon
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     doctor_cmd.run(argparse.Namespace())
     assert "claude-auth-missing" not in capsys.readouterr().out
+
+
+# ── Credential-Drift: Faktensammlung ────────────────────────────────
+
+def test_fingerprint_is_short_stable_and_not_the_value():
+    fp = doctor_cmd._fingerprint("gho_supersecret")
+    assert fp is not None
+    assert len(fp) == 12
+    assert "supersecret" not in fp
+    assert fp == doctor_cmd._fingerprint("gho_supersecret")
+    assert fp != doctor_cmd._fingerprint("gho_othersecret")
+    assert doctor_cmd._fingerprint(None) is None
+    assert doctor_cmd._fingerprint("") is None
+
+
+def test_keychain_value_none_without_security_binary(monkeypatch):
+    """Auf Nicht-macOS existiert der Ort nicht — kein Fund, kein Fehler."""
+    monkeypatch.setattr(doctor_cmd.shutil, "which", lambda _: None)
+    assert doctor_cmd._keychain_value("svc", "acct") is None
+
+
+def test_credential_pairs_accepts_both_env_spellings(monkeypatch):
+    """Die Verteilweg-Seite trägt den Namen mit oder ohne BIBI_JOB_ENV_-Präfix
+    (PLAN-32); beide müssen gefunden werden."""
+    monkeypatch.setattr(doctor_cmd.repo, "credential_checks",
+                        lambda: [{"env": "GITEA_TOKEN", "keychain_service": "s",
+                                  "keychain_account": "a"}])
+    monkeypatch.setattr(doctor_cmd, "_keychain_value", lambda s, a: "same")
+
+    prefixed = doctor_cmd._credential_pairs({"BIBI_JOB_ENV_GITEA_TOKEN": "same"})
+    assert prefixed[0].env_fp == prefixed[0].keychain_fp
+
+    bare = doctor_cmd._credential_pairs({"GITEA_TOKEN": "same"})
+    assert bare[0].env_fp == bare[0].keychain_fp

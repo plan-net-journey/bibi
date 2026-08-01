@@ -110,3 +110,37 @@ def test_label_deduplicates_tag_and_version(monkeypatch, ref, version, expected)
         "vcs_info": {"vcs": "git", "commit_id": "deadbeefcafe", "requested_revision": ref},
     }))
     assert ei.engine_info().label() == expected
+
+
+# --- Arbeitsbaum des Engine-Checkouts (m.rau/bibi#67) ------------------------
+
+
+def test_checkout_dir_only_where_a_checkout_exists(tmp_path):
+    """Ein VCS-Pin hat keinen Arbeitsbaum. Nur editable und lokaler Build
+    zeigen auf ein Verzeichnis, das man befragen könnte."""
+    from bibi.engine_info import EngineInfo
+    assert EngineInfo(url=f"file://{tmp_path}", editable=True).checkout_dir() == tmp_path
+    assert EngineInfo(url=f"file://{tmp_path}").checkout_dir() == tmp_path      # local
+    assert EngineInfo(url="https://example.invalid/bibi.git", ref="v1").checkout_dir() is None
+    assert EngineInfo(version="0.4.2").checkout_dir() is None
+
+
+def test_tree_status_is_none_without_a_checkout():
+    from bibi.engine_info import EngineInfo
+    assert EngineInfo(version="0.4.2").tree_status() is None
+
+
+def test_tree_status_reports_a_dirty_checkout(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+    (tmp_path / "a.txt").write_text("x")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp_path, check=True)
+
+    from bibi.engine_info import EngineInfo
+    info = EngineInfo(url=f"file://{tmp_path}", editable=True)
+    assert info.tree_status() == "clean"
+    (tmp_path / "a.txt").write_text("geändert")
+    assert info.tree_status() == "modified"

@@ -570,3 +570,107 @@ def test_doctor_ignores_legacy_worker_name_when_new_name_set(gitrepo: Path, caps
     out = capsys.readouterr().out
     assert rc == 0
     assert "legacy-node-name" not in out
+
+
+# ── Credential-Drift ────────────────────────────────────────────────
+# Live gefunden 2026-07-31 (Case 20260729.bibi4DesignStudie): der Gitea-Token
+# lag im Keychain UND im Verteilweg; nur der Verteilweg wurde erneuert. Wochen
+# unbemerkt, weil die Jobs weiterliefen und nur interaktive Aufrufe 401 bekamen.
+
+def _pair(kc, env, label="GITEA_TOKEN"):
+    return hygiene.CredentialPair(label=label, keychain_fp=kc, env_fp=env)
+
+
+def test_credential_drift_flags_differing_fingerprints():
+    out = hygiene.check_credential_drift([_pair("aaaaaaaaaaaa", "bbbbbbbbbbbb")])
+    assert len(out) == 1
+    assert out[0].kind == "credential-drift"
+    assert out[0].path == "GITEA_TOKEN"
+
+
+def test_credential_drift_silent_when_equal():
+    assert hygiene.check_credential_drift([_pair("aaaaaaaaaaaa", "aaaaaaaaaaaa")]) == []
+
+
+def test_credential_drift_silent_when_one_side_absent():
+    """Kein Fund, wenn ein Ort das Geheimnis gar nicht führt — Linux hat keinen
+    Keychain, und ein fehlender Eintrag ist eine Entscheidung, kein Widerspruch."""
+    assert hygiene.check_credential_drift([_pair(None, "bbbbbbbbbbbb")]) == []
+    assert hygiene.check_credential_drift([_pair("aaaaaaaaaaaa", None)]) == []
+    assert hygiene.check_credential_drift([_pair(None, None)]) == []
+
+
+def test_credential_drift_never_leaks_the_value():
+    """Die Meldung darf nur Fingerprints enthalten, nie den Wert selbst —
+    doctor läuft in Terminals, CI-Logs und pre-commit-Hooks."""
+    secret = "gho_supersecrettokenvalue"
+    out = hygiene.check_credential_drift([_pair("aaaaaaaaaaaa", "bbbbbbbbbbbb")])
+    assert secret not in out[0].detail
+
+
+def test_credential_drift_reports_each_pair():
+    out = hygiene.check_credential_drift([
+        _pair("aaaaaaaaaaaa", "bbbbbbbbbbbb", label="GITEA_TOKEN"),
+        _pair("cccccccccccc", "cccccccccccc", label="OTHER_TOKEN"),
+        _pair("dddddddddddd", "eeeeeeeeeeee", label="THIRD_TOKEN"),
+    ])
+    assert [f.path for f in out] == ["GITEA_TOKEN", "THIRD_TOKEN"]
+
+
+def test_doctor_flags_credential_drift(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.setattr(doctor_cmd.repo, "credential_checks",
+                        lambda: [{"env": "GITEA_TOKEN", "keychain_service": "s",
+                                  "keychain_account": "a"}])
+    # Werte bewusst so gewählt, dass sie in keinem deutschen Meldungstext als
+    # Teilstring auftauchen können — "alt" steckte in "veraltet".
+    monkeypatch.setattr(doctor_cmd, "_keychain_value",
+                        lambda s, a: "gho_keychainseite_xy71")
+    monkeypatch.setenv("BIBI_JOB_ENV_GITEA_TOKEN", "gho_verteilwegseite_zq93")
+    rc = doctor_cmd.run(_args())
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "credential-drift" in out
+    assert "gho_keychainseite_xy71" not in out      # nie der Wert
+    assert "gho_verteilwegseite_zq93" not in out
+
+
+def test_doctor_silent_when_credentials_match(gitrepo: Path, capsys, monkeypatch):
+    monkeypatch.setattr(hygiene, "git_lfs_installed", lambda: True)
+    monkeypatch.setattr(doctor_cmd.repo, "credential_checks",
+                        lambda: [{"env": "GITEA_TOKEN", "keychain_service": "s",
+                                  "keychain_account": "a"}])
+    monkeypatch.setattr(doctor_cmd, "_keychain_value", lambda s, a: "gleich")
+    monkeypatch.setenv("BIBI_JOB_ENV_GITEA_TOKEN", "gleich")
+    doctor_cmd.run(_args())
+    # Bewusst **nicht** ``rc == 0``: dieser Test sagt nur aus, dass bei
+    # gleichen Fingerprints kein Drift-Befund entsteht. Der Exit-Code hängt an
+    # *allen* Checks; ihn hier zu prüfen hängt den Test an einen globalen
+    # Zustand, den er nicht kontrolliert. Auf sarasate schlägt seit
+    # m.rau/bibi#78 ein anderer Check an, wodurch jeder rc==0-Test rot wird —
+    # dieser hier war das siebte Opfer, ohne eigenen Fehler.
+    assert "credential-drift" not in capsys.readouterr().out
+
+
+# --- git-Identität des Knotens (m.rau/bibi#18) -------------------------------
+
+def test_missing_git_identity_is_a_finding():
+    """Ohne ``user.name``/``user.email`` rät git eine Identität aus Benutzer und
+    Hostname und schreibt sie mit einer Warnung in den Commit. In einem
+    Team-Repo heisst das: Beiträge tragen ``mmu@sarasate`` statt eines Namens,
+    und wer das später gerade zieht, schreibt Historie um."""
+    assert hygiene.check_git_identity(name=None, email=None)
+    assert hygiene.check_git_identity(name="m.rau", email=None)
+    assert hygiene.check_git_identity(name=None, email="m@x")
+
+
+def test_complete_git_identity_is_silent():
+    assert hygiene.check_git_identity(name="m.rau", email="m@x") == []
+
+
+def test_git_identity_finding_names_both_commands():
+    """Der Befund soll die Reparatur enthalten, nicht nur das Problem — sonst
+    kostet er den Leser eine Suche."""
+    (f,) = hygiene.check_git_identity(name=None, email=None)
+    assert f.kind == "git-identity"
+    assert "user.name" in f.detail and "user.email" in f.detail

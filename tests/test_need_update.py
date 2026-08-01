@@ -224,3 +224,61 @@ def test_clients_table_marks_the_outdated_node(team_repo: Path):
          "last_heartbeat": 0.0, "connected_at": 0.0},
     ], now=0.0)
     assert html.count("NEED UPDATE") == 1
+
+
+# --- Symmetrie zur Repo-Zelle (m.rau/bibi#67) --------------------------------
+#
+# m.rau: "jeweils für beide, Repo und Engine, dieselbe dreiteilige Auskunft":
+#
+#     Engine:  dev (#hash)     modified   behind
+#     Repo:    trunk (#hash)   modified   synced
+#
+# Die Repo-Seite hat diese Form bereits (_node_git_status_chips). Die
+# Engine-Zelle zeigte allein das Label — kein Arbeitsbaum-Chip, kein
+# Aktualitäts-Chip.
+
+
+def test_engine_cell_shows_currency_as_a_chip():
+    """`behind` ist das verdict aus #43 — es existierte schon, trat aber nur
+    als NEED-UPDATE-Zeile auf, nicht als Chip in der Reihe."""
+    html = render._node_engine_cell("v0.3.0", "v0.4.0")
+    assert "chip" in html and "behind" in html
+
+
+def test_engine_cell_marks_a_current_node():
+    html = render._node_engine_cell("v0.4.0", "v0.4.0")
+    assert "current" in html
+    assert "behind" not in html
+
+
+def test_engine_cell_shows_a_branch_pin_as_undetermined():
+    """Bei einem Branch-Pin weiß lokal niemand, ob der Branch weitergewandert
+    ist. Lieber `branch` sagen als `current` behaupten."""
+    html = render._node_engine_cell("dev @ 86ea20e", "dev")
+    assert "branch" in html
+    assert "current" not in html
+
+
+def test_engine_cell_shows_the_working_tree_when_there_is_one():
+    """`modified` gibt es nur, wo ein Checkout existiert — bei editable und
+    lokalem Build."""
+    html = render._node_engine_cell("0.4.2 (editable)", "v0.4.2", tree="modified")
+    assert "modified" in html
+
+
+def test_engine_cell_omits_the_tree_chip_for_a_vcs_pin():
+    """Ein VCS-Pin hat keinen Arbeitsbaum. Dort entfällt der Chip, statt
+    `clean` zu behaupten — eine Aussage, die niemand geprüft hat."""
+    html = render._node_engine_cell("v0.4.2", "v0.4.2", tree=None)
+    # Auf den Chip-*Text* prüfen, nicht auf die Zeichenkette: "clean" steht
+    # auch in der CSS-Klasse `chip clean`, die der Aktualitäts-Chip für
+    # `current` trägt.
+    assert ">clean<" not in html
+    assert ">modified<" not in html
+
+
+def test_engine_cell_still_names_editable_and_local():
+    """Die bestehende Warnung bleibt: beide sind der Grund, warum es das
+    Engine-Info-Modul überhaupt gibt."""
+    assert "editable" in render._node_engine_cell("0.4.2 (editable)", "v0.4.2")
+    assert "local" in render._node_engine_cell("0.4.0 (local)", "v0.4.0")

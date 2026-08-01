@@ -280,14 +280,14 @@ def compute_next_fire(spec, now: float | None = None) -> float | None:
         except ValueError:
             return None
     sched = spec.schedule
-    if sched is None or sched in ("startup", "never", "on_demand"):
+    if sched is None or sched in ("startup", "autostart", "never", "on_demand"):
         return None
     if sched == "now":
         return now
     return _next_cron(sched, now)
 
 
-_SPECIAL = ("now", "startup", "never", "on_demand")
+_SPECIAL = ("now", "startup", "never", "on_demand", "autostart")
 
 
 def is_recurring(schedule: str | None) -> bool:
@@ -1091,7 +1091,13 @@ def fire_startup(conn: sqlite3.Connection, now: float | None = None) -> int:
     cur = conn.execute(
         "UPDATE jobs SET status='pending', next_fire_at=:now, attempt=0, reason=NULL, "
         "fire=fire+1, locked_at=NULL, started_at=NULL, finished_at=NULL, exit_code=NULL, "
-        "output_ref=NULL, deferred_at=NULL, updated_at=:now WHERE schedule='startup'",
+        # `autostart` loest der Parser seit m.rau/bibi#50 zu `startup` auf. Hier
+        # trotzdem beide: in der DB koennen Zeilen stehen, die vor dieser
+        # Aenderung geschrieben wurden, und ein Job, der beim Daemon-Start nicht
+        # feuert, meldet das von sich aus nicht -- genau der stille Fehler, um
+        # den es in dem Issue geht.
+        "output_ref=NULL, deferred_at=NULL, updated_at=:now "
+        "WHERE schedule IN ('startup','autostart')",
         {"now": now},
     )
     return cur.rowcount
