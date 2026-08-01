@@ -650,3 +650,27 @@ def test_doctor_silent_when_credentials_match(gitrepo: Path, capsys, monkeypatch
     # m.rau/bibi#78 ein anderer Check an, wodurch jeder rc==0-Test rot wird —
     # dieser hier war das siebte Opfer, ohne eigenen Fehler.
     assert "credential-drift" not in capsys.readouterr().out
+
+
+# --- git-Identität des Knotens (m.rau/bibi#18) -------------------------------
+
+def test_missing_git_identity_is_a_finding():
+    """Ohne ``user.name``/``user.email`` rät git eine Identität aus Benutzer und
+    Hostname und schreibt sie mit einer Warnung in den Commit. In einem
+    Team-Repo heisst das: Beiträge tragen ``mmu@sarasate`` statt eines Namens,
+    und wer das später gerade zieht, schreibt Historie um."""
+    assert hygiene.check_git_identity(name=None, email=None)
+    assert hygiene.check_git_identity(name="m.rau", email=None)
+    assert hygiene.check_git_identity(name=None, email="m@x")
+
+
+def test_complete_git_identity_is_silent():
+    assert hygiene.check_git_identity(name="m.rau", email="m@x") == []
+
+
+def test_git_identity_finding_names_both_commands():
+    """Der Befund soll die Reparatur enthalten, nicht nur das Problem — sonst
+    kostet er den Leser eine Suche."""
+    (f,) = hygiene.check_git_identity(name=None, email=None)
+    assert f.kind == "git-identity"
+    assert "user.name" in f.detail and "user.email" in f.detail

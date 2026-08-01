@@ -27,7 +27,7 @@ import os
 import shutil
 import subprocess
 
-from bibi import config, hygiene, repo
+from bibi import config, git_ops, hygiene, repo
 from bibi.daemon import job_db
 from bibi.schedule import discovery
 from bibi.schedule.models import is_claude_payload
@@ -184,6 +184,11 @@ def run(args: argparse.Namespace) -> int:
         + hygiene.check_legacy_job_env_names(cfg_and_env)
         + hygiene.check_legacy_worker_name(cfg_and_env)
         + hygiene.check_credential_drift(_credential_pairs(cfg_and_env))
+        # m.rau/bibi#18: fehlende git-Identität. Aus dem Repo gelesen, nicht aus
+        # der Knoten-Config — git löst sie selbst über lokal > global > System
+        # auf, und genau diese Auflösung soll der Befund abbilden.
+        + hygiene.check_git_identity(name=git_ops.git_user_name(),
+                                     email=git_ops.git_user_email())
     )
     if not findings:
         print("doctor: keine Hygiene-Probleme ✓")
