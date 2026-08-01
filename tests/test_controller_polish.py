@@ -63,6 +63,27 @@ def test_term_and_logbox_stay_dark_regardless_of_theme():
     # Body-Textfarbe (dunkel im Light-Mode) — auf jetzt dunklem Grund
     # unleserlich. Fester Hintergrund + feste helle Textfarbe, unabhängig von
     # :root[data-theme].
-    assert ".term { background: #1a1a1a; color: #ddd;" in render._CSS
-    assert ".logbox { height: 72vh; overflow-y: auto; background: #1a1a1a; color: #ddd;" in render._CSS
-    assert ".md pre { background: #1a1a1a; color: #ddd;" in render._CSS
+    #
+    # Seit #68 stehen die Werte als --term-*-Token statt als Literale. Geprüft
+    # wird deshalb der Sachverhalt und nicht mehr die Schreibweise: dass alle
+    # drei Boxen dieselbe Quelle benutzen UND diese Quelle in beiden Themes
+    # denselben Wert trägt. Das ist schärfer als vorher — ein Literal konnte
+    # nur an einer Stelle falsch sein, ein Token kann in einem Satz abweichen,
+    # und genau das würde die Boxen theme-abhängig machen.
+    import re
+
+    for box in (".term {", ".logbox {", ".md pre {"):
+        decl = render._CSS[render._CSS.index(box):][:220]
+        assert "var(--term-bg)" in decl, box
+        assert "var(--term-text)" in decl, box
+
+    vals: dict[str, set[str]] = {}
+    for sel in (":root", ':root[data-theme="light"]', ':root[data-theme="dark"]'):
+        m = re.search(re.escape(sel) + r"\s*\{(.*?)\n\}", render._CSS, re.S)
+        assert m, sel
+        for tok in ("--term-bg", "--term-text"):
+            hit = re.search(tok + r"\s*:\s*([^;]+);", m.group(1))
+            assert hit, f"{tok} fehlt in {sel}"
+            vals.setdefault(tok, set()).add(hit.group(1).strip())
+    for tok, seen in vals.items():
+        assert len(seen) == 1, f"{tok} ist theme-abhängig geworden: {seen}"
