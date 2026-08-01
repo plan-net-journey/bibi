@@ -399,3 +399,38 @@ def test_expected_version_form_warns_when_not_pushed(monkeypatch):
         deploy_result={"ok": True, "changed": True, "ref": "v0.2.3",
                        "was": "v0.2.2", "pushed": False})
     assert "NICHT gepusht" in html
+
+
+# ── m.rau/bibi#44: ein Sitzungs-Knoten hat keinen Supervisor ────────────────
+
+
+def test_restart_cell_marks_a_session_node_before_the_click():
+    """Die Anforderung aus dem Plan: der Knopf macht es **vorher** sichtbar,
+    statt es erst im Ergebnis zu erwähnen. Wer erst nach dem Klick erfährt, dass
+    niemand zurückkommt, hat seine eigene Sitzung bereits abgeschossen."""
+    workers = [{"worker": "air2024", "host": "mac", "port": 8780, "node_id": "n1",
+                "session": True, "stale": False, "connected_at": 0, "last_heartbeat": 0}]
+    html = render._clients_table(workers, now=0)
+    assert ">session<" in html                    # als Chip lesbar, ohne Klick
+    assert ">Stop" in html                        # das Verb sagt, was passiert
+    assert "Restart<" not in html                 # und verspricht keinen Neustart
+    assert "nobody brings it back" in html        # im Bestätigungsdialog
+
+
+def test_restart_cell_is_unchanged_for_a_supervised_node():
+    workers = [{"worker": "sarasate", "host": "s", "port": 8781, "node_id": "n2",
+                "session": False, "stale": False, "connected_at": 0, "last_heartbeat": 0}]
+    html = render._clients_table(workers, now=0)
+    assert ">Restart" in html
+    assert ">session<" not in html
+    assert "nobody brings it back" not in html
+
+
+def test_restart_cell_treats_unknown_origin_as_before():
+    """Ein Client, der noch kein ``session`` meldet (älter als diese Änderung),
+    verhält sich wie bisher — eine Behauptung wäre schlechter als keine."""
+    workers = [{"worker": "alt", "host": "h", "port": 8782, "node_id": "n3",
+                "stale": False, "connected_at": 0, "last_heartbeat": 0}]
+    html = render._clients_table(workers, now=0)
+    assert ">Restart" in html
+    assert ">session<" not in html

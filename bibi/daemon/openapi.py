@@ -178,6 +178,11 @@ class WorkerHeartbeat(BaseModel):
     role: str | None = None
     port: int | None = None
     client_config_version: str | None = None
+    # m.rau/bibi#44: gehoert der sendende Daemon einer Sitzung (kein
+    # Supervisor) oder einer Unit? ``None`` heisst ausdruecklich *unbekannt*
+    # (Client aelter als diese Aenderung), nicht *keine Sitzung* -- dieselbe
+    # Unterscheidung, die ``portfile.read()`` fuer denselben Wert trifft.
+    session: bool | None = None
     # m.rau/bibi#19: ``engine`` ist die Bezeichnung des installierten Stands
     # (``engine_info.EngineInfo.label()`` — ein Tag wie "v0.2.0", sonst
     # "dev @ 86ea20e", oder "0.2.1 (editable)" für einen Knoten, der gegen ein
