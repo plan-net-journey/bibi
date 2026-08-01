@@ -365,6 +365,36 @@ def unmerged_agent_branches(*, repo_root: Path, trunk: str = "trunk") -> list[st
     return sorted(line.strip() for line in proc.stdout.splitlines() if line.strip())
 
 
+def orphaned_agent_branches(*, repo_root: Path, trunk: str = "trunk") -> list[str]:
+    """``agent/*``-Branches, deren Commits **alle** inhaltlich schon in trunk
+    stecken — nur unter anderem SHA (m.rau/bibi#13).
+
+    Die Teilmenge von :func:`unmerged_agent_branches`, die weder ein Merge noch
+    der Sweep je auflösen kann: nach einem Rebase von trunk (den ``/sync`` zur
+    Konfliktauflösung selbst herbeiführt) zeigen alle davon abzweigenden
+    Branches auf ersetzte Commits. ``--no-merged`` sieht sie weiter als
+    ungemergt, zu holen gibt es aber nichts. Der Worker verweigert dann korrekt
+    den ``-B``-Reset, der Sweep kann nicht heilen — beide Mechanismen zeigen
+    aufeinander, der Zustand bleibt stehen. Erfahren hat es bisher nur, wer
+    zufällig einen Job startete, der darüber stolperte.
+
+    **Ein Teil-Rewrite zählt nicht.** Steckt auch nur ein Commit noch nirgends
+    sonst, trägt der Branch echte Arbeit — im auslösenden Vorfall war das einer
+    von vieren, mit einer 245-zeiligen Ergebnisdatei. Die Grenze verläuft
+    deshalb bei ``equivalent == total``, nicht bei ``equivalent > 0``.
+
+    Reine Auskunft, hier wird nichts angefasst: ob ein Branch zurückgesetzt
+    werden darf, kann nur ein Mensch entscheiden.
+    """
+    from bibi.daemon.worktree import ahead_counts
+    out: list[str] = []
+    for branch in unmerged_agent_branches(repo_root=repo_root, trunk=trunk):
+        total, equivalent = ahead_counts(repo_root=repo_root, branch=branch, trunk=trunk)
+        if total and equivalent == total:
+            out.append(branch)
+    return out
+
+
 def remerge_all(*, repo_root: Path, trunk: str = "trunk", lock=None) -> dict[str, str]:
     """Alle unmergten ``agent/*``-Branches nach trunk mergen. ``{branch: status}``."""
     branches = unmerged_agent_branches(repo_root=repo_root, trunk=trunk)

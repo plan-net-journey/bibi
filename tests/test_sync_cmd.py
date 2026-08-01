@@ -533,3 +533,98 @@ def test_hook_start_warns_on_conflict_flag(repo_with_origin, capsys):
     rc = main(["sync", "hook-start"])
     assert rc == 1
     assert "sync" in capsys.readouterr().err.lower()
+
+
+# --- m.rau/bibi#13: verwaiste agent/*-Branches melden, nicht reparieren ------
+
+def _agent_branch_merged_into_trunk(root: Path, slug: str, fname: str) -> None:
+    """Ein Job-Lauf, sauber nach trunk gemergt — der Zustand VOR dem Rebase.
+
+    Genau so entsteht der Vorfall: der Commit liegt danach buchstäblich auf
+    trunk, und der Rebase im nächsten ``/sync`` ersetzt ihn durch einen mit
+    anderem SHA. Der Branch zeigt dann auf einen Commit, den es in trunk nicht
+    mehr gibt — obwohl sein Inhalt dort steht.
+    """
+    from bibi.daemon import mergeback, worktree as wt
+    path = wt.prepare(repo_root=root, work_dir=root / "data" / "worktrees", slug=slug)
+    (path / fname).write_text("Ergebnis\n", encoding="utf-8")
+    wt.commit(worktree=path, message=f"{slug}: run", slug=slug)
+    assert mergeback.merge_back(repo_root=root, slug=slug,
+                                now=FAR_FUTURE_TS).status == "merged"
+
+
+def test_sync_continue_reports_branches_orphaned_by_the_rebase(
+        repo_with_origin, tmp_path, capsys):
+    """Der Vorfall selbst, in einem Test: der Rebase, den ``/sync`` zur
+    Konfliktauflösung herbeiführt, verwaist die Branches — und bisher erfuhr das
+    nur, wer zufällig einen Job startete, der darüber stolperte."""
+    root, origin = repo_with_origin
+    _agent_branch_merged_into_trunk(root, "rest", "rest.md")
+    _diverge(origin, tmp_path)
+    _commit_local_edit(root)
+
+    main(["sync", "--apply"])                                   # → Konflikt offen
+    (root / "pyproject.toml").write_text("RESOLVED\n", encoding="utf-8")
+    capsys.readouterr()                                          # Vorlauf verwerfen
+
+    assert main(["sync", "continue"]) == 0
+    out = capsys.readouterr().out
+    assert "agent/rest" in out
+    assert "git branch -f agent/rest trunk" in out               # der Handgriff
+    # …und der Branch ist unangetastet: gemeldet, nicht repariert.
+    assert "agent/rest" in _sh(root, "branch", "--list", "agent/rest")
+    from bibi.daemon import mergeback
+    assert mergeback.orphaned_agent_branches(repo_root=root) == ["agent/rest"]
+
+
+def test_sync_apply_reports_orphans_after_a_clean_rebase(
+        repo_with_origin, tmp_path, capsys):
+    """Ein Rebase braucht keinen Konflikt, um zu verwaisen — der konfliktfreie
+    Pull tut dasselbe. Wer nur ``sync continue`` meldete, träfe den selteneren
+    der beiden Fälle."""
+    root, origin = repo_with_origin
+    _agent_branch_merged_into_trunk(root, "rest", "rest.md")
+    _remote_ahead(origin, tmp_path)
+    _commit_local_edit(root)
+
+    assert main(["sync", "--apply"]) == 0
+    out = capsys.readouterr().out
+    assert "agent/rest" in out
+    assert "git branch -f agent/rest trunk" in out
+
+
+def test_sync_stays_quiet_about_branches_with_genuine_work(
+        repo_with_origin, tmp_path, capsys):
+    """Die Gegenprobe, und sie ist der Kern der Entscheidung: ein Branch mit
+    echter, nirgends sonst vorhandener Arbeit darf hier NICHT auftauchen — die
+    Meldung nennt einen Reset, und der würde sie wegwerfen.
+
+    Damit er den Rebase ungemergt überlebt, blockiert ihn Ebene 4s Idle-Guard
+    (dieselbe Konstellation wie in
+    ``test_sync_continues_normal_flow_after_quiet_live_edit_branch``): Schritt 0
+    von ``/sync`` würde ihn sonst selbst nach trunk mergen — und danach stünde
+    er zu Recht in der Liste, weil seine Arbeit dann dort steht. Genau daran ist
+    die erste Fassung dieses Tests gescheitert."""
+    from bibi.daemon import mergeback, worktree as wt
+    root, origin = repo_with_origin
+    path = wt.prepare(repo_root=root, work_dir=root / "data" / "worktrees", slug="echt")
+    (path / "pyproject.toml").write_text("JOB\n", encoding="utf-8")
+    wt.commit(worktree=path, message="echt: run", slug="echt")
+    (root / "pyproject.toml").write_text("TRUNK\n", encoding="utf-8")
+    git_ops.stage_and_commit(None, "trunk diverge")   # bewusst NICHT vordatiert
+    _remote_ahead(origin, tmp_path)
+
+    main(["sync", "--apply"])
+    assert "git branch -f" not in capsys.readouterr().out
+    # Der Branch trägt weiterhin echte, nirgends sonst vorhandene Arbeit.
+    assert mergeback.unmerged_agent_branches(repo_root=root) == ["agent/echt"]
+    assert mergeback.orphaned_agent_branches(repo_root=root) == []
+
+
+def test_sync_says_nothing_when_no_agent_branch_exists(repo_with_origin, tmp_path, capsys):
+    """Der Normalfall bleibt still — eine Zeile, die bei jedem Lauf erscheint,
+    wird nach dem dritten Mal nicht mehr gelesen."""
+    root, origin = repo_with_origin
+    _remote_ahead(origin, tmp_path)
+    assert main(["sync", "--apply"]) == 0
+    assert "git branch -f" not in capsys.readouterr().out
