@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from bibi.wrapper import exec_backend, output, run_job
+from tests._docker import container_skip_reason
 
 pytestmark = pytest.mark.slow
 
@@ -325,19 +326,12 @@ def test_stop_container_noop_without_job_id(monkeypatch):
 
 # ── Smoke gegen echtes Docker ────────────────────────────────────────────────
 
-def _docker_ok() -> bool:
-    bin_ = exec_backend.resolve_docker_bin(dict(os.environ))
-    env = dict(os.environ)
-    env["PATH"] = str(Path(bin_).parent) + os.pathsep + env.get("PATH", "")
-    try:
-        r = subprocess.run([bin_, "version", "--format", "{{.Server.Version}}"],
-                           capture_output=True, text=True, env=env, timeout=15)
-        return r.returncode == 0 and bool(r.stdout.strip())
-    except (OSError, subprocess.SubprocessError):
-        return False
+# Gemessene Voraussetzung statt „läuft Docker?" (m.rau/bibi#86) — beide
+# Smoke-Tests unten schreiben aus dem Container in einen Bind-Mount und
+# brauchen dafür echte UID-Durchreichung. Siehe ``tests/_docker.py``.
+_SKIP = container_skip_reason()
 
-
-docker = pytest.mark.skipif(not _docker_ok(), reason="kein laufendes Docker")
+docker = pytest.mark.skipif(_SKIP is not None, reason=_SKIP or "")
 
 
 @docker

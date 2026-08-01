@@ -14,26 +14,20 @@ from pathlib import Path
 import pytest
 
 from bibi.wrapper import exec_backend, output, run_job
+from tests._docker import container_skip_reason
 
 _DOCKER = exec_backend.resolve_docker_bin(dict(os.environ))
 _ENV = {**os.environ, "PATH": str(Path(_DOCKER).parent) + os.pathsep + os.environ.get("PATH", "")}
 
 
-def _docker_and_image() -> bool:
-    try:
-        v = subprocess.run([_DOCKER, "version", "--format", "{{.Server.Version}}"],
-                           capture_output=True, text=True, env=_ENV, timeout=15)
-        if v.returncode != 0 or not v.stdout.strip():
-            return False
-        img = subprocess.run([_DOCKER, "image", "inspect", "bibi-base:dev"],
-                             capture_output=True, env=_ENV, timeout=15)
-        return img.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
+# Die Voraussetzung wird **gemessen**, nicht aus „läuft Docker?" geschlossen
+# (m.rau/bibi#86): beide Tests unten starten mit ``--user <host-uid>:0`` und
+# schreiben in einen Bind-Mount. Reicht der Docker-Server die Host-UID nicht
+# durch, scheitern sie an der Umgebung statt am Code — und der Grund steht
+# dann im Skip-Text statt in einem verwirrenden „Permission denied".
+_SKIP = container_skip_reason()
 
-
-needs = pytest.mark.skipif(not _docker_and_image(),
-                           reason="kein Docker oder bibi-base:dev fehlt")
+needs = pytest.mark.skipif(_SKIP is not None, reason=_SKIP or "")
 
 
 @needs
