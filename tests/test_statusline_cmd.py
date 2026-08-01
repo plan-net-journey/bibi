@@ -204,3 +204,41 @@ def test_main_handles_bad_json(repo_with_origin, monkeypatch, capsys):
     rc = main(["statusline"])
     assert rc == 0  # robust: niemals crashen
     capsys.readouterr()
+
+
+# --- Upgrade-Aufforderung: hart über alles (m.rau/bibi#94) ---
+
+def test_upgrade_notice_leads_the_line(repo_with_origin, monkeypatch):
+    """Wartet ein Upgrade, steht die Aufforderung **vor** allem anderen.
+
+    „Hart über alles" heißt Vorrang, nicht Einreihen: eingereiht zwischen
+    Branch und ctx% wäre sie ein Segment unter sechsen und damit genau so
+    übersehbar wie der Zustand, den sie melden soll.
+    """
+    from bibi import upgrade_notice
+    monkeypatch.setattr(upgrade_notice, "pending",
+                        lambda *a, **kw: {"expected": "v0.6.0",
+                                          "running": "v0.5.3"})
+    line = _render(model={"display_name": "Opus"})
+    assert "UPGRADE" in line
+    assert line.index("UPGRADE") < line.index("Opus")
+
+
+def test_no_upgrade_notice_when_current(repo_with_origin, monkeypatch):
+    """Ohne wartendes Upgrade bleibt die Leiste, wie sie war — sonst wäre der
+    Hinweis dauerhaft da und würde nach dem zweiten Mal überlesen."""
+    from bibi import upgrade_notice
+    monkeypatch.setattr(upgrade_notice, "pending", lambda *a, **kw: None)
+    assert "UPGRADE" not in _render(model={"display_name": "Opus"})
+
+
+def test_statusline_survives_a_broken_upgrade_check(repo_with_origin, monkeypatch):
+    """Die Leiste darf an der Aufforderung nicht scheitern — sie ist eine
+    Beigabe, und eine leere Leiste wäre der teurere Fehler."""
+    from bibi import upgrade_notice
+
+    def boom(*a, **kw):
+        raise RuntimeError("kaputt")
+
+    monkeypatch.setattr(upgrade_notice, "pending", boom)
+    assert "Opus" in _render(model={"display_name": "Opus"})

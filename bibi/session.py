@@ -37,7 +37,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-from bibi import config, repo
+from bibi import config, repo, upgrade_notice
 from bibi.daemon import portfile, session_registry
 
 #: Wie lange auf den Fetch beim Start gewartet wird, wenn der Nutzer nichts
@@ -412,6 +412,30 @@ def _parse(argv: list[str] | None) -> tuple[argparse.Namespace, list[str]]:
     return p.parse_known_args(argv)
 
 
+def _demand_upgrade(root: Path) -> None:
+    """Ein wartendes Upgrade fordern, solange der Mensch noch hinsieht
+    (m.rau/bibi#94).
+
+    Der Platz ist bewusst hier: direkt hinter der Oberflächen-Meldung, im Block
+    der übrigen ``bibi:``-Zeilen und vor dem Übergang an Claude. Danach gehört
+    der Bildschirm einem anderen Programm.
+
+    Dass es überhaupt eine Aufforderung braucht, ist die Eigenart des
+    Sitzungs-Knotens: er hat keinen Supervisor, der einen Neustart ausführen
+    könnte. Die Abgrenzung — wer bekommt sie, wer nicht — liegt in
+    ``upgrade_notice.pending()``, nicht hier.
+
+    Nie eine Exception: eine Sitzung, die an ihrem eigenen Hinweis scheitert,
+    wäre der teurere Fehler.
+    """
+    try:
+        st = upgrade_notice.pending(root)
+        if st:
+            print(upgrade_notice.banner(st), flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     args, claude_args = _parse(argv)
 
@@ -443,6 +467,7 @@ def main(argv: list[str] | None = None) -> int:
             watcher.start()
         url = f"http://127.0.0.1:{port}/-/"
         print(f"bibi: Oberfläche auf {url}", flush=True)
+        _demand_upgrade(root)
         if not args.no_browser:
             try:
                 webbrowser.open(url)

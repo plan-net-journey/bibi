@@ -626,3 +626,59 @@ def test_hostless_node_starts_without_connect(team_repo: Path, monkeypatch, tmp_
     from bibi.ctrl import main as ctrl_main
     ctrl_main(["init", "--non-interactive", "--role", "synchronizer,controller"])
     assert "--connect" not in session._daemon_argv(_args(), team_repo)
+
+
+# ── Upgrade-Aufforderung beim Start (m.rau/bibi#94) ─────────────────────────
+
+
+def test_start_demands_the_upgrade(team_repo: Path, no_side_effects,
+                                   monkeypatch: pytest.MonkeyPatch, capsys):
+    """Wartet ein Upgrade, sagt der Start es — und nennt den Weg.
+
+    Für einen Sitzungs-Knoten endet der Deploy-Weg beim Menschen. Sagt ihm
+    niemand, dass ein Upgrade bereitliegt, bleibt der Knoten beliebig lange auf
+    dem alten Stand; genau der Zustand, den `release.sh` heute mit „zieht beim
+    nächsten Start nach" verbucht.
+    """
+    from bibi import upgrade_notice
+    monkeypatch.setattr(upgrade_notice, "pending",
+                        lambda *a, **kw: {"expected": "v0.6.0",
+                                          "running": "v0.5.3"})
+    monkeypatch.setattr(session, "_start_daemon", lambda a, r: _FakeProc(54321))
+    monkeypatch.setattr(session, "_wait_healthy", lambda *a, **kw: True)
+
+    assert session.main([]) == 0
+    out = capsys.readouterr().out
+    assert "UPGRADE" in out
+    assert "v0.6.0" in out and "v0.5.3" in out
+    assert "exit" in out
+
+
+def test_start_is_silent_without_a_pending_upgrade(team_repo: Path, no_side_effects,
+                                                   monkeypatch: pytest.MonkeyPatch,
+                                                   capsys):
+    """Nicht bei jedem Start nerven — fällig ist der Hinweis nur, wenn gepinnt
+    ≠ laufend."""
+    from bibi import upgrade_notice
+    monkeypatch.setattr(upgrade_notice, "pending", lambda *a, **kw: None)
+    monkeypatch.setattr(session, "_start_daemon", lambda a, r: _FakeProc(54321))
+    monkeypatch.setattr(session, "_wait_healthy", lambda *a, **kw: True)
+
+    assert session.main([]) == 0
+    assert "UPGRADE" not in capsys.readouterr().out
+
+
+def test_start_survives_a_broken_upgrade_check(team_repo: Path, no_side_effects,
+                                               monkeypatch: pytest.MonkeyPatch):
+    """Der Sitzungsstart darf an der Aufforderung nicht scheitern. Sie ist eine
+    Beigabe; eine Sitzung, die deshalb nicht startet, wäre der teurere Fehler."""
+    from bibi import upgrade_notice
+
+    def boom(*a, **kw):
+        raise RuntimeError("kaputt")
+
+    monkeypatch.setattr(upgrade_notice, "pending", boom)
+    monkeypatch.setattr(session, "_start_daemon", lambda a, r: _FakeProc(54321))
+    monkeypatch.setattr(session, "_wait_healthy", lambda *a, **kw: True)
+
+    assert session.main([]) == 0
