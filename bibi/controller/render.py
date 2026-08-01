@@ -25,53 +25,143 @@ _HTMX = "/-/static/htmx-1.9.12.min.js"
 # fängt der Ping-Watchdog in _EVENTS_JS ab, nicht mehr ein Poll-Netz.
 
 _CSS = """
-:root { color-scheme: light dark; }
-:root[data-theme="light"] { color-scheme: light; }
-:root[data-theme="dark"] { color-scheme: dark; }
-body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem;
+/* ── Grundpalette (m.rau/bibi#68) ───────────────────────────────────────────
+   Bis v0.5.3 hatte die UI keine. `color-scheme: light dark` ueberliess Grund
+   und Textfarbe dem Browser, und alles Neutrale lief ueber den Alpha-Grau-
+   Trick (#8881 … #888), der theme-blind funktioniert — deshalb musste bibi
+   nie ein zweites Theme pflegen. Das ist ab hier vorbei: es sind zwei Themes,
+   dauerhaft, und beide sind vollstaendig gezeichnet. Der Preis stand so in
+   #68 und wird bewusst bezahlt.
+
+   Die Werte kommen aus Teil 5 der Design-Studie (bibi-notes,
+   20260729.bibi4DesignStudie-77178146) — die einzige Palette, an der eine
+   Gestaltungsentscheidung tatsaechlich getroffen wurde (Layout 01
+   Kontenblatt, 2026-07-31). Abgeleitet aus dem interaktiven Claude-Code-CLI:
+   warmes Papier gegen warmes Anthrazit, Terracotta als einziger
+   Marken-Akzent, gedimmtes Grau als Haupttraeger, Semantikfarben nur an
+   Zustandsstellen.
+
+   Terracotta traegt genau EINE Bedeutung — Interaktion. Sie an Marke und
+   Job-Typ zugleich zu geben liess im Studien-Mockup die halbe Tabelle orange
+   werden und die Slugs sich als Fehlerzustand lesen. Der Fehlerton haelt
+   deshalb Farbwinkel-Abstand (10,9° statt der 6,6°, die naheliegend gewesen
+   waeren); korrigiert wurde der Fehlerton, nicht die Marke. */
+:root {
+  color-scheme: light;
+  --bg: #faf9f5; --text: #1f1e1b; --dim: #6f695e; --faint: #9c9689;
+  --line: #00000012; --line-hard: #00000024; --hover: #00000008;
+  --brand: #c25f3c;
+  --green: #3f7d52; --blue: #3a6f9e; --amber: #a3762a; --red: #b0342b;
+  --btnbg: #00000008; --btnline: #00000022;
+  --greensoft: #3f7d5222; --bluesoft: #3a6f9e1a; --blueline: #3a6f9e55;
+  --ambersoft: #a3762a22; --amberline: #a3762a55;
+  --redsoft: #b0342b14; --redline: #b0342b44;
+  --cell0: #00000009; --cell1: #3a6f9e33; --cell2: #3a6f9e66;
+  --cell3: #3a6f9ea6; --cell4: #3a6f9e;
+  --term-bg: #1c1b18; --term-text: #e8e5dc; --term-link: #d97757;
+}
+/* Wer nichts gewaehlt hat, bekommt was sein System sagt. Die ausdrueckliche
+   Wahl steht weiter unten und schlaegt das — die Reihenfolge ist hier die
+   ganze Kaskade. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #1c1b18; --text: #e8e5dc; --dim: #948e81; --faint: #6d675c;
+    --line: #ffffff12; --line-hard: #ffffff26; --hover: #ffffff08;
+    --brand: #d97757;
+    --green: #6aa87e; --blue: #6b9fd0; --amber: #cb9a4a; --red: #d4534a;
+    --btnbg: #ffffff0d; --btnline: #ffffff26;
+    --greensoft: #6aa87e26; --bluesoft: #6b9fd022; --blueline: #6b9fd055;
+    --ambersoft: #cb9a4a26; --amberline: #cb9a4a55;
+    --redsoft: #d4534a1a; --redline: #d4534a44;
+    --cell0: #ffffff0d; --cell1: #6b9fd033; --cell2: #6b9fd066;
+    --cell3: #6b9fd0a6; --cell4: #6b9fd0;
+    --term-bg: #1c1b18; --term-text: #e8e5dc; --term-link: #d97757;
+  }
+}
+/* Der data-theme-Toggle schrieb bis #68 nur `color-scheme` um. Mit Token muss
+   er Token-Saetze umschalten, sonst aendert ein Klick die Farben des Browsers
+   und nicht die der Seite. Beide Saetze stehen vollstaendig da und keiner ist
+   vom anderen abgeleitet: was nur zur Haelfte gezeichnet ist, faellt erst dem
+   auf, der genau diesen Modus benutzt. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #faf9f5; --text: #1f1e1b; --dim: #6f695e; --faint: #9c9689;
+  --line: #00000012; --line-hard: #00000024; --hover: #00000008;
+  --brand: #c25f3c;
+  --green: #3f7d52; --blue: #3a6f9e; --amber: #a3762a; --red: #b0342b;
+  --btnbg: #00000008; --btnline: #00000022;
+  --greensoft: #3f7d5222; --bluesoft: #3a6f9e1a; --blueline: #3a6f9e55;
+  --ambersoft: #a3762a22; --amberline: #a3762a55;
+  --redsoft: #b0342b14; --redline: #b0342b44;
+  --cell0: #00000009; --cell1: #3a6f9e33; --cell2: #3a6f9e66;
+  --cell3: #3a6f9ea6; --cell4: #3a6f9e;
+  --term-bg: #1c1b18; --term-text: #e8e5dc; --term-link: #d97757;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1c1b18; --text: #e8e5dc; --dim: #948e81; --faint: #6d675c;
+  --line: #ffffff12; --line-hard: #ffffff26; --hover: #ffffff08;
+  --brand: #d97757;
+  --green: #6aa87e; --blue: #6b9fd0; --amber: #cb9a4a; --red: #d4534a;
+  --btnbg: #ffffff0d; --btnline: #ffffff26;
+  --greensoft: #6aa87e26; --bluesoft: #6b9fd022; --blueline: #6b9fd055;
+  --ambersoft: #cb9a4a26; --amberline: #cb9a4a55;
+  --redsoft: #d4534a1a; --redline: #d4534a44;
+  --cell0: #ffffff0d; --cell1: #6b9fd033; --cell2: #6b9fd066;
+  --cell3: #6b9fd0a6; --cell4: #6b9fd0;
+  --term-bg: #1c1b18; --term-text: #e8e5dc; --term-link: #d97757;
+}
+/* Monospace ist gemessen, nicht geschaetzt (Canvas-measureText an den echten
+   Zeilen der UI): die breiteste Zeile — Nodes mit 13 Spalten — braucht in
+   Mono 14px 851 px, verfuegbar sind 1024. Der Preis ist 14px Grundgroesse
+   statt 15px, und dafuer bleibt die max-width unangetastet. */
+body { font: 14px/1.55 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+       background: var(--bg); color: var(--text);
+       margin: 0; padding: 1.5rem;
        max-width: 64rem; margin-inline: auto; }
 /* Rahmen um die ganze Nav-Leiste, von "bibi" links bis Theme-Toggle rechts
    (Bibi4-Iteration, User-Fund) — derselbe Stil wie .panel-card/.card. */
 header { display: flex; align-items: baseline; justify-content: space-between;
-         gap: .75rem; flex-wrap: wrap; border: 1px solid #8883; border-radius: .4rem;
+         gap: .75rem; flex-wrap: wrap; border: 1px solid var(--line); border-radius: .4rem;
          padding: .5rem .9rem; margin-bottom: .6rem; }
 .nav-left, .nav-right { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; }
 header .handles { margin: 0; }
 h1 { font-size: 1.4rem; margin: 0; }
-.muted { color: #888; font-size: .85rem; }
+.muted { color: var(--dim); font-size: .85rem; }
 .banner { margin: 0; padding: .35rem .75rem; border-radius: .35rem;
-          border: 1px solid #8884; font-size: .82rem; font-weight: 500;
+          border: 1px solid var(--btnline); font-size: .82rem; font-weight: 500;
           display: inline-block; }
-.banner.ok  { background: #1a7f3722; }
-.banner.bad { background: #c0392b22; }
+.banner.ok  { background: var(--greensoft); }
+.banner.bad { background: var(--redsoft); }
 table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-th { text-align: left; color: #888; font-weight: 500; padding: .35rem .5rem;
-     border-bottom: 1px solid #8883; }
-td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
+th { text-align: left; color: var(--faint); font-weight: 500; padding: .35rem .5rem;
+     border-bottom: 1px solid var(--line); }
+td { padding: .4rem .5rem; border-bottom: 1px solid var(--line); }
 .st { font-family: ui-monospace, monospace; }
-.st.complete { color: #5fb37a; }
+.st.complete { color: var(--green); }
 /* starting (#38): Live-Farbe wie running, aber gedimmt — der Job ist aktiv, sein
    Wrapper aber noch nicht gestartet. Ohne eigene Regel bliebe der Status
    ungefärbt und wäre optisch nicht von "pending" zu unterscheiden, obwohl er
    das Gegenteil bedeutet. */
-.st.starting { color: #5a9fe0; opacity: .7; }
-.st.running { color: #5a9fe0; }
-.st.awaiting { color: #d6a23e; }
-.st.pending, .st.deferred { color: #888; }
-.st.failed, .st.error, .st.killed, .st.zombie { color: #e06c5a; }
-.st.overdue { color: #d6a23e; }
-.kind { font-family: ui-monospace, monospace; font-size: .82rem; color: #999; }
+.st.starting { color: var(--blue); opacity: .7; }
+.st.running { color: var(--blue); }
+.st.awaiting { color: var(--amber); }
+.st.pending, .st.deferred { color: var(--dim); }
+.st.failed, .st.error, .st.killed, .st.zombie { color: var(--red); }
+.st.overdue { color: var(--amber); }
+.kind { font-family: ui-monospace, monospace; font-size: .82rem; color: var(--faint); }
 .handles { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center;
            margin: 1rem 0 .25rem; }
 /* Toggles (FOLLOW/THEME/RESCAN/MAINT) wie Nav-Text-Links, keine Buttons mehr
    (PLAN-19 Befund 7, User-Fund: "nicht Buttons und Text Links gemischt") —
    überschreibt das globale button{...} gezielt nur für diese Klasse. */
 .toggle { font: inherit; font-size: 1.3rem; line-height: 1; text-decoration: none;
-          color: #888; background: none; border: none; padding: 0; cursor: pointer; }
+          color: var(--dim); background: none; border: none; padding: 0; cursor: pointer; }
 .toggle:hover { text-decoration: underline; }
-.toggle.on { color: #5fb37a; }
-.toggle.warn { color: #d6a23e; }
-.toggle.bad { color: #e06c5a; }
+.toggle.on { color: var(--green); }
+.toggle.warn { color: var(--amber); }
+.toggle.bad { color: var(--red); }
 /* Disabled-aber-sichtbar (Bibi4-Iteration, User-Fund "eine App") — Host/
    Client zeigen dieselbe Toggle-Menge, nicht verfügbare Funktionen (z.B.
    MAINT auf dem Client) bleiben an Ort und Stelle, statt zu verschwinden. */
@@ -80,8 +170,8 @@ td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
    visualisieren, vielleicht als Spalten mit leerem oder gefuelltem
    Rechteck") — ersetzt die alte Komma-Text-Spalte im Clients-Screen. */
 .role-box { font-size: 1rem; }
-.role-box.on { color: #5fb37a; }
-.role-box.off { color: #666; opacity: .45; }
+.role-box.on { color: var(--green); }
+.role-box.off { color: var(--faint); opacity: .45; }
 /* Time-Toggle (Bibi4-Iteration, User-Fund: "Time: abs./rel./both" für die
    last/since- und next-Spalten) — alle drei Varianten stehen serverseitig
    immer im Markup, data-timeformat auf <html> blendet per CSS genau eine
@@ -91,37 +181,43 @@ td { padding: .4rem .5rem; border-bottom: 1px solid #8882; }
 :root[data-timeformat="both"] .tt-relonly,
 :root[data-timeformat="rel"] .tt-abs,
 :root[data-timeformat="rel"] .tt-relboth { display: none; }
-a.slug { font-weight: 600; text-decoration: none; }
+/* Links tragen die Marke — bis #68 hatten sie ueberhaupt keine eigene Farbe
+   und erbten den Browser-Standard (im Light-Mode ein dunkles Lila). Das war
+   schon einmal ein Lesbarkeitsproblem und wurde in der Logbox punktuell
+   uebermalt; mit einer eigenen Farbe erledigt sich der Sonderfall. Terracotta
+   heisst hier Interaktion und nur das — sie ist an keiner Typ- oder
+   Zustandsstelle vergeben. */
+a.slug { font-weight: 600; text-decoration: none; color: var(--brand); }
 a.slug:hover { text-decoration: underline; }
 .sched a { text-decoration: none; }
 .sched a:hover { text-decoration: underline; }
 a.rowlink { color: inherit; text-decoration: none; }
 a.rowlink:hover { text-decoration: underline; }
-h2 { font-size: .95rem; color: #888; margin: 1.5rem 0 .4rem; font-weight: 600; }
-.back { color: #888; text-decoration: none; font-size: .85rem; }
+h2 { font-size: .95rem; color: var(--dim); margin: 1.5rem 0 .4rem; font-weight: 600; }
+.back { color: var(--dim); text-decoration: none; font-size: .85rem; }
 .tab-active { font-weight: 600; border-bottom: 2px solid currentColor; }
-.meta { color: #aaa; font-size: .9rem; margin: .2rem 0 1rem; }
+.meta { color: var(--dim); font-size: .9rem; margin: .2rem 0 1rem; }
 /* Terminal-Boxen bleiben theme-unabhängig dunkel (PLAN-19 Befund 3, User-Fund:
    Light-Mode unleserlich) — vorher halbtransparentes Schwarz über dem
    wechselnden Seitenhintergrund, im Light-Mode nur mittelgrau statt dunkel;
    Text ohne eigene Farbe erbte zudem die Body-Textfarbe (im Light-Mode dunkel
    auf jetzt dunklem Grund). Fester Hintergrund + feste helle Standardfarbe. */
-.term { background: #1a1a1a; color: #ddd; border: 1px solid #8883; border-radius: .4rem;
+.term { background: var(--term-bg); color: var(--term-text); border: 1px solid var(--line); border-radius: .4rem;
         padding: .6rem .8rem; overflow-x: auto; font-family: ui-monospace, monospace;
         font-size: .82rem; line-height: 1.45; white-space: pre-wrap; }
-.term .err { color: #e06c5a; }
-.term .thinking { color: #888; font-style: italic; }
-.term .phase { color: #5a9fe0; font-style: italic; }
+.term .err { color: var(--red); }
+.term .thinking { color: var(--dim); font-style: italic; }
+.term .phase { color: var(--blue); font-style: italic; }
 .md { font-size: .92rem; }
-.md pre { background: #1a1a1a; color: #ddd; border: 1px solid #8883; border-radius: .4rem;
+.md pre { background: var(--term-bg); color: var(--term-text); border: 1px solid var(--line); border-radius: .4rem;
           padding: .6rem .8rem; overflow-x: auto; }
 .md code { font-family: ui-monospace, monospace; font-size: .85em; }
-.out-empty { color: #888; font-size: .85rem; font-style: italic; }
-button { font: inherit; background: #8882; border: 1px solid #8884;
+.out-empty { color: var(--dim); font-size: .85rem; font-style: italic; }
+button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnline);
          border-radius: .35rem; padding: .15rem .5rem; cursor: pointer; color: inherit; }
-.commit { font-family: ui-monospace, monospace; font-size: .8rem; color: #888; }
-.live { margin: .6rem 0 1rem; padding: .5rem .8rem; border: 1px solid #5a9fe066;
-        border-radius: .4rem; background: #5a9fe014; }
+.commit { font-family: ui-monospace, monospace; font-size: .8rem; color: var(--dim); }
+.live { margin: .6rem 0 1rem; padding: .5rem .8rem; border: 1px solid var(--blueline);
+        border-radius: .4rem; background: var(--bluesoft); }
 .live-head { display: flex; gap: .6rem; align-items: baseline; }
 .live .st { font-weight: 600; }
 .liveout { margin-top: .5rem; }
@@ -145,44 +241,44 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 .logbar { display: flex; gap: .6rem; align-items: center; margin: 1rem 0 .6rem;
           flex-wrap: wrap; }
 .logbar select, .logbar input { font: inherit; padding: .2rem .45rem; color: inherit;
-          background: #8881; border: 1px solid #8884; border-radius: .3rem; }
+          background: var(--btnbg); border: 1px solid var(--btnline); border-radius: .3rem; }
 .logbar input { flex: 1; min-width: 8rem; }
-.logbox { height: 72vh; overflow-y: auto; background: #1a1a1a; color: #ddd;
-          border: 1px solid #8883; border-radius: .4rem; padding: .6rem .8rem;
+.logbox { height: 72vh; overflow-y: auto; background: var(--term-bg); color: var(--term-text);
+          border: 1px solid var(--line); border-radius: .4rem; padding: .6rem .8rem;
           font-family: ui-monospace, monospace;
           font-size: .82rem; line-height: 1.5; white-space: pre-wrap; }
-.logbox .ln.warning { color: #d6a23e; }
-.logbox .ln.error   { color: #e06c5a; }
-.logbox .ln.debug   { color: #888; }
-/* a.slug hat sonst keine eigene Farbe (Jobs-/Schedule-Tabelle: soll dem Theme
-   folgen) — im .logbox hier aber erbt sie sonst Chromes color-scheme-abhängige
-   Standard-Linkfarbe (Light: dunkles #0000EE), obwohl der Hintergrund immer
-   dunkel bleibt (Bibi4-Iteration, User-Fund: "im Light Mode ist die
-   Schriftfarbe lila schwer zu lesen" — live gemessen, Root Cause). Fest statt
-   theme-abhängig, analog zu .ln.warning/.error oben. */
-.logbox a.slug { color: #9e9eff; }
-.feed { height: 45vh; overflow-y: auto; background: #0008; border: 1px solid #8883;
+.logbox .ln.warning { color: var(--amber); }
+.logbox .ln.error   { color: var(--red); }
+.logbox .ln.debug   { color: var(--dim); }
+/* Die Logbox ist theme-unabhaengig dunkel, ihre Links brauchen deshalb den
+   Dark-Ton der Marke statt des Theme-Tons — im Light-Mode saesse sonst ein
+   dunkles Terracotta auf Anthrazit. Der Anlass war urspruenglich ein anderer
+   (Chromes Standard-Linkfarbe, im Light-Mode dunkles Lila, User-Fund "im
+   Light Mode ist die Schriftfarbe lila schwer zu lesen"); den erledigt die
+   eigene Linkfarbe aus #68 mit, der Kontrast-Grund bleibt. */
+.logbox a.slug { color: var(--term-link); }
+.feed { height: 45vh; overflow-y: auto; background: var(--term-bg); border: 1px solid var(--line);
         border-radius: .4rem; padding: .6rem .8rem; font-family: ui-monospace, monospace;
         font-size: .85rem; line-height: 1.7; }
 .feed-row { white-space: pre-wrap; }
-.feed-row .t  { color: #888; }
-.feed-row .ex { color: #888; }
+.feed-row .t  { color: var(--dim); }
+.feed-row .ex { color: var(--dim); }
 .feed-row a.run  { color: inherit; text-decoration: none; opacity: .75; }
 .feed-row a.run:hover { text-decoration: underline; opacity: 1; }
 .feed-row .st.complete { font-weight: 600; }
 #bands h3 { margin: .7rem 0 .3rem; font-size: .95rem; }
-.bandscroll { max-height: 30vh; overflow-y: auto; border: 1px solid #8883;
+.bandscroll { max-height: 30vh; overflow-y: auto; border: 1px solid var(--line);
               border-radius: .4rem; padding: .35rem .6rem; margin-bottom: .4rem;
               font-family: ui-monospace, monospace; font-size: .85rem; }
 .band-row { padding: .15rem 0; }
 .outscroll { max-height: 72vh; overflow-y: auto; }
-.hitl { margin: .5rem 0 0; padding: .5rem .75rem; border: 1px solid #d6a23e55;
-        border-radius: .35rem; background: #d6a23e0d; }
+.hitl { margin: .5rem 0 0; padding: .5rem .75rem; border: 1px solid var(--amberline);
+        border-radius: .35rem; background: var(--ambersoft); }
 .hitl-label { font-weight: 600; font-size: .9rem; margin-bottom: .45rem; }
-.hitl a { color: #d6a23e; word-break: break-all; }
+.hitl a { color: var(--amber); word-break: break-all; }
 .liveterm { max-height: 24rem; overflow-y: auto; }
-.liveterm .lts { color: #888; user-select: none; }
-.liveclock { color: #5fb37a; font-size: .8rem; font-family: ui-monospace, monospace; }
+.liveterm .lts { color: var(--dim); user-select: none; }
+.liveclock { color: var(--green); font-size: .8rem; font-family: ui-monospace, monospace; }
 /* m.rau/bibi#62: drei Stufen statt auto-fit — breit 1x4, schmal 2x2, ganz
    schmal 4x1. Mit `repeat(auto-fit, minmax(9rem, 1fr))` entschied der Browser,
    wie viele Spalten es gibt, und ergab je nach Fensterbreite auch 3+1 — genau
@@ -197,18 +293,18 @@ button { font: inherit; background: #8882; border: 1px solid #8884;
 th a { color: inherit; text-decoration: none; cursor: pointer; }
 th a:hover { text-decoration: underline; }
 th.sorted { font-weight: 700; }
-.card { border: 1px solid #8883; border-radius: .4rem; padding: .55rem .7rem; }
-.card .label { font-size: .72rem; color: #888; text-transform: uppercase; letter-spacing: .03em; }
+.card { border: 1px solid var(--line); border-radius: .4rem; padding: .55rem .7rem; }
+.card .label { font-size: .72rem; color: var(--faint); text-transform: uppercase; letter-spacing: .03em; }
 .card .value { font-size: 1.05rem; font-weight: 600; margin-top: .1rem; }
-.card .value.ok { color: #5fb37a; }
-.card .value.bad { color: #e06c5a; }
-.card .sub { font-size: .75rem; color: #888; margin-top: .15rem; }
+.card .value.ok { color: var(--green); }
+.card .value.bad { color: var(--red); }
+.card .sub { font-size: .75rem; color: var(--dim); margin-top: .15rem; }
 /* Mehrzeilige Karten (PLAN-19 Befund 4, User-Entscheidung: Git UND Mode im
    selben 3-Zeilen-Stil, kein Trenner-Punkt mehr) — Host/Mode/Git ersetzen die
    bisherigen 6 Kacheln des Feed-Headers. */
 .card .cardline { font-size: 1.05rem; font-weight: 600; margin-top: .1rem; }
-.card .cardline.ok, .card a.ok { color: #5fb37a; }
-.card .cardline.bad, .card a.bad { color: #e06c5a; }
+.card .cardline.ok, .card a.ok { color: var(--green); }
+.card .cardline.bad, .card a.bad { color: var(--red); }
 .card a { text-decoration: none; }
 .card a:hover { text-decoration: underline; }
 /* Key/Value als echtes 2-Spalten-Grid (PLAN-21 Befund 7, User-Fund: "als
@@ -219,58 +315,58 @@ th.sorted { font-weight: 700; }
    kein Key/Value-Paar). */
 .card .kvgrid { display: grid; grid-template-columns: auto 1fr; row-gap: .2rem;
                 column-gap: .6em; margin-top: .15rem; }
-.card .kvgrid .k { font-size: .72rem; font-weight: 400; color: #888;
+.card .kvgrid .k { font-size: .72rem; font-weight: 400; color: var(--faint);
                    text-transform: uppercase; letter-spacing: .03em; align-self: center; }
 .card .kvgrid .v { font-size: 1.05rem; font-weight: 600; }
-.card .kvgrid .v.ok { color: #5fb37a; }
-.card .kvgrid .v.bad { color: #e06c5a; }
+.card .kvgrid .v.ok { color: var(--green); }
+.card .kvgrid .v.bad { color: var(--red); }
 /* Job-Status-Matrix (Bibi4-Iteration, User-Fund: "Apps enden nicht" — eigene
    Spalte je Kind statt der bisherigen 2x2-Aggregation ohne Kind-Aufschlüsselung,
    löst .kvgrid2 ab). 4 Spalten: Label + job/claude/app, row-major befüllt
    (Header-Zeile, dann Waiting/Running/Stopped). */
 .card .jobstatus-grid { display: grid; grid-template-columns: auto repeat(3, minmax(2.2rem, auto));
                         row-gap: .2rem; column-gap: .6em; margin-top: .15rem; }
-.card .jobstatus-grid .jsg-h { font-size: .68rem; font-weight: 400; color: #888;
+.card .jobstatus-grid .jsg-h { font-size: .68rem; font-weight: 400; color: var(--faint);
                                text-transform: uppercase; letter-spacing: .03em; text-align: right; }
-.card .jobstatus-grid .jsg-k { font-size: .72rem; font-weight: 400; color: #888;
+.card .jobstatus-grid .jsg-k { font-size: .72rem; font-weight: 400; color: var(--faint);
                                text-transform: uppercase; letter-spacing: .03em; align-self: center; }
 .card .jobstatus-grid .jsg-v { font-size: 1.0rem; font-weight: 600; text-align: right; }
-.side-empty { color: #888; font-size: .82rem; }
+.side-empty { color: var(--dim); font-size: .82rem; }
 .chip { font-family: ui-monospace, monospace; font-size: .7rem; font-weight: 700;
         padding: .1rem .45rem; border-radius: .3rem; display: inline-block; white-space: nowrap; }
 /* Git-Status je Job-MD (PLAN-21 Befund 10) — löst die vorherige Lokal/Remote-
    Abgleich-Chips (same/diff/local_only/remote_only) ab. */
-.chip.clean { background: #5fb37a2e; color: #5fb37a; }
-.chip.modified { background: #d6a23e2e; color: #d6a23e; }
-.chip.new { background: #5a9fe02e; color: #5a9fe0; }
-.chip.conflict { background: #e06c5a2e; color: #e06c5a; }
+.chip.clean { background: var(--greensoft); color: var(--green); }
+.chip.modified { background: var(--ambersoft); color: var(--amber); }
+.chip.new { background: var(--bluesoft); color: var(--blue); }
+.chip.conflict { background: var(--redsoft); color: var(--red); }
 /* Nodes-Screen Git-Status-Chips (Batch 9 Punkt 3) — dieselben Farben wie
    .tree-*/.sync-* (Feed-Git-Kachel), hier als Chip statt Klartext. */
-.chip.synced { background: #5fb37a2e; color: #5fb37a; }
-.chip.ahead { background: #d6a23e2e; color: #d6a23e; }
-.chip.behind, .chip.diverged { background: #e06c5a2e; color: #e06c5a; }
+.chip.synced { background: var(--greensoft); color: var(--green); }
+.chip.ahead { background: var(--ambersoft); color: var(--amber); }
+.chip.behind, .chip.diverged { background: var(--redsoft); color: var(--red); }
 .sparkline { display: block; vertical-align: middle; }
-.startbtn { font: inherit; font-size: .78rem; background: #5a9fe033; border: 1px solid #5a9fe066;
+.startbtn { font: inherit; font-size: .78rem; background: var(--bluesoft); border: 1px solid var(--blueline);
         border-radius: .35rem; padding: .2rem .55rem; cursor: pointer; color: inherit; font-weight: 600;
         white-space: nowrap; }
-.killbtn { font: inherit; font-size: .78rem; background: #e06c5a33; border: 1px solid #e06c5a66;
+.killbtn { font: inherit; font-size: .78rem; background: var(--redsoft); border: 1px solid var(--redline);
         border-radius: .35rem; padding: .2rem .55rem; cursor: pointer; color: inherit; font-weight: 600;
         white-space: nowrap; }
 .startbtn:disabled, .killbtn:disabled { opacity: .4; cursor: default; }
 .runhist { font-size: .86rem; }
-.runhist .row { display: flex; gap: .8rem; padding: .35rem 0; border-bottom: 1px solid #8881;
+.runhist .row { display: flex; gap: .8rem; padding: .35rem 0; border-bottom: 1px solid var(--line);
                 align-items: baseline; }
-.runhist a.row:hover { background: #8881; }
-.runhist .t { color: #888; font-family: ui-monospace, monospace; font-size: .78rem; flex: 0 0 4.4rem; }
+.runhist a.row:hover { background: var(--hover); }
+.runhist .t { color: var(--dim); font-family: ui-monospace, monospace; font-size: .78rem; flex: 0 0 4.4rem; }
 .gitsegment { font-family: ui-monospace, monospace; font-size: .95rem; }
-.gitsegment .sep { color: #888; }
-.tree-clean, .sync-synced { color: #5fb37a; }
-.tree-modified, .sync-ahead { color: #d6a23e; }
-.sync-behind, .sync-conflict { color: #e06c5a; }
+.gitsegment .sep { color: var(--faint); }
+.tree-clean, .sync-synced { color: var(--green); }
+.tree-modified, .sync-ahead { color: var(--amber); }
+.sync-behind, .sync-conflict { color: var(--red); }
 .filterbar { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap;
              margin: .3rem 0 .8rem; font-size: .85rem; }
 .filterbar select { font: inherit; padding: .2rem .45rem; color: inherit;
-          background: #8881; border: 1px solid #8884; border-radius: .3rem; }
+          background: var(--btnbg); border: 1px solid var(--btnline); border-radius: .3rem; }
 .filterbar label.chk { display: flex; align-items: center; gap: .35rem; cursor: pointer; }
 /* Volle Breite, dynamisch (PLAN-19 Befund 5, User-Fund: Heatmap zog vorher
    nur eine feste Pixelbreite, viel Leerraum daneben) — Tag-Gruppen UND
@@ -279,25 +375,25 @@ th.sorted { font-weight: 700; }
 .heatmap2 { display: flex; flex-direction: column; gap: 3px; width: 100%; }
 .hm2-header, .hm2-subheader, .hm2-row { display: flex; align-items: center; gap: .5rem; }
 .hm2-subheader { margin-bottom: .1rem; }
-.hm2-wlabel { flex: 0 0 5.2rem; font-size: .72rem; color: #888; text-align: right; }
-.hm2-daylabel { font-size: .68rem; color: #888; text-align: center; width: 100%; font-weight: 600; }
-.hm2-day-group { display: flex; gap: 2px; padding: 0 .3rem; border-right: 1px solid #8882;
+.hm2-wlabel { flex: 0 0 5.2rem; font-size: .72rem; color: var(--faint); text-align: right; }
+.hm2-daylabel { font-size: .68rem; color: var(--faint); text-align: center; width: 100%; font-weight: 600; }
+.hm2-day-group { display: flex; gap: 2px; padding: 0 .3rem; border-right: 1px solid var(--line);
                  flex: 1; min-width: 0; box-sizing: border-box; justify-content: center; }
 .hm2-day-group:last-child { border-right: none; }
-.hm2-hourtick { flex: 1; font-size: .55rem; color: #888; text-align: center;
+.hm2-hourtick { flex: 1; font-size: .55rem; color: var(--faint); text-align: center;
                 font-family: ui-monospace, monospace; }
-.hm-cell { flex: 1; height: 14px; min-width: 4px; border-radius: 2px; background: #8882; }
-.hm-cell[data-lvl="1"] { background: #5a9fe044; }
-.hm-cell[data-lvl="2"] { background: #5a9fe088; }
-.hm-cell[data-lvl="3"] { background: #5a9fe0cc; }
-.hm-cell[data-lvl="4"] { background: #5a9fe0; }
+.hm-cell { flex: 1; height: 14px; min-width: 4px; border-radius: 2px; background: var(--cell0); }
+.hm-cell[data-lvl="1"] { background: var(--cell1); }
+.hm-cell[data-lvl="2"] { background: var(--cell2); }
+.hm-cell[data-lvl="3"] { background: var(--cell3); }
+.hm-cell[data-lvl="4"] { background: var(--cell4); }
 /* PLAN-21 Befund 4, User-Fund: die Legende (5 kleine Farbblöcke "wenig →
    viel") zog trotz fester width auf die volle Zeilenbreite — Root Cause: die
    geerbte Basis-Regel .hm-cell{flex:1} gewinnt in einem Flex-Container gegen
    die explizite width. `flex: none` hier überschreibt das gezielt, nur für
    die Legende (die eigentliche Heatmap bleibt bei PLAN-19s voller Breite). */
 .heatmap-legend { display: flex; align-items: center; justify-content: flex-end;
-                  gap: .3rem; font-size: .75rem; color: #888; margin-top: .35rem; }
+                  gap: .3rem; font-size: .75rem; color: var(--faint); margin-top: .35rem; }
 .heatmap-legend .hm-cell { flex: none; width: 9px; height: 9px; }
 /* Lauf-Historie-Chart (PLAN-21 Befund 11) — eine Karte über die volle Breite
    (Kopf mit Titel+Auflösung, Zustands-Chips, Chart.js-Canvas, s. render.py).
@@ -309,7 +405,7 @@ th.sorted { font-weight: 700; }
 /* .panel-card: generischer Rahmen, wiederverwendet für Lauf-Historie UND die
    Schedule-Liste (User-Fund 2026-07-08, 5. Runde: "den Rahmen auch um die
    Schedules und die Inaktiven"). */
-.panel-card { border: 1px solid #8883; border-radius: .4rem; padding: .7rem 1rem .6rem;
+.panel-card { border: 1px solid var(--line); border-radius: .4rem; padding: .7rem 1rem .6rem;
               margin: .5rem 0 1rem; }
 /* PLAN-27 Befund 1, User-Fund: "Margins zwischen Chart und Heatmap
    unterschiedlich" — die generische h2-Regel (margin-top 1.5rem, für
@@ -323,34 +419,34 @@ th.sorted { font-weight: 700; }
 .ts-head h3 { margin: 0; font-size: .95rem; }
 .ts-chips { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: baseline;
             font-family: ui-monospace, monospace; font-size: .8rem; font-weight: 700;
-            color: #8886; margin: .35rem 0 .7rem; }  /* Default = gedimmt (running=0) */
-.ts-chip.ts-dim { color: #888; font-weight: 400; }
+            color: var(--faint); margin: .35rem 0 .7rem; }  /* Default = gedimmt (running=0) */
+.ts-chip.ts-dim { color: var(--dim); font-weight: 400; }
 .res-links { display: flex; gap: .9rem; }
-.res-link { font-size: .7rem; color: #888; text-decoration: none; cursor: pointer; }
+.res-link { font-size: .7rem; color: var(--dim); text-decoration: none; cursor: pointer; }
 .res-link:hover { color: inherit; }
 .res-link.active { color: inherit; text-decoration: underline; font-weight: 600; }
 .chart-wrap { height: 148px; }  /* User-Fund 2026-07-08 (4. Runde): 74px war zu klein, doppelt so hoch */
 .feedlist { display: flex; flex-direction: column; gap: 0; font-size: .88rem; }
 .frow { display: flex; gap: .6rem; align-items: baseline; padding: .38rem 0;
-        border-bottom: 1px solid #8881; }
+        border-bottom: 1px solid var(--line); }
 .frow.is-agent { opacity: .55; }
-.frow .t { color: #888; font-family: ui-monospace, monospace; font-size: .78rem;
+.frow .t { color: var(--dim); font-family: ui-monospace, monospace; font-size: .78rem;
            flex: 0 0 11rem; overflow-wrap: anywhere; }
 .lvl { font-family: ui-monospace, monospace; font-size: .68rem; font-weight: 700;
        padding: .05rem .4rem; border-radius: .25rem; flex: 0 0 auto;
        text-transform: uppercase; letter-spacing: .02em; }
-.lvl.case { background: #5fb37a33; color: #5fb37a; }
-.lvl.vault { background: #5a9fe033; color: #5a9fe0; }
-.lvl.system { background: #d6a23e33; color: #d6a23e; }
+.lvl.case { background: var(--greensoft); color: var(--green); }
+.lvl.vault { background: var(--bluesoft); color: var(--blue); }
+.lvl.system { background: var(--ambersoft); color: var(--amber); }
 /* Bibi4-Iteration, User-Fund: langer Slug (Bindestrich-Umbruch mitten im Wort)
    und die kommagetrennte Autorenliste liefen über den Rand — Flex-Items haben
    ohne min-width:0 eine implizite Mindestbreite gleich ihrem Inhalt, egal wie
    die Zeile eigentlich schrumpfen könnte. */
 .frow .msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.frow .who { color: #888; font-size: .78rem; flex: 0 1 auto; min-width: 0;
+.frow .who { color: var(--dim); font-size: .78rem; flex: 0 1 auto; min-width: 0;
              overflow-wrap: anywhere; }
 .frow a.commit { text-decoration: none; }
-.frow a.commit:hover { text-decoration: underline; color: #5a9fe0; }
+.frow a.commit:hover { text-decoration: underline; color: var(--blue); }
 /* m.rau/bibi#63: in der Karte, an ihrem unteren linken Rand. Der obere
    Abstand trennt vom Inhalt darueber, der untere entfaellt — die Karte
    bringt ihr eigenes Padding mit. */
