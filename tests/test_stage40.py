@@ -254,22 +254,4 @@ def test_status_job_stats_includes_complete_since_uptime(sched):
     assert stats["complete_since_uptime"] == 1
 
 
-def test_landings_route_returns_terminal_journal_entries(sched):
-    client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
-    client.post("/-/rescan")
-    jid = client.post("/-/scheduler/next").json()["id"]
-    client.post(f"/-/scheduler/status/{jid}", json={"status": "complete", "exit_code": 0})
-    rows = client.get("/-/landings").json()
-    assert len(rows) == 1
-    assert rows[0]["status"] == "complete"
 
-
-def test_landings_route_since_filters(sched):
-    client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
-    client.post("/-/rescan")
-    jid = client.post("/-/scheduler/next").json()["id"]
-    client.post(f"/-/scheduler/status/{jid}", json={"status": "complete", "exit_code": 0})
-    future = 9999999999.0
-    assert client.get("/-/landings", params={"since": future}).json() == []

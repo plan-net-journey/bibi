@@ -208,15 +208,6 @@ def add_controller_routes(
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             return []
 
-    def _landings() -> list:
-        # /-/landings ist scheduler-gated (501 ohne scheduler-Rolle, PLAN-21
-        # Befund 11) — auf einem reinen Client bleibt das Chart dann leer statt
-        # den Screen zu brechen (§2.7, wie _status()/_schedules() oben).
-        try:
-            return client.landings()
-        except Exception:  # noqa: BLE001
-            return []
-
     def _effective_days(days: int | None) -> int | None:
         """``days`` fehlt im Query (allererster Seitenaufruf) → Default 1 Tag
         (PLAN-18 Design-Pass), nicht unbegrenzt — ein voller, unbegrenzter Log
@@ -382,16 +373,6 @@ def add_controller_routes(
                         max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
         resp.set_cookie("bibi_sched_status", status or "alle",
                         max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
-
-    def _effective_resolution(request: Request, res: int | None) -> int:
-        # Dieselbe Systematik wie _effective_filter (User-Fund: "warum wird
-        # die Auflösung ... nicht gespeichert?") — Query-Param gewinnt, sonst
-        # Cookie, sonst Default. res muss zusätzlich noch ein gültiges Preset
-        # sein (sonst wie ein fehlender Query-Param behandelt).
-        if res is not None and res in render._RESOLUTION_WINDOWS:
-            return res
-        cookie_res = render._cookie_resolution_value(request.cookies.get("bibi_sched_res"))
-        return cookie_res if cookie_res is not None else render._DEFAULT_RESOLUTION_MINUTES
 
     def _set_resolution_cookie(resp: HTMLResponse, res: int) -> None:
         resp.set_cookie("bibi_sched_res", str(res),

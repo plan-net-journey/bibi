@@ -721,18 +721,6 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                                 content={"error": "journal entry not found", "id": jid})
         return {"deleted": jid}
 
-    # ── Lauf-Historie-Chart: Terminal-Landungen (PLAN-21 Befund 11 v2) ────────
-    @app.get("/-/landings", tags=["journal"])
-    def landings_list(since: float | None = None):
-        # Dünne Landungs-Projektion (status+finished_at) — Bucket-Aggregation
-        # für den Chart passiert im Controller/Render-Layer (reine Funktionen,
-        # kein DB-Zugriff dort).
-        conn = job_db.connect()
-        try:
-            return job_db.journal_landings(conn, since=since)
-        finally:
-            conn.close()
-
     # ── Worker-Verbund: Anmeldung/Heartbeat + Liste (PLAN-3 §3.6, A12) ────────
     # PLAN-32 Stufe 32.1 ("Open Trust"): der frühere BIBI_CONNECT_SECRET-Gate
     # (``_auth``, oben) entfällt hier zugunsten eines Host-seitig gepflegten

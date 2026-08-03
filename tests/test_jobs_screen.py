@@ -277,6 +277,54 @@ def test_no_chart_no_sparkline_anywhere_in_the_renderer():
         assert wort not in quelle, f"{wort!r} lebt noch in render.py"
 
 
+def test_the_landings_chain_is_gone_everywhere():
+    """Der Rest von #120, nachgeholt statt vertagt (m.rau/bibi#121).
+
+    Beim Entfernen der Charts blieb ihre Zulieferkette stehen — nicht weil sie
+    gebraucht wurde, sondern weil sie nicht im Suchmuster lag: sie heisst nicht
+    "chart", sondern "landings". Aufgefallen ist es erst, als ein Test dieser
+    Kette fuer die Archivierungsregel (#101) angepasst werden musste — Arbeit
+    an Code, den niemand mehr ruft.
+
+    Die Kette reichte vom Renderer bis in den gefrorenen API-Vertrag. Gerade
+    dort ist sie mehr als Kosmetik: wer den Vertrag liest, haelt eine Route
+    fuer ein Versprechen.
+
+    **Was hierbleibt und warum:** `_effective_days` sieht dazugehoerig aus, hat
+    aber zwei echte Aufrufer im Feed — die Namensaehnlichkeit zu
+    `_effective_resolution` ist der ganze Zusammenhang. Genau solche
+    Beinahe-Treffer sind der Grund, warum dieser Test Namen einzeln nennt
+    statt ein Praefix zu verbieten.
+    """
+    from bibi import controller as controller_pkg
+    from bibi.controller import ControllerClient
+    from bibi.daemon import app as daemon_app
+    from bibi.daemon import job_db, openapi
+
+    tot = {
+        render: ("timeseries_fragment", "_landings_buckets", "_resolution_links",
+                 "_current_state_chips", "_cookie_resolution_value",
+                 "_LANDING_ORDER", "_RESOLUTION_WINDOWS",
+                 "_DEFAULT_RESOLUTION_MINUTES"),
+        job_db: ("journal_landings",),
+    }
+    for modul, namen in tot.items():
+        for name in namen:
+            assert not hasattr(modul, name), f"{modul.__name__}.{name} lebt noch"
+
+    assert not hasattr(ControllerClient, "landings")
+
+    for modul in (daemon_app, openapi, controller_pkg):
+        quelle = Path(modul.__file__).read_text()
+        assert "/-/landings" not in quelle, \
+            f"die Route /-/landings steht noch in {modul.__name__}"
+        assert "_effective_resolution" not in quelle, \
+            f"_effective_resolution lebt noch in {modul.__name__}"
+
+    # Die Gegenprobe: der Feed braucht `_effective_days` weiterhin.
+    assert "_effective_days" in Path(controller_pkg.__file__).read_text()
+
+
 def test_a_job_never_run_locally_shows_dashes():
     """Gerettet aus `test_jobs_table_no_local_run_yet_shows_dash_for_last_and_runtime`.
 

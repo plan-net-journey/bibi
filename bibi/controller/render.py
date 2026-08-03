@@ -1252,7 +1252,6 @@ _WAITING_COLOR = "#d6a23e"
 #: eine separate Legende redundant, User-Fund 2026-07-08). Sechs klar
 #: unterscheidbare Töne — vorher teilten sich error/zombie sowie killed/
 #: _WAITING_COLOR versehentlich denselben Hex-Wert.
-_LANDING_ORDER = ("complete", "error", "zombie", "killed", "inactive")
 _LANDING_COLOR = {
     "complete": "#5fb37a",   # grün — Erfolg
     "error": "#e06c5a",      # rot — endgültig gescheitert (Retries erschöpft)
@@ -1267,109 +1266,10 @@ _LANDING_COLOR = {
 #: Auflösungs-Presets (Bucket-Minuten → Fenster in Stunden) — Bucket-Zahl bleibt
 #: dabei über alle Presets ähnlich groß (~96), sonst würde z. B. 1min-Auflösung
 #: über 24h zu 1440 kaum noch unterscheidbaren Balken führen.
-_RESOLUTION_WINDOWS = {1440: 720, 480: 168, 180: 72, 120: 48, 15: 24, 5: 8, 1: 2}
 _RESOLUTION_LABEL = {1440: "24h/1m", 480: "8h/1w", 180: "3h/3d", 120: "2h/2d",
                      15: "15min/24h", 5: "5min/8h", 1: "1min/2h"}
-_DEFAULT_RESOLUTION_MINUTES = 15
 
 
-
-def _landings_buckets(landings: list[dict], *, now: float,
-                      bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES,
-                      hours: float | None = None) -> tuple[list[float], dict[str, list[int]]]:
-    """``landings`` (``{"status", "finished_at"}``, z. B. aus
-    ``job_db.journal_landings()``) → Bucket-Start-Zeitstempel + Zählung je
-    Terminal-Status. Reines Event-Histogramm: ein Lauf landet in **genau
-    einem** Bucket (dem, der seine ``finished_at`` enthält), keine
-    Zeitfenster-Overlap-Logik nötig."""
-    hours = _RESOLUTION_WINDOWS.get(bucket_minutes, 24) if hours is None else hours
-    bucket_s = bucket_minutes * 60
-    n = int(hours * 3600 / bucket_s)
-    start = now - n * bucket_s
-    counts: dict[str, list[int]] = {s: [0] * n for s in _LANDING_ORDER}
-    for row in landings:
-        status = row.get("status")
-        ts = row.get("finished_at")
-        if status not in counts or ts is None:
-            continue
-        idx = int((ts - start) // bucket_s)
-        if 0 <= idx < n:
-            counts[status][idx] += 1
-    labels = [start + i * bucket_s for i in range(n)]
-    return labels, counts
-
-
-def _current_state_chips(counts: dict[str, int], running_since_uptime: int) -> str:
-    """Kompakte Inline-Zeile im Chart-Kopf statt eines eigenen Stat-Grids
-    (User-Fund 2026-07-08, Variante C: "kein separates Stat-Grid mehr, nur
-    Inline-Zahlen neben dem Titel"). Zeigt nur, was gerade tatsächlich
-    passiert — Nullen werden gar nicht erst als Chip gerendert (nicht mal
-    gedimmt) statt eine Wand aus Nullen zu zeigen. Jeder Chip trägt dieselbe
-    Farbe wie sein Pendant im Chart (``_LANDING_COLOR``) — das lehrt die
-    Farb-Bedeutung nebenbei, eine separate Chart-Legende wird dadurch
-    redundant (User-Fund: "mit der richtigen Farbgebung können wir die
-    Legende weglassen")."""
-    running = counts.get("running", 0)
-    style = f' style="color:{_LIVE_COLOR}"' if running else ""
-    chips = [f'<span class="ts-chip"{style}>{running} running</span>']
-    for status in _HALT_STATUSES:  # error/inactive/zombie/killed — Chart-Farben
-        n = counts.get(status, 0)
-        if n:
-            color = _LANDING_COLOR.get(status, _WAITING_COLOR)
-            chips.append(f'<span class="ts-chip" style="color:{color}">{n} {status}</span>')
-    for status in _WAITING_STATUSES:  # pending/failed/deferred/awaiting — eigener Ton
-        n = counts.get(status, 0)
-        if n:
-            chips.append(f'<span class="ts-chip" style="color:{_WAITING_COLOR}">{n} {status}</span>')
-    chips.append(f'<span class="ts-chip ts-dim">{running_since_uptime} since start</span>')
-    return f'<div class="ts-chips">{"".join(chips)}</div>'
-
-
-def _resolution_links(bucket_minutes: int) -> str:
-    """Auflösungs-Wahl als kleine Link-Zeile (User-Fund 2026-07-08: "statt
-    Drop-down einfach Links, klein, mit dem aktuellen Zeitfenster
-    unterstrichen") statt Dropdown — dieselbe hx-get/Ziel-Idee wie zuvor,
-    andere Optik."""
-    links = "".join(
-        f'<a class="res-link{" active" if m == bucket_minutes else ""}" '
-        f'hx-get="/-/ui/schedules/timeseries?res={m}" '
-        f'hx-target="#timeseries" hx-swap="outerHTML">{_RESOLUTION_LABEL[m]}</a>'
-        for m in _RESOLUTION_WINDOWS
-    )
-    return f'<div class="res-links">{links}</div>'
-
-
-def timeseries_fragment(landings: list[dict], job_stats: dict | None = None,
-                        now: float | None = None, *,
-                        bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES) -> str:
-    """Bus-getriebener Wrapper um Chart-Kopf (Titel + Auflösung) + Zustands-
-    Chips + Landungs-Histogramm, in einer Karte über die volle Breite (User-
-    Fund 2026-07-08, Variante C: "vereinigt", kein separates Stat-Grid, keine
-    Chart-Legende mehr, Chart deutlich größer). Ziel =
-    ``/-/ui/schedules/timeseries`` — eigenes Bus-Target ``chart``, getrennt
-    von der Schedule-Liste (``jobs``): der Collector feuert es nur bei neuen
-    Journal-Einträgen, d.h. das Chart wird seltener neu instanziiert als die
-    Job-Listen — dieselbe Absicht wie der frühere langsamere ``_CHART_POLL``
-    (das "wackelt"-Fund 2026-07-08), jetzt ereignisgenau statt zeitgestreckt.
-    Der Refetch-Link trägt die aktuelle Auflösung in der URL, damit sie den
-    Swap überlebt (dieselbe Idee wie ``schedules_fragment``s Filter-QS)."""
-    now = time.time() if now is None else now
-    job_stats = job_stats or {}
-    counts = job_stats.get("counts") or {}
-    running_since_uptime = job_stats.get("running_since_uptime", 0)
-    labels, bucket_counts = _landings_buckets(landings, now=now, bucket_minutes=bucket_minutes)
-    body = (
-        f'<div class="ts-head"><h3>Run History</h3>{_resolution_links(bucket_minutes)}</div>'
-        + _current_state_chips(counts, running_since_uptime)
-        + _landings_chart_html(labels, bucket_counts)
-    )
-    url = f"/-/ui/schedules/timeseries?res={bucket_minutes}"
-    attrs = (f'id="timeseries" class="panel-card" data-bus="chart" '
-             f'data-bus-refetch="{url}"')
-    return f"<div {attrs}>{body}</div>"
-
-
-# ── Schedules-Screen mit Filter (Frontend-Plan §C.3) ─────────────────────────
 
 #: Filter-Optionen. „problem" ist eine **Gruppe** (Abweichungen als Filter statt
 #: eigenem Block): failed/error/killed/zombie + überfällig (pending, fällig verpasst).
@@ -1531,20 +1431,6 @@ def filter_schedules(schedules: list[dict], *, typ: str | None = None,
         else:
             out = [s for s in out if s.get("last_status") == status]
     return out
-
-
-def _cookie_resolution_value(cookie: str | None) -> int | None:
-    """Persistenter Auflösungs-Wert aus Cookie (dieselbe Systematik wie
-    ``_cookie_filter_value()`` für typ/status, User-Fund: "warum wird die
-    Auflösung ... nicht gespeichert?") — nur übernehmen, wenn er noch zu
-    einem der aktuell gültigen Presets gehört."""
-    if not cookie:
-        return None
-    try:
-        value = int(cookie)
-    except ValueError:
-        return None
-    return value if value in _RESOLUTION_WINDOWS else None
 
 
 def _cookie_filter_value(cookie: str | None, valid: tuple[str, ...]) -> str | None:

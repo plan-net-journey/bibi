@@ -1747,21 +1747,6 @@ def list_journal(
     return [journal_view(r) for r in conn.execute(sql, params).fetchall()]
 
 
-def journal_landings(conn: sqlite3.Connection, *, since: float | None = None) -> list[dict]:
-    """Dünn projizierte Landungen (``status``+``finished_at``) für das
-    Lauf-Historie-Chart (PLAN-21 Befund 11 v2) — ``journal`` ist per
-    Konstruktion schon terminal-only (``_write_journal`` feuert nur bei
-    ``target in lifecycle.TERMINAL``), darum reicht ein simpler Zeitfilter
-    ohne die volle ``journal_view()``-Projektion (Snapshot/Payload etc.)."""
-    q = "SELECT status, finished_at FROM journal WHERE finished_at IS NOT NULL"
-    params: dict = {}
-    if since is not None:
-        q += " AND finished_at >= :since"
-        params["since"] = since
-    q += " ORDER BY finished_at ASC"
-    return [dict(r) for r in conn.execute(q, params).fetchall()]
-
-
 #: Live-Zustände, die als **Abweichung** zählen (PLAN-4 §3/§4.1): „lief nicht".
 #: ``failed`` (Retry-wartend), ``error`` (aufgegeben), ``zombie``/``killed``.
 PROBLEM_STATES = ("failed", "error", "zombie", "killed")

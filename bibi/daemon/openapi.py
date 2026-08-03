@@ -342,7 +342,10 @@ def add_contract_routes(app: FastAPI) -> None:
     def journal_delete(jid: int):  # noqa: ARG001
         return _todo("DELETE /-/journal/{id}")
 
-    # ── Lifecycle-Zeitreihe (PLAN-21 Befund 11) ───────────────────────────────
-    @app.get("/-/landings", tags=["journal"])
-    def landings_list(since: float | None = None):  # noqa: ARG001
-        return _todo("GET /-/landings")
+    # Die Lifecycle-Zeitreihe (PLAN-21 Befund 11) ist mit m.rau/bibi#121
+    # ersatzlos entfallen: sie belieferte das Landungs-Histogramm, und das ging
+    # mit #120. Eine Route im gefrorenen Vertrag, die nichts mehr bedient, ist
+    # schlimmer als eine fehlende — wer den Vertrag liest, hält sie für ein
+    # Versprechen. Ihr Pfad steht hier bewusst nicht mehr wörtlich: der
+    # Nachweis in test_the_landings_chain_is_gone_everywhere ist eine
+    # Textsuche, und ein Kommentar, der sie auslöst, wäre ein blinder Fleck.

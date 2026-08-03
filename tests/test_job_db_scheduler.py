@@ -407,37 +407,7 @@ def test_count_completed_since_survives_fresh_connection(tmp_path: Path):
 # ── journal_landings (PLAN-21 Befund 11 v2, Lauf-Historie-Chart) ────────────
 
 
-def test_journal_landings_returns_status_and_finished_at(conn):
-    jid = _insert(conn, "a", 0, time.time())
-    job_db.reserve_next(conn, now=100.0)
-    job_db.report_status(conn, jid, status="complete", now=200.0)
-    rows = job_db.journal_landings(conn)
-    assert rows == [{"status": "complete", "finished_at": 200.0}]
 
-
-def test_journal_landings_since_filters(conn):
-    jid = _insert(conn, "a", 0, time.time())
-    job_db.reserve_next(conn, now=100.0)
-    job_db.report_status(conn, jid, status="killed", now=200.0)
-    # A2 (m.rau/bibi#101): erst das Abräumen archiviert. `finished_at` bleibt
-    # dabei der Zeitpunkt des Laufs (200.0) — der Filter arbeitet weiter auf
-    # der Lauf-Zeit, nicht auf der Aufräum-Zeit.
-    job_db.start_now(conn, jid, now=900.0)
-    assert job_db.journal_landings(conn, since=250.0) == []
-    assert job_db.journal_landings(conn, since=150.0) == [
-        {"status": "killed", "finished_at": 200.0}]
-
-
-def test_journal_landings_excludes_non_terminal_status(conn):
-    # awaiting ist kein Terminal-Status — journal bekommt dafür nie eine Zeile
-    # (_write_journal feuert nur bei target in lifecycle.TERMINAL).
-    jid = _insert(conn, "a", 0, time.time())
-    job_db.reserve_next(conn, now=100.0)
-    job_db.report_status(conn, jid, status="awaiting", now=150.0)
-    assert job_db.journal_landings(conn) == []
-
-
-# ── status_counts (PLAN-21 Befund 11 Stat-Grid) ──────────────────────────────
 
 
 def test_status_counts_groups_active_jobs_by_status(conn):

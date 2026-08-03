@@ -27,7 +27,10 @@ def test_openapi_covers_job_scheduler_worker_journal(client):
     assert "/-/scheduler/status/{id}" in paths
     assert "/-/worker" in paths
     assert "/-/journal" in paths
-    assert "/-/landings" in paths
+    # Die Lifecycle-Zeitreihe ist mit m.rau/bibi#121 ersatzlos entfallen — sie
+    # belieferte das Landungs-Histogramm, und das ging mit #120. Der Vertrag
+    # schrumpft damit, und das ist richtig: er soll beschreiben, was es gibt.
+    assert not any("landings" in p for p in paths)
 
 
 def test_openapi_is_versioned(client):
@@ -78,7 +81,8 @@ def test_status_enum_in_schema(client):
         # rollenunabhängig immer real, s. test_journal_list_is_not_a_stub
         # unten und tests/test_journal_route.py.
         ("delete", "/-/journal/1", None),
-        ("get", "/-/landings", None),
+        # KEIN ("get", "/-/landings") hier (mehr) — die Route ist mit
+        # m.rau/bibi#121 ersatzlos entfallen, samt ihrem Stub.
     ],
 )
 def test_all_stubs_return_501_json_no_html(client, method, path, body):
