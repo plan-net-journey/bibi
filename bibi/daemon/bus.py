@@ -43,6 +43,7 @@ import asyncio
 import logging
 import re
 import threading
+import time
 from collections import deque
 from pathlib import Path
 
@@ -186,6 +187,8 @@ class Collector:
         self._tails: dict[str, dict] = {}    # job_id → {run_id, path, kind, sent}
         self._nodes_snapshot: tuple | None = None
         self._flags_snapshot: tuple | None = None
+        self._sched_snapshot: tuple | None = None
+        self._sched_last_fetch: float = 0.0
         self._primed = False
         self._task: asyncio.Task | None = None
         self._running = False
@@ -259,6 +262,7 @@ class Collector:
 
         stats["state"] += self._diff_nodes()
         stats["state"] += self._diff_flags()
+        stats["state"] += self._diff_scheduler()
 
         # Tails: Output-Zuwachs publizieren; Läufe, die nicht mehr aktiv
         # wachsen (Terminal/deferred), nach einem letzten Read entlassen.
@@ -308,6 +312,81 @@ class Collector:
         changed = self._primed and snap != self._flags_snapshot
         self._flags_snapshot = snap
         if changed:
+            self.bus.publish_state("feedstatus")
+            return 1
+        return 0
+
+    #: Wie oft der Scheduler befragt wird. Der Collector tickt sekuendlich;
+    #: ein HTTP-Aufruf je Tick waere Netzlast fuer eine Anzeige, die sich
+    #: selten aendert. Fuenf Sekunden sind die Obergrenze dafuer, wie lange
+    #: der Header nach einem Ereignis veraltet sein darf — der Heartbeat
+    #: selbst kommt nur alle 15 s.
+    _SCHED_POLL_S = 5.0
+
+    def _fetch_scheduler_status(self) -> dict | None:
+        """Status des konfigurierten Schedulers, oder ``None``.
+
+        ``None`` heisst zweierlei und wird gleich behandelt: kein Scheduler
+        konfiguriert (dieser Knoten ist selbst einer) oder nicht erreichbar.
+        Im ersten Fall gibt es nichts zu beobachten, im zweiten ist der
+        Ausfall die Nachricht — beides fuehrt zu einem stabilen Fingerabdruck
+        bzw. zu genau einer Veroeffentlichung beim Wechsel.
+        """
+        try:
+            # NICHT config.scheduler_base_url(): die bevorzugt bewusst
+            # BIBI_DAEMON_PORT ("sprich mit MEINEM Daemon", von `bibi-ctrl
+            # daemon` selbst gesetzt) und liefert in einem Daemon-Prozess
+            # deshalb die eigene Adresse. Ihr Docstring nennt das einen
+            # "reinen Lokalitaets-Override, kein Federations-Ziel" -- hier
+            # ist aber genau das Federations-Ziel gemeint. Ohne diese
+            # Unterscheidung fragt der Client sich selbst und sieht nie eine
+            # Aenderung (live beobachtet: workers=0, counts=(), started_at =
+            # eigener Prozessstart).
+            import os
+            from bibi import config
+            url = (os.environ.get("BIBI_SCHEDULER_URL")
+                   or config.read_env().get("BIBI_SCHEDULER_URL"))
+            if not url:
+                return None
+            from bibi.controller.client import ControllerClient
+            return ControllerClient(url, timeout=3.0).status()
+        except Exception:  # noqa: BLE001 — der Host darf ausfallen (§2.7)
+            return None
+
+    def _diff_scheduler(self) -> int:
+        """"feedstatus"-Trigger fuer die Werte, die vom **Scheduler** kommen.
+
+        Der Header zeigt verbundene Clients, den naechsten Termin und die
+        Job-Zaehler — alles Fremdzustand. ``_diff_nodes()`` und
+        ``_diff_flags()`` sehen ihn nicht: sie beobachten die lokale Registry
+        und die lokalen Flags, und auf einem reinen Client aendert sich dort
+        nie etwas. Der SSE-Strom war deshalb stumm, und der Header
+        aktualisierte nur beim Reload (Befund m.rau, 2026-08-03).
+
+        Der Fingerabdruck deckt genau das ab, was im rechten Block steht. Zu
+        weit gefasst machte er den Header bei jeder Kleinigkeit dreckig — und
+        der haengt an einem git-Aufruf.
+        """
+        jetzt = time.time()
+        if jetzt - self._sched_last_fetch < self._SCHED_POLL_S:
+            return 0
+        self._sched_last_fetch = jetzt
+        s = self._fetch_scheduler_status()
+        if s is None:
+            snap: tuple | None = None
+        else:
+            js = s.get("job_stats") or {}
+            snap = (
+                len(s.get("workers") or []),
+                tuple(sorted((js.get("counts") or {}).items())),
+                js.get("next_due_at"),
+                s.get("maintenance"),
+                s.get("started_at"),
+            )
+        changed = self._primed and snap != self._sched_snapshot
+        war_leer = self._sched_snapshot is None and snap is None
+        self._sched_snapshot = snap
+        if changed and not war_leer:
             self.bus.publish_state("feedstatus")
             return 1
         return 0
