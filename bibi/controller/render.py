@@ -1664,6 +1664,39 @@ SCREENS: tuple[tuple[str, str], ...] = (
 _STOPPED_STATES = ("error", "inactive", "zombie", "killed")
 
 
+#: Ein Zeitformat fuer den ganzen Header. Datum nur, wo es noetig ist —
+#: alles unter 24 Stunden traegt die Uhrzeit allein, sonst waere jede Zeile
+#: doppelt so lang fuer eine Information, die fast immer "heute" lautet.
+def _uhrzeit(ts: float | None, now: float) -> str:
+    """Absoluter Zeitpunkt, lesbar und dauerhaft wahr.
+
+    **Entscheidung m.rau, 2026-08-03**, gegen die Relativzeiten der
+    FE-Spezifikation §2 (``21s ago``, ``in 2 min``). Drei Gruende, in der
+    Reihenfolge ihres Gewichts:
+
+    1. **Ein absoluter Zeitpunkt bleibt nach einem Screenshot wahr.** ``21s
+       ago`` ist ohne den Aufnahmezeitpunkt wertlos — und in diesem System
+       lesen Mensch und Agent dieselbe Oberflaeche.
+    2. **Nichts kann einfrieren.** Eine Relativzeit ist nur im Moment des
+       Renderns richtig; sie aktuell zu halten verlangt entweder einen
+       sekuendlichen Refetch (haengt an einem git-Subprozess) oder einen
+       Ticker im Browser — und damit dieselbe Zeitlogik in zwei Sprachen.
+    3. **Ein Format ueber die ganze Kette.** Epoch in der DB, Epoch im
+       Transport, Uhrzeit erst beim Anzeigen.
+
+    Der Preis ist eine Subtraktion im Kopf. Er ist klein, weil die Uhr in der
+    App-Bar unmittelbar daneben steht.
+    """
+    if ts is None:
+        return "—"
+    import datetime as _dt
+    t = _dt.datetime.fromtimestamp(ts)
+    # Aelter (oder ferner) als ein Tag: ohne Datum waere die Uhrzeit mehrdeutig.
+    if abs(now - ts) >= 86400:
+        return t.strftime("%d/%m %H:%M")
+    return t.strftime("%H:%M:%S")
+
+
 def _hdr_row(label: str, wert: str, *, klasse: str = "") -> str:
     """Eine Beschriftungs-/Wert-Zeile eines Header-Blocks."""
     c = f' class="{klasse}"' if klasse else ""
@@ -1705,7 +1738,7 @@ def status_header(
     # kein Schönheitsfehler — der Knoten gilt dem Host nach 60 s als stale.
     hb_klasse = "bad" if hb_alt is not None and hb_alt > 60 else ""
     auto = "on" if status.get("auto_sync") else "off"
-    heartbeat = f'{_ago(hb, now)}, auto-sync: {auto}'
+    heartbeat = f'{_uhrzeit(hb, now)}, auto-sync: {auto}'
 
     zweig = git_status.get("branch") or "—"
     baum = git_status.get("tree") or "—"
@@ -1756,12 +1789,13 @@ def status_header(
     # `next_due_at` liegt in `job_stats`, nicht auf oberster Ebene — live stand
     # hier ein Strich, weil ich es eine Ebene zu hoch gesucht hatte.
     naechster = _until(counts_quelle.get("next_due_at") or sched.get("next_fire_at"), now)
-    next_job = f'{naechster}, {gestoppt} stopped, {fertig} finished'
+    faellig = counts_quelle.get("next_due_at") or sched.get("next_fire_at")
+    next_job = f'{_uhrzeit(faellig, now)}, {gestoppt} stopped, {fertig} finished'
 
     hoch = sched.get("started_at")
     verbunden = (status.get("connect") or {}).get("since") or status.get("started_at")
-    uptime = (f'{_human_duration(now - hoch) if hoch else "—"} up · '
-              f'{_human_duration(now - verbunden) if verbunden else "—"} connected')
+    # "since", weil hier jetzt ein Zeitpunkt steht und keine Dauer mehr.
+    uptime = f'up since {_uhrzeit(hoch, now)} · connected since {_uhrzeit(verbunden, now)}'
 
     dim = " dimmed" if stale else ""
     rechts = (

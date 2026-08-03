@@ -9,6 +9,8 @@ Herkunft und Aktualität vermischten.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from bibi.controller import render
@@ -141,12 +143,66 @@ def test_project_row_shows_the_short_commit():
 
 
 def test_next_job_reads_the_schedulers_own_field():
-    """Die Zeit bis zur nächsten Feuerung steht in `job_stats.next_due_at` —
-    live stand hier `—`, weil ich das Feld auf oberster Ebene erwartet hatte."""
+    """Der naechste Termin steht in `job_stats.next_due_at`, nicht auf oberster
+    Ebene — live stand hier ein Strich, weil ich es eine Ebene zu hoch gesucht
+    hatte."""
     sched = {"hostname": "sarasate", "workers": [],
              "job_stats": {"counts": {"complete": 9, "killed": 1},
                            "next_due_at": NOW + 120}}
     html = render.status_header(CLIENT_STATUS, GIT, scheduler=sched, now=NOW,
                                 scheduler_host="sarasate")
-    assert "in 2 min" in html
+    # Absolute Uhrzeit statt "in 2 min" — der Wert kommt weiterhin aus
+    # `job_stats.next_due_at`, nur die Darstellung hat gewechselt.
+    assert re.search(r"\d{2}:\d{2}:\d{2}", html)
     assert "1 stopped, 9 finished" in html
+
+
+# ── Absolute Zeiten (Entscheidung m.rau, 2026-08-03) ───────────────────────
+#
+# Befund: „mir faellt auf, dass der heartbeat nicht aktualisiert, ausser beim
+# reload." Der Bus feuert auf Ereignisse — Job-Wechsel, Flag-Wechsel,
+# Node-Wechsel —, und Zeitablauf ist keins. Drei der acht Header-Werte waren
+# aber genau das.
+#
+# Erste Antwort war ein Ticker im Browser. Dagegen der Einwand: „nicht dass wir
+# uns das Leben unnoetig verkomplizieren, weil wir an der fachlichen Bedeutung
+# haengen. Datum und Uhrzeiten moeglichst einheitlich verarbeiten und
+# persistieren." — und dann die Frage „nicht besser nur noch absolute Zeiten?"
+#
+# Ja. Eine absolute Zeit bleibt nach einem Screenshot wahr, sie kann nicht
+# einfrieren, und es gibt die Zeitlogik nur noch einmal (Epoch bis zur Anzeige).
+# Das weicht von FE-Spezifikation §2 ab, die `21s ago` und `in 2 min` zeigt.
+
+
+def test_header_shows_absolute_times_not_relative_ones():
+    """Kein `ago`, kein `in …` — was einfrieren koennte, gibt es nicht mehr."""
+    html = _header()
+    assert " ago" not in html
+    assert "in 2 min" not in html and "in 3 min" not in html
+
+
+def test_no_ticker_script_is_needed():
+    """Die Vereinfachung, um die es ging: keine zweite Zeitlogik im Browser."""
+    assert not hasattr(render, "_REL_TIME_JS")
+    assert not hasattr(render, "_rel")
+
+
+def test_times_within_a_day_show_the_clock_only():
+    """Das Datum waere fast immer „heute" und macht jede Zeile doppelt so lang."""
+    html = _header()
+    assert re.search(r"\d{2}:\d{2}:\d{2}", html), "keine Uhrzeit gefunden"
+
+
+def test_times_older_than_a_day_carry_their_date():
+    """Ohne Datum waere die Uhrzeit mehrdeutig — 08:15 von wann?"""
+    alt = dict(SCHEDULER_STATUS)
+    alt["started_at"] = NOW - 3 * 86400
+    html = _header(scheduler=alt)
+    assert re.search(r"\d{2}/\d{2} \d{2}:\d{2}", html), "kein Datum bei altem Zeitstempel"
+
+
+def test_uptime_reads_as_a_point_in_time():
+    """„up since 14:32" statt „13h 25m up" — es steht jetzt ein Zeitpunkt da,
+    und die Beschriftung muss das sagen."""
+    html = _header()
+    assert "up since" in html and "connected since" in html
