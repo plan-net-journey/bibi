@@ -325,6 +325,24 @@ table.jobs tr.leer-band td { color: var(--dim); font-style: normal;
                              padding: .45rem 0 .3rem; white-space: normal; }
 table.jobs td.slug a { color: var(--text); text-decoration: none; }
 table.jobs td.slug a:hover { text-decoration: underline; }
+/* Filterleiste. Textknoepfe, keine Kaesten — sie stehen ueber einer Tabelle
+   und sollen sie nicht optisch erschlagen. */
+.fltr-bar { display: flex; align-items: baseline; gap: .35rem;
+            padding: .4rem 0 .7rem; flex-wrap: wrap; font-size: .9rem; }
+.fltr-grp { color: var(--hdr-key); margin-right: .2rem; margin-left: .9rem;
+            letter-spacing: .04em; font-size: .82rem; }
+.fltr-grp:first-child { margin-left: 0; }
+.fltr { background: none; border: 1px solid transparent; color: var(--dim);
+        padding: .1rem .45rem; border-radius: 3px; cursor: pointer;
+        font: inherit; }
+.fltr:hover { color: var(--text); background: var(--hover); }
+/* Der gewaehlte Zustand traegt Rahmen UND Farbe: Farbe allein geht in hellen
+   Themes und auf schlechten Monitoren verloren. */
+.fltr.on { color: var(--text); border-color: var(--btnline); background: var(--btnbg); }
+.fltr-zahl { margin-left: auto; color: var(--dim); }
+table.jobs th[data-sort] { cursor: pointer; user-select: none; }
+table.jobs th[data-sort]:hover { color: var(--text); }
+table.jobs th.sortiert { color: var(--text); }
 /* Leerer Screen: kein Kasten, kein Ausrufezeichen — ein Satz, der sagt, was
    fehlt und was man tun kann. */
 .leer { padding: 2.2rem 0; max-width: 42rem; }
@@ -856,6 +874,7 @@ def archive_page(schedules: list[dict], now: float | None = None,
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_JOBS_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
@@ -1270,6 +1289,7 @@ def clients_page(workers: list[dict], now: float | None = None, *,
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_JOBS_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
@@ -2072,6 +2092,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_JOBS_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
@@ -3009,6 +3030,7 @@ def jobs_archive_page(runs: list[dict], now: float | None = None,
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_JOBS_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
@@ -4524,6 +4546,7 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         f'<div class="outscroll">{out}</div>'
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_JOBS_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
@@ -4709,7 +4732,39 @@ def _jobs_zeile(row, now: float) -> str:
     )
 
 
-def jobs_screen(rows: list, now: float) -> str:
+#: Die Filtergruppen der Kopfleiste. `TYPE` und `STATUS` wirken auf alle
+#: Bänder, die drei Journal-Filter nur auf das dritte — deshalb stehen sie
+#: dort und nicht hier oben.
+_FILTER_OBEN = (("TYPE", ("job", "claude", "app")),
+                ("STATUS", ("waiting", "running", "stopped")))
+_FILTER_JOURNAL = ("dropped", "oneshot", "local")
+
+#: Klickbare Spalten. Der Schlüssel ist zugleich der Query-Parameter.
+_SORTIERBAR = (("slug", "SLUG"), ("type", "TYPE"), ("status", "STATUS"),
+               ("last", "LAST"), ("next", "NEXT"), ("24h", "24H"))
+
+
+def _filter_knopf(wert: str, aktiv: list[str]) -> str:
+    an = " on" if wert in aktiv else ""
+    return f'<button class="fltr{an}" data-filter="{wert}">{wert}</button>'
+
+
+def _sort_kopf(schluessel: str, label: str, sort: str | None, richtung: str) -> str:
+    """Ein Spaltenkopf, der seinen Zustand zeigt.
+
+    Ohne Pfeil weiß niemand, ob gerade auf- oder absteigend sortiert ist — und
+    ein zweiter Klick fühlt sich dann folgenlos an.
+    """
+    if sort == schluessel:
+        pfeil = " ↓" if richtung == "desc" else " ↑"
+        return (f'<th class="sortiert" data-sort="{schluessel}" '
+                f'data-dir="{richtung}">{label}{pfeil}</th>')
+    return f'<th data-sort="{schluessel}">{label}</th>'
+
+
+def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
+                status: list[str] | None = None, journal: list[str] | None = None,
+                sort: str | None = None, direction: str = "asc") -> str:
     """Die drei Bänder mit ihren Zeilen.
 
     Alle drei stehen immer da, auch leer: sonst verschöbe sich das Layout je
@@ -4733,36 +4788,102 @@ def jobs_screen(rows: list, now: float) -> str:
             "</div>"
         )
 
+    from bibi.controller import jobs_view
+
+    typ, status, journal = typ or [], status or [], journal or []
+    rows = [r for r in rows
+            if jobs_view.trifft_filter(r, typ=typ, status=status, journal=journal)]
+    if sort:
+        rows = jobs_view.sortiere(rows, nach=sort, richtung=direction)
+
+    gruppen = "".join(
+        f'<span class="fltr-grp">{name}</span>'
+        + "".join(_filter_knopf(w, typ if name == "TYPE" else status) for w in werte)
+        for name, werte in _FILTER_OBEN)
+    leiste = (f'<div class="fltr-bar">{gruppen}'
+              f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
+
     kopf = (
         "<thead>"
         '<tr class="gruppen"><th></th><th></th>'
         '<th colspan="3" class="grp">SCHEDULER</th>'
         '<th colspan="2" class="grp">LOCAL</th><th></th></tr>'
-        "<tr><th>SLUG</th><th>TYPE</th>"
-        "<th>STATUS</th><th>LAST</th><th>NEXT</th>"
-        "<th>STATUS</th><th>RUNTIME</th><th>24H</th></tr>"
-        "</thead>"
+        "<tr>"
+        + _sort_kopf("slug", "SLUG", sort, direction)
+        + _sort_kopf("type", "TYPE", sort, direction)
+        + _sort_kopf("status", "STATUS", sort, direction)
+        + _sort_kopf("last", "LAST", sort, direction)
+        + _sort_kopf("next", "NEXT", sort, direction)
+        + "<th>STATUS</th><th>RUNTIME</th>"
+        + _sort_kopf("24h", "24H", sort, direction)
+        + "</tr></thead>"
     )
 
     teile = []
     for seg in (Segment.SCHEDULE, Segment.ADHOC, Segment.JOURNAL):
         drin = [r for r in rows if r.segment is seg]
+        eigene = ""
+        if seg is Segment.JOURNAL:
+            # Hier, nicht oben: diese drei wirken nur in diesem Band, und eine
+            # gestaffelte Filtermenge braucht einen Ort je Staffel.
+            eigene = " " + "".join(_filter_knopf(w, journal) for w in _FILTER_JOURNAL)
         teile.append(
             f'<tr class="band"><td colspan="8">{seg.value.upper()} '
-            f'<span class="muted">{len(drin)}</span></td></tr>'
+            f'<span class="muted">{len(drin)}</span>{eigene}</td></tr>'
         )
         if drin:
             teile.extend(_jobs_zeile(r, now) for r in drin)
         else:
             teile.append(f'<tr class="leer-band"><td colspan="8">— {_LEER[seg]}</td></tr>')
 
-    return f'<table class="jobs">{kopf}<tbody>{"".join(teile)}</tbody></table>'
+    return f'{leiste}<table class="jobs">{kopf}<tbody>{"".join(teile)}</tbody></table>'
+
+
+_JOBS_JS = """
+(function(){
+  // Filter und Sortierung leben in der URL, nicht im Speicher der Seite:
+  // damit ist jede Ansicht teilbar, ueberlebt ein Neuladen und laesst sich
+  // zurueckblaettern. Die Auswertung passiert am Server -- dieselbe
+  // Klassifikation wie beim ersten Aufbau, kein zweiter Filter im Browser.
+  const url = new URL(window.location.href);
+  const mehrfach = (name, wert) => {
+    const da = url.searchParams.getAll(name);
+    url.searchParams.delete(name);
+    // Toggle: was schon drin ist, faellt raus.
+    const neu = da.includes(wert) ? da.filter(v => v !== wert) : da.concat([wert]);
+    neu.forEach(v => url.searchParams.append(name, v));
+    window.location.href = url.toString();
+  };
+  const gruppe = (wert) => {
+    if (['job','claude','app'].includes(wert)) return 'typ';
+    if (['waiting','running','stopped'].includes(wert)) return 'status';
+    return 'journal';
+  };
+  document.querySelectorAll('.fltr').forEach(b => {
+    b.addEventListener('click', () => mehrfach(gruppe(b.dataset.filter), b.dataset.filter));
+  });
+  document.querySelectorAll('th[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const jetzt = url.searchParams.get('sort');
+      const richtung = url.searchParams.get('dir') || 'asc';
+      url.searchParams.set('sort', th.dataset.sort);
+      // Zweiter Klick auf dieselbe Spalte dreht die Richtung um.
+      url.searchParams.set('dir', jetzt === th.dataset.sort && richtung === 'asc'
+                                   ? 'desc' : 'asc');
+      window.location.href = url.toString();
+    });
+  });
+})();
+"""
 
 
 def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
                  git_status: dict | None = None, host_url: str | None = None,
                  scheduler: dict | None = None,
-                 scheduler_stale_since: float | None = None) -> str:
+                 scheduler_stale_since: float | None = None,
+                 typ: list[str] | None = None, status: list[str] | None = None,
+                 journal: list[str] | None = None,
+                 sort: str | None = None, direction: str = "asc") -> str:
     """Die Jobs-Seite: Hülle plus die drei Bänder.
 
     Getrennt von :func:`jobs_screen`, weil die Bänder als Fragment nachgeladen
@@ -4779,9 +4900,10 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         "</head><body>"
         f"{_header('Jobs', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
-        f'<div id="jobs">{jobs_screen(rows, now)}</div>'
+        f'<div id="jobs">{jobs_screen(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction)}</div>'
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_JOBS_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"

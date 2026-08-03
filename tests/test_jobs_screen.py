@@ -149,3 +149,58 @@ def test_the_slug_links_to_the_job_by_uid():
     from bibi.schedule.models import job_uid
     html = render.jobs_screen(_zeilen(local=[_md("EngineCI")]), now=NOW)
     assert f'/-/jobs/{job_uid("EngineCI")}' in html
+
+
+# ── Filterleiste und Sortierköpfe (FE-Spezifikation §4.5/§4.6) ─────────────
+
+
+def test_the_filter_bar_offers_both_groups():
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    for wert in ("job", "claude", "app", "waiting", "running", "stopped"):
+        assert f'data-filter="{wert}"' in html, wert
+
+
+def test_an_active_filter_is_marked():
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW, typ=["job"])
+    aktiv = [z for z in html.split("<") if 'data-filter="job"' in z]
+    assert aktiv and "on" in aktiv[0]
+
+
+def test_the_journal_filters_sit_at_their_band():
+    """Die Staffelung ist der Grund für Bänder: eine gestaffelte Filtermenge
+    braucht einen Ort je Staffel. Die drei wirken nur im dritten Band, also
+    stehen sie dort — nicht oben bei den anderen."""
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    oben = html.split("JOURNAL", 1)[0]
+    for wert in ("dropped", "oneshot", "local"):
+        assert f'data-filter="{wert}"' not in oben, wert
+        assert f'data-filter="{wert}"' in html, wert
+
+
+def test_column_heads_are_clickable():
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    for spalte in ("slug", "type", "status", "last", "next", "24h"):
+        assert f'data-sort="{spalte}"' in html, spalte
+
+
+def test_the_active_sort_column_shows_its_direction():
+    """Ohne Pfeil weiß niemand, ob gerade auf- oder absteigend sortiert ist —
+    und ein zweiter Klick fühlt sich dann folgenlos an."""
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW,
+                              sort="slug", direction="desc")
+    kopf = [z for z in html.split("<") if 'data-sort="slug"' in z][0]
+    assert "↓" in kopf or "desc" in kopf
+
+
+def test_filtered_out_rows_are_gone_not_greyed():
+    """Ein Filter blendet aus, er dimmt nicht — sonst zählte die Bandkopfzeile
+    etwas anderes als das, was man sieht."""
+    zeilen = _zeilen(local=[_md("job1"), _md("app1", app_port=9100)])
+    html = render.jobs_screen(zeilen, now=NOW, typ=["app"])
+    assert "app1" in html and "job1" not in html
+
+
+def test_the_band_count_follows_the_filter():
+    zeilen = _zeilen(local=[_md("job1"), _md("app1", app_port=9100)])
+    html = render.jobs_screen(zeilen, now=NOW, typ=["app"])
+    assert re.search(r"SCHEDULE\D*1", html), "die Zahl zählt, was sichtbar ist"

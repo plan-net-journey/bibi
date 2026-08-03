@@ -279,3 +279,124 @@ def erwartete_laeufe(trigger: str | None) -> int:
         return n
     except Exception:  # noqa: BLE001 — ein kaputter Ausdruck ist keine Erwartung
         return 0
+
+
+#: Die drei Statusgruppen. Sie decken alle elf ``models.Status`` ab und
+#: überschneiden sich nicht — anders als die frühere Filtermenge
+#: (`starting`/`running`/`pending`/`complete`/`failed`/`deferred`/`problem`),
+#: die an zwei Stellen desselben Screens verschieden zählte.
+_WAITING = {"pending", "deferred", "failed"}
+_RUNNING = {"starting", "running", "awaiting"}
+#: Alle terminalen außer `complete` — ein blockierter Slot, der auf START oder
+#: RESET wartet.
+_STOPPED = {"error", "inactive", "zombie", "killed"}
+
+
+def status_gruppe(status: str | None, *, next_fire_at: float | None) -> str | None:
+    """Welcher Filtergruppe ein Slot-Zustand angehört.
+
+    ``complete`` ist der Sonderfall und der Grund, warum ``next_fire_at``
+    hineingereicht wird: **ein abgeschlossener Job, der wieder feuern wird,
+    wartet.** Er ist nicht „fertig" — fertig ist ein Job nie, solange sein
+    Rhythmus gilt. Ohne diese Regel wäre der Normalfall eines Cron-Jobs ein
+    eigener Filterwert, und die Frage „was läuft demnächst?" ließe sich gar
+    nicht stellen.
+
+    Ein ``complete`` **ohne** Termin gehört in keine Gruppe: es wartet auf
+    nichts und ist auch nicht angehalten. Es erscheint nur ungefiltert.
+    """
+    if status in _WAITING:
+        return "waiting"
+    if status in _RUNNING:
+        return "running"
+    if status in _STOPPED:
+        return "stopped"
+    if status == "complete":
+        return "waiting" if next_fire_at else None
+    return None
+
+
+def trifft_filter(row: JobRow, *, typ: list[str], status: list[str],
+                  journal: list[str]) -> bool:
+    """Ob eine Zeile die aktuelle Filterauswahl übersteht.
+
+    Alle Toggles sind on/off und mehrfach wählbar — man kann `job` und `app`
+    zugleich sehen. **Keine Auswahl heißt keine Einschränkung**, nicht „nichts
+    anzeigen".
+
+    Die Staffelung ist der Grund für Bänder statt einer flachen Liste: `TYPE`
+    wirkt überall, `STATUS` nur auf die ersten beiden Bänder (im Journal steht
+    Historie, die keinen laufenden Zustand hat), die drei Journal-Filter nur
+    auf das dritte.
+    """
+    from bibi.schedule.models import display_kind
+
+    if typ:
+        art = display_kind(row.spec.get("payload"), row.spec.get("app_port"))
+        if art not in typ:
+            return False
+
+    if status and row.segment is not Segment.JOURNAL:
+        g = status_gruppe(row.scheduler.get("row_status") or row.scheduler.get("status"),
+                          next_fire_at=row.scheduler.get("next_fire_at"))
+        if g not in status:
+            return False
+
+    if journal and row.segment is Segment.JOURNAL:
+        passt = False
+        if "dropped" in journal and row.relation in ("dropped", "deleted"):
+            passt = True
+        if "oneshot" in journal and row.spec.get("at"):
+            passt = True
+        if "local" in journal and row.local:
+            passt = True
+        if not passt:
+            return False
+
+    return True
+
+
+#: Sortierschlüssel je Spalte. ``None`` bedeutet „kein Wert" und landet immer
+#: am Ende — ein Strich ist keine Zahl, und er soll nicht die erste
+#: Bildschirmhöhe füllen.
+def _sortwert(row: JobRow, nach: str):
+    if nach == "slug":
+        return row.slug.lower()
+    if nach == "type":
+        from bibi.schedule.models import display_kind
+        return display_kind(row.spec.get("payload"), row.spec.get("app_port"))
+    if nach == "status":
+        return row.scheduler.get("row_status") or row.scheduler.get("status") or None
+    if nach == "last":
+        return row.scheduler.get("last_run_at")
+    if nach == "next":
+        return row.scheduler.get("next_fire_at")
+    if nach == "24h":
+        # Nach dem Prozentwert, nicht nach dem Text: als Zeichenkette wäre
+        # "100%" kleiner als "74%".
+        return row.quote.prozent if row.quote else None
+    return None
+
+
+def sortiere(rows: list[JobRow], *, nach: str, richtung: str = "asc") -> list[JobRow]:
+    """Sortiert **innerhalb jedes Bandes**, nicht über die Bänder hinweg.
+
+    Die Bänder sind eine Klassifikation, keine Sortierordnung; eine Sortierung
+    über sie hinweg zerstörte genau die Aussage, für die es sie gibt.
+
+    Zeilen ohne Wert stehen immer am Ende, unabhängig von der Richtung.
+    """
+    umgekehrt = richtung == "desc"
+    reihenfolge = {Segment.SCHEDULE: 0, Segment.ADHOC: 1, Segment.JOURNAL: 2}
+
+    aus: list[JobRow] = []
+    for seg in (Segment.SCHEDULE, Segment.ADHOC, Segment.JOURNAL):
+        drin = [r for r in rows if r.segment is seg]
+        # Getrennt statt ueber einen zusammengesetzten Schluessel: der muesste
+        # Zahlen und Zeichenketten in derselben Position vergleichen, und das
+        # geht in Python nicht.
+        mit = [r for r in drin if _sortwert(r, nach) is not None]
+        ohne = [r for r in drin if _sortwert(r, nach) is None]
+        mit.sort(key=lambda r: _sortwert(r, nach), reverse=umgekehrt)
+        aus.extend(mit + ohne)
+    return aus

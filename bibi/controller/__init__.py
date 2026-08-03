@@ -1343,8 +1343,7 @@ def add_controller_routes(
     # test_every_screen_in_the_app_bar_is_reachable).
 
     @app.get("/-/jobs", include_in_schema=False)
-    def screen_jobs(request: Request, typ: str | None = None, status: str | None = None,
-                    sort: str | None = None, dir: str | None = None):
+    def screen_jobs(request: Request, sort: str | None = None, dir: str | None = None):
         """Der zentrale Screen: eine Zeile je Slug, beide Seiten nebeneinander.
 
         Die Klassifikation (welches Band, welches Beziehungslabel, was
@@ -1387,9 +1386,15 @@ def add_controller_routes(
             manuell = max(0, len(im_fenster) - erwartet)
             z.quote = jobs_view.quote_24h(runs=eigene, expected=erwartet,
                                           manual=manuell, now=jetzt)
+        # Mehrfachauswahl kommt als wiederholter Query-Parameter (`?typ=job&
+        # typ=app`) — die Toggles sind on/off und nicht exklusiv, und eine
+        # Ansicht soll teilbar sein.
+        q = request.query_params
         return HTMLResponse(render.jobs_page_v5(
             zeilen, now=jetzt, daemon_status=_status(), git_status=_feed_git_status(),
-            host_url=_scheduler_url(), scheduler=_sched[0], scheduler_stale_since=_sched[1]))
+            host_url=_scheduler_url(), scheduler=_sched[0], scheduler_stale_since=_sched[1],
+            typ=q.getlist("typ"), status=q.getlist("status"),
+            journal=q.getlist("journal"), sort=sort, direction=(dir or "asc")))
 
     def _host_schedules() -> list:
         """Die Schedules des Hosts — die linke Hälfte jeder Zeile."""
