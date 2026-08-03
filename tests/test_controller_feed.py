@@ -699,7 +699,10 @@ def test_feed_page_has_header_nav_and_status_cards():
     html = render.feed_page(feed_data, git_status={"tree": "clean", "sync": "synced",
                                                    "branch": "trunk"},
                             daemon_status={"roles": ["scheduler", "connect"]}, now=100.0)
-    assert 'href="/-/ui/jobs"' in html and 'href="/-/ui/schedules"' in html
+    # Ein Ziel je Screen: der Jobs-Tab zeigt auf `/-/jobs`, auf jedem Knoten.
+    # Vorher standen hier zwei Links nebeneinander — `/-/ui/jobs` für den
+    # Client, `/-/ui/schedules` für den Host —, beide beschriftet „Jobs".
+    assert 'href="/-/jobs"' in html and "/-/ui/schedules" not in html
     assert "<title>bibi · Feed</title>" in html
     assert 'class="statuscards"' in html
 

@@ -1626,53 +1626,42 @@ def _filter_bar(typ: str | None, status: str | None, *,
     )
 
 
+#: Die sechs Screens, in der Reihenfolge der App-Bar. Feed und Jobs sind die
+#: täglichen, Nodes ist Betrieb, Live und Log sind Diagnose.
+SCREENS: tuple[tuple[str, str], ...] = (
+    ("Feed", "/-/"),
+    ("Jobs", "/-/jobs"),
+    ("Archive", "/-/archive"),
+    ("Nodes", "/-/nodes"),
+    ("Live", "/-/live"),
+    ("Log", "/-/log"),
+)
+
+
 def _screen_nav(active: str, roles: list[str] | None = None) -> str:
-    """Screen-Tabs (Feed · [Jobs] · Live-Log · API-Docs); der aktive ohne
-    Link. **Home ist jetzt Feed** (PLAN-18 Stufe 18.3, löst die
-    2026-07-04-Entscheidung „Home = Schedules" bewusst ab) — Schedules bleibt
-    unter seiner eigenen Route erreichbar, ist nur nicht mehr ``/-/`` selbst.
-    Jobs (PLAN-17 Stufe 17.2) zeigt den Lokal/Remote-Abgleich + Start-Button für
-    /run. Daemon-Tab entfernt (PLAN-18 Stufe 18.4) — sein Inhalt (Status-
-    Kacheln) lebt jetzt im Feed-Header, ``daemon_page()``/``_status_cards()``
-    bleiben als Bausteine bestehen, nur die eigene Seite/der Tab fallen weg.
+    """Die App-Bar: sechs Screens, der aktive ohne Link.
 
-    Host (``/-/ui/schedules``) und Client (``/-/ui/jobs``) heißen im Tab jetzt
-    beide "Jobs" (Bibi4-Iteration, User-Fund: "eine App", Host/Client sollen
-    dieselbe Screen-Menge zeigen) — Routen/interne Namen bleiben unverändert,
-    nur das Label vereinheitlicht sich. Kein Kollisionsrisiko: ``scheduler``
-    und ``connect`` schließen sich gegenseitig aus (``roles.py``), es kann also
-    nie beide gleichzeitig geben.
+    Auf **jedem** Knoten dieselben sechs — es gibt nur noch einen Client, und
+    der Scheduler ist Backend ohne eigenes Frontend (FE-Spezifikation §1). Die
+    Leiste verzweigt deshalb nicht mehr nach Rolle; ``roles`` bleibt in der
+    Signatur, weil die Aufrufer es durchreichen, und wird hier nicht gelesen.
 
-    Rollenabhängig ausgeblendet (PLAN-20 Befund 6): der Host-Jobs-Tab nur mit
-    ``scheduler``-Rolle (die zugrundeliegenden ``/-/schedule``-Routen existieren
-    serverseitig nur dann, s. ``app.py::_add_scheduler_routes`` — ohne Rolle
-    wäre die Seite ohnehin nur ein 404). Der Client-Jobs-Tab nur mit
-    ``connect``-Rolle (User-Entscheidung trotz Rückfrage: bewusst NICHT
-    zusätzlich für reine Scheduler-Knoten wie sarasate — auch wenn der Screen
-    dort technisch funktionieren würde).
+    Vorher zeigte ein Scheduler-Knoten ``/-/ui/schedules`` und ein Client
+    ``/-/ui/jobs``, beide beschriftet „Jobs" — zwei Screens unter einem Namen,
+    weil es zwei Frontends gab. Ein Screenshot war ohne Kenntnis der Rolle
+    nicht einzuordnen.
 
-    Archive-Tab (Bibi4-Iteration, User-Fund: Archive/Journal bzw. lokale Läufe
-    auf einen eigenen Screen auslagern) für Host (``scheduler``-Rolle,
-    ``archive_page()``/``/-/ui/archive``) UND Client (``connect``-Rolle,
-    ``jobs_archive_page()``/``/-/ui/jobs/archive``) — dieselbe Beschriftung,
-    unterschiedliche Routen/Inhalte, exakt wie beim Jobs-Tab. Kein
-    Kollisionsrisiko aus demselben Grund (``scheduler``⊥``connect``)."""
-    roles = roles or []
-    tabs = [("Feed", "/-/")]
-    if "scheduler" in roles:
-        tabs.append(("Jobs", "/-/ui/schedules"))
-        tabs.append(("Archive", "/-/ui/archive"))
-        tabs.append(("Nodes", "/-/ui/clients"))
-    if "connect" in roles:
-        tabs.append(("Jobs", "/-/ui/jobs"))
-        tabs.append(("Archive", "/-/ui/jobs/archive"))
-    tabs += [("Live Log", "/-/ui/logs"), ("API Docs", "/-/docs")]
+    ``Live`` und ``Log`` sind getrennt, was vorher ein Tab war: der Unterschied
+    ist das Gedächtnis. Live hat keines und erzählt, was gerade geschieht; Log
+    hat Historie und ist zum Nachschlagen da (FE-Spezifikation §7). ``API
+    Docs`` ist aus der Leiste raus — die Route bleibt, aber eine generierte
+    Schema-Seite ist kein Screen dieser App.
+    """
     def _tab(t: str, h: str) -> str:
         if t == active:
             return f'<span class="tab-active">{t}</span>'
-        extra = ' target="_blank" rel="noopener"' if t == "API Docs" else ""
-        return f'<a class="back" href="{h}"{extra}>{t}</a>'
-    items = [_tab(t, h) for t, h in tabs]
+        return f'<a class="back" href="{h}">{t}</a>'
+    items = [_tab(t, h) for t, h in SCREENS]
     return '<span class="muted">' + " · ".join(items) + "</span>"
 
 

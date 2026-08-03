@@ -383,7 +383,7 @@ def test_jobs_archive_page_includes_status_cards():
 
 def test_jobs_page_has_header_and_nav():
     html = render.jobs_page([], {}, now=100.0)
-    assert 'href="/-/"' in html and 'href="/-/ui/logs"' in html
+    assert 'href="/-/"' in html and 'href="/-/log"' in html
     assert "<title>bibi · Jobs</title>" in html
 
 
@@ -447,7 +447,7 @@ def test_jobs_route_has_status_cards_header(team_repo: Path, app_with):
 def test_screen_nav_includes_jobs_tab():
     # Jobs nur mit connect-Rolle sichtbar (PLAN-20 Befund 6).
     html = render._screen_nav("Schedules", roles=["connect"])
-    assert 'href="/-/ui/jobs"' in html and "Jobs" in html
+    assert 'href="/-/jobs"' in html and "Jobs" in html
 
 
 def test_screen_nav_hides_jobs_tab_without_connect_role():

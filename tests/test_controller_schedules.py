@@ -177,7 +177,7 @@ def test_schedules_page_has_filter_and_nav():
     assert 'name="typ"' in html and 'name="status"' in html
     assert "/-/ui/schedules/list" in html      # Filter-Ziel + Self-Poll
     assert 'id="schedules"' in html and "daily" in html
-    assert "Live Log" in html
+    assert "Live" in html
 
 
 def test_schedules_page_includes_feed_status_header():

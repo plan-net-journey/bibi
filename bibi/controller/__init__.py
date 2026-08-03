@@ -1288,3 +1288,41 @@ def add_controller_routes(
         _, runs, job = _detail_data(slug)
         return HTMLResponse(render.journal_fragment(runs, slug, time.time(),
                                                     live_job=job))
+
+    # ── Die sechs Screens (bibi5, FE-Spezifikation §1) ───────────────────────
+    #
+    # Kanonische Adressen, eine je Screen, auf jedem Knoten dieselben. Die
+    # `/-/ui/`-Routen darunter bleiben, was sie sind: htmx-Fragmente, die eine
+    # Seite nachlädt — keine Screens, die jemand anspringt.
+    #
+    # Vorher hing die Adresse an der Rolle: ein Scheduler-Knoten zeigte
+    # `/-/ui/schedules`, ein Client `/-/ui/jobs`, und beide hießen "Jobs". Ein
+    # Link war damit nur zusammen mit der Rolle des Knotens verständlich, und
+    # die App-Bar musste verzweigen. Jetzt zeigt sie immer alle sechs — was
+    # verlangt, dass es alle sechs auch überall gibt (test_controller_nav.py::
+    # test_every_screen_in_the_app_bar_is_reachable).
+
+    @app.get("/-/jobs", include_in_schema=False)
+    def screen_jobs(request: Request, typ: str | None = None, status: str | None = None,
+                    sort: str | None = None, dir: str | None = None):
+        return jobs_screen(request, typ=typ, status=status, sort=sort, dir=dir)
+
+    @app.get("/-/archive", include_in_schema=False)
+    def screen_archive():
+        return jobs_archive_screen()
+
+    @app.get("/-/nodes", include_in_schema=False)
+    def screen_nodes():
+        return clients_screen()
+
+    @app.get("/-/live", include_in_schema=False)
+    def screen_live():
+        # Noch derselbe Inhalt wie `Log` — die Trennung (Live ohne Gedächtnis,
+        # SSE; Log mit Historie, HTTP) kommt in Bauschritt 4. Bis dahin ist der
+        # Tab erreichbar statt tot: ein 404 hinter einem sichtbaren Tab ist die
+        # schlechtere Zwischenlösung.
+        return logs_page()
+
+    @app.get("/-/log", include_in_schema=False)
+    def screen_log():
+        return logs_page()
