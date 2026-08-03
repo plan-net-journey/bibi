@@ -39,11 +39,21 @@ def test_slot_states_are_the_eleven_plus_done():
     assert slot.STATES == frozenset({*(str(s) for s in Status), slot.DONE})
 
 
-def test_done_is_terminal_without_an_exit():
-    """Der einzige Zustand ohne Ausgang. ``error`` ist auch terminal, hat aber
+def test_done_has_no_exit_at_all():
+    """Der einzige Zustand ohne Ausgang. ``error`` ist auch blockiert, hat aber
     START und RESET — ``done`` hat nichts, weil der Termin verbraucht ist."""
-    assert slot.is_terminal(slot.DONE)
     assert slot.actions(slot.DONE) == frozenset()
+
+
+def test_blocked_and_finished_are_not_the_same_question():
+    """Zwei verschiedene Fragen, die leicht verwechselt werden: „läuft gerade
+    nichts?" und „läuft ohne Eingriff nie wieder was?". Ein ``complete``-Slot
+    beantwortet die erste mit ja und die zweite mit nein — er hat seinen
+    nächsten Termin und läuft von selbst wieder an."""
+    assert slot.is_finished("complete") and not slot.is_blocked("complete")
+    assert slot.is_finished("error") and slot.is_blocked("error")
+    assert slot.is_finished(slot.DONE) and not slot.is_blocked(slot.DONE)
+    assert not slot.is_finished("running")
 
 
 # ── die vier Knopf-Gesichter (Zustandsmodell §4) ────────────────────────────
@@ -69,22 +79,23 @@ def test_blocked_slots_offer_start_and_reset(state):
     assert slot.actions(state) == frozenset({slot.Verb.START, slot.Verb.RESET})
 
 
-def test_complete_never_appears_in_a_slot():
-    """A1: ``complete`` archiviert sofort und von selbst, der Slot wird im
-    selben Zug neu initialisiert. Es ist ein Durchgangszustand von der Dauer
-    eines Schreibvorgangs — nach ihm zu fragen ist ein Fehler, keine leere
-    Antwort, sonst rechnet der Aufrufer stillschweigend mit einem Fall, den es
-    nicht gibt."""
-    assert "complete" not in slot.STATES_IN_A_SLOT
-    with pytest.raises(ValueError, match="complete"):
-        slot.actions("complete")
+def test_a_completed_slot_is_a_waiting_slot_with_a_history():
+    """``complete`` steht sehr wohl im Slot, und zwar bewusst: der *Lauf* ist
+    nach A1 sofort archiviert, die Zeile traegt den Zustand bis zum naechsten
+    faelligen Tick weiter (lazy Rearm in ``reserve_next()``, Entscheidung
+    m.rau: "archiviert wird erst vor dem naechsten Rerun"). Die
+    FE-Spezifikation §4.5 rechnet damit — sie zaehlt "``complete``, sofern ein
+    ``next`` gesetzt ist" zu ``waiting``.
+
+    KILL fehlt: es laeuft nichts, was zu beenden waere."""
+    assert slot.actions("complete") == frozenset({slot.Verb.START, slot.Verb.RESET})
 
 
 def test_every_slot_state_has_a_defined_button_face():
-    """Vollstaendigkeit: keine Luecke zwischen den vier Leisten — sonst faellt
-    ein Zustand durch und der Screen zeigt gar keine Knoepfe, ohne dass das
-    als Fehler auffaellt."""
-    for state in slot.STATES_IN_A_SLOT:
+    """Vollstaendigkeit: keine Luecke zwischen den Leisten — sonst faellt ein
+    Zustand durch und der Screen zeigt gar keine Knoepfe, ohne dass das als
+    Fehler auffaellt."""
+    for state in slot.STATES:
         assert isinstance(slot.actions(state), frozenset)
 
 

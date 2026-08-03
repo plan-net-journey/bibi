@@ -37,18 +37,15 @@ DONE = "done"
 #: Alle Werte, die in der ``status``-Spalte eines Slots stehen können.
 STATES: frozenset[str] = frozenset({*(str(s) for s in Status), DONE})
 
-#: Alle Werte, die dort tatsächlich *angetroffen* werden. ``complete`` fehlt:
-#: nach der Archivierungsregel A1 wird ein fertiger Lauf unverzüglich ins
-#: Journal geschrieben und die Zeile im selben Zug neu initialisiert — der
-#: Zustand existiert nur für die Dauer eines Schreibvorgangs.
-STATES_IN_A_SLOT: frozenset[str] = STATES - {str(Status.COMPLETE)}
-
-#: Kein Ausgang mehr, ohne dass ein Mensch eingreift. ``done`` ist darunter der
-#: einzige ganz ohne Ausgang (s. ``actions()``).
-TERMINAL: frozenset[str] = frozenset({
-    str(Status.ERROR), str(Status.INACTIVE), str(Status.ZOMBIE),
-    str(Status.KILLED), DONE,
+#: Blockiert: kein Fortgang mehr ohne einen Menschen. Der Slot ist besetzt,
+#: deshalb feuert nichts, auch wenn der Cron-Ausdruck weiter gilt.
+BLOCKED: frozenset[str] = frozenset({
+    str(Status.ERROR), str(Status.INACTIVE), str(Status.ZOMBIE), str(Status.KILLED),
 })
+
+#: Kein Lauf mehr unterwegs — inklusive ``complete`` (der Lauf ist fertig, der
+#: Slot wartet auf seinen nächsten Termin) und ``done`` (verbraucht).
+FINISHED: frozenset[str] = BLOCKED | {str(Status.COMPLETE), DONE}
 
 
 class Verb(StrEnum):
@@ -84,6 +81,13 @@ _ACTIONS: dict[str, frozenset[Verb]] = {
     str(Status.INACTIVE): frozenset({Verb.START, Verb.RESET}),
     str(Status.ZOMBIE): frozenset({Verb.START, Verb.RESET}),
     str(Status.KILLED): frozenset({Verb.START, Verb.RESET}),
+    # Abgeschlossen und wieder eingeplant. Der *Lauf* ist archiviert (A1), die
+    # Zeile trägt ``complete`` bis zum nächsten fälligen Tick weiter — bewusst
+    # („archiviert wird erst vor dem nächsten Rerun", lazy Rearm in
+    # ``reserve_next()``). Sie ist damit ein wartender Slot mit Vorgeschichte:
+    # START zieht den nächsten Lauf auf jetzt vor, RESET stellt den regulären
+    # Termin wieder her. KILL fehlt — es läuft nichts, was zu beenden wäre.
+    str(Status.COMPLETE): frozenset({Verb.START, Verb.RESET}),
     # Verbraucht: keine. Das Fehlen der Leiste ist selbst die Aussage — ein
     # ``done``-Slot zeigt keine toten Knöpfe, weil es nichts mehr zu tun gibt.
     # Wer den Oneshot erneut laufen lassen will, legt eine neue ``at``-Datei an
@@ -92,25 +96,27 @@ _ACTIONS: dict[str, frozenset[Verb]] = {
 }
 
 
-def is_terminal(state: str) -> bool:
-    """Ob der Slot ohne Eingriff nicht mehr weiterläuft."""
-    return state in TERMINAL
+def is_blocked(state: str) -> bool:
+    """Ob der Slot ohne einen Menschen nicht mehr weiterläuft."""
+    return state in BLOCKED
+
+
+def is_finished(state: str) -> bool:
+    """Ob gerade kein Lauf mehr unterwegs ist — auch ``complete`` und ``done``.
+
+    Der Unterschied zu ``is_blocked()``: ein ``complete``-Slot hat seinen
+    nächsten Termin und läuft von selbst wieder an, ein blockierter nicht.
+    """
+    return state in FINISHED
 
 
 def actions(state: str) -> frozenset[Verb]:
     """Die auf diesem Slot verfügbaren Verben.
 
-    Wirft ``ValueError`` bei ``complete`` und bei Unbekanntem statt eine leere
-    Menge zu liefern: eine leere Leiste ist eine *Aussage* (``done`` — hier ist
-    nichts mehr zu tun), und die darf nicht versehentlich aus einem Tippfehler
-    entstehen. ``complete`` ist eigens genannt, weil es zwar ein gültiger
-    Lauf-Zustand ist, in einem Slot aber nach A1 nie angetroffen wird.
+    Wirft ``ValueError`` bei Unbekanntem statt eine leere Menge zu liefern:
+    eine leere Leiste ist eine *Aussage* (``done`` — hier ist nichts mehr zu
+    tun), und die darf nicht versehentlich aus einem Tippfehler entstehen.
     """
-    if state == str(Status.COMPLETE):
-        raise ValueError(
-            "complete steht nie in einem Slot (Archivierungsregel A1): ein "
-            "fertiger Lauf wird unverzüglich archiviert und die Zeile im "
-            "selben Zug neu initialisiert")
     try:
         return _ACTIONS[state]
     except KeyError:

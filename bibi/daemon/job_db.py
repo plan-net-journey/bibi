@@ -23,7 +23,7 @@ from pathlib import Path
 from dateutil import parser as _date_parser
 
 from bibi import repo
-from bibi.schedule import discovery, dispatcher, lifecycle
+from bibi.schedule import discovery, dispatcher, lifecycle, slot
 from bibi.schedule.models import Kind, Status, display_kind, job_uid
 from bibi.schedule.parser import SPECIAL_SCHEDULES, ParseResult
 
@@ -516,7 +516,11 @@ def active_worktree_slugs(conn: sqlite3.Connection) -> set[str]:
     for r in rows:
         if not r["active"]:
             continue
-        if lifecycle.is_terminal(Status(r["status"])) and r["next_fire_at"] is None:
+        # `slot.is_finished()` statt `lifecycle.is_terminal()`: der Slot kann
+        # `done` tragen (verbrauchter Oneshot), und das ist kein `models.Status`
+        # — die Umwandlung stürbe daran. Inhaltlich gehört `done` genau hierher:
+        # ein verbrauchter Termin ohne nächste Feuerung braucht keinen Worktree.
+        if slot.is_finished(r["status"]) and r["next_fire_at"] is None:
             continue
         known.add(r["slug"])
     return known
@@ -963,9 +967,17 @@ def report_status(
     """Worker meldet einen Zustandswechsel (§4.4, output-frei). Rückgabe:
     ``ok`` | ``invalid`` (verbotener Übergang, §5.4) | ``not_found``."""
     now = time.time() if now is None else now
-    row = conn.execute("SELECT status, kind, schedule, slug FROM jobs WHERE id=?", (job_id,)).fetchone()
+    # `at_iso` mit: es entscheidet, ob `complete` den Slot verbraucht (s. u.).
+    row = conn.execute(
+        "SELECT status, kind, schedule, slug, at_iso FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return "not_found"
+    if row["status"] == slot.DONE:
+        # Ein verbrauchter Slot hat keinen Ausgang (Zustandsmodell §1): kein
+        # Lauf kommt mehr, also gibt es auch keinen Zustandswechsel zu melden.
+        # `done` ist kein `models.Status` — ohne diese Prüfung stürbe die
+        # Umwandlung unten mit `ValueError`, statt „geht hier nicht" zu sagen.
+        return "invalid"
     current = Status(row["status"])
     target = Status(status)
     if target is current and target in lifecycle.TERMINAL:
@@ -1145,6 +1157,19 @@ def report_status(
     #      lief, während `fire+1` schon dem neuen Zyklus gehört.
     archive_first = target is Status.PENDING
 
+    # `at` ist der einzige Trigger, der sich verbraucht — und damit die einzige
+    # Ausführungsgarantie „genau einmal". Ein Rhythmus bekommt nach `complete`
+    # den nächsten Termin, ein Oneshot hat keinen mehr: sein Slot geht auf
+    # ``done``, den einzigen Zustand ohne Ausgang.
+    #
+    # Das ist bewusst ein zweiter Schritt **nach** dem Journal-Schreiben, nicht
+    # ein anderer Wert im selben UPDATE: der *Lauf* endet als ``complete`` und
+    # wird auch so archiviert, der *Slot* wird danach verbraucht. Genau die
+    # Spiegelung aus Zustandsmodell §1 — ``complete`` steht nie im Slot,
+    # ``done`` nie im Journal. Beides in einem Zug hieße, ``done`` in die
+    # Journal-Zeile zu schreiben.
+    consumes_slot = target is Status.COMPLETE and row["at_iso"] is not None
+
     own_tx = not conn.in_transaction
     if own_tx:
         conn.execute("BEGIN IMMEDIATE")
@@ -1155,6 +1180,10 @@ def report_status(
         else:
             conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
             _write_journal(conn, job_id, now, commit_sha=commit_sha, branch=branch)
+            if consumes_slot:
+                conn.execute(
+                    "UPDATE jobs SET status=?, next_fire_at=NULL, updated_at=? WHERE id=?",
+                    (slot.DONE, now, job_id))
     except BaseException:
         if own_tx:
             conn.execute("ROLLBACK")
@@ -1303,6 +1332,11 @@ def start_now(conn: sqlite3.Connection, job_id: str, now: float | None = None) -
     row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return "not_found"
+    if row["status"] == slot.DONE:
+        # Verbrauchter Oneshot: START zeigt nichts an, was ginge. Wer ihn
+        # erneut laufen lassen will, legt eine neue `at`-Datei an oder macht
+        # ihn zu einem `adhoc`-Job (Zustandsmodell §5).
+        return "invalid"
     status = Status(row["status"])
     if status in (Status.PENDING, Status.DEFERRED, Status.FAILED):
         # failed/deferred brauchen keine attempts-1-Logik — "sofortiger Start"

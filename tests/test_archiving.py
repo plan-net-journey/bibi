@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 
 from bibi.daemon import job_db
-from bibi.schedule import parser
+from bibi.schedule import parser, slot
 from bibi.schedule.models import Status
 
 
@@ -45,6 +45,15 @@ def conn(tmp_path: Path):
 def _job(conn, slug: str = "J", *, schedule: str = "0 * * * *") -> str:
     pr = parser.parse_text(
         f"---\nslug: {slug}\nschedule: \"{schedule}\"\njob: echo hi\n---\n",
+        schedule_ref=f"case/x/{slug}.md", path=Path(f"case/x/{slug}.md"),
+    )
+    assert pr.is_ok, pr.error
+    return job_db.upsert_schedule(conn, pr, 1000.0)
+
+
+def _oneshot(conn, slug: str = "O1", *, at: str = "2026-08-05T10:00:00") -> str:
+    pr = parser.parse_text(
+        f"---\nslug: {slug}\nat: \"{at}\"\njob: echo hi\n---\n",
         schedule_ref=f"case/x/{slug}.md", path=Path(f"case/x/{slug}.md"),
     )
     assert pr.is_ok, pr.error
@@ -186,6 +195,60 @@ def test_a_blocked_slot_is_not_dispatched(conn):
     jid = _job(conn, "B")
     _run_until(conn, jid, "starting", "running", "zombie")
     assert job_db.reserve_next(conn) is None
+
+
+# ── A1 fuer Oneshots: der Termin verbraucht sich ────────────────────────────
+
+
+def test_a_finished_oneshot_consumes_its_slot(conn):
+    """`at` ist der einzige Trigger, der sich verbraucht — und damit die einzige
+    Ausfuehrungsgarantie "genau einmal" im System. Nach A1 wird auch ein Oneshot
+    bei `complete` sofort archiviert; anders als bei einem Rhythmus gibt es
+    danach aber keinen naechsten Termin, auf den der Slot neu reserviert werden
+    koennte. Er geht auf `done` — den einzigen Slot-Zustand ohne Ausgang."""
+    jid = _oneshot(conn)
+    _run_until(conn, jid, "starting", "running", "complete")
+    assert _slot(conn, jid) == slot.DONE
+
+
+def test_a_recurring_job_does_not_consume_its_slot(conn):
+    """Die Gegenprobe — sonst waere nach dem ersten Lauf jeder Job erledigt."""
+    jid = _job(conn, "R2")
+    _run_until(conn, jid, "starting", "running", "complete")
+    assert _slot(conn, jid) != slot.DONE
+
+
+def test_the_consumed_oneshot_still_has_its_run_in_the_journal(conn):
+    """`done` ist der Slot-Zustand, `complete` der Lauf-Zustand — beide
+    entstehen aus demselben Vorgang und stehen nebeneinander, jeder an seinem
+    Ort. Im Journal darf `done` nie auftauchen (Zustandsmodell §1)."""
+    jid = _oneshot(conn, "O2")
+    _run_until(conn, jid, "starting", "running", "complete")
+    rows = _journal(conn)
+    assert [r["status"] for r in rows] == ["complete"]
+    assert slot.DONE not in {r["status"] for r in rows}
+
+
+def test_a_consumed_oneshot_offers_no_actions(conn):
+    """Ein verbrauchter Slot hat keinen Ausgang — die Knopfleiste entfaellt
+    ganz, statt tote Knoepfe zu zeigen."""
+    jid = _oneshot(conn, "O3")
+    _run_until(conn, jid, "starting", "running", "complete")
+    assert slot.actions(_slot(conn, jid)) == frozenset()
+    # Und die Zustandsmaschine kennt keinen Weg heraus: START/RESET greifen nicht.
+    assert job_db.start_now(conn, jid, now=5000.0) == "invalid"
+    assert job_db.report_status(conn, jid, status="pending") == "invalid"
+
+
+def test_a_failed_oneshot_stays_open(conn):
+    """Die nuetzliche Zeile der Tabelle in Zustandsmodell §5: ein
+    fehlgeschlagener Oneshot ist **nicht** verbraucht. Sein Slot ist blockiert,
+    nicht leer — er kann also noch einmal versucht werden. Erst der
+    erfolgreiche Lauf verbraucht den Termin."""
+    jid = _oneshot(conn, "O4")
+    _run_until(conn, jid, "starting", "running", "failed", "error")
+    assert _slot(conn, jid) == "error"
+    assert slot.actions(_slot(conn, jid))  # START und RESET stehen bereit
 
 
 def test_archiving_happens_once_not_twice(conn):
