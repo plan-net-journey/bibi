@@ -507,3 +507,35 @@ def test_archive_states_its_reach(client):
 def test_an_empty_archive_says_what_it_means(client):
     c, _ = _md_job(client)
     assert "No runs" in c.get("/-/archive").text
+
+
+def test_archive_shows_the_base_job_of_a_pinned_run(client):
+    """Live gefunden: die SLUG-Spalte fuehrte `calendar-transfer-0ea75cbc`
+    neben `calendar-transfer`. Ein gepinnter Lauf traegt einen Slug mit
+    Zufallssuffix (`run_pinned()`), gehoert aber zum Basis-Job — sonst zerfaellt
+    er in so viele Eintraege, wie er lokale Laeufe hatte (live: 252 Pseudo-Slugs
+    fuer 33 echte Jobs), und jeder Link fuehrt auf eine eigene Detailseite fuer
+    denselben Job.
+
+    Der Suffix wird nur abgeschnitten, wenn `pinned_host` gesetzt ist — genau
+    die Regel, die `bus.bucket_slug()` und `job_db.list_journal()` schon
+    anwenden. Ohne diesen Diskriminator waere es Raten am Namen."""
+    from bibi.controller import render
+    html = render.archive_page_v5(laeufe=[
+        {"slug": "calendar-transfer-0ea75cbc", "pinned_host": "Mac",
+         "finished_at": 1_754_000_000.0, "status": "complete"},
+    ], now=1_754_000_100.0)
+    assert ">calendar-transfer<" in html
+    assert "0ea75cbc" not in html
+
+
+def test_archive_leaves_a_real_slug_alone_even_if_it_looks_suffixed(client):
+    """Die Gegenprobe: ohne `pinned_host` wird nichts abgeschnitten. Ein echter
+    Slug darf auf acht Hex-Zeichen enden — `20260728.at-150738-81ec` tut es
+    fast, und ein Oneshot-Slug traegt seinen Suffix mit Bedeutung."""
+    from bibi.controller import render
+    html = render.archive_page_v5(laeufe=[
+        {"slug": "daily-digest-deadbeef", "pinned_host": None,
+         "finished_at": 1_754_000_000.0, "status": "complete"},
+    ], now=1_754_000_100.0)
+    assert ">daily-digest-deadbeef<" in html

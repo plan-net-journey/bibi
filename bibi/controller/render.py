@@ -4647,6 +4647,7 @@ def archive_page_v5(*, laeufe: list, now: float, monate: int = 1, pruned: int = 
     hier nicht steht, ist nicht verlorengegangen, sondern weggepruned.
     """
     from bibi.controller import jobs_view
+    from bibi.daemon.bus import bucket_slug as _bucket
     from bibi.schedule.models import job_uid as _uid
 
     reichweite = (f'showing {monate} month{"" if monate == 1 else "s"} '
@@ -4661,7 +4662,15 @@ def archive_page_v5(*, laeufe: list, now: float, monate: int = 1, pruned: int = 
         for tag, tages_laeufe in jobs_view.by_day(laeufe):
             teile.append(f'<tr class="day"><td colspan="7">{_e(tag)}</td></tr>')
             for r in tages_laeufe:
-                slug = r.get("slug") or ""
+                # Ein gepinnter Lauf gehoert zu seinem Basis-Job: `run_pinned()`
+                # haengt je Lauf einen Zufallssuffix an, und ohne das
+                # Zurueckrechnen zerfaellt ein Job in so viele Eintraege, wie er
+                # lokale Laeufe hatte (live 252 Pseudo-Slugs fuer 33 Jobs).
+                # `bucket_slug()` schneidet nur bei gesetztem `pinned_host` —
+                # sonst waere es Raten am Namen, und ein echter Slug darf auf
+                # acht Hex-Zeichen enden.
+                slug = (_bucket(r.get("slug") or "", r.get("pinned_host"))
+                        or r.get("slug") or "")
                 st = r.get("status") or ""
                 rs = r.get("reason")
                 teile.append(
