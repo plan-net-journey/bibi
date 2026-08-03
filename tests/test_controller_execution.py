@@ -60,7 +60,7 @@ def test_execution_detail_local_domain_links_back_to_jobs_not_raw_journal():
     # statt der scheduler-gated /-/journal/-Route.
     html = render.execution_detail_page(
         _entry(jid=7, slug="mein-testjob", domain="local"), events=[], kind="job")
-    assert 'href="/-/ui/jobs"' in html
+    assert 'href="/-/jobs"' in html
     assert 'href="/-/ui/schedule/mein-testjob"' not in html
     assert "/-/journal/7/stream" not in html
     assert 'href="/-/run/journal/7/stream"' in html
@@ -77,7 +77,7 @@ def test_execution_detail_pinned_run_links_back_to_jobs_not_raw_journal():
     html = render.execution_detail_page(
         _entry(jid=7, slug="mein-testjob", domain="scheduled", pinned_host="mac"),
         events=[], kind="job")
-    assert 'href="/-/ui/jobs"' in html
+    assert 'href="/-/jobs"' in html
     assert 'href="/-/ui/schedule/mein-testjob"' not in html
     assert "/-/journal/7/stream" not in html
     assert 'href="/-/run/journal/7/stream"' in html
@@ -229,7 +229,7 @@ def test_ui_run_detail_route_pinned_run_on_combined_scheduler_node(team_repo: Pa
         r = c.get("/-/ui/run/9")
         assert r.status_code == 200
         assert "gepinnt gelaufen" in r.text
-        assert 'href="/-/ui/jobs"' in r.text
+        assert 'href="/-/jobs"' in r.text
         assert "/-/journal/9/stream" not in r.text
 
 
@@ -271,7 +271,7 @@ def test_ui_run_detail_route_falls_back_to_local_journal_without_scheduler_role(
         r = c.get("/-/ui/run/9")
         assert r.status_code == 200
         assert "mein-testjob:1" in r.text and "lokal gelaufen" in r.text
-        assert 'href="/-/ui/jobs"' in r.text  # "zurück" führt zum Jobs-Screen, nicht zum (404) Schedule
+        assert 'href="/-/jobs"' in r.text  # "zurück" führt zum Jobs-Screen, nicht zum (404) Schedule
 
 
 def test_ui_run_detail_route_falls_back_to_local_journal_for_pinned_run(team_repo: Path):
@@ -289,7 +289,7 @@ def test_ui_run_detail_route_falls_back_to_local_journal_for_pinned_run(team_rep
         r = c.get("/-/ui/run/9")
         assert r.status_code == 200
         assert "adhoc-abc123:0:9" in r.text and "gepinnt gelaufen" in r.text
-        assert 'href="/-/ui/jobs"' in r.text  # "zurück" führt zum Jobs-Screen, nicht zum (404) Schedule
+        assert 'href="/-/jobs"' in r.text  # "zurück" führt zum Jobs-Screen, nicht zum (404) Schedule
 
 
 def test_ui_run_detail_route_shows_schedule_ref(team_repo: Path):

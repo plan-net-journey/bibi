@@ -468,24 +468,6 @@ class FakeClient:
         return self._landings
 
 
-def test_ui_schedules_screen_route(team_repo: Path):
-    client = FakeClient([_sched("daily", last_status="complete")])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules")
-        assert r.status_code == 200
-        assert 'name="status"' in r.text and "daily" in r.text
-
-
-def test_ui_schedules_screen_route_has_rescan_and_reflects_maintenance(team_repo: Path):
-    # User-Feedback 2026-07-03: RESCAN + MAINT auch auf dem Schedules-Screen.
-    client = FakeClient([], status={"maintenance": True, "roles": ["scheduler"]})
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules")
-        assert r.status_code == 200
-        assert 'id="rescan"' in r.text
-        assert 'id="maint" class="toggle warn"' in r.text
 
 
 def test_ui_archive_screen_route(team_repo: Path):
@@ -519,30 +501,6 @@ def test_ui_schedules_list_filters_problem(team_repo: Path):
         assert "fine" not in r.text.replace("/-/ui/schedule/", "")
 
 
-def test_ui_schedules_screen_includes_timeseries(team_repo: Path):
-    client = FakeClient(
-        [], status={"job_stats": {"counts": {"running": 2}, "running_since_uptime": 5}},
-        landings=[{"status": "complete", "finished_at": 1.0}])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules")
-        assert r.status_code == 200
-        assert 'id="timeseries"' in r.text
-        assert "5 since start" in r.text
-
-
-def test_ui_schedules_screen_includes_feed_status_header(team_repo: Path):
-    # User-Fund: denselben Host/Mode/Git/Job-Status-Kopf wie auf /-/ auch auf
-    # /-/ui/schedules zeigen.
-    client = FakeClient(
-        [], status={"job_stats": {"counts": {"running": 1}, "complete_since_uptime": 3,
-                                  "next_due_at": None}})
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules")
-        assert r.status_code == 200
-        assert 'id="feedstatus"' in r.text
-        assert r.text.count('class="hdr-block') == 2
 
 
 def test_ui_schedules_timeseries_fragment_route(team_repo: Path):
@@ -572,50 +530,8 @@ def test_ui_schedules_timeseries_fragment_route_honors_resolution_param(team_rep
 # /-/ui/schedules sollte erhalten bleiben. Entweder Cookies oder Local Store") ─
 
 
-def test_schedules_screen_sets_filter_cookies_from_query(team_repo: Path):
-    client = FakeClient([_sched("a", kind="job"), _sched("b", kind="claude",
-                                                        payload="claude: x")])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules", params={"typ": "job", "status": "complete"})
-        assert r.cookies.get("bibi_sched_typ") == "job"
-        assert r.cookies.get("bibi_sched_status") == "complete"
 
 
-def test_schedules_screen_uses_cookie_when_no_query_param(team_repo: Path):
-    client = FakeClient([_sched("jobrun", kind="job"),
-                         _sched("clauderun", kind="claude", payload="claude: x")])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        c.cookies.set("bibi_sched_typ", "claude")
-        r = c.get("/-/ui/schedules")  # kein ?typ= in der URL
-        assert r.status_code == 200
-        assert "clauderun" in r.text
-        assert "jobrun" not in r.text
-
-
-def test_schedules_screen_query_param_overrides_cookie(team_repo: Path):
-    client = FakeClient([_sched("jobrun", kind="job"),
-                         _sched("clauderun", kind="claude", payload="claude: x")])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        c.cookies.set("bibi_sched_typ", "claude")
-        r = c.get("/-/ui/schedules", params={"typ": "job"})
-        assert "jobrun" in r.text
-        assert "clauderun" not in r.text
-        assert r.cookies.get("bibi_sched_typ") == "job"  # Cookie folgt der expliziten Wahl
-
-
-def test_schedules_screen_ignores_stale_invalid_cookie(team_repo: Path):
-    # Z. B. der entfernte "app"-Typ (PLAN-25 Befund 7) — ein altes Cookie darf
-    # nicht crashen oder alles unsichtbar filtern.
-    client = FakeClient([_sched("a", kind="job")])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        c.cookies.set("bibi_sched_typ", "app")
-        r = c.get("/-/ui/schedules")
-        assert r.status_code == 200
-        assert '/-/ui/schedule/a"' in r.text
 
 
 def test_schedules_list_fragment_sets_filter_cookies(team_repo: Path):
@@ -639,25 +555,6 @@ def test_schedules_timeseries_fragment_sets_resolution_cookie(team_repo: Path):
         assert r.cookies.get("bibi_sched_res") == "120"
 
 
-def test_schedules_screen_uses_resolution_cookie_when_no_query_param(team_repo: Path):
-    client = FakeClient([], status={"job_stats": {"counts": {}, "running_since_uptime": 0}})
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        c.cookies.set("bibi_sched_res", "120")
-        r = c.get("/-/ui/schedules")  # kein ?res= in der URL
-        assert r.status_code == 200
-        assert render._RESOLUTION_LABEL[120] in r.text
-        assert 'hx-get="/-/ui/schedules/timeseries?res=120"' in r.text
-
-
-def test_schedules_screen_res_query_param_overrides_cookie(team_repo: Path):
-    client = FakeClient([], status={"job_stats": {"counts": {}, "running_since_uptime": 0}})
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        c.cookies.set("bibi_sched_res", "120")
-        r = c.get("/-/ui/schedules", params={"res": 5})
-        assert render._RESOLUTION_LABEL[5] in r.text
-        assert r.cookies.get("bibi_sched_res") == "5"
 
 
 def test_schedules_timeseries_fragment_ignores_stale_invalid_cookie(team_repo: Path):
@@ -670,23 +567,6 @@ def test_schedules_timeseries_fragment_ignores_stale_invalid_cookie(team_repo: P
         assert render._RESOLUTION_LABEL[render._DEFAULT_RESOLUTION_MINUTES] in r.text
 
 
-def test_ui_schedules_screen_survives_landings_fetch_failure(team_repo: Path):
-    # /-/landings ist scheduler-gated (501 ohne Rolle) — der Screen darf
-    # trotzdem laden, nur ohne Chart-Daten (§2.7, wie schedules()/status()).
-    class BoomClient(FakeClient):
-        def landings(self, *, since=None):
-            raise RuntimeError("501")
-
-    client = BoomClient([_sched("daily")])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules")
-        assert r.status_code == 200
-        assert "daily" in r.text
-
-
-# ── Host-Sparkline-Spalte (Batch 9 Punkt 1) ──────────────────────────────────
-
 
 def _seed_schedule_ref(root: Path, slug: str) -> str:
     d = root / "vault" / "case" / slug
@@ -695,18 +575,6 @@ def _seed_schedule_ref(root: Path, slug: str) -> str:
                                  encoding="utf-8")
     return f"{slug}/README.md"
 
-
-def test_ui_schedules_screen_renders_eager_sparkline_cell(team_repo: Path):
-    # Analog zu jobs_screen(): der initiale Seitenaufbau rechnet die Serie
-    # synchron (schedule_ref -> repo_path -> _job_sparkline_series()), kein
-    # separater Lazy-Request pro Zeile.
-    ref = _seed_schedule_ref(team_repo, "hitl-test-app")
-    client = FakeClient([_sched("hitl-test-app", schedule_ref=ref)])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules")
-        assert r.status_code == 200
-        assert 'id="spark-hitl-test-app" hx-preserve="true">' in r.text
 
 
 def test_ui_schedules_list_fragment_omits_sparkline_data(team_repo: Path):
@@ -723,12 +591,3 @@ def test_ui_schedules_list_fragment_omits_sparkline_data(team_repo: Path):
         assert 'id="spark-hitl-test-app" hx-preserve="true"></span>' in r.text
 
 
-def test_ui_schedules_screen_sparkline_cell_empty_without_schedule_ref(team_repo: Path):
-    # Journal-only-Phantom-Slugs (job_db.list_schedules()) tragen keinen
-    # schedule_ref -> keine Sparkline-Berechnung, aber auch kein Crash.
-    client = FakeClient([_sched("phantom", schedule_ref=None)])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules")
-        assert r.status_code == 200
-        assert 'id="spark-phantom" hx-preserve="true"></span>' in r.text

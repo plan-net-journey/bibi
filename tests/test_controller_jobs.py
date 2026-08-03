@@ -437,25 +437,12 @@ def test_jobs_page_status_filter_still_applies_with_daemon_status():
     assert 'href="/-/ui/jobs/detail/a"' not in html
 
 
-def test_jobs_route_has_status_cards_header(team_repo: Path, app_with):
-    app, _ = app_with(_FakeClient())
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert 'id="feedstatus"' in r.text
-
 
 def test_screen_nav_includes_jobs_tab():
     # Jobs nur mit connect-Rolle sichtbar (PLAN-20 Befund 6).
     html = render._screen_nav("Schedules", roles=["connect"])
     assert 'href="/-/jobs"' in html and "Jobs" in html
 
-
-def test_screen_nav_hides_jobs_tab_without_connect_role():
-    html = render._screen_nav("Schedules", roles=["scheduler"])
-    assert 'href="/-/ui/jobs"' not in html
-
-
-# ── Lokale Job-Detailseite (PLAN-21 Befund 10-Nachtrag) — Rendering ──────────
 
 
 def test_local_job_view_never_run_returns_none():
@@ -697,7 +684,7 @@ def test_jobs_detail_page_has_no_back_link():
     # schedule_detail_page() den "← zurück"-Link genommen hat, gilt explizit
     # auch für den Client — die Nav-Leiste hat schon einen Jobs-Tab.
     html = render.jobs_detail_page("a", _row("a"), None, [], now=100.0)
-    assert '<a class="back" href="/-/ui/jobs">← Jobs</a>' not in html
+    assert '<a class="back" href="/-/jobs">← Jobs</a>' not in html
 
 
 def test_jobs_detail_page_unknown_slug_still_renders():
@@ -819,52 +806,7 @@ def app_with(team_repo: Path):
     return _make
 
 
-def test_jobs_route_shows_local_md_with_git_status_new(team_repo: Path, app_with):
-    # Frisch angelegt, nie committet/geaddet → git-Status "neu".
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    client = _FakeClient()
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert r.status_code == 200
-        assert "mein-testjob" in r.text
-        assert 'class="chip new"' in r.text and ">neu<" in r.text
 
-
-def test_jobs_route_shows_app_port_link_for_discovered_app_job(team_repo: Path, app_with):
-    # PLAN-29 Befund 2: end-to-end-Nachweis, dass app_port aus der MD-
-    # Frontmatter tatsächlich bis zur gerenderten Type-Spalte durchgereicht
-    # wird (_local_schedules() -> _jobs_data() -> jobs_page()), nicht nur,
-    # dass die reine Render-Funktion einen bereits befüllten Dict-Key
-    # akzeptiert.
-    _seed_schedule_md(team_repo, "hitl-test-app", "now", "python3 app.py",
-                      app_port=9100)
-    client = _FakeClient()
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert r.status_code == 200
-        assert ('<a href="http://localhost:9100/" target="_blank" '
-               'rel="noopener">app :9100</a>') in r.text
-
-
-# ── Sparkline-Entkopplung (zweite Bibi4-Iteration) ──────────────────────────
-
-
-def test_jobs_route_renders_eager_sparkline_not_lazy_placeholder(team_repo: Path, app_with):
-    # Revert (User-Fund 2026-07-22: die Lazy-Variante — 19 Pro-Slug-hx-get-
-    # Requests gleichzeitig mit dem 2s-Self-Poll — hängte den Browser-Tab
-    # komplett auf, live in mehreren frischen Tabs reproduziert; Staffelung
-    # allein behob es nicht). jobs_screen() rechnet die Serie jetzt wieder
-    # synchron (wie vor der Sparkline-Entkopplung), keine Pro-Slug-Requests
-    # mehr vom initialen Seitenaufbau.
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    client = _FakeClient()
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert r.status_code == 200
-        assert 'hx-get="/-/ui/jobs/mein-testjob/sparkline"' not in r.text
 
 
 def test_jobs_sparkline_route_returns_resolved_cell(team_repo: Path, app_with):
@@ -950,25 +892,6 @@ def test_jobs_detail_page_route_links_to_attrs_route(team_repo: Path, app_with):
         assert 'href="/-/ui/jobs/detail/mein-testjob/attrs">Attribute →</a>' in r.text
 
 
-def test_jobs_route_never_calls_remote_schedules_even_with_scheduler_role(
-    team_repo: Path, monkeypatch,
-):
-    # PLAN-21 Befund 10, User-Entscheidung: kein Remote-Abgleich mehr — auch
-    # nicht auf einem Knoten mit scheduler-Rolle oder konfigurierter
-    # BIBI_SCHEDULER_URL. Spiegelt die vorher hier getesteten Remote-Compare-
-    # Szenarien, jetzt umgekehrt: kein Netzaufruf, egal welche Rolle/Config.
-    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://sarasate.example:8780")
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    client = _FakeClient(schedules=[{"slug": "alter-cron-job", "trigger": "0 */3 * * *",
-                                     "payload": "echo r"}])
-    app = create_app(roles.resolve({"controller", "scheduler"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert r.status_code == 200
-        assert "mein-testjob" in r.text
-        assert "alter-cron-job" not in r.text  # nur remote gemeldet, nie lokal entdeckt
-        assert client.schedules_called is False
-
 
 def test_jobs_route_no_longer_shows_local_run_history(team_repo: Path, app_with):
     # Bibi4-Iteration, User-Fund: "Lokale Läufe" wanderte auf den eigenen
@@ -1001,25 +924,6 @@ def test_jobs_archive_list_fragment_route(team_repo: Path, app_with):
         assert r.status_code == 200
         assert 'id="archive"' in r.text and "mein-testjob" in r.text
 
-
-def test_jobs_route_per_job_status_finds_pinned_run_by_bucket_slug(team_repo: Path, app_with):
-    # User-Fund 2026-07-13: run_pinned() vergibt pro Aufruf einen eindeutigen
-    # jobs.slug (f"{bucket_slug}-{token}") — die ungefilterte "Lokale Läufe"-
-    # Liste unten zeigt den Lauf zwar (s. test_jobs_route_shows_local_run_
-    # history), aber die Pro-Job-Statuszelle (_jobs_row(), Slug-Lookup gegen
-    # den STABILEN Bucket-Slug) fand ihn nie — zeigte immer "noch nie lokal
-    # gelaufen", obwohl der Job gerade erst komplett gelaufen war.
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    client = _FakeClient(run_journal=[
-        {"id": 5, "slug": "mein-testjob-abc12345", "status": "complete",
-         "exit_code": 0, "exec_runtime": 3.2, "finished_at": 100.0,
-         "domain": "scheduled", "pinned_host": "mac"},
-    ])
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert "noch nie lokal gelaufen" not in r.text
-        assert 'href="/-/ui/run/5"><span class="st complete"' in r.text
 
 
 def test_jobs_board_fragment_route(team_repo: Path, app_with):
@@ -1069,20 +973,6 @@ def test_jobs_detail_route_shows_pinned_runs_for_this_slug(team_repo: Path, app_
         assert 'href="/-/ui/run/5"' in r.text
         assert 'href="/-/ui/run/6"' not in r.text  # anderer Bucket-Slug, kein Treffer
 
-
-def test_jobs_route_shows_running_for_live_job(team_repo: Path, app_with):
-    # PLAN-21 Befund 10, 2. Nachtrag: die Jobs-Liste zeigt "running" für einen
-    # gerade laufenden lokalen Job, unabhängig vom letzten ABGESCHLOSSENEN
-    # Lauf im Journal.
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    client = _FakeClient(
-        run_journal=[{"id": 5, "slug": "mein-testjob", "status": "complete",
-                     "finished_at": 100.0, "domain": "local"}],
-        live={"mein-testjob": {"id": "jidlive", "started_at": 200.0}})
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert 'class="st running">running<' in r.text
 
 
 def test_jobs_detail_route_shows_live_output(team_repo: Path, app_with):

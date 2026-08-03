@@ -4515,7 +4515,7 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         # jobs-Zeilen erweitert): "zurück zum Schedule" wäre die scheduler-
         # gated Remote-Detailseite (auf einem reinen Client 404) — zurück zum
         # Jobs-Screen stattdessen.
-        back = '<a class="back" href="/-/ui/jobs">← Jobs</a>'
+        back = '<a class="back" href="/-/jobs">← Jobs</a>'
     else:
         # Breadcrumb statt eigenem "bibi ·"-Header (User-Feedback 2026-07-01:
         # doppeltes "bibi" + verschachtelte Nav) — derselbe Aufbau wie
@@ -4660,7 +4660,7 @@ def jobs_detail_attrs_page(slug: str, local: dict | None) -> str:
         ".attrtable a { color: inherit; word-break: break-all; }"
         "</style></head><body>"
         f'<div style="display:flex;gap:.75rem;align-items:baseline">'
-        f'<a class="back" href="/-/ui/jobs">← Jobs</a>'
+        f'<a class="back" href="/-/jobs">← Jobs</a>'
         f'<a class="back" href="/-/ui/jobs/detail/{name}">← Detail</a>'
         f'</div>'
         f'<h1>{name} · Attribute</h1>'

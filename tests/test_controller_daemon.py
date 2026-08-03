@@ -158,18 +158,3 @@ def test_htmx_served_locally(app_with):
         assert "/-/static/htmx-1.9.12.min.js" in home.text
 
 
-def test_chartjs_served_locally(app_with):
-    # PLAN-36-Nachtrag (2026-07-27): nach der htmx-Lokalisierung (36.0) war
-    # chart.js vom jsdelivr-CDN die letzte externe Seiten-Abhängigkeit —
-    # offline blieb das Chart auf /-/ui/schedules leer. Gleiche Mechanik.
-    app = app_with({"roles": ["controller"]})
-    with TestClient(app) as c:
-        r = c.get("/-/static/chartjs-4.4.4.min.js")
-        assert r.status_code == 200
-        assert "javascript" in r.headers["content-type"]
-        assert "immutable" in r.headers["cache-control"]
-        assert "Chart" in r.text
-        # die Schedules-Seite referenziert den lokalen Pfad, kein CDN mehr
-        page = c.get("/-/ui/schedules", headers={"Accept": "text/html"})
-        assert "jsdelivr.net" not in page.text
-        assert "/-/static/chartjs-4.4.4.min.js" in page.text

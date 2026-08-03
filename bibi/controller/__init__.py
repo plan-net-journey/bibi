@@ -426,36 +426,6 @@ def add_controller_routes(
         resp.set_cookie("bibi_sched_res", str(res),
                         max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
 
-    @app.get("/-/ui/schedules", include_in_schema=False)
-    def schedules_screen(request: Request, typ: str | None = None, status: str | None = None,
-                         sort: str | None = None, dir: str | None = None,
-                         res: int | None = None):
-        _sched = _scheduler_status()
-        # Der Schedules-Screen (Seite): Nav + Ops-Handles + Status-Kacheln
-        # (Host/Mode/Git/Job-Status, wie /-/) + Stat-Grid/Landungs-Histogramm
-        # (PLAN-21 Befund 11) + Filter + gefilterte, self-pollende Liste.
-        from bibi import config
-        eff_typ, eff_status = _effective_filter(request, typ, status)
-        eff_sort, eff_dir = _effective_sort(request, sort, dir)
-        eff_res = _effective_resolution(request, res)
-        all_scheds = _schedules()
-        items = render.filter_schedules(all_scheds, typ=eff_typ, status=eff_status)
-        # Batch 9 Punkt 1: eager über ALLE Schedules (nicht nur die gefilterte
-        # Auswahl) berechnet — hält den Cache-Key (Slug-Set) stabil über
-        # Filterwechsel hinweg, analog zu jobs_screen() (dort gibt es keine
-        # Filterleiste, die Frage stellt sich dort nicht).
-        sparklines = _sched_sparkline_series(all_scheds)
-        resp = HTMLResponse(render.schedules_page(
-            items, typ=eff_typ, status=eff_status, daemon_status=_status(),
-            landings=_landings(), git_status=_feed_git_status(), host_url=_scheduler_url(),
-            bucket_minutes=eff_res,
-            public_host=config.public_host(), sparklines=sparklines,
-            sort=eff_sort, direction=eff_dir, scheduler=_sched[0], scheduler_stale_since=_sched[1]))
-        _set_filter_cookies(resp, eff_typ, eff_status)
-        _set_sort_cookies(resp, eff_sort, eff_dir)
-        _set_resolution_cookie(resp, eff_res)
-        return resp
-
     @app.get("/-/ui/schedules/list", include_in_schema=False)
     def schedules_list_fragment(request: Request, typ: str | None = None, status: str | None = None,
                                 sort: str | None = None, dir: str | None = None):
@@ -893,36 +863,6 @@ def add_controller_routes(
             return client.run_journal(limit=200)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             return []
-
-    @app.get("/-/ui/jobs", include_in_schema=False)
-    def jobs_screen(request: Request, typ: str | None = None, status: str | None = None,
-                    sort: str | None = None, dir: str | None = None):
-        _sched = _scheduler_status()
-        # Revert (User-Fund 2026-07-22, live: die Lazy-Variante (19 Pro-Slug-
-        # hx-get-Requests + 2s-Self-Poll gleichzeitig) hängte den Browser-Tab
-        # komplett auf — reproduziert in mehreren frischen Tabs, Server
-        # antwortete über curl weiterhin schnell; Staffelung allein behob es
-        # nicht. Bis das sauber root-caused ist: zurück zur eager, synchronen
-        # Berechnung (Stand vor der Sparkline-Entkopplung) — bekannt stabil
-        # über Wochen, Kosten bleiben durch den TTL-Cache in
-        # _job_sparkline_series() bei warmem Cache gering.
-        from bibi import config
-        rows, local_runs = _jobs_data()
-        sparklines = _job_sparkline_series(rows)
-        # m.rau/bibi#65: dieselbe Filter-Praezedenz wie beim Host — Query-Param
-        # gewinnt, sonst der zuletzt gemerkte Cookie-Wert. Bewusst DIESELBEN
-        # Cookie-Namen: wer auf dem Host nach "failed" filtert und dann auf die
-        # Client-Ansicht wechselt, meint dort dasselbe.
-        eff_typ, eff_status = _effective_filter(request, typ, status)
-        eff_sort, eff_dir = _effective_sort(request, sort, dir)
-        resp = HTMLResponse(render.jobs_page(
-            rows, local_runs, daemon_status=_status(), git_status=_feed_git_status(),
-            host_url=_scheduler_url(),
-            public_host=config.public_host(), sparklines=sparklines,
-            typ=eff_typ, status=eff_status, sort=eff_sort, direction=eff_dir, scheduler=_sched[0], scheduler_stale_since=_sched[1]))
-        _set_filter_cookies(resp, eff_typ, eff_status)
-        _set_sort_cookies(resp, eff_sort, eff_dir)
-        return resp
 
     @app.get("/-/ui/jobs/{slug}/sparkline", include_in_schema=False)
     def jobs_sparkline(slug: str):

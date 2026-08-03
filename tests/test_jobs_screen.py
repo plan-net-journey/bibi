@@ -13,11 +13,42 @@ Band. Eine gestaffelte Filtermenge braucht einen Ort je Staffel.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from bibi.controller import render
 from bibi.controller.jobs_view import Segment, build_rows
+from bibi.daemon import roles
+from bibi.daemon.app import create_app
+
+
+class _FakeClient:
+    def __init__(self, status: dict) -> None:
+        self._status = status
+
+    def status(self) -> dict:
+        return self._status
+
+    def schedules(self):
+        return []
+
+    def journal(self, **_):
+        return []
+
+    def run_journal(self, **_):
+        return []
+
+    def jobs(self, **_):
+        return []
+
+
+@pytest.fixture
+def app_with(team_repo: Path):
+    def _make(status: dict):
+        return create_app(roles.resolve({"controller"}), controller_client=_FakeClient(status))
+    return _make
 
 NOW = 1_000_000.0
 
@@ -204,3 +235,26 @@ def test_the_band_count_follows_the_filter():
     zeilen = _zeilen(local=[_md("job1"), _md("app1", app_port=9100)])
     html = render.jobs_screen(zeilen, now=NOW, typ=["app"])
     assert re.search(r"SCHEDULE\D*1", html), "die Zahl zählt, was sichtbar ist"
+
+
+# ── Die alten Screens sind abgelöst (Umbauplan §1, „jeden Stein umdrehen") ──
+
+
+def test_the_old_screen_routes_are_gone(app_with):
+    """`/-/ui/jobs` und `/-/ui/schedules` waren zwei Screens unter einem Namen,
+    weil es zwei Frontends gab. Jetzt gibt es einen Screen und eine Adresse:
+    `/-/jobs`. Vor 1.0 wird gebrochen statt umgeleitet — eine Weiche, die
+    niemand mehr braucht, ist nur eine Stelle, an der man später rätselt."""
+    app = app_with({"roles": ["scheduler", "connect"]})
+    with TestClient(app) as c:
+        assert c.get("/-/ui/jobs").status_code == 404
+        assert c.get("/-/ui/schedules").status_code == 404
+        assert c.get("/-/jobs").status_code == 200
+
+
+def test_nothing_links_to_the_old_routes_anymore():
+    """Ein toter Link ist schlimmer als eine fehlende Route: er sieht aus wie
+    ein Weg."""
+    quelle = (Path(render.__file__)).read_text()
+    assert '"/-/ui/jobs"' not in quelle
+    assert '"/-/ui/schedules"' not in quelle

@@ -216,10 +216,3 @@ class FakeClient:
         return self._schedules
 
 
-def test_ui_schedules_fragment_route(team_repo: Path):
-    client = FakeClient({}, [_sched("daily", last_status="complete")])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules")
-        assert r.status_code == 200
-        assert 'id="schedules"' in r.text and "daily" in r.text
