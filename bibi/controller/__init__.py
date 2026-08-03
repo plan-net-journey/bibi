@@ -202,6 +202,35 @@ def add_controller_routes(
         except Exception:  # noqa: BLE001 — Daemon-Selbstaufruf, defensiv (§2.7)
             return {}
 
+    #: Letzter erfolgreicher Scheduler-Status samt Zeitpunkt. Der Header zeigt
+    #: bei Ausfall die letzten Werte gedimmt und datiert (FE-Spezifikation §2)
+    #: — dafür muss jemand sie behalten, und der Ausgefallene kann es nicht.
+    _sched_cache: dict = {"status": None, "at": None}
+
+    def _scheduler_status() -> tuple[dict | None, float | None]:
+        """Status des Schedulers, plus „stale seit", wenn er nicht antwortet.
+
+        Rückgabe ``(status, stale_since)``: ``stale_since`` bleibt ``None``,
+        solange der Abruf gelingt, und trägt sonst den Zeitpunkt der letzten
+        Antwort. Kam noch nie eine, sind beide ``None`` — dann gibt es nichts
+        zu dimmen und der Block zeigt Striche.
+        """
+        url = _scheduler_url()
+        if not url:
+            # Der Knoten trägt die scheduler-Rolle selbst: sein eigener Status
+            # *ist* der des Schedulers. Ein HTTP-Aufruf wäre ein Umweg über
+            # sich selbst — und würde bei gesperrtem Port an sich scheitern.
+            eigen = _status()
+            if "scheduler" in (eigen.get("roles") or []):
+                return eigen, None
+            return None, None
+        try:
+            s = ControllerClient(url, timeout=3.0).status()
+            _sched_cache["status"], _sched_cache["at"] = s, time.time()
+            return s, None
+        except Exception:  # noqa: BLE001 — defensiv (§2.7): der Host darf ausfallen
+            return _sched_cache["status"], _sched_cache["at"]
+
     def _schedules() -> list:
         try:
             return client.schedules()

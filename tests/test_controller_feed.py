@@ -304,32 +304,7 @@ def test_job_status_card_uses_jobstatus_grid_css():
     assert ".jobstatus-grid {" in render._CSS
 
 
-def test_feed_status_fragment_includes_job_status_card_when_present():
-    html = render.feed_status_fragment(
-        {"job_stats": {"counts": {"running": 1}, "complete_since_uptime": 5,
-                       "next_due_at": None}},
-        None, None, now=100.0)
-    assert html.count('<div class="card">') == 4
-    assert '<div class="jobstatus-grid">' in html
 
-
-def test_feed_status_fragment_omits_job_status_card_without_job_stats_or_client_rows():
-    # Weder job_stats (job_db, scheduler-Rolle) noch client_rows (Discovery-
-    # Liste, Bibi4-Iteration) vorhanden — z. B. Job-/Run-Detailseiten — keine
-    # leere 4. Kachel.
-    html = render.feed_status_fragment({}, None, None, now=100.0)
-    assert html.count('<div class="card">') == 3
-    assert '<div class="jobstatus-grid">' not in html
-
-
-def test_feed_status_fragment_shows_client_card_when_client_rows_given():
-    # Bibi4-Iteration, User-Brainstorm: 4. Kachel für Knoten ohne job_stats,
-    # gefüttert aus derselben Discovery-Liste wie die Jobs-Tabelle.
-    rows = [{"payload": "echo x", "app_port": None, "git_status": "modified"}]
-    html = render.feed_status_fragment({}, None, None, now=100.0, client_rows=rows)
-    assert html.count('<div class="card">') == 4
-    assert '<div class="jobstatus-grid">' in html
-    assert '<div class="jsg-k">Modified</div><div class="jsg-v">1</div>' in html
 
 
 def test_client_job_status_card_is_a_full_matrix_like_host():
@@ -365,28 +340,35 @@ def test_client_job_status_card_no_title_matches_host_shape():
     assert '<div class="label">' not in html
 
 
-def test_feed_status_fragment_prefers_host_card_when_both_present():
-    # job_stats (scheduler) gewinnt, falls aus irgendeinem Grund beides
-    # übergeben würde — die Host-Karte ist die maßgebliche für diese Rolle.
-    status = {"job_stats": {"counts_by_kind": {}, "complete_since_uptime": 0,
-                            "next_due_at": None}}
+def test_feed_status_header_prefers_scheduler_numbers():
+    """Die Zahlen des Schedulers gewinnen gegen eine lokale Zaehlung.
+
+    Frueher entschied sich das zwischen zwei Kacheln (Host- gegen Client-
+    Job-Status); jetzt hat der rechte Block genau eine Quelle, und `client_rows`
+    ist fuer ihn ohne Bedeutung.
+    """
+    status = {"job_stats": {"counts": {"complete": 7}, "next_due_at": None}}
     html = render.feed_status_fragment(
-        status, None, None, now=100.0, client_rows=[{"payload": "x", "app_port": None}])
-    assert '<div class="jsg-h"></div><div class="jsg-h">Job</div>' in html
+        status, None, None, now=100.0, client_rows=[{"payload": "x", "app_port": None}],
+        scheduler={"hostname": "sarasate", "job_stats": {"counts": {"complete": 7}}})
+    assert "7 finished" in html
 
 
 # --- Feed-Kachel-Grid: jetzt 3 statt 6 (PLAN-19 Befund 4) -----------------------
 
 
-def test_feed_status_cards_has_three_cards_no_rollen():
+def test_feed_status_header_has_two_blocks_by_origin():
+    """Statt vier Kacheln zwei Bloecke: links dieser Knoten, rechts der
+    Scheduler. Die Trennung folgt dem Ausfall — faellt der Host weg, verlieren
+    genau die rechten Werte gleichzeitig ihre Gueltigkeit."""
     html = render.feed_status_fragment(
-        {"roles": ["connect"], "connect": {"ok": True, "last_at": 99.0}},
-        {"tree": "clean", "sync": "synced", "branch": "trunk"},
-        "http://sarasate.tail9f9173.ts.net:8780", now=100.0)
-    assert html.count('<div class="card">') == 3
+        {"roles": ["connect"], "connect": {"ok": True, "last_at": 90.0}},
+        {"branch": "trunk", "tree": "clean", "sync": "synced"},
+        "http://sarasate:8780", 100.0)
+    assert html.count('class="hdr-block') == 2
+    assert "CLIENT" in html and "SCHEDULER" in html
     assert "Rollen" not in html
-    # PLAN-21 Befund 6: mit connect-Rolle heißt die erste Karte "Client".
-    assert "Client" in html and "Mode" in html and "Git" in html
+
 
 
 def test_feed_status_fragment_is_bus_driven_with_maint_trigger():
@@ -422,17 +404,6 @@ def test_job_status_fragment_is_bus_driven():
 def test_job_status_fragment_empty_without_job_stats():
     assert render.job_status_fragment(None, now=100.0) == ""
 
-
-def test_feed_status_fragment_nests_job_status_fragment():
-    # Beide Bus-Container stehen verschachtelt im selben .statuscards-Grid —
-    # #feedstatus (Target "feedstatus") aussen, #jobstatuscard (Target "jobs")
-    # als weiteres Grid-Kind.
-    html = render.feed_status_fragment(
-        {"job_stats": {"counts_by_kind": {}, "complete_since_uptime": 5, "next_due_at": None}},
-        None, None, now=100.0)
-    assert 'id="feedstatus"' in html and 'data-bus="feedstatus"' in html
-    assert 'id="jobstatuscard"' in html and 'data-bus="jobs"' in html
-    assert html.count('<div class="card">') == 4
 
 
 def test_status_cards_unchanged_after_refactor():
@@ -704,7 +675,7 @@ def test_feed_page_has_header_nav_and_status_cards():
     # Client, `/-/ui/schedules` für den Host —, beide beschriftet „Jobs".
     assert 'href="/-/jobs"' in html and "/-/ui/schedules" not in html
     assert "<title>bibi · Feed</title>" in html
-    assert 'class="statuscards"' in html
+    assert 'class="hdr"' in html
 
 
 # --- Route (gefakter Client) -------------------------------------------------------
@@ -758,15 +729,6 @@ def test_feed_board_fragment_route(app_with):
         assert 'id="feedboard"' in r.text
 
 
-def test_feed_status_fragment_route(app_with):
-    # PLAN-25 Befund 4: Self-Poll-Ziel von #feedstatus.
-    app = app_with(_FakeClient())
-    with TestClient(app) as c:
-        r = c.get("/-/ui/feed/status")
-        assert r.status_code == 200
-        assert 'id="feedstatus"' in r.text
-        assert 'class="statuscards"' in r.text
-
 
 def test_feed_jobstatus_fragment_route(app_with):
     # Bibi4-Iteration: Self-Poll-Ziel von #jobstatuscard, eigene Route/eigener
@@ -789,8 +751,11 @@ def test_feed_status_fragment_route_shows_escalated_merge_branches(app_with, tea
     with TestClient(app) as c:
         r = c.get("/-/ui/feed/status")
         assert r.status_code == 200
-        assert '<div class="k">Konflikte</div>' in r.text
-        assert '<div class="v sync-conflict">1</div>' in r.text
+        # bibi5: die Zahl steht jetzt in der `project`-Zeile des Headers
+        # statt in einer eigenen Kachel — die Aussage bleibt, dass eine
+        # eskalierte Quarantaene sichtbar wird und nicht still verschwindet.
+        assert "1 conflict" in r.text
+        assert 'class="sync-conflict"' in r.text
 
 
 def test_root_route_status_cards_are_bus_driven(app_with):

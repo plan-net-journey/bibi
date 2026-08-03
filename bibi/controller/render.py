@@ -287,6 +287,23 @@ button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnlin
                gap: .6rem; margin-bottom: 1.2rem; }
 @media (max-width: 60rem) { .statuscards { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 32rem) { .statuscards { grid-template-columns: 1fr; } }
+/* Header, zwei Bloecke nach Herkunft (bibi5, FE-Spezifikation §2). Kein
+   Kasten, nur eine Haarlinie darunter — Layout "Kontenblatt": der Header ist
+   Rahmen, kein Inhalt, und soll sich nicht wie eine Karte anfuehlen. */
+.hdr { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem 2.5rem;
+       padding: .5rem 0 .7rem; border-bottom: 1px solid var(--line);
+       margin-bottom: 1.1rem; font-size: .92rem; }
+.hdr-title { font-weight: 600; letter-spacing: .04em; margin-bottom: .25rem; }
+.hdr-host { font-weight: 400; margin-left: .9rem; }
+.hdr-row { display: flex; gap: .8rem; line-height: 1.5; }
+.hdr-label { color: var(--muted); min-width: 5.5rem; flex: 0 0 auto; }
+.hdr-row .hdr-value { color: var(--fg); }
+/* Ausfall: der Block behaelt seine Werte und wird gedimmt. Ein alter Wert mit
+   Datum sagt mehr als acht Platzhalter. */
+.hdr-block.dimmed .hdr-value,
+.hdr-block.dimmed .hdr-label { opacity: .45; }
+/* Unterhalb 64rem brechen die zwei Bloecke untereinander statt zu zerschneiden. */
+@media (max-width: 64rem) { .hdr { grid-template-columns: 1fr; gap: .9rem; } }
 /* m.rau/bibi#66: Sortier-Koepfe. Der Link erbt die Kopf-Farbe — er soll wie
    eine Spalte aussehen, nicht wie ein Verweis; erst der Zeiger verraet, dass
    man klicken kann. Die aktive Spalte traegt zusaetzlich den Pfeil. */
@@ -1638,6 +1655,117 @@ SCREENS: tuple[tuple[str, str], ...] = (
 )
 
 
+#: Zustände, die im Header als „stopped" zählen — terminal, aber nicht
+#: `complete`. Ein `complete` mit `next` wartet, es ist nicht angehalten.
+_STOPPED_STATES = ("error", "inactive", "zombie", "killed")
+
+
+def _hdr_row(label: str, wert: str, *, klasse: str = "") -> str:
+    """Eine Beschriftungs-/Wert-Zeile eines Header-Blocks."""
+    c = f' class="{klasse}"' if klasse else ""
+    return (f'<div class="hdr-row"><span class="hdr-label">{label}</span>'
+            f'<span class="hdr-value"{c}>{wert}</span></div>')
+
+
+def status_header(
+    status: dict | None, git_status: dict | None, *,
+    scheduler: dict | None = None, now: float,
+    scheduler_host: str | None = None, scheduler_stale_since: float | None = None,
+) -> str:
+    """Der Header: links dieser Knoten, rechts der Scheduler.
+
+    Die Zweiteilung folgt dem Ausfall. Fällt der Host weg, verlieren genau die
+    rechten Werte gleichzeitig ihre Gültigkeit — und nur sie. Vier Kacheln
+    nebeneinander konnten das nicht zeigen: sie mischten, was dieser Knoten
+    weiß, mit dem, was ihm jemand gesagt hat.
+
+    ``scheduler_stale_since`` schaltet die Offline-Darstellung: der rechte
+    Block behält seine letzten Werte, wird gedimmt und datiert. Kein
+    achtfaches „offline" — ein alter Wert mit Datum sagt mehr als acht
+    Platzhalter.
+
+    Der Scheduler-Hostname kommt aus der Konfiguration dieses Knotens
+    (``scheduler_host``), nicht aus der Antwort des Hosts. Deshalb steht er
+    auch dann da, wenn nichts mehr antwortet — er ist der Anker, an dem der
+    leere Block hängt, und trägt den Ausfall in Rot.
+    """
+    status = status or {}
+    git_status = git_status or {}
+    stale = scheduler_stale_since is not None
+
+    # ── links: was dieser Knoten selbst weiß ────────────────────────────────
+    eigener = status.get("hostname") or "—"
+    hb = (status.get("connect") or {}).get("last_at")
+    hb_alt = now - hb if hb else None
+    # Rot mit steigendem Alter: ein Heartbeat, der zwei Minuten aussetzt, ist
+    # kein Schönheitsfehler — der Knoten gilt dem Host nach 60 s als stale.
+    hb_klasse = "bad" if hb_alt is not None and hb_alt > 60 else ""
+    auto = "on" if status.get("auto_sync") else "off"
+    heartbeat = f'{_ago(hb, now)}, auto-sync: {auto}'
+
+    zweig = git_status.get("branch") or "—"
+    baum = git_status.get("tree") or "—"
+    sync = git_status.get("sync") or "—"
+    commit = git_status.get("commit")
+    projekt = f'{zweig} · {baum} · {sync}' + (f': {commit}' if commit else "")
+    # Eskalierte Merge-Quarantäne (`stuck`) gehört in diese Zeile, obwohl die
+    # FE-Spezifikation §2 sie nicht nennt: bisher hatte sie eine eigene Zahl in
+    # der Git-Kachel, und ein Branch, der dreimal nicht mergen konnte, wartet
+    # auf einen Menschen. Ersatzlos wegzulassen hieße, eine Eskalation still zu
+    # verlieren — der eine Fehler, den dieser Header nicht machen darf.
+    stuck = git_status.get("stuck") or 0
+    if stuck:
+        mehrzahl = "s" if stuck != 1 else ""
+        projekt += f' · <span class="sync-conflict">{stuck} conflict{mehrzahl}</span>'
+    # Konflikt ist der einzige Git-Zustand, der Handeln verlangt.
+    projekt_klasse = "bad" if git_status.get("conflict") or sync == "conflict" else ""
+
+    engine = status.get("engine") or {}
+    version = engine.get("running") or "—"
+    if engine.get("needs_update"):
+        version += ' <span class="bad">requires upgrade</span>'
+
+    links = (
+        f'<div class="hdr-block"><div class="hdr-title">CLIENT'
+        f'<span class="hdr-host">{eigener}</span></div>'
+        + _hdr_row("heartbeat", heartbeat, klasse=hb_klasse)
+        + _hdr_row("project", projekt, klasse=projekt_klasse)
+        + _hdr_row("bibi", version)
+        + "</div>"
+    )
+
+    # ── rechts: was der Scheduler sagt ──────────────────────────────────────
+    sched = scheduler or {}
+    host = scheduler_host or sched.get("hostname") or "—"
+    punkt = "○" if stale else "●"
+    host_klasse = "bad" if stale else "ok"
+    titel_zusatz = f' — no contact for {_human_duration(now - scheduler_stale_since)}' if stale else ""
+
+    clients = len(sched.get("workers") or [])
+    counts = ((sched.get("job_stats") or {}).get("counts") or {})
+    gestoppt = sum(counts.get(z, 0) for z in _STOPPED_STATES)
+    fertig = counts.get("complete", 0)
+    naechster = _until(sched.get("next_fire_at"), now)
+    next_job = f'{naechster}, {gestoppt} stopped, {fertig} finished'
+
+    hoch = sched.get("started_at")
+    verbunden = (status.get("connect") or {}).get("since") or status.get("started_at")
+    uptime = (f'{_human_duration(now - hoch) if hoch else "—"} up · '
+              f'{_human_duration(now - verbunden) if verbunden else "—"} connected')
+
+    dim = " dimmed" if stale else ""
+    rechts = (
+        f'<div class="hdr-block{dim}"><div class="hdr-title">'
+        f'<span class="{host_klasse}">{punkt}</span> SCHEDULER'
+        f'<span class="hdr-host {host_klasse}">{host}</span>{titel_zusatz}</div>'
+        + _hdr_row("clients", f"{clients} connected")
+        + _hdr_row("next job", next_job)
+        + _hdr_row("uptime", uptime)
+        + "</div>"
+    )
+    return f'<div class="hdr">{links}{rechts}</div>'
+
+
 def _screen_nav(active: str, roles: list[str] | None = None) -> str:
     """Die App-Bar: sechs Screens, der aktive ohne Link.
 
@@ -2311,6 +2439,7 @@ def _client_job_status_card(rows: list[dict]) -> str:
 def feed_status_fragment(
     status: dict, git_status: dict | None, host_url: str | None, now: float,
     *, client_rows: list[dict] | None = None,
+    scheduler: dict | None = None, scheduler_stale_since: float | None = None,
 ) -> str:
     """Die Feed-Header-Kacheln (PLAN-19 Befund 4: Host-Connection, Mode,
     Git — löst die bisherigen 6 Kacheln von PLAN-18 Stufe 18.3 ab, u. a. fällt
@@ -2342,24 +2471,31 @@ def feed_status_fragment(
     Git-Karte an einem ``git status``-Subprozess hängt, der für Sekundentakt
     zu teuer war; jetzt läuft er nur noch, wenn sich tatsächlich etwas
     geändert hat (bzw. beim MAINT-Klick, s. u.)."""
-    cards = [_host_card(status, host_url, now), _mode_card(status, now),
-             _git_segment_card(git_status)]
-    if status.get("job_stats") is not None:
-        job_card = job_status_fragment(status.get("job_stats"), now)
-    elif client_rows is not None:
-        job_card = _client_job_status_card(client_rows)
-    else:
-        job_card = ""
-    # "bibiMaintChanged from:body" (Bibi4-Iteration, User-Fund: "ein Klick auf
-    # Maintenance muss ein Update der Mode Card nach sich ziehen") — der MAINT-
-    # Toggle (_OPS_HANDLES_JS) lebt im gemeinsamen Header, unabhängig davon, ob
-    # diese Kachel auf der aktuellen Seite überhaupt existiert (z. B. Job-
-    # Detail hat keine); ohne Treffer im DOM ist das Event einfach ein No-op.
+    # Seit bibi5 rendert dieses Fragment den **Header** (zwei Blöcke nach
+    # Herkunft, ``status_header()``) statt der vier Status-Kacheln. Name,
+    # Signatur und Bus-Verdrahtung bleiben, weil daran das Nachladen hängt —
+    # was sich ändert, ist die Darstellung, und die ändert sich damit auf jedem
+    # Screen zugleich.
+    #
+    # ``host_url`` ist der Scheduler-URL aus der Konfiguration *dieses* Knotens.
+    # Daraus kommt der Hostname im rechten Block — deshalb steht er auch dann
+    # da, wenn der Host nicht antwortet.
+    host = None
+    if host_url:
+        from urllib.parse import urlparse
+        host = urlparse(host_url).hostname or host_url
+    body = status_header(status, git_status, scheduler=scheduler, now=now,
+                         scheduler_host=host,
+                         scheduler_stale_since=scheduler_stale_since)
+    # "bibiMaintChanged from:body" (User-Fund: "ein Klick auf Maintenance muss
+    # ein Update nach sich ziehen") — der MAINT-Toggle lebt im gemeinsamen
+    # Header, unabhängig davon, ob dieses Fragment auf der Seite existiert;
+    # ohne Treffer im DOM ist das Event ein No-op.
     attrs = ('id="feedstatus" data-bus="feedstatus" '
              'data-bus-refetch="/-/ui/feed/status" '
              'hx-get="/-/ui/feed/status" '
              'hx-trigger="bibiMaintChanged from:body" hx-swap="outerHTML"')
-    return f'<div {attrs}><div class="statuscards">{"".join(cards)}{job_card}</div></div>'
+    return f'<div {attrs}>{body}</div>'
 
 
 def daemon_page(daemon_status: dict | None = None, now: float | None = None) -> str:

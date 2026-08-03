@@ -190,8 +190,14 @@ def test_schedules_page_includes_feed_status_header():
         git_status={"tree": "clean", "sync": "synced", "branch": "trunk"},
         host_url="http://sarasate.tail9f9173.ts.net:8780")
     assert 'id="feedstatus"' in html
-    assert html.count('<div class="card">') == 4  # Host/Mode/Git/Job Status
-    assert '<div class="jsg-k">Running</div><div class="jsg-v">1</div><div class="jsg-v">0</div><div class="jsg-v">0</div>' in html
+    # bibi5: zwei Bloecke nach Herkunft statt vier Kacheln — links dieser
+    # Knoten, rechts der Scheduler (FE-Spezifikation §2).
+    assert html.count('class="hdr-block') == 2
+    # Die Seite traegt den Header samt seiner verdichteten Job-Aussage. Dass er
+    # keine 3×3-Matrix mehr enthaelt (FE-Spezifikation §9), gehoert an das
+    # Fragment und steht in test_header_blocks.py — hier waere es eine Aussage
+    # ueber den Screen-Inhalt darunter, der erst mit dem Jobs-Screen faellt.
+    assert "next job" in html
 
 
 def test_schedules_fragment_active_only_has_single_panel_card():
@@ -536,7 +542,7 @@ def test_ui_schedules_screen_includes_feed_status_header(team_repo: Path):
         r = c.get("/-/ui/schedules")
         assert r.status_code == 200
         assert 'id="feedstatus"' in r.text
-        assert r.text.count('<div class="card">') == 4
+        assert r.text.count('class="hdr-block') == 2
 
 
 def test_ui_schedules_timeseries_fragment_route(team_repo: Path):

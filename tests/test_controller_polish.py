@@ -46,7 +46,9 @@ def test_log_page_includes_feed_status_header():
         git_status={"tree": "clean", "sync": "synced", "branch": "trunk"},
         host_url="http://sarasate.tail9f9173.ts.net:8780")
     assert 'id="feedstatus"' in html
-    assert html.count('<div class="card">') == 4  # Host/Mode/Git/Job Status
+    # bibi5: zwei Bloecke nach Herkunft statt vier Kacheln — links dieser
+    # Knoten, rechts der Scheduler (FE-Spezifikation §2).
+    assert html.count('class="hdr-block') == 2
 
 
 def test_log_links_slug_to_schedule_detail():
