@@ -4434,7 +4434,83 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
     )
 
 
-def job_detail_page_v5(*, slug: str, spec: dict, now: float,
+def _slot_leiste(aktionen) -> str:
+    """Die Knopfleiste eines Slots (FE-Spezifikation §5.2).
+
+    Nicht verfügbare Verben bleiben **sichtbar und ausgegraut**, nicht
+    ausgeblendet: sonst springt das Layout, und die Information „das geht hier
+    nicht" geht verloren. ``done`` ist die einzige Ausnahme — ein verbrauchter
+    Slot hat keinen Ausgang, deshalb zeigt er auch keine toten Knöpfe, und das
+    Fehlen der Leiste ist selbst die Aussage.
+    """
+    from bibi.schedule.slot import Verb
+    if not aktionen:
+        return ""
+    teile = []
+    for verb, label in ((Verb.START, "START"), (Verb.RESET, "RESET"), (Verb.KILL, "KILL")):
+        if verb in aktionen:
+            teile.append(f'<button class="slot-do" data-verb="{verb.value}">[{label}]</button>')
+        else:
+            teile.append(f'<span class="slot-off">&middot;{label}&middot;</span>')
+    return f'<span class="slot-bar">{" ".join(teile)}</span>'
+
+
+def job_runs_fragment(gruppen: list, *, now: float) -> str:
+    """Die Quell-Gruppen mit ihren Läufen — das Nachlade-Ziel von ``archived``.
+
+    Je Gruppe eine Kopfzeile mit dem Slot und darunter die archivierten Läufe,
+    tageweise getrennt. Der Slot steht unmittelbar über der Liste, in die sein
+    Inhalt wandert: wird ein Lauf terminal, rutscht er aus der Kopfzeile in die
+    erste Zeile darunter.
+    """
+    from bibi.controller import jobs_view
+
+    if not gruppen:
+        return ('<div class="empty">This job is unknown on both sides — no slot, '
+                'no runs. It may have been renamed; the Archive screen still '
+                'holds its history.</div>')
+    aus = []
+    for g in gruppen:
+        status = g.slot.get("status") or "pending"
+        reason = g.slot.get("reason")
+        zustand = f"{status} &middot; {_e(reason)}" if reason else _e(status)
+        titel = f"{g.quelle}" + (f" &middot; {_e(g.host)}" if g.host else "")
+        n = g.gesamt
+        aus.append(
+            f'<div class="grp"><div class="grp-head">'
+            f'<span class="fold" data-fold="{_e(g.quelle)}">&#9662;</span> '
+            f'<span class="grp-title">{titel}</span>'
+            f'<span class="slot">slot: {zustand}</span>'
+            f'{_slot_leiste(g.aktionen)}'
+            f'<span class="grp-count">{n} run{"" if n == 1 else "s"}</span>'
+            "</div>")
+        if not g.runs:
+            aus.append('<div class="empty">No runs yet — trigger one with START, '
+                       "or wait for the schedule.</div></div>")
+            continue
+        aus.append('<table class="runs"><thead><tr>'
+                   "<th>DATE</th><th>TIME</th><th>STATUS</th><th>EXIT</th>"
+                   "<th>RUNTIME</th><th>COMMIT</th><th></th></tr></thead><tbody>")
+        for tag, laeufe in jobs_view.by_day(g.runs):
+            aus.append(f'<tr class="day"><td colspan="7">{_e(tag)}</td></tr>')
+            for r in laeufe:
+                st = r.get("status") or ""
+                rs = r.get("reason")
+                aus.append(
+                    "<tr>"
+                    f'<td>{_e(tag)}</td>'
+                    f'<td class="t" data-ts="{r.get("finished_at") or ""}"></td>'
+                    f'<td>{_e(st)}{" &middot; " + _e(rs) if rs else ""}</td>'
+                    f'<td>{_e(r.get("exit_code"))}</td>'
+                    f'<td>{_e(r.get("exec_runtime"))}</td>'
+                    f'<td>{_e((r.get("commit_sha") or "")[:7])}</td>'
+                    f'<td><button class="cta" data-run="{_e(r.get("run_id"))}">[show]</button></td>'
+                    "</tr>")
+        aus.append("</tbody></table></div>")
+    return "".join(aus)
+
+
+def job_detail_page_v5(*, slug: str, spec: dict, now: float, gruppen: list | None = None,
                        daemon_status: dict | None = None,
                        git_status: dict | None = None, host_url: str | None = None,
                        scheduler: dict | None = None,
@@ -4474,7 +4550,10 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float,
         f"{kopf}"
         # Am Bus: `archived` meldet, dass ein Lauf ins Journal gewandert ist —
         # die einzige Verbindung zwischen Strom und Liste (m.rau/bibi#108).
-        '<div id="runs" data-bus="archived">'
+        # Nachgeladen wird die Liste, nicht die Seite: sonst ginge bei jedem
+        # Lauf Scroll-Position und Faltzustand verloren.
+        f'<div id="runs" data-bus="archived" data-bus-refetch="/-/jobs/{_uid(slug)}/runs">'
+        f'{job_runs_fragment(gruppen or [], now=now)}'
         "</div>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"

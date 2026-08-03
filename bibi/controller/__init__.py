@@ -1256,9 +1256,58 @@ def add_controller_routes(
                 break
         _sched = _scheduler_status()
         return HTMLResponse(render.job_detail_page_v5(
-            slug=slug, spec=spec, now=_t.time(), daemon_status=_status(),
+            slug=slug, spec=spec, now=_t.time(), gruppen=_job_gruppen(slug),
+            daemon_status=_status(),
             git_status=_feed_git_status(), host_url=_scheduler_url(),
             scheduler=_sched[0], scheduler_stale_since=_sched[1]))
+
+    def _job_gruppen(slug: str) -> list:
+        """Slot und Läufe beider Quellen für ``build_groups()`` beschaffen.
+
+        Nur Beschaffung — welche Gruppe es gibt und welche Knöpfe sie trägt,
+        entscheidet die reine Funktion.
+        """
+        from bibi.controller import jobs_view
+        sched_slot = None
+        for e in _host_schedules():
+            if e.get("slug") == slug:
+                sched_slot = e
+                break
+        lokal_slot = None
+        sched_runs: list = []
+        lokal_runs: list = []
+        try:
+            sched_runs = client.journal(slug=slug, limit=200) or []
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        try:
+            from bibi.daemon import job_db
+            conn = job_db.connect()
+            try:
+                zeile = conn.execute(
+                    "SELECT * FROM jobs WHERE slug=?", (slug,)).fetchone()
+                lokal_slot = dict(zeile) if zeile else None
+                lokal_runs = job_db.list_journal(conn, slug=slug, limit=200)
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        return jobs_view.build_groups(
+            scheduler_slot=sched_slot, local_slot=lokal_slot,
+            scheduler_runs=sched_runs, local_runs=lokal_runs,
+            scheduler_host=(_scheduler_url() or "").split("//")[-1].split(":")[0] or None,
+            local_host=_status().get("host"))
+
+    @app.get("/-/jobs/{job_uid}/runs", include_in_schema=False)
+    def screen_job_runs(request: Request, job_uid: str):  # noqa: ARG001
+        """Nur die Gruppen — das Nachlade-Ziel des ``archived``-Ereignisses."""
+        import time as _t
+
+        treffer = _job_by_uid(job_uid)
+        if treffer is None:
+            return HTMLResponse("", status_code=404)
+        slug, _ = treffer
+        return HTMLResponse(render.job_runs_fragment(_job_gruppen(slug), now=_t.time()))
 
     def _job_by_uid(job_uid: str):
         """``job_uid`` → (Slug, lokale Spec) oder ``None``.

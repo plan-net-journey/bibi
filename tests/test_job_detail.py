@@ -288,3 +288,47 @@ def test_the_group_counts_all_runs_not_just_the_loaded_page():
     g = _grp(scheduler_slot={"status": "pending"},
              scheduler_runs=[{"finished_at": 1.0}], scheduler_total=45)[0]
     assert g.gesamt == 45
+
+
+def test_the_page_shows_both_groups_with_their_slots(client):
+    """Der Screen im Bild (§5.1): je Quelle eine faltbare Gruppe, der Slot in
+    der Kopfzeile, die Laeufe darunter."""
+    c, root = _md_job(client)
+    from bibi.daemon import job_db
+    conn = job_db.connect()
+    try:
+        jid = conn.execute("SELECT id FROM jobs WHERE slug='EngineCI'").fetchone()["id"]
+        job_db.report_status(conn, jid, status="starting")
+        job_db.report_status(conn, jid, status="running")
+    finally:
+        conn.close()
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    assert "LOCAL" in text
+    assert "slot:" in text
+    assert "running" in text
+
+
+def test_a_running_slot_offers_kill_but_not_start(client):
+    """Besetzt: START waere ein zweiter Lauf auf demselben Platz. Der Knopf
+    bleibt sichtbar und ausgegraut, statt zu verschwinden — sonst springt das
+    Layout und die Information „das geht hier nicht" geht verloren (§5.2)."""
+    c, root = _md_job(client)
+    from bibi.daemon import job_db
+    conn = job_db.connect()
+    try:
+        jid = conn.execute("SELECT id FROM jobs WHERE slug='EngineCI'").fetchone()["id"]
+        job_db.report_status(conn, jid, status="starting")
+        job_db.report_status(conn, jid, status="running")
+    finally:
+        conn.close()
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    assert "[KILL]" in text          # verfuegbar
+    assert "&middot;START&middot;" in text or "·START·" in text  # ausgegraut
+
+
+def test_an_empty_run_list_says_what_to_do(client):
+    """Leerer Zustand mit Handlungsanweisung (Umbauplan §4): der haeufigste
+    erste Eindruck eines neuen Jobs ist eine leere Liste."""
+    c, _ = _md_job(client)
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    assert "No runs yet" in text
