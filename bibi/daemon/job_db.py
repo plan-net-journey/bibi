@@ -24,10 +24,10 @@ from dateutil import parser as _date_parser
 
 from bibi import repo
 from bibi.schedule import discovery, dispatcher, lifecycle
-from bibi.schedule.models import Kind, Status, display_kind
+from bibi.schedule.models import Kind, Status, display_kind, job_uid
 from bibi.schedule.parser import SPECIAL_SCHEDULES, ParseResult
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -185,6 +185,32 @@ def _mig_jobs_docker_args(conn: sqlite3.Connection) -> None:  # v18 → v19
         conn.execute("ALTER TABLE jobs ADD COLUMN docker_args TEXT")
 
 
+def _mig_job_uid(conn: sqlite3.Connection) -> None:  # v19 → v20
+    # Job-Identität als Spalte (Zustandsmodell §6). **Ohne Backfill**: alte
+    # Zeilen bleiben NULL. Sie zu füllen hieße, für jeden gepinnten Lauf den
+    # Basis-Slug zu erraten (`EngineCI-46ec57c7` → `EngineCI`) — live 252
+    # Pseudo-Slugs für 33 echte Jobs. Ein Fehlgriff dabei hängt Läufe an den
+    # falschen Job, und das fiele niemandem auf. Die Historie bleibt über den
+    # Slug erreichbar, nur nicht über den neuen Join.
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "job_uid"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN job_uid TEXT")
+    if _has_table(conn, "journal") and not _has_column(conn, "journal", "job_uid"):
+        conn.execute("ALTER TABLE journal ADD COLUMN job_uid TEXT")
+        # Der Index deckt den Zugriffspfad der Lauf-Liste ab (alle Läufe eines
+        # Jobs, jüngste zuerst). `archived_at` kommt aus der Basis, ist in einer
+        # sehr alten DB aber noch nicht zwingend da — eine Migration darf über
+        # den Stand *anderer* Migrationen nichts annehmen. Ohne die Spalte
+        # genügt der einspaltige Index; die spätere Sortierspalte kostet dann
+        # einen Row-Lookup, was bei einer DB dieses Alters nicht ins Gewicht
+        # fällt.
+        if _has_column(conn, "journal", "archived_at"):
+            conn.execute("CREATE INDEX IF NOT EXISTS journal_job_uid_idx "
+                         "ON journal (job_uid, archived_at DESC)")
+        else:
+            conn.execute("CREATE INDEX IF NOT EXISTS journal_job_uid_idx "
+                         "ON journal (job_uid)")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -207,6 +233,7 @@ _MIGRATIONS: dict[int, list] = {
     16: [_mig_jobs_error_time],
     17: [_mig_approved_nodes],
     18: [_mig_jobs_docker_args],
+    19: [_mig_job_uid],
 }
 
 
@@ -326,6 +353,7 @@ def _spec_columns(pr: ParseResult, now: float) -> dict:
     assert s is not None
     return {
         "slug": s.slug,
+        "job_uid": job_uid(s.slug),
         "schedule_ref": pr.schedule_ref,
         "slug_explicit": 1 if pr.slug_explicit else 0,
         "kind": s.kind.value,
@@ -1485,13 +1513,19 @@ def _write_journal(
     if row["started_at"] is not None and row["finished_at"] is not None:
         exec_runtime = row["finished_at"] - row["started_at"]
     cur = conn.execute(
-        "INSERT INTO journal (run_id, slug, kind, status, reason, started_at, "
+        "INSERT INTO journal (run_id, slug, job_uid, kind, status, reason, started_at, "
         "finished_at, exit_code, exec_runtime, host, worker, output_ref, commit_sha, "
-        "branch, payload, pinned_host, snapshot, archived_at) VALUES (:run_id,:slug,:kind,"
-        ":status,:reason,:started_at,:finished_at,:exit_code,:exec_runtime,:host,:worker,"
+        "branch, payload, pinned_host, snapshot, archived_at) VALUES (:run_id,:slug,:job_uid,"
+        ":kind,:status,:reason,:started_at,:finished_at,:exit_code,:exec_runtime,:host,:worker,"
         ":output_ref,:commit_sha,:branch,:payload,:pinned_host,:snapshot,:archived_at)",
         {
-            "run_id": run_id, "slug": row["slug"], "kind": row["kind"],
+            "run_id": run_id, "slug": row["slug"],
+            # Geerbt, nicht neu berechnet: der Slug dieser Zeile kann der eines
+            # gepinnten Laufs sein (`EngineCI-46ec57c7`) — sein `job_uid` gehört
+            # trotzdem dem Basis-Job, sonst findet die kombinierte Lauf-Liste
+            # ihre lokalen Läufe nicht wieder.
+            "job_uid": row["job_uid"],
+            "kind": row["kind"],
             "status": row["status"], "reason": row["reason"],
             "started_at": row["started_at"], "finished_at": row["finished_at"],
             "exit_code": row["exit_code"], "exec_runtime": exec_runtime,

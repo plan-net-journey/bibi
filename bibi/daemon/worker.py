@@ -39,6 +39,7 @@ from bibi.schedule.models import (
     DEFAULT_SILENCE_TIMEOUT_JOB,
     Status,
     is_claude_payload,
+    job_uid,
 )
 
 log = logging.getLogger("bibi.worker")
@@ -1098,15 +1099,21 @@ def run_pinned(
     conn = job_db.connect(db_path)
     try:
         conn.execute(
-            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, model, soul, "
+            "INSERT INTO jobs (id, slug, job_uid, schedule_ref, kind, payload, model, soul, "
             "session, app_port, app_prefix, exec_mode, image, silence_timeout, wall_time, "
             "schedule, next_fire_at, attempts, backoff, defer_time, error_time, "
             "pinned_host, status, enqueued_at) VALUES "
-            "(:id, :slug, :schedule_ref, :kind, :payload, :model, :soul, :session, "
+            "(:id, :slug, :job_uid, :schedule_ref, :kind, :payload, :model, :soul, :session, "
             ":app_port, :app_prefix, :exec_mode, :image, :silence_timeout, :wall_time, "
             "'now', :now, :attempts, :backoff, :defer_time, :error_time, "
             ":pinned_host, 'pending', :now)",
-            {"id": jid, "slug": unique_slug, "schedule_ref": eff_schedule_ref or unique_slug,
+            # `job_uid` kommt aus ``eff_slug``, nicht aus ``unique_slug``: der
+            # Zufallssuffix macht die *Zeile* eindeutig, nicht den *Job*. Ein
+            # lokaler Lauf von `EngineCI` gehört zu `EngineCI` — hier ist der
+            # Basis-Slug bekannt, deshalb wird er hier gesetzt und nirgends
+            # später aus dem Suffix zurückgerechnet (models.job_uid()).
+            {"id": jid, "slug": unique_slug, "job_uid": job_uid(eff_slug),
+             "schedule_ref": eff_schedule_ref or unique_slug,
              "kind": eff_kind, "payload": payload, "model": eff_model, "soul": eff_soul,
              "session": eff_session, "app_port": eff_app_port, "app_prefix": eff_app_prefix,
              "exec_mode": eff_exec_mode, "image": eff_image,

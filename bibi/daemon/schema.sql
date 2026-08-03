@@ -13,6 +13,12 @@
 CREATE TABLE IF NOT EXISTS jobs (
     id              TEXT PRIMARY KEY,          -- Scheduler-vergebene Hash-ID (§4.4)
     slug            TEXT NOT NULL UNIQUE,
+    -- Job-Identität: md5(slug), ordnerübergreifend (v20, Zustandsmodell §6).
+    -- Anders als `id` nicht vergeben, sondern abgeleitet — deshalb auf jedem
+    -- Knoten derselbe Wert, ohne dass die Knoten sich abstimmen. Das ist der
+    -- Join-Schlüssel der kombinierten Lauf-Liste. Ein gepinnter Lauf trägt den
+    -- uid seines *Basis*-Slugs, nicht den seines Suffix-Slugs.
+    job_uid         TEXT,
     schedule_ref    TEXT NOT NULL,             -- MD-Pfad relativ zum Vault
     slug_explicit   INTEGER NOT NULL DEFAULT 0,
     kind            TEXT NOT NULL,             -- job | claude | app (§5.3)
@@ -85,6 +91,10 @@ CREATE TABLE IF NOT EXISTS journal (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id        TEXT NOT NULL,               -- slug:trial, konstant über Retries
     slug          TEXT NOT NULL,
+    job_uid       TEXT,                        -- (v20) geerbt aus jobs.job_uid — nicht
+                                               -- erneut aus dem eigenen Slug abgeleitet,
+                                               -- sonst verlöre ein gepinnter Lauf den
+                                               -- Bezug zu seinem Basis-Job.
     kind          TEXT NOT NULL,
     status        TEXT NOT NULL,
     reason        TEXT,
@@ -114,6 +124,10 @@ CREATE TABLE IF NOT EXISTS journal (
 
 CREATE INDEX IF NOT EXISTS journal_slug_idx
     ON journal (slug, archived_at DESC);
+
+-- (v20) Der Zugriffspfad der Lauf-Liste: alle Läufe eines Jobs, jüngste zuerst.
+CREATE INDEX IF NOT EXISTS journal_job_uid_idx
+    ON journal (job_uid, archived_at DESC);
 
 -- Append-only Lifecycle-Übergänge (Schema v14) — anders als journal (nur der
 -- Terminal-Übergang) jeder Statuswechsel, inkl. running/awaiting/failed/
