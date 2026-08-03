@@ -1260,6 +1260,55 @@ def add_controller_routes(
             git_status=_feed_git_status(), host_url=_scheduler_url(),
             scheduler=_sched[0], scheduler_stale_since=_sched[1]))
 
+    def _job_by_uid(job_uid: str):
+        """``job_uid`` → (Slug, lokale Spec) oder ``None``.
+
+        Gemeinsam für die Detailseite und ihre Unterseiten, damit beide
+        dieselbe Auflösung benutzen und nicht auseinanderlaufen können.
+        """
+        from bibi.controller import jobs_view
+        slug = jobs_view.slug_for(job_uid, _slug_kandidaten())
+        if slug is None:
+            return None
+        for e in _local_job_mds():
+            if e.get("slug") == slug:
+                return slug, e
+        return slug, {}
+
+    @app.get("/-/jobs/{job_uid}/attrs", include_in_schema=False)
+    def screen_job_attrs(request: Request, job_uid: str):  # noqa: ARG001
+        """Alle Konfigurationswerte des Jobs (FE-Spezifikation §5.5)."""
+        import time as _t
+
+        from bibi.schedule import models
+        treffer = _job_by_uid(job_uid)
+        if treffer is None:
+            return JSONResponse(status_code=404,
+                                content={"error": "job not found", "job_uid": job_uid})
+        slug, _ = treffer
+        # Die **volle** Spec, nicht die schmale Zeilen-Sicht aus
+        # `_local_job_mds()`: die trägt nur, was der Jobs-Screen braucht
+        # (Slug, Trigger, Payload, Port). Hier geht es um jeden
+        # Konfigurationswert.
+        spec = _local_schedules().get(slug) or {}
+        # Die Defaults, gegen die „gesetzt oder geerbt" entschieden wird. Der
+        # silence_timeout hängt am Typ — ein App-Job darf 48 h schweigen, ein
+        # Shell-Job nicht.
+        kind = "app" if spec.get("app_port") else "job"
+        vorgabe = {
+            "attempts": 1, "backoff": "fixed",
+            "defer_time": models.DEFAULT_DEFER_TIME,
+            "defer_max": models.DEFAULT_DEFER_MAX,
+            "silence_timeout": (models.DEFAULT_SILENCE_TIMEOUT_APP if kind == "app"
+                                else models.DEFAULT_SILENCE_TIMEOUT_JOB),
+        }
+        _sched = _scheduler_status()
+        return HTMLResponse(render.job_attrs_page_v5(
+            slug=slug, spec=spec, defaults=vorgabe, now=_t.time(),
+            daemon_status=_status(), git_status=_feed_git_status(),
+            host_url=_scheduler_url(), scheduler=_sched[0],
+            scheduler_stale_since=_sched[1]))
+
     def _local_run_status() -> dict:
         """Letzter lokaler Lauf je Slug — die rechte Hälfte der Zeile."""
         try:

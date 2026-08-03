@@ -4482,3 +4482,73 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float,
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
+
+
+#: Scheduling-Werte der Attribut-Seite in der Reihenfolge, in der sie dort
+#: stehen — Trigger zuerst, dann Retry-Verhalten, dann die Fristen.
+_ATTR_FELDER = ("schedule", "at", "attempts", "backoff",
+                "defer_time", "defer_max", "error_time", "silence_timeout",
+                "wall_time", "hitl_timeout")
+
+
+def job_attrs_page_v5(*, slug: str, spec: dict, defaults: dict, now: float,
+                      daemon_status: dict | None = None,
+                      git_status: dict | None = None, host_url: str | None = None,
+                      scheduler: dict | None = None,
+                      scheduler_stale_since: float | None = None) -> str:
+    """Job Attributes (FE-Spezifikation §5.5) — alle Konfigurationswerte.
+
+    **Gesetzte Werte sind von Default-Werten unterscheidbar, und zwar an zwei
+    Signalen:** ein gesetzter Wert steht in Normalfarbe, ein geerbter gedimmt
+    **und in Klammern**. Zwei statt einem, weil Dimmung allein in hellen Themes
+    und auf schlechten Monitoren verlorengeht — dann sähe ein geerbter Wert aus
+    wie eine Entscheidung.
+
+    **Wie „geerbt" erkannt wird:** durch Vergleich mit dem Default. Das ist eine
+    Näherung — wer einen Wert explizit auf genau den Default setzt, erscheint
+    hier als Erbe. Der Preis ist bewusst: die Alternative wäre, das rohe
+    Frontmatter bis hierher durchzureichen, und damit eine zweite Wahrheit
+    neben der geparsten Spec zu führen. Für die Frage, die diese Seite
+    beantwortet — *warum verhält sich der Job so* —, ist der Wert entscheidend
+    und nicht, wer ihn hingeschrieben hat.
+    """
+    from bibi.schedule.models import job_uid as _uid
+
+    zeilen = []
+    for feld in _ATTR_FELDER:
+        wert = spec.get(feld)
+        if wert is None:
+            continue
+        geerbt = feld in defaults and wert == defaults[feld]
+        gezeigt = f"({_e(wert)})" if geerbt else _e(wert)
+        klasse = "attr-default" if geerbt else "attr-set"
+        zeilen.append(
+            f'<div class="attr-row"><span class="attr-key">{_e(feld)}</span>'
+            f'<span class="{klasse}">{gezeigt}</span></div>')
+    if not zeilen:
+        # Leerer Zustand mit Handlungsanweisung (Umbauplan §4): sagen, was
+        # fehlt und was man tun kann — nicht bloss, dass nichts da ist.
+        zeilen.append('<div class="empty">No attributes — this job has no '
+                      'configuration beyond its trigger and payload.</div>')
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>bibi &middot; {_e(slug)} &middot; attributes</title>"
+        f"<style>{_CSS}</style>"
+        f'<script src="/-/static/htmx-1.9.12.min.js"></script>'
+        "</head><body>"
+        f"{_header('Jobs', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
+        '<div class="jd-head">'
+        f'<a class="back" href="/-/jobs/{_uid(slug)}">&#9666; back to job</a>'
+        f'<span class="jd-slug">{_e(slug)}</span>'
+        '<span class="jd-meta">attributes</span>'
+        "</div>"
+        f'<div class="attrs">{"".join(zeilen)}</div>'
+        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )

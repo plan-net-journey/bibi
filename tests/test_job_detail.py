@@ -19,6 +19,8 @@ Jobs-Screen (`jobs_view.build_rows()`).
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from bibi.controller import jobs_view
@@ -148,3 +150,51 @@ def test_the_page_carries_the_shell(client):
     for teil in ("Feed", "Jobs", "Archive", "Nodes", "Live", "Log"):
         assert teil in text
     assert "CLIENT" in text and "SCHEDULER" in text
+
+
+# ── Job Attributes (FE-Spezifikation §5.5) ───────────────────────────────────
+
+
+def test_the_attrs_link_in_the_header_is_not_a_dead_end(client):
+    """Derselbe Fehler wie beim Slug-Link, nur eine Ebene tiefer und von mir
+    selbst gebaut: die Kopfzeile traegt `[ATTRS]`, und die Unterseite gab es
+    nicht. Ein Knopf, der ins Leere fuehrt, ist schlimmer als keiner."""
+    c, _ = _md_job(client)
+    seite = c.get(f"/-/jobs/{job_uid('EngineCI')}")
+    assert f"/-/jobs/{job_uid('EngineCI')}/attrs" in seite.text  # der Link steht da
+    assert c.get(f"/-/jobs/{job_uid('EngineCI')}/attrs").status_code == 200
+
+
+def test_attrs_separates_set_values_from_defaults(client):
+    """Zwei Signale statt einem (§5.5): ein gesetzter Wert steht normal, ein
+    Default gedimmt **und in Klammern**. Dimmung allein geht in hellen Themes
+    und auf schlechten Monitoren verloren — dann saehe ein geerbter Wert aus
+    wie eine Entscheidung."""
+    c, root = client
+    _md(root, "ci/Timeouts.md",
+        '---\nslug: Timeouts\nschedule: "0 * * * *"\nsilence_timeout: 1800\n'
+        'job: "echo hi"\n---\n')
+    from bibi.daemon import job_db
+    conn = job_db.connect()
+    try:
+        job_db.rescan(conn, vault_root=root / "vault" / "case")
+    finally:
+        conn.close()
+    text = c.get(f"/-/jobs/{job_uid('Timeouts')}/attrs").text
+    assert "1800" in text                     # gesetzt: normal
+    assert re.search(r"\(\s*\d+\s*\)", text)  # geerbt: in Klammern
+    # Und der gesetzte Wert steht *nicht* in Klammern — sonst waere die
+    # Unterscheidung blosse Dekoration.
+    assert not re.search(r"\(\s*1800\s*\)", text)
+
+
+def test_attrs_leads_back_to_the_job(client):
+    """`◂ back to job` — eine Unterseite ohne Rueckweg ist eine Sackgasse."""
+    c, _ = _md_job(client)
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}/attrs").text
+    assert f'href="/-/jobs/{job_uid("EngineCI")}"' in text
+
+
+def test_attrs_of_an_unknown_job_is_a_404(client):
+    c, _ = client
+    assert c.get(f"/-/jobs/{job_uid('gibt-es-nicht')}/attrs").status_code == 404
