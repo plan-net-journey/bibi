@@ -198,3 +198,93 @@ def test_attrs_leads_back_to_the_job(client):
 def test_attrs_of_an_unknown_job_is_a_404(client):
     c, _ = client
     assert c.get(f"/-/jobs/{job_uid('gibt-es-nicht')}/attrs").status_code == 404
+
+
+# ── Quell-Gruppen und Lauf-Liste (FE-Spezifikation §5.1–§5.3) ────────────────
+
+
+def _grp(**kw):
+    from bibi.controller import jobs_view
+    basis = dict(scheduler_slot=None, local_slot=None,
+                 scheduler_runs=[], local_runs=[],
+                 scheduler_host="sarasate", local_host="Mac.fritz.box")
+    basis.update(kw)
+    return jobs_view.build_groups(**basis)
+
+
+def test_a_group_is_missing_when_there_is_no_slot_at_all():
+    """Der Unterschied zwischen *kein Platz* und *freier Platz* (§5.1): eine
+    Gruppe fehlt genau dann, wenn diese Seite den Job gar nicht kennt — nicht,
+    wenn ihr Slot gerade leer ist. Das ersetzt das ausgegraute Control."""
+    gruppen = _grp(scheduler_slot={"status": "pending"})
+    assert [g.quelle for g in gruppen] == ["SCHEDULER"]
+
+
+def test_both_groups_appear_when_both_sides_know_the_job():
+    gruppen = _grp(scheduler_slot={"status": "pending"},
+                   local_slot={"status": "error"})
+    assert [g.quelle for g in gruppen] == ["SCHEDULER", "LOCAL"]
+
+
+def test_a_group_survives_an_empty_slot_if_the_side_knows_the_job():
+    """`adhoc`: die Seite kennt ihn, gerade ist nichts los. `pending` ohne
+    `next` ist ein *freier* Platz, kein fehlender."""
+    gruppen = _grp(scheduler_slot={"status": "pending", "next_fire_at": None})
+    assert len(gruppen) == 1 and gruppen[0].slot["status"] == "pending"
+
+
+def test_the_slot_carries_its_own_actions():
+    """Die vier Knopf-Gesichter kommen aus `slot.actions()` — dieselbe Quelle
+    wie die Engine, damit Oberflaeche und Zustandsmaschine nicht auseinander
+    laufen koennen."""
+    from bibi.schedule import slot
+    g = _grp(scheduler_slot={"status": "error"})[0]
+    assert g.aktionen == slot.actions("error")
+    assert slot.Verb.START in g.aktionen and slot.Verb.KILL not in g.aktionen
+
+
+def test_a_consumed_oneshot_offers_no_action_bar():
+    """`done` ist die Ausnahme von „ausgegraut statt ausgeblendet": ein
+    verbrauchter Slot zeigt keine toten Knoepfe, das Fehlen der Leiste ist
+    selbst die Aussage."""
+    from bibi.schedule import slot
+    g = _grp(scheduler_slot={"status": slot.DONE})[0]
+    assert g.aktionen == frozenset()
+
+
+def test_runs_are_grouped_by_day_newest_first():
+    """Tagesgruppen geben einen greifbaren Anker („was lief gestern?"), den
+    eine gleichfoermige Endlosliste nicht hat (§5.3)."""
+    from bibi.controller import jobs_view
+    runs = [
+        {"finished_at": 1_754_003_600.0, "status": "complete"},   # spaeter
+        {"finished_at": 1_754_000_000.0, "status": "error"},      # frueher, selber Tag
+        {"finished_at": 1_753_800_000.0, "status": "complete"},   # anderer Tag
+    ]
+    tage = jobs_view.by_day(runs)
+    assert len(tage) == 2
+    assert tage[0][1][0]["finished_at"] > tage[0][1][1]["finished_at"]
+    # Über die Läufe geprüft, nicht über die Tages-Strings: `dd/mm/yyyy` ist
+    # ein Anzeigeformat und lexikografisch nicht sortierbar.
+    assert tage[0][1][0]["finished_at"] > tage[1][1][0]["finished_at"]
+
+
+def test_runs_are_sorted_by_finished_at_not_by_archived_at():
+    """Der Kern der Entscheidung aus §5.3: unter A2 laufen beide Zeiten
+    beliebig weit auseinander. Ein Lauf, der tagelang blockiert stand, gehoert
+    an seinen Lauf-Tag — nicht an den Tag, an dem ihn jemand abgeraeumt hat."""
+    from bibi.controller import jobs_view
+    alt_aber_frisch_archiviert = {"finished_at": 1_753_800_000.0,
+                                  "archived_at": 1_754_100_000.0, "status": "killed"}
+    neu = {"finished_at": 1_754_000_000.0, "archived_at": 1_754_000_100.0,
+           "status": "complete"}
+    tage = jobs_view.by_day([alt_aber_frisch_archiviert, neu])
+    assert tage[0][1][0] is neu  # der juengere *Lauf* steht oben
+
+
+def test_the_group_counts_all_runs_not_just_the_loaded_page():
+    """`45 runs` in der Kopfzeile meint die Gesamtzahl — sonst zaehlte die
+    Zahl mit jedem LOAD MORE hoch und saehe aus wie Zuwachs."""
+    g = _grp(scheduler_slot={"status": "pending"},
+             scheduler_runs=[{"finished_at": 1.0}], scheduler_total=45)[0]
+    assert g.gesamt == 45

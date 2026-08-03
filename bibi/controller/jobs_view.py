@@ -437,3 +437,92 @@ def slug_for(job_uid_gesucht: str, kandidaten) -> str | None:
         if _uid(slug) == job_uid_gesucht:
             return slug
     return None
+
+
+@dataclass
+class RunGroup:
+    """Eine Quelle des Job-Details: ihr Slot und die Läufe darunter.
+
+    Es gibt bis zu zwei — ``SCHEDULER`` und ``LOCAL``. Der Slot steht in der
+    Kopfzeile, unmittelbar über der Liste, in die sein Inhalt wandert: wird ein
+    Lauf terminal, rutscht er aus der Kopfzeile in die erste Zeile darunter.
+    Die Bewegung bleibt sichtbar, ohne dass eine Sonderzeile in der Tabelle
+    steht.
+    """
+
+    quelle: str
+    host: str | None
+    slot: dict
+    aktionen: frozenset
+    runs: list = field(default_factory=list)
+    gesamt: int = 0
+
+
+def build_groups(*, scheduler_slot: dict | None, local_slot: dict | None,
+                 scheduler_runs: list, local_runs: list,
+                 scheduler_host: str | None = None, local_host: str | None = None,
+                 scheduler_total: int | None = None,
+                 local_total: int | None = None) -> list[RunGroup]:
+    """Die Quell-Gruppen des Job-Details (FE-Spezifikation §5.1).
+
+    **Eine Gruppe fehlt genau dann, wenn es dort keinen Slot gibt** — nicht,
+    wenn er leer ist. Das ist der Unterschied zwischen *kein Platz* und
+    *freier Platz*, und er ersetzt das ausgegraute Control: eine Seite, die den
+    Job gar nicht kennt, zeigt keine Gruppe; eine, die ihn kennt und gerade
+    nichts zu tun hat (``adhoc``), zeigt ``pending`` ohne ``next``.
+
+    Ein ``at``-Job hat auf einem Client deshalb keine ``LOCAL``-Gruppe: dort
+    kann nie ein Lauf entstehen (Zustandsmodell §5).
+
+    Die Aktionen kommen aus :func:`bibi.schedule.slot.actions` — dieselbe
+    Quelle, aus der die Engine ihre Übergänge nimmt. Zwei Listen, die dasselbe
+    behaupten, laufen sonst auseinander, und die Oberfläche zeigt einen Knopf,
+    den der Scheduler ablehnt.
+    """
+    from bibi.schedule import slot as slot_mod
+
+    aus: list[RunGroup] = []
+    for quelle, zeile, runs, host, gesamt in (
+        ("SCHEDULER", scheduler_slot, scheduler_runs, scheduler_host, scheduler_total),
+        ("LOCAL", local_slot, local_runs, local_host, local_total),
+    ):
+        if zeile is None:
+            continue
+        status = zeile.get("status") or "pending"
+        try:
+            aktionen = slot_mod.actions(status)
+        except ValueError:
+            # Ein Zustand, den das Modell nicht kennt: keine Knöpfe, aber die
+            # Gruppe bleibt. Die Läufe sind echt, auch wenn der Slot unklar ist
+            # — sie zu verstecken wäre der falsche Ausgang.
+            aktionen = frozenset()
+        aus.append(RunGroup(
+            quelle=quelle, host=host, slot=zeile, aktionen=aktionen,
+            runs=list(runs), gesamt=gesamt if gesamt is not None else len(runs)))
+    return aus
+
+
+def by_day(runs: list) -> list[tuple[str, list]]:
+    """Läufe nach Tag gruppieren, jüngster Tag zuerst (FE-Spezifikation §5.3).
+
+    **Sortiert wird nach ``finished_at``, nicht nach ``archived_at``.** Unter
+    der Archivierungsregel A2 laufen beide beliebig weit auseinander: ein
+    terminaler Lauf bleibt im Slot stehen, bis ihn jemand abräumt. Nach dem
+    Aufräum-Zeitpunkt sortiert, erschiene ein tagealter Lauf ganz oben unter
+    dem heutigen Datum — die Tagestrennlinien sollen aber sagen, *wann etwas
+    lief*, nicht wann jemand aufgeräumt hat.
+
+    Tagesgruppen statt einer gleichförmigen Endlosliste, weil sie einen
+    greifbaren Anker geben („was lief gestern?").
+    """
+    import datetime as _dt
+
+    nach_tag: dict[str, list] = {}
+    for r in sorted(runs, key=lambda x: x.get("finished_at") or 0, reverse=True):
+        ts = r.get("finished_at")
+        if ts is None:
+            continue
+        tag = _dt.datetime.fromtimestamp(ts).strftime("%d/%m/%Y")
+        nach_tag.setdefault(tag, []).append(r)
+    return sorted(nach_tag.items(),
+                  key=lambda kv: kv[1][0].get("finished_at") or 0, reverse=True)
