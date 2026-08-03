@@ -173,3 +173,65 @@ def test_the_collector_asks_the_remote_scheduler_not_itself(monkeypatch, tmp_pat
     Collector(_Bus(), registry=None)._fetch_scheduler_status()
     assert gefragt == ["http://sarasate.example:8780"], \
         "der Collector muss den entfernten Scheduler fragen, nicht sich selbst"
+
+
+# ── Der eigene Heartbeat (Befund m.rau, 2026-08-03) ─────────────────────────
+#
+# „der heartbeat bleibt weiter stehen." — und das lag daran, dass der
+# vorherige Diff nur den *Scheduler* beobachtet. Der Heartbeat ist die einzige
+# Zeile des linken Blocks, die sich regelmäßig ändert, und sie entsteht **hier**:
+# alle 15 s meldet sich dieser Knoten beim Host. Niemand hat das bisher als
+# Ereignis behandelt.
+#
+# Er gehört zum selben Muster wie `registry` — der Collector bekommt eine
+# Referenz und bildet einen Fingerabdruck, statt irgendwo zu pollen.
+
+
+class _HB:
+    def __init__(self, last_at=None, last_ok=True):
+        self.last_at, self.last_ok = last_at, last_ok
+
+
+def test_a_new_heartbeat_publishes_feedstatus():
+    bus = _Bus()
+    hb = _HB(last_at=100.0)
+    c = Collector(bus, registry=None, heartbeat=hb)
+    c._primed = True
+    c._diff_heartbeat()
+    bus.published.clear()
+    hb.last_at = 115.0          # der nächste Schlag, 15 s später
+    assert c._diff_heartbeat() == 1
+    assert bus.published == ["feedstatus"]
+
+
+def test_an_unchanged_heartbeat_stays_quiet():
+    bus = _Bus()
+    hb = _HB(last_at=100.0)
+    c = Collector(bus, registry=None, heartbeat=hb)
+    c._primed = True
+    c._diff_heartbeat()
+    bus.published.clear()
+    assert c._diff_heartbeat() == 0
+    assert bus.published == []
+
+
+def test_a_failing_heartbeat_is_an_event():
+    """Von „ok" auf „nicht ok" ist die wichtigste Änderung dieser Zeile — sie
+    bedeutet, dass der Knoten den Host verloren hat."""
+    bus = _Bus()
+    hb = _HB(last_at=100.0, last_ok=True)
+    c = Collector(bus, registry=None, heartbeat=hb)
+    c._primed = True
+    c._diff_heartbeat()
+    bus.published.clear()
+    hb.last_ok = False
+    assert c._diff_heartbeat() == 1
+
+
+def test_without_a_heartbeat_nothing_happens():
+    """Ein Knoten ohne `connect`-Rolle hat keinen — das ist kein Fehler."""
+    bus = _Bus()
+    c = Collector(bus, registry=None)
+    c._primed = True
+    assert c._diff_heartbeat() == 0
+    assert bus.published == []

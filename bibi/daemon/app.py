@@ -1090,7 +1090,7 @@ def create_app(
     worker_registry = WorkerRegistry() if roles.scheduler else None
     if collector is None:
         from bibi.daemon.bus import Collector
-        collector = Collector(bus, registry=worker_registry)
+        collector = Collector(bus, registry=worker_registry, heartbeat=heartbeat)
     # Bugfix (User-Fund: ein erschoepfter gepinnter Job blieb auf einem reinen
     # Client fuer immer in "failed" haengen): job_db.sweep() (failed+erschoepft
     # -> error, deferred+defer_max -> inactive) lief bisher nur unter

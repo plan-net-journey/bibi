@@ -295,6 +295,9 @@ button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnlin
        margin-bottom: 1.1rem; font-size: .92rem; }
 .hdr-title { font-weight: 600; letter-spacing: .04em; margin-bottom: .25rem; }
 .hdr-host { font-weight: 400; margin-left: .9rem; }
+/* Der Bezugspunkt der absoluten Zeiten. Rechtsbuendig im Block, damit er die
+   Werte darunter nicht verdraengt, aber im selben Blickfeld bleibt. */
+.hdr-clock { float: right; font-weight: 400; font-variant-numeric: tabular-nums; }
 .hdr-row { display: flex; gap: .8rem; line-height: 1.5; }
 .hdr-label { color: var(--muted); min-width: 5.5rem; flex: 0 0 auto; }
 .hdr-row .hdr-value { color: var(--fg); }
@@ -1767,7 +1770,12 @@ def status_header(
 
     links = (
         f'<div class="hdr-block"><div class="hdr-title">CLIENT'
-        f'<span class="hdr-host">{eigener}</span></div>'
+        f'<span class="hdr-host">{eigener}</span>'
+        # Der Bezugspunkt fuer alle absoluten Zeiten daneben — nicht in der
+        # App-Bar oben rechts, wo er zwar steht, aber diagonal weg vom Wert,
+        # den er einordnen soll (Befund m.rau, 2026-08-03: "ich tappe total im
+        # Dunkeln, weil keine Sekundenanzeige da ist").
+        f'<span class="hdr-clock" id="hdr-clock">--:--:--</span></div>'
         + _hdr_row("heartbeat", heartbeat, klasse=hb_klasse)
         + _hdr_row("project", projekt, klasse=projekt_klasse)
         + _hdr_row("bibi", version)
@@ -1849,10 +1857,17 @@ def _live_clock() -> str:
 _CLOCK_JS = """
 (function(){
   const c = document.getElementById('liveclock');
-  if (!c) return;
+  const h = document.getElementById('hdr-clock');
+  if (!c && !h) return;
   const tick = () => {
     const now = new Date();
-    c.textContent = '● live ' + now.toLocaleDateString('en-GB') + ' ' + now.toLocaleTimeString('en-GB');
+    const uhr = now.toLocaleTimeString('en-GB');
+    if (c) c.textContent = now.toLocaleDateString('en-GB') + ' ' + uhr;
+    // Die Uhr im Header ist der Bezugspunkt der absoluten Zeiten darunter.
+    // Sie wird bei jedem Bus-Swap neu eingesetzt, deshalb hier per id gesucht
+    // statt einmal gemerkt.
+    const hh = h || document.getElementById('hdr-clock');
+    if (hh) hh.textContent = uhr;
   };
   tick(); setInterval(tick, 1000);
 })();

@@ -171,7 +171,7 @@ class Collector:
 
     def __init__(self, bus: Bus, *, db_path: Path | None = None,
                  repo_root: Path | None = None, interval: float = 1.0,
-                 autorun: bool = True, registry=None) -> None:
+                 autorun: bool = True, registry=None, heartbeat=None) -> None:
         self.bus = bus
         self.db_path = db_path
         self.repo_root = repo_root
@@ -182,12 +182,17 @@ class Collector:
         # den stale-Übergang OHNE neuen Heartbeat (stale wird beim list()-
         # Aufruf zeitbasiert berechnet, nicht gespeichert).
         self.registry = registry
+        #: Der eigene Heartbeat (nur mit `connect`-Rolle vorhanden). Der
+        #: Collector liest davon `last_at`/`last_ok`, wie er von der
+        #: Registry die Knotenliste liest — kein Poll, eine Referenz.
+        self.heartbeat = heartbeat
         self._jobs: dict[str, tuple] = {}    # job_id → (status, fire)
         self._journal_max: int | None = None
         self._tails: dict[str, dict] = {}    # job_id → {run_id, path, kind, sent}
         self._nodes_snapshot: tuple | None = None
         self._flags_snapshot: tuple | None = None
         self._sched_snapshot: tuple | None = None
+        self._hb_snapshot: tuple | None = None
         self._sched_last_fetch: float = 0.0
         self._primed = False
         self._task: asyncio.Task | None = None
@@ -263,6 +268,7 @@ class Collector:
         stats["state"] += self._diff_nodes()
         stats["state"] += self._diff_flags()
         stats["state"] += self._diff_scheduler()
+        stats["state"] += self._diff_heartbeat()
 
         # Tails: Output-Zuwachs publizieren; Läufe, die nicht mehr aktiv
         # wachsen (Terminal/deferred), nach einem letzten Read entlassen.
@@ -322,6 +328,33 @@ class Collector:
     #: der Header nach einem Ereignis veraltet sein darf — der Heartbeat
     #: selbst kommt nur alle 15 s.
     _SCHED_POLL_S = 5.0
+
+    def _diff_heartbeat(self) -> int:
+        """"feedstatus"-Trigger fuer den **eigenen** Heartbeat.
+
+        Die einzige Zeile des linken Header-Blocks, die sich regelmaessig
+        aendert — alle 15 s meldet sich dieser Knoten beim Host. Sie entsteht
+        hier im Prozess, wird also nicht abgefragt, sondern abgelesen: eine
+        Referenz auf das Heartbeat-Objekt, derselbe Weg wie bei ``registry``.
+
+        Ohne diesen Diff blieb die Zeile stehen, bis zufaellig etwas anderes
+        den Header dreckig machte (Befund m.rau, 2026-08-03: "der heartbeat
+        bleibt weiter stehen"). ``_diff_scheduler()`` sieht sie nicht — sie
+        gehoert diesem Knoten, nicht dem Host.
+
+        ``last_ok`` gehoert in den Fingerabdruck: der Wechsel von "verbunden"
+        auf "nicht verbunden" ist die wichtigste Aenderung dieser Zeile.
+        """
+        hb = self.heartbeat
+        if hb is None:
+            return 0
+        snap = (getattr(hb, "last_at", None), getattr(hb, "last_ok", None))
+        changed = self._primed and snap != self._hb_snapshot
+        self._hb_snapshot = snap
+        if changed:
+            self.bus.publish_state("feedstatus")
+            return 1
+        return 0
 
     def _fetch_scheduler_status(self) -> dict | None:
         """Status des konfigurierten Schedulers, oder ``None``.

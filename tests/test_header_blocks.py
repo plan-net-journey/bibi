@@ -206,3 +206,31 @@ def test_uptime_reads_as_a_point_in_time():
     und die Beschriftung muss das sagen."""
     html = _header()
     assert "up since" in html and "connected since" in html
+
+
+def test_the_header_carries_a_running_clock():
+    """**Befund m.rau, 2026-08-03:** „ich tappe total im Dunkeln, weil keine
+    Sekundenanzeige da ist!"
+
+    Absolute Zeiten sind nur lesbar, wenn der Bezugspunkt danebensteht. Meine
+    Begründung dafür lautete, die Uhr in der App-Bar leiste das — sie steht
+    aber oben rechts, während die Werte links im Header stehen. Diagonal über
+    den Bildschirm ist nicht „daneben".
+
+    Die laufende Uhr gehört deshalb in die Titelzeile des CLIENT-Blocks,
+    unmittelbar über `heartbeat`. Dann ist „14:15:44" gegen „14:15:52" eine
+    Ablesung statt einer Rechenaufgabe.
+    """
+    html = _header()
+    assert 'id="hdr-clock"' in html
+    # Sie sitzt im linken Block, nicht irgendwo.
+    links = html.split("SCHEDULER", 1)[0]
+    assert 'id="hdr-clock"' in links
+
+
+def test_the_header_clock_ticks_every_second():
+    """Sie zeigt Sekunden und laeuft — sonst waere sie nur ein weiterer Wert,
+    der einfriert."""
+    js = render._CLOCK_JS
+    assert "hdr-clock" in js
+    assert "setInterval" in js
