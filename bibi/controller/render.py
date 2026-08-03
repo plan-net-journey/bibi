@@ -4434,6 +4434,49 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
     )
 
 
+#: Faltung der Quell-Gruppen und Ausklappen einer Lauf-Ausgabe.
+#:
+#: Beides ist reine Anzeige und bleibt deshalb im Browser: der Server weiss
+#: nicht, was jemand gerade aufgeklappt hat, und soll es auch nicht wissen —
+#: sonst waere jeder Klick ein Roundtrip und der Faltzustand ginge bei jedem
+#: Nachladen verloren.
+_JOB_DETAIL_JS = """
+(() => {
+  document.addEventListener('click', async (ev) => {
+    const fold = ev.target.closest('[data-fold]');
+    if (fold) {
+      const grp = fold.closest('.grp');
+      const zu = grp.classList.toggle('folded');
+      // Die Marke ist der Zustand: wer sie liest, weiss es, ohne zu klicken.
+      fold.innerHTML = zu ? '&#9656;' : '&#9662;';
+      return;
+    }
+    const show = ev.target.closest('.run-show');
+    if (!show) return;
+    const zeile = document.getElementById('run-' + show.dataset.run);
+    if (!zeile) return;
+    if (!zeile.hidden) { zeile.hidden = true; show.textContent = '[show]'; return; }
+    zeile.hidden = false;
+    show.textContent = '[hide]';
+    const feld = zeile.querySelector('.out-body');
+    if (feld.dataset.geladen) return;
+    feld.textContent = 'loading …';
+    try {
+      const r = await fetch(location.pathname + '/runs/' + show.dataset.jid + '/output');
+      feld.textContent = r.ok ? await r.text() : 'output unavailable';
+      if (r.ok) feld.dataset.geladen = '1';
+    } catch (e) { feld.textContent = 'output unavailable'; }
+  });
+  // Deep-Link: `#run=<run_id>` oeffnet genau diese Zeile.
+  const m = location.hash.match(/^#run=(.+)$/);
+  if (m) {
+    const b = document.querySelector('.run-show[data-run="' + m[1] + '"]');
+    if (b) b.click();
+  }
+})();
+"""
+
+
 def _slot_leiste(aktionen) -> str:
     """Die Knopfleiste eines Slots (FE-Spezifikation §5.2).
 
@@ -4509,8 +4552,14 @@ def job_runs_fragment(gruppen: list, *, now: float) -> str:
                     f'<td>{_e(r.get("exit_code"))}</td>'
                     f'<td>{_e(r.get("exec_runtime"))}</td>'
                     f'<td>{_e((r.get("commit_sha") or "")[:7])}</td>'
-                    f'<td><button class="cta" data-run="{_e(r.get("run_id"))}">[show]</button></td>'
-                    "</tr>")
+                    f'<td><button class="cta run-show" data-jid="{_e(r.get("id"))}" '
+                    f'data-run="{_e(r.get("run_id"))}">[show]</button></td>'
+                    "</tr>"
+                    # Der Ausklappbereich gehoert zum Lauf, nicht zur Zeile:
+                    # derselbe `run_id` zeigt vor der Archivierung auf die
+                    # Slot-Kopfzeile und danach hierher (FE-Spezifikation §5.4).
+                    f'<tr class="out" id="run-{_e(r.get("run_id"))}" hidden>'
+                    f'<td colspan="7"><pre class="out-body"></pre></td></tr>')
         aus.append("</tbody></table></div>")
     return "".join(aus)
 
@@ -4562,6 +4611,7 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, gruppen: list | Non
         "</div>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_JOB_DETAIL_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"

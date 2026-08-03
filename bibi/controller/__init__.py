@@ -23,7 +23,7 @@ import threading
 import time
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from bibi.daemon import activity, openapi, roles as roles_mod
 
@@ -1301,6 +1301,39 @@ def add_controller_routes(
             scheduler_runs=sched_runs, local_runs=lokal_runs,
             scheduler_host=(_scheduler_url() or "").split("//")[-1].split(":")[0] or None,
             local_host=_status().get("host"))
+
+    @app.get("/-/jobs/{job_uid}/runs/{jid}/output", include_in_schema=False)
+    def screen_job_run_output(request: Request, job_uid: str, jid: int):  # noqa: ARG001
+        """Die Ausgabe eines archivierten Laufs (FE-Spezifikation §5.4).
+
+        **Es gibt keinen eigenen Lauf-Screen** — die Zeile klappt auf, und der
+        Bereich holt sich seinen Inhalt hier. Die Liste trägt ihn nicht mit:
+        sonst wäre jede Seite so groß wie alle Ausgaben zusammen, und
+        `gmail-transfer` allein hat 1064 Läufe im Fenster.
+        """
+        if _job_by_uid(job_uid) is None:
+            return PlainTextResponse("", status_code=404)
+        from bibi.daemon import job_db
+        conn = job_db.connect()
+        try:
+            zeile = job_db.get_journal(conn, jid)
+        finally:
+            conn.close()
+        if zeile is None:
+            return PlainTextResponse("", status_code=404)
+        from bibi import repo as repo_mod
+        pfad = repo_mod.root() / (zeile.get("output_ref") or "")
+        try:
+            from bibi.wrapper import output as output_mod
+            zeilen = output_mod.read_events(pfad)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            zeilen = []
+        if not zeilen:
+            # Kein Output ist eine Aussage, kein Fehler: ein Job kann
+            # schweigend durchlaufen.
+            return PlainTextResponse("(no output)")
+        return PlainTextResponse(
+            "\n".join(str(e.get("text") or e.get("line") or "") for e in zeilen))
 
     @app.get("/-/jobs/{job_uid}/runs", include_in_schema=False)
     def screen_job_runs(request: Request, job_uid: str):  # noqa: ARG001

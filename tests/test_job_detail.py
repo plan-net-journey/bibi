@@ -380,3 +380,62 @@ def test_a_slot_without_any_status_is_not_invented():
         scheduler_runs=[], local_runs=[])[0]
     assert g.slot_status is None
     assert g.aktionen == frozenset()
+
+
+# ── Output ausklappen statt Unterseite (FE-Spezifikation §5.4) ───────────────
+
+
+def _seed_run(root, slug: str = "EngineCI", *, out: str = "hallo welt") -> int:
+    """Eine archivierte Journal-Zeile mit Output auf Platte."""
+    from bibi.daemon import job_db
+    from bibi.wrapper import output as out_mod
+    rel = f"data/job/{slug}-1/output.jsonl"
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    out_mod.append(p, "out", out, t=1.0)
+    conn = job_db.connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO journal (run_id, slug, kind, status, started_at, "
+            "finished_at, exit_code, output_ref, archived_at, domain) "
+            "VALUES (?,?,?,?,?,?,?,?,?, 'local')",
+            (f"{slug}:1:a", slug, "job", "complete", 1.0, 2.0, 0, rel, 2.0))
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def test_a_run_row_offers_show_instead_of_a_link_away(client):
+    """Es gibt keinen eigenen Lauf-Screen: `show` klappt die Zeile auf, statt
+    die Seite zu verlassen. Wer drei Laeufe vergleichen will, soll nicht
+    dreimal navigieren muessen."""
+    c, root = _md_job(client)
+    _seed_run(root)
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    assert "[show]" in text
+    assert "/-/ui/run/" not in text  # kein Weg auf den alten Lauf-Screen
+
+
+def test_the_output_of_a_run_can_be_fetched(client):
+    """Der Ausklappbereich holt sich seinen Inhalt selbst — die Liste traegt
+    ihn nicht mit, sonst waere jede Seite so gross wie alle Ausgaben zusammen."""
+    c, root = _md_job(client)
+    jid = _seed_run(root, out="147 passed in 6.9s")
+    r = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs/{jid}/output")
+    assert r.status_code == 200
+    assert "147 passed" in r.text
+
+
+def test_the_output_of_an_unknown_run_is_a_404(client):
+    c, _ = _md_job(client)
+    assert c.get(f"/-/jobs/{job_uid('EngineCI')}/runs/999999/output").status_code == 404
+
+
+def test_every_run_keeps_its_own_url(client):
+    """`#run=<id>` (§5.4): ein Aufruf mit Anker oeffnet genau diese Zeile
+    ausgeklappt. Das ist die Bedingung dafuer, dass der Status-Klick aus dem
+    Jobs-Screen ueberhaupt ein Ziel hat."""
+    c, root = _md_job(client)
+    jid = _seed_run(root)
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    assert f'data-jid="{jid}"' in text
