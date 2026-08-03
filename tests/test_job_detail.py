@@ -539,3 +539,48 @@ def test_archive_leaves_a_real_slug_alone_even_if_it_looks_suffixed(client):
          "finished_at": 1_754_000_000.0, "status": "complete"},
     ], now=1_754_000_100.0)
     assert ">daily-digest-deadbeef<" in html
+
+
+# ── LOAD MORE (FE-Spezifikation §5.3/§6) ─────────────────────────────────────
+
+
+def test_the_archive_pages_instead_of_scrolling_endlessly(client):
+    """Infinite Scrolling ist bei diesen Mengen unbrauchbar: `gmail-transfer`
+    allein hat 1064 Laeufe im 5000er-Journalfenster. Tagesgruppen plus
+    `LOAD MORE` geben stattdessen einen Anker und ein Ende."""
+    c, root = _md_job(client)
+    for i in range(3):
+        _seed_run(root, f"job{i}")
+    text = c.get("/-/archive?limit=2").text
+    assert "LOAD MORE" in text
+    assert "offset=2" in text
+
+
+def test_load_more_disappears_when_everything_is_shown(client):
+    """Ein Knopf, der nichts mehr laedt, ist schlimmer als keiner — er sieht
+    aus wie ein Weg. Genau die Unterscheidung, die §6 fuer die Reichweite
+    verlangt: was fehlt, ist weggepruned und nicht ungeladen."""
+    c, root = _md_job(client)
+    _seed_run(root)
+    assert "LOAD MORE" not in c.get("/-/archive?limit=50").text
+
+
+def test_the_next_page_continues_where_the_first_ended(client):
+    """Kein Ueberlappen und kein Loch: Seite zwei beginnt beim ersten Lauf, den
+    Seite eins nicht mehr trug."""
+    c, root = _md_job(client)
+    for i in range(4):
+        _seed_run(root, f"p{i}")
+    erste = c.get("/-/archive?limit=2").text
+    zweite = c.get("/-/archive?limit=2&offset=2").text
+    drin = lambda t: {s for s in ("p0", "p1", "p2", "p3") if f">{s}<" in t}
+    assert drin(erste) and drin(zweite)
+    assert not (drin(erste) & drin(zweite))
+
+
+def test_the_run_list_of_a_job_pages_too(client):
+    c, root = _md_job(client)
+    for _ in range(3):
+        _seed_run(root, "EngineCI")
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs?limit=2").text
+    assert "LOAD MORE" in text

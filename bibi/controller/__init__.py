@@ -1261,7 +1261,7 @@ def add_controller_routes(
             git_status=_feed_git_status(), host_url=_scheduler_url(),
             scheduler=_sched[0], scheduler_stale_since=_sched[1]))
 
-    def _job_gruppen(slug: str) -> list:
+    def _job_gruppen(slug: str, *, offset: int = 0, limit: int | None = None) -> list:
         """Slot und Läufe beider Quellen für ``build_groups()`` beschaffen.
 
         Nur Beschaffung — welche Gruppe es gibt und welche Knöpfe sie trägt,
@@ -1296,9 +1296,17 @@ def add_controller_routes(
                 conn.close()
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
+        # Die Gesamtzahl gehoert in die Kopfzeile, der Ausschnitt in die
+        # Liste: `45 runs` darf nicht mit jedem LOAD MORE hochzaehlen, sonst
+        # saehe es aus wie Zuwachs statt wie Fortschritt.
+        sched_gesamt, lokal_gesamt = len(sched_runs), len(lokal_runs)
+        if limit is not None:
+            sched_runs = sched_runs[offset:offset + limit]
+            lokal_runs = lokal_runs[offset:offset + limit]
         return jobs_view.build_groups(
             scheduler_slot=sched_slot, local_slot=lokal_slot,
             scheduler_runs=sched_runs, local_runs=lokal_runs,
+            scheduler_total=sched_gesamt, local_total=lokal_gesamt,
             scheduler_host=(_scheduler_url() or "").split("//")[-1].split(":")[0] or None,
             local_host=_status().get("host"))
 
@@ -1350,7 +1358,8 @@ def add_controller_routes(
             "\n".join(str(e.get("text") or e.get("line") or "") for e in zeilen))
 
     @app.get("/-/jobs/{job_uid}/runs", include_in_schema=False)
-    def screen_job_runs(request: Request, job_uid: str):  # noqa: ARG001
+    def screen_job_runs(request: Request, job_uid: str,  # noqa: ARG001
+                        limit: int = 100, offset: int = 0):
         """Nur die Gruppen — das Nachlade-Ziel des ``archived``-Ereignisses."""
         import time as _t
 
@@ -1358,7 +1367,9 @@ def add_controller_routes(
         if treffer is None:
             return HTMLResponse("", status_code=404)
         slug, _ = treffer
-        return HTMLResponse(render.job_runs_fragment(_job_gruppen(slug), now=_t.time()))
+        return HTMLResponse(render.job_runs_fragment(
+            _job_gruppen(slug, offset=offset, limit=limit), now=_t.time(),
+            job_uid=job_uid, offset=offset, limit=limit))
 
     def _job_by_uid(job_uid: str):
         """``job_uid`` → (Slug, lokale Spec) oder ``None``.
@@ -1450,7 +1461,7 @@ def add_controller_routes(
             journal=q.getlist("journal"), sort=sort, direction=(dir or "asc")))
 
     @app.get("/-/archive", include_in_schema=False)
-    def screen_archive(request: Request):  # noqa: ARG001
+    def screen_archive(request: Request, limit: int = 100, offset: int = 0):  # noqa: ARG001
         """Die Gesamthistorie beider Quellen (FE-Spezifikation §6).
 
         Beide Journale gemischt und nach Lauf-Zeit sortiert — der Join, den das
@@ -1473,9 +1484,17 @@ def add_controller_routes(
                 conn.close()
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
+        # Erst mischen, dann schneiden: die beiden Journale sind je fuer sich
+        # sortiert, aber die gemeinsame Reihenfolge entsteht erst hier. Wer
+        # vorher schneidet, verliert genau die Laeufe der einen Seite, die
+        # zwischen die der anderen gehoert haetten.
+        laeufe.sort(key=lambda r: r.get("finished_at") or 0, reverse=True)
+        gesamt = len(laeufe)
+        laeufe = laeufe[offset:offset + limit]
         _sched = _scheduler_status()
         return HTMLResponse(render.archive_page_v5(
-            laeufe=laeufe, now=_t.time(), daemon_status=_status(),
+            laeufe=laeufe, now=_t.time(), offset=offset, limit=limit,
+            mehr=offset + limit < gesamt, daemon_status=_status(),
             git_status=_feed_git_status(), host_url=_scheduler_url(),
             scheduler=_sched[0], scheduler_stale_since=_sched[1]))
 

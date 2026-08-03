@@ -4498,7 +4498,8 @@ def _slot_leiste(aktionen) -> str:
     return f'<span class="slot-bar">{" ".join(teile)}</span>'
 
 
-def job_runs_fragment(gruppen: list, *, now: float) -> str:
+def job_runs_fragment(gruppen: list, *, now: float, job_uid: str | None = None,
+                      offset: int = 0, limit: int | None = None) -> str:
     """Die Quell-Gruppen mit ihren Läufen — das Nachlade-Ziel von ``archived``.
 
     Je Gruppe eine Kopfzeile mit dem Slot und darunter die archivierten Läufe,
@@ -4560,7 +4561,12 @@ def job_runs_fragment(gruppen: list, *, now: float) -> str:
                     # Slot-Kopfzeile und danach hierher (FE-Spezifikation §5.4).
                     f'<tr class="out" id="run-{_e(r.get("run_id"))}" hidden>'
                     f'<td colspan="7"><pre class="out-body"></pre></td></tr>')
-        aus.append("</tbody></table></div>")
+        aus.append("</tbody></table>")
+        # Mehr, als diese Seite trägt: der Zähler in der Kopfzeile kennt die
+        # Gesamtzahl, die Liste nur ihren Ausschnitt.
+        if limit and job_uid and g.gesamt > offset + len(g.runs):
+            aus.append(_load_more(f"/-/jobs/{job_uid}/runs", offset + limit, limit))
+        aus.append("</div>")
     return "".join(aus)
 
 
@@ -4625,7 +4631,20 @@ _ATTR_FELDER = ("schedule", "at", "attempts", "backoff",
                 "wall_time", "hitl_timeout")
 
 
+def _load_more(ziel: str, offset: int, limit: int) -> str:
+    """Der Nachlade-Knopf. Er erscheint **nur**, wenn es wirklich mehr gibt.
+
+    Ein Knopf, der nichts mehr lädt, ist schlimmer als keiner — er sieht aus
+    wie ein Weg. Genau die Unterscheidung, die §6 auch für die Reichweite
+    verlangt: was fehlt, ist weggepruned und nicht bloß ungeladen.
+    """
+    trenn = "&" if "?" in ziel else "?"
+    return (f'<div class="more"><a class="cta" '
+            f'href="{ziel}{trenn}limit={limit}&offset={offset}">[ LOAD MORE ]</a></div>')
+
+
 def archive_page_v5(*, laeufe: list, now: float, monate: int = 1, pruned: int = 3,
+                    offset: int = 0, limit: int | None = None, mehr: bool = False,
                     daemon_status: dict | None = None,
                     git_status: dict | None = None, host_url: str | None = None,
                     scheduler: dict | None = None,
@@ -4684,6 +4703,8 @@ def archive_page_v5(*, laeufe: list, now: float, monate: int = 1, pruned: int = 
                     f'<td>{_e((r.get("commit_sha") or "")[:7])}</td>'
                     "</tr>")
         teile.append("</tbody></table>")
+        if mehr:
+            teile.append(_load_more("/-/archive", offset + (limit or 0), limit or 0))
         koerper = "".join(teile)
     return (
         "<!DOCTYPE html>\n"
