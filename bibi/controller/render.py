@@ -305,6 +305,10 @@ button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnlin
 .hdr { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem 2.5rem;
        padding: .5rem 0 .7rem; border-bottom: 1px solid var(--line);
        margin-bottom: 1.1rem; font-size: .92rem; }
+.conn-dot { font-size: 1.05rem; line-height: 1; padding: 0 .1rem; cursor: default; }
+.conn-dot.ok { color: var(--green); }
+.conn-dot.warn { color: var(--amber); }
+.conn-dot.bad { color: var(--red); }
 .hdr-title { font-weight: 600; letter-spacing: .04em; margin-bottom: .25rem; }
 .hdr-host { font-weight: 400; margin-left: .9rem; }
 /* Der Bezugspunkt der absoluten Zeiten. Rechtsbuendig im Block, damit er die
@@ -821,7 +825,7 @@ def archive_page(schedules: list[dict], now: float | None = None,
         "<title>bibi · Archive</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Archive', daemon_status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{_header('Archive', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{archive_fragment(schedules, now, public_host=public_host, sparklines=sparklines)}"
         f"<script>{_EVENTS_JS}</script>"
@@ -1235,7 +1239,7 @@ def clients_page(workers: list[dict], now: float | None = None, *,
         "<title>bibi · Nodes</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Nodes', daemon_status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{_header('Nodes', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{clients_fragment(workers, now)}"
         f"<script>{_EVENTS_JS}</script>"
@@ -1981,6 +1985,7 @@ _TIME_JS = """
 
 
 def _header(active: str, status: dict | None = None, *,
+            scheduler: dict | None = None,
             scheduler_now: float | None = None, now: float | None = None) -> str:
     """Gemeinsame obere Navigationsleiste: links Titel + reine Tab-Leiste,
     rechts alle Toggles (FOLLOW/RESCAN/MAINT/Datum-Uhrzeit/THEME) — Bibi4-
@@ -1995,7 +2000,7 @@ def _header(active: str, status: dict | None = None, *,
     left = f'<h1>bibi</h1>{_screen_nav(active, roles)}'
     # Die Uhr zeigt die Zeit des Schedulers, nicht die eigene — deshalb reisen
     # sein `now` und der Renderzeitpunkt bis hierher durch.
-    right = (f'{_ops_handles(status)}{_time_toggle()}'
+    right = (f'{_ops_handles(status, scheduler=scheduler)}{_time_toggle()}'
             f'{_live_clock(scheduler_now, now)}{_theme_toggle()}')
     return (f'<header><div class="nav-left">{left}</div>'
             f'<div class="nav-right">{right}</div></header>')
@@ -2035,7 +2040,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f'<script src="{_CHARTJS}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Jobs', daemon_status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{_header('Jobs', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now, bucket_minutes=bucket_minutes)}"
         f"{schedules_fragment(schedules, now, typ=typ, status=status, public_host=public_host, sparklines=sparklines, sort=sort, direction=direction)}"
@@ -2155,7 +2160,7 @@ def log_page(daemon_status: dict | None = None, *, git_status: dict | None = Non
         "<title>bibi · Live-Log</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Live Log', status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{_header('Live Log', status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{_log_panel()}"
@@ -2973,7 +2978,7 @@ def jobs_archive_page(runs: list[dict], now: float | None = None,
         "<title>bibi · Archive</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Archive', daemon_status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{_header('Archive', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{jobs_archive_fragment(runs, now)}"
         f"<script>{_EVENTS_JS}</script>"
@@ -3023,7 +3028,7 @@ def jobs_page(
         "<title>bibi · Jobs</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Jobs', daemon_status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{_header('Jobs', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, client_rows=rows)}"
         f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines, typ=typ, status=status, sort=sort, direction=direction)}"
@@ -3489,7 +3494,7 @@ def feed_page(
         "<title>bibi · Feed</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Feed', status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{_header('Feed', status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{feed_fragment(feed_data, days=days, weeks=weeks, now=now)}"
@@ -3501,48 +3506,63 @@ def feed_page(
     )
 
 
-def _ops_handles(status: dict | None = None) -> str:
-    """Ops-Bedienelemente: RESCAN, MAINT-Toggle (spiegelt ``status.maintenance``).
-    Ursprünglich Feed-exklusiv, jetzt auch auf Schedules-Liste und Job-Detail
-    (User-Feedback 2026-07-03: "brauchen den Rescan und Maintenance Button auf
-    Schedule Screen"). Plain-JS
-    (``_OPS_HANDLES_JS``) statt htmx — funktioniert dadurch identisch auf jeder
-    Seite, ohne pro Screen ein eigenes hx-target verdrahten zu müssen.
+def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -> str:
+    """Die drei Ops-Handles der App-Bar: ``⟳`` Rescan, ``◐`` Maintenance,
+    ``●`` Verbindung.
 
-    RESCAN zeigt bewusst wieder die generische Beschriftung, kein Sync-Label
-    mehr (PLAN-21 Befund 2, revidiert PLAN-20 Befund 5: der Sync-Zustand stand
-    dadurch gleichzeitig im Button UND in der Git-Karte — echte Dopplung, per
-    Screenshot bestätigt. Bleibt jetzt nur noch in der Git-Karte). Kein
-    "Wartungsmodus aktiv"-Banner mehr (PLAN-21 Befund 3: reine Redundanz zum
-    längst aussagekräftigen MAINT-Toggle, keine Zusatzinfo).
+    **Der Verbindungspunkt trägt drei Zustände**, nicht zwei: grün verbunden,
+    orange Maintenance aktiv, rot getrennt. Das geht auf einen Befund zurück,
+    der mehrfach Zeit gekostet hat — *„wir haben uns gefragt, warum der Job
+    nicht startet. Wir hatten den Maintenance Mode übersehen."* Die Antwort
+    darauf ist keine zweite Ampel, sondern eine dritte Farbe an der
+    vorhandenen: ein Modus, der die Automatik anhält, gehört dorthin, wo man
+    ohnehin nachsieht, ob die Verbindung steht.
 
-    MAINT funktional weiterhin nur mit ``scheduler``-Rolle (PLAN-25 Befund 1)
-    — der Client kennt gar keinen eigenen Maintenance-Mode, ein Klick hätte
-    dort nie etwas pausiert. Seit der Bibi4-Iteration (User-Fund "eine App":
-    Host und Client sollen dieselbe Toggle-Menge zeigen, nicht verfügbare
-    Funktionen disabled statt ausgeblendet) bleibt der Button ohne
-    ``scheduler``-Rolle sichtbar, aber ``disabled`` — rein visuelle
-    Vereinheitlichung, keine neue Funktionalität (User-Entscheidung: kein
-    read-only Host-Maintenance-Status auf dem Client). RESCAN bleibt
-    unbedingt aktiv, das ist auf jedem Knoten sinnvoll.
+    **Der Maintenance-Zustand kommt vom Scheduler**, nicht von diesem Knoten.
+    Ein Client hat keinen eigenen; zeigte der Punkt den lokalen Wert, stünde
+    dort dauerhaft „aus" und der Befund wäre verkleidet statt behoben.
 
-    Icons statt Text (Bibi4-Iteration, User-Fund: "Toggles über Icons") — ⟳
-    für RESCAN (reine Aktion, kein eigener Zustand), ⚙/⚠ für MAINT aus/an
-    (analog THEME: Glyph trägt den Zustand, ``title`` das Hover-Label)."""
+    ``◐`` für Maintenance statt ``⚙``/``⚠``: ein halb gefüllter Kreis ist ein
+    Zustand zwischen an und aus, und genau das ist dieser Modus. Ein Zahnrad
+    ist eine Einstellung, ein Warndreieck ein Fehler — beides trifft es nicht.
+    Der Knopf bleibt ohne ``scheduler``-Rolle sichtbar, aber ``disabled``:
+    dieselbe Toggle-Menge auf jedem Knoten, nicht verfügbare Funktionen
+    ausgegraut statt ausgeblendet.
+    """
     roles = (status or {}).get("roles") or []
-    maint = bool((status or {}).get("maintenance"))
-    if "scheduler" in roles:
+    ist_host = "scheduler" in roles
+    # Auf einem Scheduler-Knoten *ist* der eigene Status der des Schedulers —
+    # dieselbe Regel wie in `_scheduler_status()`. Ohne sie zeigte der Host
+    # seinen eigenen Maintenance-Modus nicht an, weil er sich selbst nicht
+    # ueber HTTP befragt.
+    quelle = scheduler if scheduler is not None else (status if ist_host else None)
+    maint = bool((quelle or {}).get("maintenance"))
+
+    # Verbunden? Der Host ist es mit sich selbst — dort gibt es keinen
+    # Heartbeat, und ein roter Punkt waere schlicht falsch.
+    verbunden = True if ist_host else ((status or {}).get("connect") or {}).get("ok") is not False
+
+    if not verbunden:
+        # Getrennt schlaegt Maintenance: wer nicht verbunden ist, weiss ueber
+        # den Modus des Hosts ohnehin nichts Aktuelles.
+        dot_cls, dot_titel = "bad", "disconnected"
+    elif maint:
+        dot_cls, dot_titel = "warn", "maintenance active — nothing is dispatched"
+    else:
+        dot_cls, dot_titel = "ok", "connected"
+
+    if ist_host:
         mcls = "toggle warn" if maint else "toggle"
-        micon = "⚠" if maint else "⚙"
-        mtitle = "Wartungsmodus: an" if maint else "Wartungsmodus: aus"
-        maint_btn = f'<button id="maint" class="{mcls}" title="{mtitle}">{micon}</button>'
+        mtitle = "maintenance: on" if maint else "maintenance: off"
+        maint_btn = f'<button id="maint" class="{mcls}" title="{mtitle}">◐</button>'
     else:
         maint_btn = ('<button id="maint" class="toggle" disabled '
-                    'title="Wartungsmodus: nur auf dem Host verfügbar">⚙</button>')
+                    'title="maintenance: host only">◐</button>')
     return (
         '<nav class="handles">'
-        '<button id="rescan" class="toggle" title="Rescan auslösen">⟳</button>'
+        '<button id="rescan" class="toggle" title="rescan the vault">⟳</button>'
         f"{maint_btn}"
+        f'<span id="conn-dot" class="conn-dot {dot_cls}" title="{dot_titel}">●</span>'
         "</nav>"
     )
 
@@ -3566,8 +3586,16 @@ _OPS_HANDLES_JS = """
   const maint = document.getElementById('maint');
   function setMaint(on){
     maint.classList.toggle('warn', on);
-    maint.textContent = on ? '⚠' : '⚙';
-    maint.title = on ? 'Wartungsmodus: an' : 'Wartungsmodus: aus';
+    maint.title = on ? 'maintenance: on' : 'maintenance: off';
+    // Der Verbindungspunkt traegt den Modus mit — er ist die Stelle, auf die
+    // man ohnehin schaut. Rot (getrennt) bleibt unangetastet: es schlaegt
+    // Maintenance, weil ein getrennter Knoten ueber den Modus nichts weiss.
+    const dot = document.getElementById('conn-dot');
+    if (dot && !dot.classList.contains('bad')) {
+      dot.classList.toggle('warn', on);
+      dot.classList.toggle('ok', !on);
+      dot.title = on ? 'maintenance active — nothing is dispatched' : 'connected';
+    }
     // Bibi4-Iteration, User-Fund: "ein Klick auf Maintenance muss ein Update
     // der Mode Card nach sich ziehen" — die Mode-Kachel hängt sonst im
     // separat gepollten #feedstatus-Bundle (bis zu 30s Verzögerung).

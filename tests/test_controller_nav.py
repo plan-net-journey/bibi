@@ -71,7 +71,7 @@ def test_header_includes_ops_handles():
 
 def test_ops_handles_rescan_is_always_generic():
     html = render._ops_handles({})
-    assert 'id="rescan" class="toggle" title="Rescan auslösen">⟳<' in html
+    assert 'id="rescan" class="toggle" title="rescan the vault">⟳<' in html
 
 
 def test_ops_handles_js_restores_idle_icon():
@@ -100,7 +100,7 @@ def test_feed_header_rescan_ignores_git_status():
     feed_data = {"entities": [], "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
     html = render.feed_page(
         feed_data, git_status={"tree": "clean", "sync": "ahead", "branch": "trunk"}, now=100.0)
-    assert 'id="rescan" class="toggle" title="Rescan auslösen">⟳<' in html
+    assert 'id="rescan" class="toggle" title="rescan the vault">⟳<' in html
     assert "SYNC: ahead" not in html.split('<div class="statuscards">')[0]  # nicht in der Nav
 
 
@@ -279,7 +279,9 @@ def test_schedule_detail_page_has_rescan_and_maint():
 def test_schedules_page_has_rescan_and_maint():
     html = render.schedules_page([], daemon_status={"maintenance": False, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint" class="toggle"' in html and "⚙" in html
+    # bibi5: ◐ statt ⚙ — ein halb gefuellter Kreis ist ein Zustand zwischen
+    # an und aus, und genau das ist Maintenance.
+    assert 'id="maint" class="toggle"' in html and "◐" in html
     assert render._OPS_HANDLES_JS in html
 
 
