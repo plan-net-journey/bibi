@@ -1173,3 +1173,24 @@ def test_concurrent_reserve_disjoint(tmp_path: Path):
     check = job_db.connect(p)
     assert check.execute("SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0] == 0
     check.close()
+
+
+# --- bibi5: Spezialwerte sind kein Rhythmus (m.rau/bibi#104, #105) -----------
+
+
+def test_is_recurring_knows_every_special_value():
+    """`is_recurring()` entscheidet an drei Stellen, ob ein `next_fire_at`
+    berechnet wird — ein Spezialwert, den sie nicht kennt, landet in
+    `_next_cron()` und damit im Fehlerausgang.
+
+    Sie führte die Liste der Spezialwerte ein zweites Mal, neben
+    `parser.SPECIAL_SCHEDULES`. Zwei Listen, die dasselbe meinen, laufen
+    auseinander: mit `adhoc`, `ad-hoc` und `-` als gültigen Schreibweisen war
+    die hiesige Kopie sofort unvollständig. Deshalb wird sie jetzt aus dem
+    Parser abgeleitet statt gepflegt."""
+    from bibi.schedule.parser import SPECIAL_SCHEDULES
+
+    for value in SPECIAL_SCHEDULES:
+        assert not job_db.is_recurring(value), f"{value!r} ist kein Rhythmus"
+    assert job_db.is_recurring("0 * * * *")
+    assert not job_db.is_recurring(None)

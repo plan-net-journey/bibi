@@ -25,7 +25,7 @@ from dateutil import parser as _date_parser
 from bibi import repo
 from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status, display_kind
-from bibi.schedule.parser import ParseResult
+from bibi.schedule.parser import SPECIAL_SCHEDULES, ParseResult
 
 SCHEMA_VERSION = 19
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
@@ -280,20 +280,21 @@ def compute_next_fire(spec, now: float | None = None) -> float | None:
         except ValueError:
             return None
     sched = spec.schedule
-    if sched is None or sched in ("startup", "autostart", "never", "on_demand"):
-        return None
     if sched == "now":
         return now
+    if sched is None or sched in SPECIAL_SCHEDULES:
+        return None
     return _next_cron(sched, now)
 
 
-_SPECIAL = ("now", "startup", "never", "on_demand", "autostart")
-
-
 def is_recurring(schedule: str | None) -> bool:
-    """True für wiederkehrende (croniter-)Schedules — nicht ``now``/``startup``/
-    ``never`` und kein ``at:`` (one-shot)."""
-    return schedule is not None and schedule not in _SPECIAL
+    """True für wiederkehrende (croniter-)Schedules — kein Spezialwert und
+    kein ``at:`` (one-shot).
+
+    Die Liste der Spezialwerte kommt aus dem Parser, nicht aus einer eigenen
+    Kopie: eine zweite Liste läuft auseinander, sobald eine Schreibweise
+    dazukommt."""
+    return schedule is not None and schedule not in SPECIAL_SCHEDULES
 
 
 def _next_cron(expr: str, now: float) -> float | None:
