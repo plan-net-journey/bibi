@@ -253,16 +253,26 @@ class Collector:
         self._journal_max = jmax
 
         # Sammel-Targets (PLAN-36 Stufe 36.3) — die Listen-/Übersichts-Screens
-        # hören auf EIN Target statt auf jeden Slug einzeln: "jobs" (Schedules-/
-        # Jobs-/Archiv-Listen + Job-Status-Kachel), "chart" (Run-History,
-        # nur bei neuen Journal-Landungen), "feedstatus" (Status-Kacheln,
-        # zusätzlich vom Flags-Diff unten getriggert).
+        # hören auf EIN Target statt auf jeden Slug einzeln: "jobs" (Jobs- und
+        # Archiv-Listen), "archived" (nur bei neuen Journal-Zeilen),
+        # "feedstatus" (Status-Kacheln, zusätzlich vom Flags-Diff unten
+        # getriggert).
         if any_job_change or new_journal:
             self.bus.publish_state("jobs")
             self.bus.publish_state("feedstatus")
             stats["state"] += 1
         if new_journal:
-            self.bus.publish_state("chart")
+            # „run archived" (m.rau/bibi#108) — die einzige Verbindung zwischen
+            # Strom und Liste: der Strom trägt die Liste nicht, er stößt sie an.
+            # Feuert genau bei einem Journal-INSERT und deshalb, seit der
+            # Archivierungsregel A2, zum richtigen Zeitpunkt: ein blockierter
+            # Lauf erzeugt das Ereignis erst, wenn ihn jemand abräumt.
+            #
+            # Hieß bis bibi5 `chart` und meinte das Landungs-Histogramm; das
+            # Chart ist mit m.rau/bibi#120 entfallen, das Ereignis nicht. Ein
+            # Target, das nach seinem Zuhörer benannt ist statt nach dem, was
+            # geschehen ist, verliert seinen Sinn, sobald der Zuhörer geht.
+            self.bus.publish_state("archived")
             stats["state"] += 1
 
         stats["state"] += self._diff_nodes()
