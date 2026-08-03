@@ -10,6 +10,7 @@ import json
 import re
 import time
 
+from bibi.controller.jobs_view import Segment
 from bibi.schedule import models
 
 # PLAN-36 Stufe 36.0: htmx lokal statt unpkg.com-CDN (Tailnet-only-Setup —
@@ -305,6 +306,30 @@ button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnlin
 .hdr { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem 2.5rem;
        padding: .5rem 0 .7rem; border-bottom: 1px solid var(--line);
        margin-bottom: 1.1rem; font-size: .92rem; }
+/* Jobs-Screen (bibi5). Kontenblatt: keine Rahmen, nur Haarlinien — die
+   Bandkopfzeilen gliedern, nicht Kaesten. */
+table.jobs { width: 100%; border-collapse: collapse; font-size: .92rem; }
+table.jobs th { text-align: left; font-weight: 500; color: var(--hdr-key);
+                padding: .3rem .6rem .3rem 0; }
+table.jobs td { padding: .22rem .6rem .22rem 0; white-space: nowrap; }
+table.jobs tbody tr:hover { background: var(--hover); }
+/* Die Gruppenzeile ueber den zwei Zustandsbloecken. Gepunktet, weil sie eine
+   Zusammenfassung ist und keine Spalte. */
+table.jobs .gruppen th.grp { color: var(--dim); font-size: .82rem;
+                             letter-spacing: .06em; border-bottom: 1px dotted var(--line-hard); }
+/* Bandkopf: eine Zeile, die keine Daten traegt — deshalb ohne Hover. */
+table.jobs tr.band td { padding-top: .9rem; font-weight: 600;
+                        letter-spacing: .04em; border-bottom: 1px solid var(--line); }
+table.jobs tr.band:hover { background: none; }
+table.jobs tr.leer-band td { color: var(--dim); font-style: normal;
+                             padding: .45rem 0 .3rem; white-space: normal; }
+table.jobs td.slug a { color: var(--text); text-decoration: none; }
+table.jobs td.slug a:hover { text-decoration: underline; }
+/* Leerer Screen: kein Kasten, kein Ausrufezeichen — ein Satz, der sagt, was
+   fehlt und was man tun kann. */
+.leer { padding: 2.2rem 0; max-width: 42rem; }
+.leer p { margin: 0 0 .5rem; }
+.leer code { background: var(--btnbg); padding: .05rem .3rem; border-radius: 3px; }
 .conn-dot { font-size: 1.05rem; line-height: 1; padding: 0 .1rem; cursor: default; }
 .conn-dot.ok { color: var(--green); }
 .conn-dot.warn { color: var(--amber); }
@@ -4617,6 +4642,146 @@ def jobs_detail_attrs_page(slug: str, local: dict | None) -> str:
         f'</div>'
         f'<h1>{name} · Attribute</h1>'
         f"{config_html}"
+        f"<script>{_TIME_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
+
+
+# ── Jobs-Screen (bibi5, FE-Spezifikation §4) ─────────────────────────────────
+
+#: Die Slug-Spalte trägt 28 Zeichen; der längste Slug im Bestand hat 50.
+_SLUG_BREITE = 28
+
+
+def _slug_kurz(slug: str) -> str:
+    """In der Mitte kürzen, nicht hinten.
+
+    Vorne steht das Datum, hinten der Zweck (``20260609.dr-stage3-…-activation``)
+    — hinten abzuschneiden verlöre beides. Der volle Slug bleibt im ``title``.
+    """
+    if len(slug) <= _SLUG_BREITE:
+        return slug
+    kopf = (_SLUG_BREITE - 1) // 2
+    schwanz = _SLUG_BREITE - 1 - kopf
+    return f"{slug[:kopf]}…{slug[-schwanz:]}"
+
+
+#: Ein Satz je leerem Band. Er sagt, was fehlt **und** was man tun kann — das
+#: ist die eigentliche Einstiegsdokumentation dieses Screens (Umbauplan §4).
+_LEER = {
+    Segment.SCHEDULE: ("no scheduled jobs — add <code>schedule:</code> to a "
+                       "markdown file in your vault, or <code>at:</code> for a one-off"),
+    Segment.ADHOC: ("none — a job with <code>schedule: adhoc</code> waits here "
+                    "until you start it"),
+    Segment.JOURNAL: "nothing archived in this window",
+}
+
+
+def _jobs_zeile(row, now: float) -> str:
+    """Eine Zeile: ein Slug, zwei Zustandsblöcke."""
+    from bibi.schedule.models import job_uid
+
+    beziehung = ""
+    if row.relation:
+        # `duplicate` ist das einzige rote Label: es meldet ein Problem im
+        # Vault, kein Verhältnis zwischen zwei Speichern, und verlangt eine
+        # Umbenennung statt eines Syncs.
+        klasse = "bad" if row.relation == "duplicate" else "muted"
+        titel = f' title="{" · ".join(row.paths)}"' if row.relation == "duplicate" else ""
+        beziehung = f' <span class="{klasse}"{titel}>({row.relation})</span>'
+
+    s, l = row.scheduler, row.local
+    return (
+        "<tr>"
+        f'<td class="slug"><a href="/-/jobs/{job_uid(row.slug)}" title="{row.slug}">'
+        f"{_slug_kurz(row.slug)}</a>{beziehung}</td>"
+        f'<td>{models.display_kind(row.spec.get("payload"), row.spec.get("app_port"))}</td>'
+        # `row_status` ist der Slot-Zustand der Scheduler-DB; `status` heisst
+        # dieses Feld nur in der lokalen Job-DB (live abgenommen 2026-08-03).
+        f'<td>{s.get("row_status") or s.get("status") or "—"}</td>'
+        f'<td>{_uhrzeit(s.get("last_run_at"), now)}</td>'
+        f'<td>{_uhrzeit(s.get("next_fire_at"), now)}</td>'
+        f'<td>{l.get("status") or "—"}</td>'
+        f'<td>{_human_duration(l.get("exec_runtime")) if l.get("exec_runtime") else "—"}</td>'
+        f'<td>{row.quote or "—"}</td>'
+        "</tr>"
+    )
+
+
+def jobs_screen(rows: list, now: float) -> str:
+    """Die drei Bänder mit ihren Zeilen.
+
+    Alle drei stehen immer da, auch leer: sonst verschöbe sich das Layout je
+    nachdem, was gerade existiert, und man suchte ein Band, das nur gerade
+    nichts enthält.
+
+    Die Bänder sind eine Klassifikation, keine Sortierordnung — sortiert wird
+    innerhalb eines Bandes. Der Grund für Bänder statt einer flachen Liste ist
+    die gestaffelte Filtermenge: `TYPE` und `STATUS` wirken überall, die drei
+    Journal-Filter nur im dritten Band, und eine gestaffelte Filtermenge
+    braucht einen Ort je Staffel.
+    """
+    if not rows:
+        return (
+            '<div class="leer">'
+            "<p>No jobs yet.</p>"
+            "<p class=\"muted\">bibi finds its work in your vault: add "
+            "<code>schedule:</code> to the frontmatter of a markdown file for a "
+            "recurring job, or <code>at:</code> for a one-off. "
+            "Then press <span class=\"mono\">⟳</span> to rescan.</p>"
+            "</div>"
+        )
+
+    kopf = (
+        "<thead>"
+        '<tr class="gruppen"><th></th><th></th>'
+        '<th colspan="3" class="grp">SCHEDULER</th>'
+        '<th colspan="2" class="grp">LOCAL</th><th></th></tr>'
+        "<tr><th>SLUG</th><th>TYPE</th>"
+        "<th>STATUS</th><th>LAST</th><th>NEXT</th>"
+        "<th>STATUS</th><th>RUNTIME</th><th>24H</th></tr>"
+        "</thead>"
+    )
+
+    teile = []
+    for seg in (Segment.SCHEDULE, Segment.ADHOC, Segment.JOURNAL):
+        drin = [r for r in rows if r.segment is seg]
+        teile.append(
+            f'<tr class="band"><td colspan="8">{seg.value.upper()} '
+            f'<span class="muted">{len(drin)}</span></td></tr>'
+        )
+        if drin:
+            teile.extend(_jobs_zeile(r, now) for r in drin)
+        else:
+            teile.append(f'<tr class="leer-band"><td colspan="8">— {_LEER[seg]}</td></tr>')
+
+    return f'<table class="jobs">{kopf}<tbody>{"".join(teile)}</tbody></table>'
+
+
+def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
+                 git_status: dict | None = None, host_url: str | None = None,
+                 scheduler: dict | None = None,
+                 scheduler_stale_since: float | None = None) -> str:
+    """Die Jobs-Seite: Hülle plus die drei Bänder.
+
+    Getrennt von :func:`jobs_screen`, weil die Bänder als Fragment nachgeladen
+    werden — die Hülle bleibt dabei stehen. Denselben Schnitt hat der Feed
+    zwischen Seite und Liste.
+    """
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>bibi · Jobs</title>"
+        f"<style>{_CSS}</style>"
+        f'<script src="/-/static/htmx-1.9.12.min.js"></script>'
+        "</head><body>"
+        f"{_header('Jobs', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
+        f'<div id="jobs">{jobs_screen(rows, now)}</div>'
+        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"

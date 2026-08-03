@@ -240,3 +240,82 @@ def test_almost_complete_never_reads_as_hundred():
     assert q.prozent == 99
     q2 = quote_24h(runs=[_lauf("x") for _ in range(240)], expected=240, manual=0)
     assert q2.prozent == 100
+
+
+# ── Die Feldnamen des Schedulers (Live-Abnahme 2026-08-03) ─────────────────
+
+
+def test_the_scheduler_calls_its_trigger_trigger():
+    """`/-/schedule` liefert `trigger`, nicht `schedule` — live abgenommen.
+    Für Zeilen, die es nur beim Host gibt, ist das die einzige Quelle."""
+    rows = build_rows(local=[], scheduler=[{"slug": "nur-host", "trigger": "adhoc"}],
+                      journal=[], now=NOW)
+    assert rows[0].segment is Segment.ADHOC
+
+
+def test_a_host_only_never_job_stays_invisible():
+    """Auch über das andere Feld muss „ruht" wirken, sonst erschiene ein
+    stillgelegter Job wieder, sobald seine MD verschwindet."""
+    rows = build_rows(local=[], scheduler=[{"slug": "ruht", "trigger": "never"}],
+                      journal=[], now=NOW)
+    assert rows == []
+
+
+# ── Erwartete Feuerungen aus dem Trigger ───────────────────────────────────
+
+
+def test_hourly_cron_expects_24_firings_a_day():
+    from bibi.controller.jobs_view import erwartete_laeufe
+    assert erwartete_laeufe("0 * * * *") == 24
+
+
+def test_every_fifteen_minutes_expects_96():
+    from bibi.controller.jobs_view import erwartete_laeufe
+    assert erwartete_laeufe("*/15 * * * *") == 96
+
+
+def test_a_daily_job_expects_one():
+    from bibi.controller.jobs_view import erwartete_laeufe
+    assert erwartete_laeufe("0 3 * * *") == 1
+
+
+def test_adhoc_and_never_expect_nothing():
+    """Ohne Rhythmus gibt es keine Erwartung — der Nenner ist dann allein das,
+    was jemand angestoßen hat."""
+    from bibi.controller.jobs_view import erwartete_laeufe
+    for wert in ("adhoc", "on_demand", "never", "startup", None, ""):
+        assert erwartete_laeufe(wert) == 0, wert
+
+
+def test_an_unparsable_expression_expects_nothing():
+    """Ein kaputter Ausdruck darf den Screen nicht kippen — er hat dann eben
+    keine Erwartung, und die Zeile zeigt einen Strich."""
+    from bibi.controller.jobs_view import erwartete_laeufe
+    assert erwartete_laeufe("kein cron") == 0
+
+
+def test_an_inactive_scheduler_entry_belongs_to_history():
+    """`active=0` heißt: der Host führt ihn nicht mehr aus. Er gehört zur
+    Historie, nicht zu dem, was kommt — sonst stünden in Segment 1 Jobs, die
+    seit Tagen tot sind (live: 16 von 29 Schedules sind inaktiv)."""
+    rows = build_rows(local=[], scheduler=[{"slug": "alt", "trigger": "0 * * * *",
+                                            "active": 0}],
+                      journal=[{"slug": "alt", "status": "complete",
+                                "finished_at": NOW - 7200}], now=NOW)
+    assert rows[0].segment is Segment.JOURNAL
+
+
+def test_an_inactive_entry_without_history_is_gone():
+    rows = build_rows(local=[], scheduler=[{"slug": "alt", "trigger": "0 * * * *",
+                                            "active": 0}], journal=[], now=NOW)
+    assert rows == []
+
+
+def test_the_quote_reads_finished_at_when_archived_at_is_absent():
+    """Die HTTP-Antwort von `/-/journal` trägt `finished_at`, nicht
+    `archived_at` — live abgenommen. Ohne diesen Rückfall zählte die Kennzahl
+    überall 0, obwohl die Läufe da waren."""
+    laeufe = [{"slug": "x", "status": "complete", "finished_at": NOW - 600}
+              for _ in range(3)]
+    q = quote_24h(runs=laeufe, expected=24, manual=0, now=NOW)
+    assert q.complete == 3

@@ -66,10 +66,21 @@ class JobRow:
     paths: tuple[str, ...] = ()
     #: Rohwerte für Anzeige und Filter.
     spec: dict = field(default_factory=dict)
+    #: Die 24H-Kennzahl. ``None``, solange sie nicht berechnet wurde — sie
+    #: braucht das Journal, und das holt der Aufrufer.
+    quote: "Quote | None" = None
 
 
 def _trigger(eintrag: dict) -> str | None:
+    """Der Trigger — unter beiden Namen, unter denen er auftritt.
+
+    Die Discovery nennt ihn ``schedule`` (so heisst das Frontmatter-Feld),
+    ``/-/schedule`` nennt ihn ``trigger``. Fuer Zeilen, die es nur beim Host
+    gibt, ist die zweite Form die einzige Quelle — live abgenommen 2026-08-03.
+    """
     s = eintrag.get("schedule")
+    if s is None and "trigger" in eintrag:
+        s = eintrag.get("trigger")
     return s.strip() if isinstance(s, str) else s
 
 
@@ -87,6 +98,12 @@ def _segment_fuer(lokal: dict | None, sched: dict | None, hat_historie: bool) ->
     """
     quelle = lokal or sched or {}
     trigger = _trigger(quelle)
+
+    # `active=0`: der Host fuehrt ihn nicht mehr aus. Das ist Historie, nicht
+    # das, was kommt — sonst staenden in Segment 1 Jobs, die seit Tagen tot
+    # sind (live: 16 von 29 Schedules).
+    if lokal is None and sched is not None and not sched.get("active", 1):
+        return Segment.JOURNAL if hat_historie else None
 
     if _ist_oneshot(quelle):
         # `status: done` heißt: der Termin ist verbraucht, ein Lauf kommt nicht
@@ -218,7 +235,47 @@ def quote_24h(*, runs: list[dict], expected: int, manual: int,
     dem Trigger (wie oft hätte er feuern sollen), ``manual`` sind die von Hand
     ausgelösten Starts.
     """
+    def _wann(r: dict) -> float:
+        # `archived_at` steht in der Datenbank, die HTTP-Antwort von
+        # `/-/journal` liefert `finished_at`. Ohne diesen Rueckfall zaehlte die
+        # Kennzahl ueberall 0, obwohl die Laeufe vorlagen (live 2026-08-03).
+        return r.get("archived_at") or r.get("finished_at") or 0.0
+
     grenze = (now if now is not None else 0.0) - 86400
-    aktuell = [r for r in runs if (r.get("archived_at") or 0.0) >= grenze] if now else runs
+    aktuell = [r for r in runs if _wann(r) >= grenze] if now else runs
     fertig = sum(1 for r in aktuell if r.get("status") == "complete")
     return Quote(complete=fertig, expected=expected, manual=manual)
+
+
+def erwartete_laeufe(trigger: str | None) -> int:
+    """Wie oft dieser Trigger in 24 Stunden feuern sollte.
+
+    Der Nenner der 24H-Kennzahl. Ohne Rhythmus — `adhoc`, `never`, `startup`,
+    ein Oneshot — gibt es keine Erwartung; dann besteht der Nenner allein aus
+    den von Hand ausgelösten Starts.
+
+    Ein unparsbarer Ausdruck ergibt 0 statt eines Fehlers: er darf den Screen
+    nicht kippen, und eine Zeile ohne Erwartung zeigt schlicht einen Strich.
+    """
+    if not isinstance(trigger, str) or not trigger.strip():
+        return 0
+    wert = trigger.strip()
+    if wert in RUHT or wert in GERUFEN or wert in {"startup", "autostart", "now"}:
+        return 0
+    try:
+        import croniter
+        from datetime import datetime, timedelta
+        # Eine Sekunde vor Mitternacht starten: `get_next()` ueberspringt den
+        # Startzeitpunkt selbst, und `0 * * * *` verlore sonst die Feuerung um
+        # 00:00 — 23 statt 24.
+        start = datetime(2026, 1, 1) - timedelta(seconds=1)
+        it = croniter.croniter(wert, start)
+        ende = datetime(2026, 1, 2) - timedelta(seconds=1)
+        n = 0
+        while n < 2000:                       # Deckel gegen Sekundentakt-Ausdrücke
+            if it.get_next(datetime) >= ende:
+                break
+            n += 1
+        return n
+    except Exception:  # noqa: BLE001 — ein kaputter Ausdruck ist keine Erwartung
+        return 0

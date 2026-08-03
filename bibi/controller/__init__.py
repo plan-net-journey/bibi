@@ -1345,7 +1345,100 @@ def add_controller_routes(
     @app.get("/-/jobs", include_in_schema=False)
     def screen_jobs(request: Request, typ: str | None = None, status: str | None = None,
                     sort: str | None = None, dir: str | None = None):
-        return jobs_screen(request, typ=typ, status=status, sort=sort, dir=dir)
+        """Der zentrale Screen: eine Zeile je Slug, beide Seiten nebeneinander.
+
+        Die Klassifikation (welches Band, welches Beziehungslabel, was
+        überhaupt sichtbar ist) macht ``jobs_view.build_rows()`` — eine reine
+        Funktion über Listen. Hier wird nur beschafft.
+        """
+        import time as _t
+
+        from bibi.controller import jobs_view
+        _sched = _scheduler_status()
+        jetzt = _t.time()
+        lokal = list(_local_schedules().values())
+        for slug, eintrag in _local_schedules().items():
+            eintrag.setdefault("slug", slug)
+        lokal = [{**v, "slug": k} for k, v in _local_schedules().items()]
+        historie = _journal_for_rows()
+        zeilen = jobs_view.build_rows(
+            local=lokal, scheduler=_host_schedules(), journal=historie,
+            now=jetzt, local_runs=_local_run_status())
+
+        # Die 24H-Kennzahl je Zeile. Sie braucht die Laeufe dieses Slugs und
+        # die Erwartung aus seinem Trigger — beides liegt hier vor, also wird
+        # sie hier angehaengt statt in build_rows(): dort waere das Journal ein
+        # zweiter Parameter mit anderer Bedeutung (Historie ja/nein gegen
+        # Laufliste), und die Funktion soll klassifizieren, nicht rechnen.
+        laeufe_je_slug: dict = {}
+        for e in historie:
+            laeufe_je_slug.setdefault(e.get("slug"), []).append(e)
+        for z in zeilen:
+            trigger = z.spec.get("schedule") or z.spec.get("trigger")
+            eigene = laeufe_je_slug.get(z.slug, [])
+            # Von Hand ausgeloest: was ueber die Erwartung hinausgeht. Genauer
+            # waere ein Flag am Lauf; solange es das nicht gibt, ist das die
+            # ehrlichste Naeherung — und sie stimmt fuer den haeufigen Fall
+            # "adhoc-Job, dreimal gestartet".
+            erwartet = jobs_view.erwartete_laeufe(trigger)
+            im_fenster = [e for e in eigene
+                          if (e.get("archived_at") or e.get("finished_at") or 0)
+                          >= jetzt - 86400]
+            manuell = max(0, len(im_fenster) - erwartet)
+            z.quote = jobs_view.quote_24h(runs=eigene, expected=erwartet,
+                                          manual=manuell, now=jetzt)
+        return HTMLResponse(render.jobs_page_v5(
+            zeilen, now=jetzt, daemon_status=_status(), git_status=_feed_git_status(),
+            host_url=_scheduler_url(), scheduler=_sched[0], scheduler_stale_since=_sched[1]))
+
+    def _host_schedules() -> list:
+        """Die Schedules des Hosts — die linke Hälfte jeder Zeile."""
+        try:
+            return _host_client().schedules() or []
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return []
+
+    def _host_client():
+        """Ein Client auf den **Scheduler**, nicht auf uns selbst.
+
+        Derselbe Fallstrick wie im Bus-Collector: `client` zeigt auf den
+        eigenen Daemon. Auf einem reinen Client gibt es dort weder Schedules
+        noch Team-Journal — die Zeilen trugen deshalb alle `(new)` und leere
+        Scheduler-Spalten, obwohl der Host sie sehr wohl kennt.
+
+        Trägt dieser Knoten die scheduler-Rolle selbst, ist der eigene Client
+        der richtige: ein HTTP-Aufruf über sich selbst wäre ein Umweg.
+        """
+        url = _scheduler_url()
+        if not url:
+            return client
+        return ControllerClient(url, timeout=5.0)
+
+    def _journal_for_rows() -> list:
+        """Nur so viel Journal, wie die Klassifikation braucht: welche Slugs
+        überhaupt Historie haben. Die Läufe selbst zeigt der Archive-Screen."""
+        try:
+            return _host_client().journal(limit=2000)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return []
+
+    def _local_run_status() -> dict:
+        """Letzter lokaler Lauf je Slug — die rechte Hälfte der Zeile."""
+        try:
+            eintraege = client.run_journal(limit=500)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return {}
+        aus: dict = {}
+        for e in eintraege:
+            slug = (e.get("slug") or "").rsplit("-", 1)
+            basis = e.get("slug")
+            if len(slug) == 2 and len(slug[1]) == 8:
+                # Gepinnter Lauf: der Suffix macht die Zeile eindeutig, nicht
+                # den Job. Bis `job_uid` überall durchgereicht ist, bleibt das
+                # die Rückrechnung (Zustandsmodell §6).
+                basis = slug[0]
+            aus.setdefault(basis, e)
+        return aus
 
     @app.get("/-/archive", include_in_schema=False)
     def screen_archive():
