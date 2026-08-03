@@ -165,6 +165,11 @@ def build_rows(
             relation = "deleted"
         elif lokal is None and sched is None:
             relation = "dropped"
+        elif (lokal or {}).get("git_status") in ("modified", "new"):
+            # Beide Seiten kennen ihn, die lokale MD weicht ab. Woher das kommt,
+            # weiss nur git — deshalb reist `git_status` aus der Discovery mit
+            # (Befund m.rau, 2026-08-03: "erscheint kein Chip modified").
+            relation = "modified"
         else:
             relation = None
 

@@ -83,7 +83,8 @@ def _local_schedules() -> dict[str, dict]:
     try:
         case_dir = repo.case_dir()
         root = repo.root()
-        found = discovery.discover(case_dir).found
+        ergebnis = discovery.discover(case_dir)
+        found = ergebnis.found
     except Exception:  # noqa: BLE001 — defensiv (§2.7)
         return {}
     return {
@@ -1092,37 +1093,13 @@ def add_controller_routes(
         from bibi.controller import jobs_view
         _sched = _scheduler_status()
         jetzt = _t.time()
-        lokal = list(_local_schedules().values())
-        for slug, eintrag in _local_schedules().items():
-            eintrag.setdefault("slug", slug)
-        lokal = [{**v, "slug": k} for k, v in _local_schedules().items()]
+        lokal = _local_job_mds()
         historie = _journal_for_rows()
         zeilen = jobs_view.build_rows(
             local=lokal, scheduler=_host_schedules(), journal=historie,
             now=jetzt, local_runs=_local_run_status())
 
-        # Die 24H-Kennzahl je Zeile. Sie braucht die Laeufe dieses Slugs und
-        # die Erwartung aus seinem Trigger — beides liegt hier vor, also wird
-        # sie hier angehaengt statt in build_rows(): dort waere das Journal ein
-        # zweiter Parameter mit anderer Bedeutung (Historie ja/nein gegen
-        # Laufliste), und die Funktion soll klassifizieren, nicht rechnen.
-        laeufe_je_slug: dict = {}
-        for e in historie:
-            laeufe_je_slug.setdefault(e.get("slug"), []).append(e)
-        for z in zeilen:
-            trigger = z.spec.get("schedule") or z.spec.get("trigger")
-            eigene = laeufe_je_slug.get(z.slug, [])
-            # Von Hand ausgeloest: was ueber die Erwartung hinausgeht. Genauer
-            # waere ein Flag am Lauf; solange es das nicht gibt, ist das die
-            # ehrlichste Naeherung — und sie stimmt fuer den haeufigen Fall
-            # "adhoc-Job, dreimal gestartet".
-            erwartet = jobs_view.erwartete_laeufe(trigger)
-            im_fenster = [e for e in eigene
-                          if (e.get("archived_at") or e.get("finished_at") or 0)
-                          >= jetzt - 86400]
-            manuell = max(0, len(im_fenster) - erwartet)
-            z.quote = jobs_view.quote_24h(runs=eigene, expected=erwartet,
-                                          manual=manuell, now=jetzt)
+        _quoten(zeilen, historie, jetzt)
         # Mehrfachauswahl kommt als wiederholter Query-Parameter (`?typ=job&
         # typ=app`) — die Toggles sind on/off und nicht exklusiv, und eine
         # Ansicht soll teilbar sein.
@@ -1132,6 +1109,98 @@ def add_controller_routes(
             host_url=_scheduler_url(), scheduler=_sched[0], scheduler_stale_since=_sched[1],
             typ=q.getlist("typ"), status=q.getlist("status"),
             journal=q.getlist("journal"), sort=sort, direction=(dir or "asc")))
+
+    def _quoten(zeilen: list, historie: list, jetzt: float) -> None:
+        """Die 24H-Kennzahl an jede Zeile haengen.
+
+        Getrennt von ``build_rows()``: dort waere das Journal ein zweiter
+        Parameter mit anderer Bedeutung (Historie ja/nein gegen Laufliste),
+        und die Funktion soll klassifizieren, nicht rechnen.
+        """
+        from bibi.controller import jobs_view
+        laeufe_je_slug: dict = {}
+        for e in historie:
+            laeufe_je_slug.setdefault(e.get("slug"), []).append(e)
+        for z in zeilen:
+            trigger = z.spec.get("schedule") or z.spec.get("trigger")
+            eigene = laeufe_je_slug.get(z.slug, [])
+            erwartet = jobs_view.erwartete_laeufe(trigger)
+            # Von Hand ausgeloest: was ueber die Erwartung hinausgeht. Genauer
+            # waere ein Flag am Lauf; solange es das nicht gibt, ist das die
+            # ehrlichste Naeherung -- und sie stimmt fuer den haeufigen Fall
+            # "adhoc-Job, dreimal gestartet".
+            im_fenster = [e for e in eigene
+                          if (e.get("archived_at") or e.get("finished_at") or 0)
+                          >= jetzt - 86400]
+            manuell = max(0, len(im_fenster) - erwartet)
+            z.quote = jobs_view.quote_24h(runs=eigene, expected=erwartet,
+                                          manual=manuell, now=jetzt)
+
+    def _local_job_mds() -> list[dict]:
+        """Die lokal entdeckten Job-MDs **als Liste**, mit git-Status.
+
+        Eine Liste und kein Dict, weil ein Dict die Kollision verschluckt: die
+        Discovery legt kollidierende Slugs bewusst nicht in ``found`` (sie sind
+        zur Laufzeit ignoriert, bis sie aufgelöst sind), und ein Dict könnte
+        zwei Dateien mit demselben Slug ohnehin nicht halten. Der Screen sah
+        den Slug deshalb gar nicht und zeigte ``deleted`` statt ``duplicate``
+        (Befund m.rau, 2026-08-03).
+
+        Der git-Status je Datei kommt mit — er ist die einzige Quelle für
+        ``modified``, und ohne ihn blieb der Chip aus.
+        """
+        from bibi import repo as repo_mod
+        from bibi.git_status import local_files_status
+        from bibi.schedule import discovery
+        try:
+            case_dir = repo_mod.case_dir()
+            root = repo_mod.root()
+            ergebnis = discovery.discover(case_dir)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return []
+
+        eintraege: list[dict] = []
+        for slug, pr in ergebnis.found.items():
+            eintraege.append({
+                "slug": slug, "schedule": pr.spec.schedule, "at": pr.spec.at,
+                "payload": pr.spec.payload, "app_port": pr.spec.app_port,
+                "repo_path": (case_dir / pr.schedule_ref).relative_to(root).as_posix(),
+            })
+        # Kollisionen: je beanspruchender Datei ein Eintrag, damit
+        # `build_rows()` sie als eine Zeile mit `duplicate` zusammenfasst und
+        # beide Pfade nennen kann.
+        #
+        # Die Dateien werden dafuer noch einmal geparst. Das ist kein Umweg:
+        # `SlugCollision` traegt nur Slug und Pfade, und ohne den Trigger
+        # landete die Zeile im Journal-Band statt dort, wo man sie sucht --
+        # ein `adhoc`-Job, den es zweimal gibt, gehoert zu den `adhoc`-Jobs.
+        # Etwas zu verstecken, das Aufmerksamkeit braucht, waere der falsche
+        # Ausgang.
+        from bibi.schedule import parser as _parser
+        for k in ergebnis.collisions:
+            for ref in k.schedule_refs:
+                pfad = case_dir / ref
+                try:
+                    pr = _parser.parse_file(pfad, vault_root=case_dir)
+                    spec = pr.spec
+                except Exception:  # noqa: BLE001 — defensiv (§2.7)
+                    spec = None
+                eintraege.append({
+                    "slug": k.slug,
+                    "schedule": spec.schedule if spec else None,
+                    "at": spec.at if spec else None,
+                    "payload": spec.payload if spec else "",
+                    "app_port": spec.app_port if spec else None,
+                    "repo_path": pfad.relative_to(root).as_posix(),
+                })
+
+        try:
+            git_je_pfad = local_files_status(root, [e["repo_path"] for e in eintraege])
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            git_je_pfad = {}
+        for e in eintraege:
+            e["git_status"] = git_je_pfad.get(e["repo_path"], "clean")
+        return eintraege
 
     def _host_schedules() -> list:
         """Die Schedules des Hosts — die linke Hälfte jeder Zeile."""
@@ -1181,6 +1250,28 @@ def add_controller_routes(
                 basis = slug[0]
             aus.setdefault(basis, e)
         return aus
+
+    @app.get("/-/jobs/list", include_in_schema=False)
+    def screen_jobs_list(request: Request, sort: str | None = None,
+                         dir: str | None = None):
+        """Nur die Liste — das Nachlade-Ziel des Bus.
+
+        Die Seite bleibt stehen, damit Scroll-Position und Fokus erhalten
+        bleiben; getauscht wird der Inhalt von ``#jobs``.
+        """
+        import time as _t
+
+        from bibi.controller import jobs_view
+        jetzt = _t.time()
+        historie = _journal_for_rows()
+        zeilen = jobs_view.build_rows(
+            local=_local_job_mds(), scheduler=_host_schedules(), journal=historie,
+            now=jetzt, local_runs=_local_run_status())
+        _quoten(zeilen, historie, jetzt)
+        q = request.query_params
+        return HTMLResponse(render.jobs_screen(
+            zeilen, jetzt, typ=q.getlist("typ"), status=q.getlist("status"),
+            journal=q.getlist("journal"), sort=sort, direction=(dir or "asc")))
 
     @app.get("/-/archive", include_in_schema=False)
     def screen_archive():

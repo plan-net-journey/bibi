@@ -319,3 +319,70 @@ def test_the_quote_reads_finished_at_when_archived_at_is_absent():
               for _ in range(3)]
     q = quote_24h(runs=laeufe, expected=24, manual=0, now=NOW)
     assert q.complete == 3
+
+
+# ── Befunde vom laufenden System (m.rau, 2026-08-03 16:14) ─────────────────
+
+
+def test_a_collision_must_reach_the_screen_as_duplicate():
+    """**Befund m.rau:** „Wenn ich den Job _Runner_ in 2 unterschiedlichen
+    Directories habe, erscheint er als _deleted_. Hier wird kein _duplicate_
+    angezeigt. Warum nicht?"
+
+    Weil die Discovery kollidierende Slugs bewusst **nicht** in `found` legt —
+    sie sind zur Laufzeit ignoriert, bis sie aufgelöst sind. Der Screen las
+    aber nur `found` und sah den Slug deshalb gar nicht; der Scheduler kannte
+    ihn noch, also blieb `deleted` übrig. Die Erkennung war da, die Anzeige
+    bekam sie nie zu sehen.
+    """
+    zeilen = build_rows(
+        local=[{"slug": "Runner", "schedule": "adhoc", "payload": "echo hi",
+                "repo_path": "case/eins/Runner.md"},
+               {"slug": "Runner", "schedule": "adhoc", "payload": "echo hi",
+                "repo_path": "case/zwei/Runner.md"}],
+        scheduler=[{"slug": "Runner", "trigger": "adhoc", "active": 1}],
+        journal=[], now=NOW)
+    assert len(zeilen) == 1
+    assert zeilen[0].relation == "duplicate", \
+        "die Kollision schlaegt jede andere Beziehung — sie verlangt Handeln"
+
+
+def test_a_changed_file_is_modified():
+    """**Befund m.rau:** „Wenn ich einen Job ändere, erscheint kein Chip
+    _modified_. Ist die git Status Überprüfung und Anzeige noch nicht
+    realisiert?"
+
+    Sie war es nicht: `build_rows()` kannte nur `new`, `deleted`, `dropped`
+    und `duplicate`. `modified` heißt „beide Seiten kennen ihn, die lokale MD
+    weicht ab" — und woher das kommt, weiß nur git.
+    """
+    zeilen = build_rows(
+        local=[{"slug": "Runner", "schedule": "adhoc", "payload": "echo hi",
+                "repo_path": "case/x/Runner.md", "git_status": "modified"}],
+        scheduler=[{"slug": "Runner", "trigger": "adhoc", "active": 1}],
+        journal=[], now=NOW)
+    assert zeilen[0].relation == "modified"
+
+
+def test_a_clean_file_carries_no_label():
+    zeilen = build_rows(
+        local=[{"slug": "Runner", "schedule": "adhoc", "payload": "echo hi",
+                "repo_path": "case/x/Runner.md", "git_status": "clean"}],
+        scheduler=[{"slug": "Runner", "trigger": "adhoc", "active": 1}],
+        journal=[], now=NOW)
+    assert zeilen[0].relation is None
+
+
+def test_a_duplicate_stays_in_the_band_its_files_belong_to():
+    """Ein `adhoc`-Job, der zweimal existiert, gehört ins ADHOC-Band — dort
+    sucht man ihn. Ihn ins Journal zu schieben, weil die Klassifikation seinen
+    Trigger nicht kennt, versteckt genau das, was Aufmerksamkeit braucht."""
+    zeilen = build_rows(
+        local=[{"slug": "Runner", "schedule": "adhoc", "payload": "echo hi",
+                "repo_path": "case/eins/Runner.md"},
+               {"slug": "Runner", "schedule": "adhoc", "payload": "echo hi",
+                "repo_path": "case/zwei/Runner.md"}],
+        scheduler=[], journal=[{"slug": "Runner", "status": "complete",
+                                "finished_at": NOW - 600}], now=NOW)
+    assert zeilen[0].relation == "duplicate"
+    assert zeilen[0].segment is Segment.ADHOC

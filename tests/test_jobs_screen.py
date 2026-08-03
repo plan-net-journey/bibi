@@ -287,3 +287,28 @@ def test_a_job_never_run_locally_shows_dashes():
     html = render.jobs_screen(_zeilen(local=[_md("nie-gelaufen")]), now=NOW)
     zeile = [z for z in html.split("<tr>") if "nie-gelaufen" in z][0]
     assert zeile.count("<td>—</td>") >= 2, "STATUS und RUNTIME der lokalen Seite"
+
+
+def test_the_screen_reloads_itself_on_job_changes():
+    """**Befund m.rau:** „Als ich ihn gelöscht habe, musste ich erst RELOAD
+    drücken, bevor der Job wieder aus der Liste verschwand. Findet dort kein
+    kontinuierliches Update statt? Haben wir dafür nicht den Stream?"
+
+    Doch — der Screen war nur nicht daran angeschlossen. Der Bus meldet jede
+    Job-Zustandsänderung unter dem Target `jobs`; die Liste muss sich dort
+    anmelden, sonst zeigt sie den Stand vom Seitenaufbau.
+
+    Eine gelöschte MD ist allerdings **kein** Job-Ereignis: sie fällt erst beim
+    Rescan auf. Deshalb hört die Liste zusätzlich auf `feedstatus` — dort
+    landet, was der Collector beim Vergleich mit dem Scheduler bemerkt.
+    """
+    html = render.jobs_page_v5([], now=NOW)
+    assert 'data-bus="jobs"' in html
+    assert 'data-bus-refetch="/-/jobs/list"' in html
+
+
+def test_the_list_fragment_is_the_refetch_target():
+    """Nachgeladen wird die Liste, nicht die Seite: sonst verlöre man bei jedem
+    Ereignis die Scroll-Position und den Fokus."""
+    html = render.jobs_page_v5([], now=NOW)
+    assert '<div id="jobs"' in html

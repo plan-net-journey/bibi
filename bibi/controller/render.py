@@ -4529,7 +4529,16 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         "</head><body>"
         f"{_header('Jobs', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
-        f'<div id="jobs">{jobs_screen(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction)}</div>'
+        # Am Bus angemeldet: `jobs` traegt jede Job-Zustandsaenderung, und der
+        # Scheduler-Diff des Collectors meldet ueber `feedstatus`, was sich
+        # drueben getan hat -- eine geloeschte MD faellt erst beim Rescan auf
+        # und ist kein Job-Ereignis. Nachgeladen wird die Liste, nicht die
+        # Seite: sonst ginge bei jedem Ereignis Scroll-Position und Fokus
+        # verloren (Befund m.rau, 2026-08-03).
+        f'<div id="jobs" data-bus="jobs" data-bus-refetch="/-/jobs/list" '
+        f'hx-get="/-/jobs/list" hx-trigger="bibiJobsChanged from:body" '
+        f'hx-swap="innerHTML">'
+        f'{jobs_screen(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction)}</div>'
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"
