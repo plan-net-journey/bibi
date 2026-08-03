@@ -1450,8 +1450,34 @@ def add_controller_routes(
             journal=q.getlist("journal"), sort=sort, direction=(dir or "asc")))
 
     @app.get("/-/archive", include_in_schema=False)
-    def screen_archive():
-        return jobs_archive_screen()
+    def screen_archive(request: Request):  # noqa: ARG001
+        """Die Gesamthistorie beider Quellen (FE-Spezifikation §6).
+
+        Beide Journale gemischt und nach Lauf-Zeit sortiert — der Join, den das
+        Backend baut und nicht das FE. Ein Lauf, dessen Job es nicht mehr gibt,
+        steht hier trotzdem: das ist der Zweck des Screens.
+        """
+        import time as _t
+
+        laeufe: list = []
+        try:
+            laeufe += _host_client().journal(limit=500) or []
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        try:
+            from bibi.daemon import job_db
+            conn = job_db.connect()
+            try:
+                laeufe += job_db.list_journal(conn, limit=500)
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        _sched = _scheduler_status()
+        return HTMLResponse(render.archive_page_v5(
+            laeufe=laeufe, now=_t.time(), daemon_status=_status(),
+            git_status=_feed_git_status(), host_url=_scheduler_url(),
+            scheduler=_sched[0], scheduler_stale_since=_sched[1]))
 
     @app.get("/-/nodes", include_in_schema=False)
     def screen_nodes():

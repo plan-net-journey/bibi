@@ -457,3 +457,53 @@ def test_the_output_of_a_scheduler_run_comes_from_the_host(client):
     r = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs/23611/output")
     assert r.status_code == 200
     assert "scheduler run 23611" in r.text
+
+
+# ── Archive (FE-Spezifikation §6) ────────────────────────────────────────────
+
+
+def test_archive_lists_runs_not_jobs(client):
+    """Der Archive-Screen fuehrt **Laeufe**, nicht Jobs — eine Zeile je Lauf.
+    Das Journal-Segment des Jobs-Screens ist deshalb keine Dopplung, sondern
+    seine Aggregation."""
+    c, root = _md_job(client)
+    _seed_run(root, "EngineCI")
+    _seed_run(root, "daily-digest")
+    text = c.get("/-/archive").text
+    assert "EngineCI" in text and "daily-digest" in text
+    assert "SLUG" in text  # die zusaetzliche Spalte gegenueber §5.3
+
+
+def test_archive_links_each_run_back_to_its_job(client):
+    """`SLUG` verlinkt auf Job Detail — sonst waere das Archiv eine Sackgasse:
+    man saehe, dass etwas lief, aber nicht, was es ist."""
+    c, root = _md_job(client)
+    _seed_run(root, "EngineCI")
+    text = c.get("/-/archive").text
+    assert f'/-/jobs/{job_uid("EngineCI")}' in text
+
+
+def test_archive_reaches_runs_whose_job_is_gone(client):
+    """**Der eigentliche Zweck** (§6): ein Job, dessen MD geloescht wurde, hat
+    keine Zeile mehr im Jobs-Screen — seine Laeufe stehen aber weiter im
+    Journal. Ohne das Archiv waeren sie unerreichbar."""
+    c, root = _md_job(client)
+    _seed_run(root, "Runner-Container")  # keine MD, nur Historie
+    text = c.get("/-/archive").text
+    assert "Runner-Container" in text
+    assert f'/-/jobs/{job_uid("Runner-Container")}' in text
+
+
+def test_archive_states_its_reach(client):
+    """Die Reichweite steht im Bild, nicht nur im Knopf: ein `LOAD MORE`, das
+    nichts mehr laedt, muss sich von „geloescht" unterscheiden lassen. Was
+    nicht im Archiv steht, ist nicht verlorengegangen, sondern weggepruned."""
+    c, root = _md_job(client)
+    _seed_run(root)
+    text = c.get("/-/archive").text
+    assert "showing" in text and "pruned after" in text
+
+
+def test_an_empty_archive_says_what_it_means(client):
+    c, _ = _md_job(client)
+    assert "No runs" in c.get("/-/archive").text

@@ -4625,6 +4625,78 @@ _ATTR_FELDER = ("schedule", "at", "attempts", "backoff",
                 "wall_time", "hitl_timeout")
 
 
+def archive_page_v5(*, laeufe: list, now: float, monate: int = 1, pruned: int = 3,
+                    daemon_status: dict | None = None,
+                    git_status: dict | None = None, host_url: str | None = None,
+                    scheduler: dict | None = None,
+                    scheduler_stale_since: float | None = None) -> str:
+    """Archive (FE-Spezifikation §6) — die Gesamthistorie beider Quellen.
+
+    Führt **Läufe**, nicht Jobs: eine Zeile je Lauf. Das Journal-Segment des
+    Jobs-Screens ist deshalb keine Dopplung, sondern seine Aggregation.
+
+    **Er ist zugleich der einzige Navigationsweg zu heimatlosen Läufen.** Ein
+    Job, dessen MD gelöscht wurde, hat keine Zeile mehr im Jobs-Screen, aber
+    seine Läufe stehen weiter im Journal; ohne diesen Screen wären sie
+    unerreichbar. Deshalb verlinkt die ``SLUG``-Spalte auch dann auf Job
+    Detail, wenn es die MD nicht mehr gibt — die Seite lebt vom Slug, nicht
+    von der Datei.
+
+    Die Reichweite steht **im Bild**, nicht nur im Knopf: ein ``LOAD MORE``,
+    das nichts mehr lädt, muss sich von „gelöscht" unterscheiden lassen. Was
+    hier nicht steht, ist nicht verlorengegangen, sondern weggepruned.
+    """
+    from bibi.controller import jobs_view
+    from bibi.schedule.models import job_uid as _uid
+
+    reichweite = (f'showing {monate} month{"" if monate == 1 else "s"} '
+                  f'&middot; pruned after {pruned} months')
+    if not laeufe:
+        koerper = ('<div class="empty">No runs in this window &mdash; nothing has '
+                   'finished yet, or everything older was pruned.</div>')
+    else:
+        teile = ['<table class="runs"><thead><tr>'
+                 "<th>DATE</th><th>TIME</th><th>SLUG</th><th>STATUS</th><th>EXIT</th>"
+                 "<th>RUNTIME</th><th>COMMIT</th></tr></thead><tbody>"]
+        for tag, tages_laeufe in jobs_view.by_day(laeufe):
+            teile.append(f'<tr class="day"><td colspan="7">{_e(tag)}</td></tr>')
+            for r in tages_laeufe:
+                slug = r.get("slug") or ""
+                st = r.get("status") or ""
+                rs = r.get("reason")
+                teile.append(
+                    "<tr>"
+                    f'<td>{_e(tag)}</td>'
+                    f'<td class="t" data-ts="{r.get("finished_at") or ""}"></td>'
+                    f'<td><a href="/-/jobs/{_uid(slug)}">{_e(slug)}</a></td>'
+                    f'<td>{_e(st)}{" &middot; " + _e(rs) if rs else ""}</td>'
+                    f'<td>{_e(r.get("exit_code"))}</td>'
+                    f'<td>{_e(r.get("exec_runtime"))}</td>'
+                    f'<td>{_e((r.get("commit_sha") or "")[:7])}</td>'
+                    "</tr>")
+        teile.append("</tbody></table>")
+        koerper = "".join(teile)
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>bibi &middot; Archive</title>"
+        f"<style>{_CSS}</style>"
+        f'<script src="/-/static/htmx-1.9.12.min.js"></script>'
+        "</head><body>"
+        f"{_header('Archive', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
+        f'<div class="jd-head"><span class="jd-slug">Archive</span>'
+        f'<span class="jd-meta">{reichweite}</span></div>'
+        f'<div id="runs" data-bus="archived" data-bus-refetch="/-/archive">{koerper}</div>'
+        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
+
+
 def job_attrs_page_v5(*, slug: str, spec: dict, defaults: dict, now: float,
                       daemon_status: dict | None = None,
                       git_status: dict | None = None, host_url: str | None = None,
