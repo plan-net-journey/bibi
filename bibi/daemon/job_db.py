@@ -1545,8 +1545,16 @@ def _write_journal(
 def journal_view(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"], "run_id": row["run_id"], "slug": row["slug"],
+        # job_uid trägt den Join der kombinierten Lauf-Liste (m.rau/bibi#103):
+        # ohne ihn müsste die Anzeige die Zusammengehörigkeit weiter am
+        # Slug-Suffix erraten — genau das Muster, das dieser Schlüssel ablöst.
+        "job_uid": row["job_uid"],
         "kind": row["kind"], "status": row["status"], "reason": row["reason"],
         "started_at": row["started_at"], "finished_at": row["finished_at"],
+        # Beide Zeiten, weil sie unter der Archivierungsregel A2 auseinander-
+        # laufen: ein terminaler Lauf bleibt im Slot stehen, bis jemand START
+        # oder RESET auslöst — bis dahin wächst der Abstand beliebig.
+        "archived_at": row["archived_at"],
         "exit_code": row["exit_code"], "exec_runtime": row["exec_runtime"],
         "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
         "commit_sha": row["commit_sha"], "branch": row["branch"],
@@ -1563,12 +1571,13 @@ def get_journal(conn: sqlite3.Connection, journal_id: int) -> dict | None:
     """Eine Journal-Zeile per ID (für Output-Replay & Detail-Sicht, §4.2). Anders
     als ``journal_view()`` (Listenansicht, bewusst schlank — 50 Zeilen pro Scroll-
     Batch sollen keinen Snapshot-JSON-Ballast tragen) liefert diese Einzelabfrage
-    zusätzlich ``snapshot``/``archived_at`` — die Lauf-Detail-Seite zeigt daraus
-    die zum Laufzeitpunkt eingefrorene Konfiguration (User-Feedback 2026-07-03)."""
+    zusätzlich den ``snapshot``: die zum Laufzeitpunkt eingefrorene Konfiguration
+    (User-Feedback 2026-07-03). ``archived_at`` trägt seit m.rau/bibi#103 schon
+    die Liste."""
     row = conn.execute("SELECT * FROM journal WHERE id=?", (journal_id,)).fetchone()
     if row is None:
         return None
-    return {**journal_view(row), "snapshot": row["snapshot"], "archived_at": row["archived_at"]}
+    return {**journal_view(row), "snapshot": row["snapshot"]}
 
 
 def delete_journal(conn: sqlite3.Connection, journal_id: int) -> bool:

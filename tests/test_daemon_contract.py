@@ -74,7 +74,9 @@ def test_status_enum_in_schema(client):
         ("post", "/-/job/abc/start", None),
         ("post", "/-/job/abc/reset", None),
         ("get", "/-/worker", None),
-        ("get", "/-/journal", None),
+        # KEIN ("get", "/-/journal") hier (mehr) — seit m.rau/bibi#103
+        # rollenunabhängig immer real, s. test_journal_list_is_not_a_stub
+        # unten und tests/test_journal_route.py.
         ("delete", "/-/journal/1", None),
         ("get", "/-/landings", None),
     ],
@@ -97,6 +99,29 @@ def test_status_route_works_without_any_role(client):
     r = client.post("/-/scheduler/status/abc", json={"status": "running"})
     assert r.status_code == 404
     assert r.json()["error"] == "job not found"
+
+
+def test_journal_list_is_not_a_stub(client):
+    """m.rau/bibi#103: GET /-/journal antwortet auch ohne jede Rolle real.
+
+    Das Journal ist keine disponierte Domäne — jeder Knoten führt sein eigenes
+    und muss es ausliefern können, sonst hat das Job-Detail eines Clients keine
+    LOCAL-Gruppe. Eine leere Liste statt 501 beweist: die echte Route
+    antwortet, nicht der Stub."""
+    r = client.get("/-/journal")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_journal_schema_carries_join_key_and_archive_time(client):
+    """Beide Felder sind Vertragsbestandteil, nicht Beiwerk: ohne ``job_uid``
+    kann ein Client seine Läufe nicht mit denen des Schedulers zusammenführen,
+    und ohne ``archived_at`` ist unter A2 nicht unterscheidbar, wann ein Lauf
+    lief und wann ihn jemand abgeräumt hat."""
+    props = client.get("/-/openapi.json").json()["components"]["schemas"][
+        "JournalEntryView"]["properties"]
+    assert "job_uid" in props
+    assert "archived_at" in props
 
 
 def test_no_route_returns_html(client):

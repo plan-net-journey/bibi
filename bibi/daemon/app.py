@@ -29,8 +29,8 @@ from bibi.daemon import activity, boot_signal, job_db, mergeback, openapi, outpu
 from bibi.daemon import worker as worker_mod  # Modul-Alias (bibi.daemon.app.worker ist eine Worker-Instanz)
 from bibi.schedule import models
 from bibi.daemon.openapi import (
-    JobReservation, JobView, KillRequest, NextRequest, RestartRequest, RunRequest,
-    StatusReport, WorkerHeartbeat, WorkerView,
+    JobReservation, JobView, JournalEntryView, KillRequest, NextRequest, RestartRequest,
+    RunRequest, StatusReport, WorkerHeartbeat, WorkerView,
 )
 from bibi.daemon import roles as roles_mod  # Modul-Alias (der Parameter heißt `roles`)
 from bibi.daemon.roles import Roles
@@ -508,6 +508,36 @@ def _add_status_route(app: FastAPI, *, sync_lock=None, synchronizer=None) -> Non
         return {"id": id, "status": str(report.status)}
 
 
+def _add_journal_route(app: FastAPI) -> None:
+    """``GET /-/journal`` — bewusst **rollenunabhängig** registriert,
+    herausgelöst aus ``_add_scheduler_routes()`` (m.rau/bibi#103).
+
+    Das Journal ist keine disponierte Domäne: jeder Knoten führt sein eigenes,
+    vollständiges — Scheduler und Client sind darin gleichwertig und
+    unabhängig, zusammengeführt wird erst in der Anzeige. Scheduler-gated
+    antwortete die Route auf einem reinen Client mit 501, und damit hätte das
+    Job-Detail keine ``LOCAL``-Gruppe und der Archive-Screen nur eine Quelle.
+
+    ``/-/run/journal`` bleibt vorerst daneben bestehen; es ist dieselbe Abfrage
+    mit ``mine_only=True`` und damit auf ``?domain=local`` abbildbar.
+    """
+
+    # ``responses`` statt ``response_model``: das Schema gehört in den Vertrag,
+    # aber die Antwort darf nicht darauf zusammengeschnitten werden —
+    # ``journal_view()`` liefert zusätzlich ``payload``/``pinned_host``, und
+    # ``render.py::_is_own_run()`` liest genau die aus dieser Liste.
+    @app.get("/-/journal", tags=["journal"],
+             responses={200: {"model": list[JournalEntryView]}})
+    def journal(slug: str | None = None, host: str | None = None, domain: str | None = None,
+                limit: int | None = None, offset: int | None = None):
+        conn = job_db.connect()
+        try:
+            return job_db.list_journal(conn, slug=slug, host=host, domain=domain,
+                                       limit=limit, offset=offset)
+        finally:
+            conn.close()
+
+
 def _journal_output_path(entry: dict) -> Path:
     """Output-Datei einer Journal-Zeile: ``output_ref``, sonst der
     deterministische ``data/job/<run_id>/output.jsonl``-Pfad.
@@ -611,17 +641,9 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                       worker=req.worker if req else None)
         return res
 
-    # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────
-    @app.get("/-/journal", tags=["journal"])
-    def journal(slug: str | None = None, host: str | None = None, domain: str | None = None,
-                limit: int | None = None, offset: int | None = None):
-        conn = job_db.connect()
-        try:
-            return job_db.list_journal(conn, slug=slug, host=host, domain=domain,
-                                       limit=limit, offset=offset)
-        finally:
-            conn.close()
-
+    # ── Journal ──────────────────────────────────────────────────────────────
+    # Die Liste selbst lebt in ``_add_journal_route()``, rollenunabhängig
+    # (m.rau/bibi#103) — hier stehen nur noch die Detail- und Output-Wege.
     @app.get("/-/journal/{jid}", tags=["journal"])
     def journal_get(jid: int):
         # Eine Journal-Zeile (Metadaten) — Quelle des Execution-Detail (§C.4).
@@ -1772,6 +1794,8 @@ def create_app(
     # status/{id} — auf JEDEM Knoten, nicht nur mit roles.scheduler (s. Docstring
     # von _add_status_route()).
     _add_status_route(app, sync_lock=sync_lock, synchronizer=synchronizer)
+    # Journal-Liste ebenso: jeder Knoten führt sein eigenes (m.rau/bibi#103).
+    _add_journal_route(app)
     # /-/restart ebenso rollenunabhängig: ein Deploy trifft alle Knoten, und der
     # häufigste Adressat ist ein reiner Client (s. _add_daemon_routes()). Der
     # sync_lock wird durchgereicht, damit der Deploy-Pull nicht mit dem

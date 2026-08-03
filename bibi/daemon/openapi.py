@@ -128,11 +128,20 @@ class JournalEntryView(BaseModel):
     id: int | None = None  # DB-Zeilen-ID — Schlüssel für DELETE /-/journal/{id}
     run_id: str
     slug: str
+    # Der Join-Schlüssel der kombinierten Lauf-Liste (m.rau/bibi#103): ein
+    # Client mischt seine eigenen Läufe unter die des Schedulers, und beide
+    # Seiten führen denselben Job unter demselben ``job_uid``.
+    job_uid: str | None = None
     kind: Kind
     status: Status
     reason: Reason | None = None
     started_at: float | None = None
     finished_at: float | None = None
+    # Wann die Zeile ins Journal wanderte. Unter der Archivierungsregel A2
+    # beliebig viel später als ``finished_at``: ein terminaler Lauf ≠
+    # ``complete`` blockiert seinen Slot, bis ein Mensch START oder RESET
+    # auslöst, und erst diese Aktion archiviert ihn.
+    archived_at: float | None = None
     exit_code: int | None = None
     exec_runtime: float | None = None
     host: str | None = None
@@ -320,9 +329,14 @@ def add_contract_routes(app: FastAPI) -> None:
         return _todo("GET /-/worker")
 
     # ── Journal (§1.4) ───────────────────────────────────────────────────────
-    @app.get("/-/journal", response_model=list[JournalEntryView], tags=["journal"])
-    def journal_list(slug: str | None = None, host: str | None = None):  # noqa: ARG001
-        return _todo("GET /-/journal")
+    # GET /-/journal: bewusst KEIN Stub hier (mehr) — seit m.rau/bibi#103 ist
+    # die Route rollenunabhängig immer real (``app.py::_add_journal_route()``,
+    # registriert vor dieser Funktion → gewinnt ohnehin), aus demselben Grund
+    # wie POST /-/scheduler/status/{id} oben: das Journal ist keine disponierte
+    # Domäne, jeder Knoten führt sein eigenes und muss es ausliefern können.
+    # Das Schema hängt dort an ``responses=`` statt an ``response_model=``,
+    # weil letzteres die intern genutzten Felder (``payload``/``pinned_host``,
+    # s. ``job_db.journal_view()``) aus der Antwort filtern würde.
 
     @app.delete("/-/journal/{jid}", tags=["journal"])
     def journal_delete(jid: int):  # noqa: ARG001
