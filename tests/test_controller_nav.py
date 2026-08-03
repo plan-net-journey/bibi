@@ -250,11 +250,6 @@ def test_ops_handles_has_no_follow_button():
     assert 'id="follow"' not in html
 
 
-def test_schedules_page_has_exactly_one_theme_button_and_no_follow():
-    html = render.schedules_page([], now=1.0)
-    assert html.count('id="follow"') == 0  # PLAN-36 Stufe 36.3 (E8)
-    assert html.count('id="theme"') == 1
-
 
 def test_schedule_detail_page_has_header_nav_without_follow():
     job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0}
@@ -275,14 +270,6 @@ def test_schedule_detail_page_has_rescan_and_maint():
     assert 'id="maint" class="toggle warn"' in html
     assert render._OPS_HANDLES_JS in html
 
-
-def test_schedules_page_has_rescan_and_maint():
-    html = render.schedules_page([], daemon_status={"maintenance": False, "roles": ["scheduler"]})
-    assert 'id="rescan"' in html
-    # bibi5: ◐ statt ⚙ — ein halb gefuellter Kreis ist ein Zustand zwischen
-    # an und aus, und genau das ist Maintenance.
-    assert 'id="maint" class="toggle"' in html and "◐" in html
-    assert render._OPS_HANDLES_JS in html
 
 
 def test_execution_detail_page_has_header_nav_without_follow():

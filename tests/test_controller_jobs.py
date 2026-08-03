@@ -179,10 +179,6 @@ def test_jobs_table_shows_last_and_runtime_for_last_run():
     assert "12s" in html
 
 
-def test_jobs_table_no_local_run_yet_shows_dash_for_last_and_runtime():
-    html = render._jobs_table([_row("a")], {}, now=100.0)
-    assert '<td>—</td><td>—</td><td><span id="spark-a" hx-preserve="true"></span></td></tr>' in html
-
 
 def test_jobs_table_live_row_shows_started_and_ongoing_runtime():
     # "aktuelle Laufzeit" — für einen laufenden Job die bisherige Dauer
@@ -206,128 +202,12 @@ def test_jobs_table_live_row_shows_awaiting_when_signaled():
     assert 'class="st running">running<' not in html
 
 
-def test_jobs_fragment_has_no_remote_or_hostlink_text():
-    # PLAN-21 Befund 10: kein Remote-Bezug mehr im Fragment, egal was aufrufe-
-    # seitig übergeben würde — die Funktion nimmt gar keinen scheduler_url/
-    # Remote-Parameter mehr entgegen.
-    html = render.jobs_fragment([_row("a")], {}, now=100.0)
-    assert "Remote" not in html
-    assert "hostlink" not in html
 
 
-def test_jobs_fragment_is_bus_driven():
-    # PLAN-36 Stufe 36.3: Board haengt am kollektiven Bus-Target "jobs".
-    html = render.jobs_fragment([], {}, now=100.0)
-    assert 'id="jobsboard"' in html
-    assert 'data-bus="jobs"' in html
-    assert 'data-bus-refetch="/-/ui/jobs/board"' in html
-    assert "hx-trigger" not in html.split(">")[0]
 
 
-def test_jobs_fragment_has_no_explanatory_note():
-    # PLAN-27 Befund 3, User-Fund: erklärender Text ("Lokal per
-    # discovery.discover() entdeckte Job-MDs ...") soll raus.
-    html = render.jobs_fragment([], {}, now=100.0)
-    assert "discovery.discover()" not in html
-    assert "bildet nur ab, was gerade im Repository liegt" not in html
 
 
-def test_jobs_fragment_has_single_panel_card_no_local_runs():
-    # Bibi4-Iteration, User-Fund: "der untere Abschnitt lokale Läufe wandert
-    # in den eigenen Screen Archive" — löst PLAN-29 Befund 1 (2 Panel-Cards
-    # hier) auf 1 Panel-Card ab, analog zu schedules_fragment() beim Host.
-    html = render.jobs_fragment([_row("mein-testjob")], {}, now=200.0)
-    assert html.count('class="panel-card"') == 1
-    assert "<h2>Jobs</h2>" in html
-    assert "Jobs im Repository" not in html
-
-
-# --- Sparkline (Bibi4-Iteration, User-Fund: "eine Sparkline, die die durch
-# --- den Agenten verursachten git Änderungen repräsentiert") ------------------
-
-
-def test_sparkline_svg_empty_without_activity():
-    assert render._sparkline_svg([]) == ""
-    assert render._sparkline_svg([0, 0, 0]) == ""
-
-
-def test_sparkline_svg_renders_polyline_with_activity():
-    svg = render._sparkline_svg([0, 1, 0, 2])
-    assert svg.startswith('<svg class="sparkline"')
-    assert "<polyline" in svg
-
-
-def test_sparkline_cell_renders_svg_when_series_given():
-    html = render._jobs_table(
-        [_row("a")], {}, now=100.0, sparklines={"a": [0, 1, 2]})
-    assert 'id="spark-a" hx-preserve="true"><svg' in html
-
-
-def test_sparkline_cell_empty_placeholder_when_no_series():
-    # jobs_board() (2s-Self-Poll) übergibt bewusst kein sparklines-Dict — die
-    # Zelle bleibt leer, hx-preserve behält das vom Seitenaufbau vorhandene
-    # Sparkline-Element (kein teurer Git-Aufruf im Sekundentakt).
-    html = render._jobs_table([_row("a")], {}, now=100.0)
-    assert '<span id="spark-a" hx-preserve="true"></span>' in html
-
-
-def test_jobs_fragment_omits_sparklines_by_default():
-    html = render.jobs_fragment([_row("a")], {}, now=100.0)
-    assert '<span id="spark-a" hx-preserve="true"></span>' in html
-
-
-def test_jobs_page_includes_sparklines_when_given():
-    html = render.jobs_page(
-        [_row("a")], {}, now=100.0, sparklines={"a": [0, 5]})
-    assert 'id="spark-a" hx-preserve="true"><svg' in html
-    assert "Lokale Läufe" not in html
-
-
-def test_sparkline_cell_lazy_renders_load_trigger():
-    # Bibi4-Iteration, User-Fund ("Sparklines dauern beim Reload immer"):
-    # Entkopplung vom initialen Seitenaufbau — Platzhalter mit hx-get gegen
-    # eine eigene Pro-Slug-Route statt der bisherigen blockierenden
-    # _job_sparkline_series()-Berechnung inline in jobs_screen().
-    html = render._sparkline_cell_lazy("a")
-    assert html == (
-        '<span id="spark-a" hx-preserve="true" '
-        'hx-get="/-/ui/jobs/a/sparkline" hx-trigger="load" hx-swap="outerHTML"></span>'
-    )
-
-
-def test_sparkline_cell_lazy_survives_poll_before_it_resolves():
-    # Regression, User-Fund (live nach dem Deploy): "Sparklines erscheinen
-    # jetzt gar nicht mehr." Root Cause: der Lazy-Platzhalter fehlte
-    # hx-preserve — der 2s-Self-Poll (jobs_board(), sparklines=None) rissn
-    # ihn samt seines noch laufenden hx-get("load") aus dem DOM, bevor der
-    # sich auflösen konnte; jede folgende Poll-Antwort (leere hx-preserve-
-    # Zelle ohne hx-get) wurde danach für immer preserved -> dauerhaft leer.
-    # hx-preserve muss auf BEIDEN Zuständen sitzen (unaufgelöst UND
-    # aufgelöst), damit htmx den unaufgelösten Zustand über einen Poll
-    # hinweg am Leben hält, bis sein eigener hx-get durch ist.
-    lazy = render._sparkline_cell_lazy("a")
-    polled = render._sparkline_cell("a", None)
-    assert 'hx-preserve="true"' in lazy
-    assert 'hx-preserve="true"' in polled
-    assert lazy.split(" ")[0] == polled.split(" ")[0] == '<span'
-    # dieselbe id in beiden Zuständen -> htmx matched sie beim Swap
-    assert 'id="spark-a"' in lazy and 'id="spark-a"' in polled
-
-
-def test_jobs_page_uses_lazy_sparklines_when_requested():
-    html = render.jobs_page([_row("a")], {}, now=100.0, lazy_sparklines=True)
-    assert 'hx-get="/-/ui/jobs/a/sparkline" hx-trigger="load"' in html
-
-
-def test_jobs_page_lazy_sparklines_ignores_eager_sparklines_arg():
-    # lazy_sparklines gewinnt, falls beides übergeben wird — kein Doppel-Render.
-    html = render.jobs_page([_row("a")], {}, now=100.0,
-                            sparklines={"a": [0, 5]}, lazy_sparklines=True)
-    assert "<svg" not in html
-    assert 'hx-get="/-/ui/jobs/a/sparkline"' in html
-
-
-# ── Archive-Screen (Client, Bibi4-Iteration) ─────────────────────────────────
 
 
 def test_client_archive_table_renders_slug_type_status_when_runtime_next():
@@ -381,60 +261,7 @@ def test_jobs_archive_page_includes_status_cards():
     assert 'id="feedstatus"' in html
 
 
-def test_jobs_page_has_header_and_nav():
-    html = render.jobs_page([], {}, now=100.0)
-    assert 'href="/-/"' in html and 'href="/-/log"' in html
-    assert "<title>bibi · Jobs</title>" in html
 
-
-def test_jobs_page_has_status_cards_header():
-    # PLAN-28 User-Feedback: "Der Header soll auch auf der Client Job Seite
-    # angezeigt werden" — derselbe feed_status_fragment()-Header wie
-    # /-/ und /-/ui/schedules (PLAN-27 Befund 2 hatte das nur fürs Live-Log
-    # erledigt, /-/ui/jobs blieb dabei außen vor).
-    html = render.jobs_page([], {}, now=100.0)
-    assert 'id="feedstatus"' in html
-
-
-# ── m.rau/bibi#90: daemon_status darf den Status-Filter nicht verdrängen ────
-#
-# `status` trug in jobs_page() zwei Bedeutungen: den Filterwert der Signatur
-# und — lokal überschrieben — das Daemon-Status-Dict. Letzteres landete über
-# jobs_fragment() in filter_schedules(), das ein nichtleeres Dict als aktiven
-# Filter las und dann einen String gegen ein Dict verglich: jede Zeile fiel
-# weg. Der Client-Jobs-Screen war damit beim Seitenaufbau immer leer, sobald
-# überhaupt ein daemon_status anlag — also live auf jedem Knoten.
-#
-# Dass es nie eine Suite reissen liess, liegt an der Aufruf-Form: jeder
-# bestehende jobs_page()-Test laesst daemon_status weg, dann ist der
-# ueberschriebene Wert {} und damit falsy — der Filter greift zufaellig
-# nicht. Genau deshalb geben die beiden Tests hier daemon_status explizit
-# mit; ohne das laufen sie am Fehler vorbei.
-#
-# schedules_page() (Host) macht es seit jeher richtig und warnt im Docstring
-# ausdruecklich vor der Verwechslung — jobs_page() war die einzige Stelle,
-# die beide Bedeutungen auf einem Namen fuehrte.
-
-
-def test_jobs_page_daemon_status_does_not_shadow_status_filter():
-    html = render.jobs_page(
-        [_row("a"), _row("b")], {}, now=100.0,
-        daemon_status={"roles": ["synchronizer", "controller", "connect"]})
-    assert "keine Job-MDs im Repository gefunden" not in html
-    assert 'href="/-/ui/jobs/detail/a"' in html
-    assert 'href="/-/ui/jobs/detail/b"' in html
-
-
-def test_jobs_page_status_filter_still_applies_with_daemon_status():
-    # Gegenprobe zum Test darueber: der echte Filterwert muss weiterhin
-    # durchgreifen, auch wenn gleichzeitig ein daemon_status anliegt.
-    html = render.jobs_page(
-        [_row("a"), _row("b")], {"a": {"id": 1, "status": "complete"},
-                                 "b": {"id": 2, "status": "failed"}},
-        now=100.0, status="failed",
-        daemon_status={"roles": ["synchronizer", "controller", "connect"]})
-    assert 'href="/-/ui/jobs/detail/b"' in html
-    assert 'href="/-/ui/jobs/detail/a"' not in html
 
 
 
@@ -809,65 +636,7 @@ def app_with(team_repo: Path):
 
 
 
-def test_jobs_sparkline_route_returns_resolved_cell(team_repo: Path, app_with):
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    client = _FakeClient()
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs/mein-testjob/sparkline")
-        assert r.status_code == 200
-        assert 'id="spark-mein-testjob" hx-preserve="true">' in r.text
-        assert 'hx-get' not in r.text  # aufgelöst, kein erneuter Lazy-Trigger
 
-
-def test_jobs_sparkline_route_unknown_slug_returns_empty_cell(team_repo: Path, app_with):
-    # Kein Crash bei einem Slug, der (Rennen mit Löschen/Umbenennen) nicht
-    # mehr existiert — leere, aber valide Zelle statt 404/500.
-    client = _FakeClient()
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs/gone/sparkline")
-        assert r.status_code == 200
-        assert 'id="spark-gone" hx-preserve="true"></span>' in r.text
-
-
-def test_jobs_sparkline_concurrent_requests_compute_once(team_repo: Path, app_with, monkeypatch):
-    # Kern des Fixes: mehrere gleichzeitige Pro-Slug-Requests (wie beim
-    # initialen Laden mehrerer Zeilen, alle mit hx-trigger="load") duerfen
-    # bei kaltem Cache nur EINE teure git-log-Berechnung ausloesen, nicht
-    # eine pro Zeile (thundering herd) — sonst waere die Entkopplung fuer
-    # den Cache-Miss-Fall schlechter als der alte, einmalige Blockier-Aufruf.
-    import threading
-    import time as time_mod
-    from bibi import feed as feed_mod
-
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    calls = []
-    real_collect = feed_mod.collect_commits
-
-    def slow_collect_commits(root, **kw):
-        calls.append(1)
-        time_mod.sleep(0.2)  # simuliert einen teuren git log
-        return real_collect(root, **kw)
-
-    monkeypatch.setattr(feed_mod, "collect_commits", slow_collect_commits)
-
-    client = _FakeClient()
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        results = []
-
-        def _fetch():
-            results.append(c.get("/-/ui/jobs/mein-testjob/sparkline").status_code)
-
-        threads = [threading.Thread(target=_fetch) for _ in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5)
-
-    assert results == [200] * 5
-    assert len(calls) == 1
 
 
 def test_jobs_detail_attrs_route(team_repo: Path, app_with):
@@ -925,16 +694,6 @@ def test_jobs_archive_list_fragment_route(team_repo: Path, app_with):
         assert 'id="archive"' in r.text and "mein-testjob" in r.text
 
 
-
-def test_jobs_board_fragment_route(team_repo: Path, app_with):
-    app, _ = app_with(_FakeClient())
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs/board")
-        assert r.status_code == 200
-        assert 'id="jobsboard"' in r.text
-
-
-# ── Lokale Job-Detailseite (PLAN-21 Befund 10-Nachtrag) — Routen ─────────────
 
 
 def test_jobs_detail_route_shows_meta_and_only_this_slugs_runs(team_repo: Path, app_with):

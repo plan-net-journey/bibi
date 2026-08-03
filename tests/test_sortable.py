@@ -89,34 +89,4 @@ def test_columns_without_a_key_stay_plain():
 
 # --- Persistenz und Bus-Refetch ---------------------------------------------
 
-def test_sort_survives_a_bus_refetch():
-    """Der Refetch-URL des Fragments trägt die Sortierung — sonst wäre sie beim
-    nächsten Bus-Ereignis weg, und genau das macht sie im Issue erwähnenswert."""
-    html = render.jobs_fragment([], {}, now=0.0, sort="status", direction="desc")
-    assert "sort=status" in html and "dir=desc" in html
 
-
-def test_host_route_sorts_and_remembers(team_repo):
-    """Die Host-Tabelle bekam klickbare Köpfe — ohne Route-Anschluss wären sie
-    ein Angebot, das nichts einlöst. Genau der Zustand, der bei #65 als
-    schlechter eingestuft wurde als gar kein Bedienelement."""
-    from fastapi.testclient import TestClient
-    from bibi.daemon import roles
-    from bibi.daemon.app import create_app
-
-    class _C:
-        def status(self): return {}
-        def schedules(self):
-            return [{"slug": "b", "payload": "echo", "last_status": "complete"},
-                    {"slug": "a", "payload": "echo", "last_status": "failed"}]
-
-    app = create_app(roles.resolve({"controller"}), controller_client=_C())
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules/list?sort=slug&dir=desc")
-        assert r.status_code == 200
-        assert "sort=slug" in r.text and "dir=asc" in r.text  # naechster Klick dreht um
-        assert r.cookies.get("bibi_sort") == "slug"
-        assert r.cookies.get("bibi_dir") == "desc"
-
-        # Alter Cookie / von Hand gebaute URL darf keinen Screen kosten.
-        assert c.get("/-/ui/schedules/list?sort=quatsch&dir=hoch").status_code == 200

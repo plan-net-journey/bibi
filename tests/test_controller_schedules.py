@@ -28,64 +28,10 @@ def _sched(slug: str, *, kind="job", last_status="complete", row_status=None,
 # ── PLAN-14 Stufe 14.6 — Registrierungs-Drei-Gruppen (Aktiv/Inaktiv/Journal) ──
 
 
-def test_schedule_list_groups_by_active_flag():
-    items = [_sched("a", active=True), _sched("b", active=False),
-             _sched("c", active=None)]
-    html = render.schedule_list(items, now=1000.0)
-    assert 'href="/-/ui/schedule/a"' in html.split("Archive")[0]
-    assert "Archive" in html and 'href="/-/ui/schedule/b"' in html.split("Archive")[1].split("Journal")[0]
-    assert "Journal" in html and 'href="/-/ui/schedule/c"' in html.split("Journal")[1]
 
 
-def test_schedule_list_no_archive_or_journal_heading_when_all_active():
-    html = render.schedule_list([_sched("a", active=True)], now=1000.0)
-    assert "Archive" not in html and "Journal —" not in html
 
 
-def test_schedule_list_default_active_true_when_key_missing():
-    # Rückwärtskompatibel: Items ohne "active"-Key (ältere Fixtures/Fake-Clients)
-    # landen in "Aktiv", nicht stillschweigend in einer anderen Gruppe.
-    item = _sched("a")
-    del item["active"]
-    html = render.schedule_list([item], now=1000.0)
-    assert "Archive" not in html and "Journal —" not in html
-    assert 'href="/-/ui/schedule/a"' in html
-
-
-# ── PLAN-23 Befund 2 — abgeschlossene oneshots wandern ins Archive ──────────
-
-
-def test_schedule_list_completed_oneshot_with_md_goes_to_archive():
-    # PLAN-23 Befund 2: ein `at:`-Einzellauf (oneshot=True), der complete
-    # abgeschlossen hat, gehört ins Archive, auch wenn seine MD noch da ist
-    # (active=True) — anders als früher (PLAN-14 14.6: "bleibt einfach aktiv").
-    items = [_sched("done", active=True, oneshot=True, last_status="complete")]
-    html = render.schedule_list(items, now=1000.0)
-    assert "Archive" in html
-    assert 'href="/-/ui/schedule/done"' in html.split("Archive")[1]
-    assert 'href="/-/ui/schedule/done"' not in html.split("Archive")[0]
-
-
-def test_schedule_list_pending_oneshot_with_md_stays_active():
-    # Regressionsschutz: ein NOCH NICHT abgeschlossener oneshot bleibt aktiv —
-    # nur last_status=="complete" verschiebt ihn ins Archive.
-    items = [_sched("waiting", active=True, oneshot=True, last_status="pending")]
-    html = render.schedule_list(items, now=1000.0)
-    assert "Archive" not in html
-    assert 'href="/-/ui/schedule/waiting"' in html
-
-
-def test_schedule_list_completed_recurring_stays_active():
-    # Regressionsschutz: ein abgeschlossener WIEDERKEHRENDER Schedule
-    # (oneshot=False) gehört weiter zur aktiven Rotation (Lazy Rearm), nicht
-    # ins Archive — nur echte oneshots werden bei complete archiviert.
-    items = [_sched("cron", active=True, oneshot=False, last_status="complete")]
-    html = render.schedule_list(items, now=1000.0)
-    assert "Archive" not in html
-    assert 'href="/-/ui/schedule/cron"' in html
-
-
-# ── Filter-Cookie-Validierung (pure) ────────────────────────────────────────
 
 
 def test_cookie_filter_value_accepts_known_type():
@@ -171,106 +117,15 @@ def test_filter_alle_passthrough():
 # ── Screen + Fragment (pure) ──────────────────────────────────────────────────
 
 
-def test_schedules_page_has_filter_and_nav():
-    html = render.schedules_page([_sched("daily")], now=300.0)
-    assert html.lower().startswith("<!doctype html>")
-    assert 'name="typ"' in html and 'name="status"' in html
-    assert "/-/ui/schedules/list" in html      # Filter-Ziel + Self-Poll
-    assert 'id="schedules"' in html and "daily" in html
-    assert "Live" in html
 
 
-def test_schedules_page_includes_feed_status_header():
-    # User-Fund: denselben Host/Mode/Git/Job-Status-Kopf wie auf /-/ auch auf
-    # /-/ui/schedules zeigen.
-    html = render.schedules_page(
-        [_sched("daily")], now=300.0,
-        daemon_status={"job_stats": {"counts_by_kind": {"job": {"running": 1}},
-                                     "complete_since_uptime": 3, "next_due_at": None}},
-        git_status={"tree": "clean", "sync": "synced", "branch": "trunk"},
-        host_url="http://sarasate.tail9f9173.ts.net:8780")
-    assert 'id="feedstatus"' in html
-    # bibi5: zwei Bloecke nach Herkunft statt vier Kacheln — links dieser
-    # Knoten, rechts der Scheduler (FE-Spezifikation §2).
-    assert html.count('class="hdr-block') == 2
-    # Die Seite traegt den Header samt seiner verdichteten Job-Aussage. Dass er
-    # keine 3×3-Matrix mehr enthaelt (FE-Spezifikation §9), gehoert an das
-    # Fragment und steht in test_header_blocks.py — hier waere es eine Aussage
-    # ueber den Screen-Inhalt darunter, der erst mit dem Jobs-Screen faellt.
-    assert "next job" in html
 
 
-def test_schedules_fragment_active_only_has_single_panel_card():
-    # PLAN-25 Befund 6: 2 Rahmen (Chart/Schedules) waren korrekt, solange kein
-    # Archive/Journal vorliegt — kein leerer zweiter Rahmen ohne Inhalt.
-    frag = render.schedules_fragment([_sched("a", active=True)], now=1000.0)
-    assert frag.count('class="panel-card"') == 1
 
 
-def test_schedules_fragment_never_shows_archive_anymore():
-    # Bibi4-Iteration, User-Fund: "Archive wird verschoben auf einen eigenen
-    # Screen" — schedules_fragment() zeigt nur noch die aktive Liste, auch
-    # wenn Archive/Journal-Einträge vorliegen (die leben jetzt exklusiv auf
-    # archive_fragment()/-page(), s. u.). Löst PLAN-25 Befund 6 (3 Rahmen
-    # Chart/Schedules/Archive auf einer Seite) ab.
-    items = [_sched("a", active=True), _sched("b", active=False),
-             _sched("c", active=None)]
-    frag = render.schedules_fragment(items, now=1000.0)
-    assert frag.count('class="panel-card"') == 1
-    assert "Archive" not in frag and "Journal" not in frag
 
 
-def test_archive_fragment_shows_archive_and_journal_in_one_panel_card():
-    items = [_sched("a", active=True), _sched("b", active=False),
-             _sched("c", active=None)]
-    frag = render.archive_fragment(items, now=1000.0)
-    assert frag.count('class="panel-card"') == 1
-    assert "Archive" in frag and "Journal" in frag
-    assert "Schedules (" not in frag  # aktive Liste steht nicht mehr hier
 
-
-def test_archive_fragment_empty_shows_placeholder():
-    frag = render.archive_fragment([], now=1000.0)
-    assert "kein Archiv" in frag
-
-
-def test_archive_fragment_is_bus_driven():
-    frag = render.archive_fragment([_sched("a", active=False)], now=1.0)
-    assert 'id="archive"' in frag
-    assert 'data-bus="jobs"' in frag
-    assert 'data-bus-refetch="/-/ui/archive/list"' in frag
-    assert "window.bibiFollow" not in frag
-
-
-def test_archive_page_has_header_and_archive_fragment():
-    html = render.archive_page(
-        [_sched("a", active=False)], now=1000.0,
-        daemon_status={"roles": ["scheduler"]})
-    assert html.lower().startswith("<!doctype html>")
-    assert 'href="/-/ui/archive"' not in html  # aktiver Tab, kein Link auf sich selbst
-    assert '<span class="tab-active">Archive</span>' in html
-    assert 'id="archive"' in html
-
-
-def test_archive_page_includes_status_cards():
-    # Bibi4-Iteration, User-Fund: "Header ist in Feed, Jobs, Archive (!),
-    # Live-Log sichtbar" — die Archive-Extraktion hatte die Status-Kacheln
-    # (Host/Mode/Git/Job-Status) schlicht nicht mitgenommen.
-    html = render.archive_page(
-        [_sched("a", active=False)], now=1000.0,
-        daemon_status={"roles": ["scheduler"]})
-    assert 'id="feedstatus"' in html
-
-
-def test_schedules_fragment_refetch_url_carries_filter():
-    # Der Bus-Refetch muss den aktiven Filter in der URL tragen, damit er
-    # den Swap ueberlebt (dieselbe Idee wie frueher beim Self-Poll).
-    frag = render.schedules_fragment([_sched("a")], now=1.0, typ="job", status="problem")
-    assert 'data-bus-refetch="/-/ui/schedules/list?typ=job&status=problem"' in frag
-
-
-def test_sched_table_column_header_combined():
-    assert "last / since" in render.schedule_list([_sched("a")], now=300.0)
 
 
 def test_sched_row_shows_app_type_with_port_link():
@@ -346,37 +201,8 @@ def test_resolution_windows_cover_all_seven_presets():
     }
 
 
-def test_landings_chart_html_has_canvas_and_chartjs_init():
-    labels, counts = render._landings_buckets(
-        [_landing("complete", 100_000.0 - 60)], now=100_000.0, bucket_minutes=15)
-    html = render._landings_chart_html(labels, counts)
-    assert '<canvas id="landingsChart"' in html
-    assert "new Chart(" in html
-    assert "complete" in html and "#5fb37a" in html  # grün
 
 
-def test_landings_chart_html_empty_shows_placeholder():
-    assert "keine Daten" in render._landings_chart_html([], {})
-
-
-def test_landings_chart_html_single_day_uses_bare_time():
-    # Bibi4-Iteration, User-Fund: Datum nur bei mehr als einem Tag Spannweite —
-    # innerhalb eines Tages ist HH:MM schon eindeutig, kein Datum nötig.
-    labels, counts = render._landings_buckets(
-        [_landing("complete", 100_000.0 - 60)], now=100_000.0, bucket_minutes=15)
-    html = render._landings_chart_html(labels, counts)
-    assert "labels" in html
-    assert "." not in html.split('"labels": [')[1].split("]")[0]  # kein TT.MM.-Punkt
-
-
-def test_landings_chart_html_multi_day_includes_date():
-    # 480min-Bucket/168h-Fenster (Preset "8h/1w") spannt 7 Tage — HH:MM allein
-    # wäre über mehrere Tage mehrdeutig (User-Fund, s. Docstring).
-    labels, counts = render._landings_buckets(
-        [_landing("complete", 100_000.0 - 60)], now=1_000_000.0, bucket_minutes=480)
-    html = render._landings_chart_html(labels, counts)
-    labels_json = html.split('"labels": [')[1].split("]")[0]
-    assert "." in labels_json  # TT.MM HH:MM-Form enthält einen Punkt
 
 
 def test_current_state_chips_only_shows_nonzero_statuses():
@@ -418,153 +244,14 @@ def test_current_state_chips_empty_state_is_minimal():
         assert s not in html
 
 
-def test_timeseries_fragment_has_own_bus_target():
-    # Eigenes, selteneres Target "chart" (nur neue Journal-Eintraege) statt
-    # des generischen "jobs" — dieselbe Absicht wie der fruehere langsamere
-    # _CHART_POLL (User-Fund 2026-07-08 "wackelt"), jetzt ereignisgenau.
-    frag = render.timeseries_fragment([], {"counts": {}, "running_since_uptime": 0}, now=1.0)
-    assert 'id="timeseries"' in frag
-    assert 'data-bus="chart"' in frag
-    assert 'data-bus-refetch="/-/ui/schedules/timeseries?res=15"' in frag
-    assert "every " not in frag
-
-
-def test_timeseries_fragment_has_resolution_links_not_dropdown():
-    # User-Fund 2026-07-08: "statt Drop-down einfach Links, klein, mit dem
-    # aktuellen Zeitfenster unterstrichen".
-    frag = render.timeseries_fragment([], now=1.0, bucket_minutes=5)
-    assert "<select" not in frag
-    assert 'class="res-link active"' in frag
-    assert render._RESOLUTION_LABEL[5] in frag
-
-
-def test_schedules_page_includes_timeseries_fragment():
-    html = render.schedules_page(
-        [_sched("daily")], now=300.0,
-        daemon_status={"job_stats": {"counts": {"running": 1}, "running_since_uptime": 2}},
-        landings=[_landing("complete", 250.0)])
-    assert 'id="timeseries"' in html
-    assert "2 since start" in html
-    assert "chart.js" in html.lower()
-
-
-# ── Routen ────────────────────────────────────────────────────────────────────
-
-
-class FakeClient:
-    def __init__(self, schedules: list[dict], *, status: dict | None = None,
-                landings: list[dict] | None = None) -> None:
-        self._s = schedules
-        self._status = status or {}
-        self._landings = landings or []
-
-    def schedules(self) -> list[dict]:
-        return self._s
-
-    def status(self) -> dict:
-        return self._status
-
-    def landings(self, *, since: float | None = None) -> list[dict]:
-        return self._landings
-
-
-
-
-def test_ui_archive_screen_route(team_repo: Path):
-    # Bibi4-Iteration, User-Fund: eigener Screen fuer Archive/Journal.
-    client = FakeClient([_sched("done", active=False), _sched("hist", active=None)])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/archive")
-        assert r.status_code == 200
-        assert "done" in r.text and "hist" in r.text
-        assert "Schedules (" not in r.text  # aktive Liste lebt nur auf /-/ui/schedules
-
-
-def test_ui_archive_list_fragment_route(team_repo: Path):
-    client = FakeClient([_sched("done", active=False)])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/archive/list")
-        assert r.status_code == 200
-        assert 'id="archive"' in r.text and "done" in r.text
-
-
-def test_ui_schedules_list_filters_problem(team_repo: Path):
-    client = FakeClient([_sched("fine", last_status="complete"),
-                         _sched("broken", last_status="failed")])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules/list", params={"status": "problem"})
-        assert r.status_code == 200
-        assert "broken" in r.text
-        assert "fine" not in r.text.replace("/-/ui/schedule/", "")
-
-
-
-
-def test_ui_schedules_timeseries_fragment_route(team_repo: Path):
-    client = FakeClient(
-        [], status={"job_stats": {"counts": {"running": 1}, "running_since_uptime": 1}},
-        landings=[{"status": "complete", "finished_at": 1.0}])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules/timeseries")
-        assert r.status_code == 200
-        assert 'id="timeseries"' in r.text
-        assert "1 since start" in r.text
-
-
-def test_ui_schedules_timeseries_fragment_route_honors_resolution_param(team_repo: Path):
-    client = FakeClient([], status={"job_stats": {"counts": {}, "running_since_uptime": 0}})
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules/timeseries", params={"res": 5})
-        assert r.status_code == 200
-        assert 'class="res-link active"' in r.text
-        assert render._RESOLUTION_LABEL[5] in r.text
-        assert 'hx-get="/-/ui/schedules/timeseries?res=5"' in r.text
-
-
-# ── Filter-Persistenz per Cookie (User-Fund: "die ausgewählte Auswahl in
-# /-/ui/schedules sollte erhalten bleiben. Entweder Cookies oder Local Store") ─
 
 
 
 
 
 
-def test_schedules_list_fragment_sets_filter_cookies(team_repo: Path):
-    client = FakeClient([_sched("a", kind="job")])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules/list", params={"typ": "job", "status": "alle"})
-        assert r.cookies.get("bibi_sched_typ") == "job"
-        assert r.cookies.get("bibi_sched_status") == "alle"
 
 
-# ── Chart-Auflösungs-Persistenz per Cookie (dieselbe Systematik + User-Fund:
-# "warum wird die Auflösung ... nicht gespeichert?") ─────────────────────────
-
-
-def test_schedules_timeseries_fragment_sets_resolution_cookie(team_repo: Path):
-    client = FakeClient([], status={"job_stats": {"counts": {}, "running_since_uptime": 0}})
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules/timeseries", params={"res": 120})
-        assert r.cookies.get("bibi_sched_res") == "120"
-
-
-
-
-def test_schedules_timeseries_fragment_ignores_stale_invalid_cookie(team_repo: Path):
-    client = FakeClient([], status={"job_stats": {"counts": {}, "running_since_uptime": 0}})
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        c.cookies.set("bibi_sched_res", "999")
-        r = c.get("/-/ui/schedules/timeseries")
-        assert r.status_code == 200
-        assert render._RESOLUTION_LABEL[render._DEFAULT_RESOLUTION_MINUTES] in r.text
 
 
 
@@ -575,19 +262,5 @@ def _seed_schedule_ref(root: Path, slug: str) -> str:
                                  encoding="utf-8")
     return f"{slug}/README.md"
 
-
-
-def test_ui_schedules_list_fragment_omits_sparkline_data(team_repo: Path):
-    # Self-Poll-Ziel (schedules_list_fragment(), 2s-Tick) übergibt bewusst
-    # keine Sparkline-Daten — htmx behält dank hx-preserve die vom initialen
-    # Seitenaufbau gerenderte Zelle (s. render._sparkline_cell()-Docstring),
-    # der Poll selbst löst keine erneute git-log-Berechnung aus.
-    ref = _seed_schedule_ref(team_repo, "hitl-test-app")
-    client = FakeClient([_sched("hitl-test-app", schedule_ref=ref)])
-    app = create_app(roles.resolve({"controller"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/schedules/list")
-        assert r.status_code == 200
-        assert 'id="spark-hitl-test-app" hx-preserve="true"></span>' in r.text
 
 

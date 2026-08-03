@@ -258,3 +258,32 @@ def test_nothing_links_to_the_old_routes_anymore():
     quelle = (Path(render.__file__)).read_text()
     assert '"/-/ui/jobs"' not in quelle
     assert '"/-/ui/schedules"' not in quelle
+
+
+def test_no_chart_no_sparkline_anywhere_in_the_renderer():
+    """**Der Nachweis, dass es wirklich weg ist** (FE-Spezifikation §9).
+
+    Chart.js, Sparklines und die Landungs-Histogramme fallen ersatzlos — die
+    `24H`-Kennzahl tritt an ihre Stelle. Eine Liste von Hand zu führen, was
+    entfernt wurde, veraltet beim ersten Vergessen; dieser Test veraltet nicht.
+
+    Er ist zugleich die Antwort auf einen Fehlversuch: das Innenleben in einem
+    Zug mit den Routen zu entfernen brachte 104 rote Tests, woraufhin ich es
+    vertagen wollte. Der Umbauplan §1 sagt dazu das Nötige — ein separater
+    Aufräum-Pass wird nie priorisiert.
+    """
+    quelle = Path(render.__file__).read_text()
+    for wort in ("sparkline", "Sparkline", "chartjs", "Chart.js", "chart.umd"):
+        assert wort not in quelle, f"{wort!r} lebt noch in render.py"
+
+
+def test_a_job_never_run_locally_shows_dashes():
+    """Gerettet aus `test_jobs_table_no_local_run_yet_shows_dash_for_last_and_runtime`.
+
+    Der alte Screen prüfte das an einer Zelle mit `hx-preserve`; die Aussage
+    gilt weiter und gehört zum neuen: wo kein lokaler Lauf war, steht ein
+    Strich — keine Null, keine leere Zelle.
+    """
+    html = render.jobs_screen(_zeilen(local=[_md("nie-gelaufen")]), now=NOW)
+    zeile = [z for z in html.split("<tr>") if "nie-gelaufen" in z][0]
+    assert zeile.count("<td>—</td>") >= 2, "STATUS und RUNTIME der lokalen Seite"

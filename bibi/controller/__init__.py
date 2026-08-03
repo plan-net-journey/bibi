@@ -120,34 +120,10 @@ def _scheduler_url() -> str | None:
     return os.environ.get("BIBI_SCHEDULER_URL") or config.read_env().get("BIBI_SCHEDULER_URL")
 
 
-#: TTL-Cache für _job_sparkline_series() (User-Feedback: minutengenaue
-#: Frische ist für eine 30-Tage-Activity-Sparkline nicht nötig, ein
-#: Stundentakt genügt) — Modul-Level statt Closure-lokal, damit ein einziger
-#: Cache über alle Requests dieses Prozesses hinweg gilt, unabhängig davon,
-#: wie oft add_controller_routes() aufgerufen wird.
-_SPARKLINE_CACHE_TTL = 3600
-#: Ein Cache-Slot je Zeilen-Domäne (Bibi4-Iteration, Batch 9 Punkt 1: die
-#: Host-Schedules-Liste bekommt dieselbe Sparkline-Spalte wie die Client-
-#: Jobs-Liste, ruft dazu dieselbe _job_sparkline_series() auf). Ein einziger
-#: gemeinsamer Cache-Slot würde auf einem Knoten mit beiden Rollen
-#: (scheduler+connect) bei jedem Wechsel zwischen Schedules- und Jobs-Screen
-#: das jeweils andere Slug-Set invalidieren (unterschiedliche Domänen,
-#: zufällig derselbe Cache-Key) — separate Slots pro Namespace vermeiden das.
-_sparkline_caches: dict[str, dict] = {}
-
-
-def _sparkline_cache_slot(namespace: str) -> dict:
-    return _sparkline_caches.setdefault(
-        namespace, {"result": None, "computed_at": 0.0, "slugs": frozenset()})
 
 
 #: Schützt die Cache-Befüllung (Bibi4-Iteration, Sparkline-Entkopplung):
 #: mehrere gleichzeitige Pro-Slug-Requests (eine je Zeile, s. render.
-#: _sparkline_cell_lazy()) dürfen bei kaltem Cache nicht je einen eigenen
-#: teuren git-log-Aufruf auslösen (thundering herd) — nur der erste
-#: Anfragende rechnet tatsächlich, alle anderen warten kurz und lesen dann
-#: den frisch befüllten Cache.
-_sparkline_lock = threading.Lock()
 
 
 def service_descriptor(roles: roles_mod.Roles) -> dict:
@@ -189,12 +165,6 @@ def add_controller_routes(
     # Abhängigkeit — offline blieb das Chart auf /-/ui/schedules leer.
     # Gleiche Mechanik: einmal gelesen (~200 KiB im Closure), versionierter
     # Pfad, aggressives immutable-Caching.
-    _chartjs_bytes = (_Path(__file__).parent / "static" / "chart.umd.min.js").read_bytes()
-
-    @app.get("/-/static/chartjs-4.4.4.min.js", include_in_schema=False)
-    def chartjs_asset():
-        return _Response(content=_chartjs_bytes, media_type="text/javascript",
-                         headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
     def _status() -> dict:
         try:
@@ -426,23 +396,6 @@ def add_controller_routes(
         resp.set_cookie("bibi_sched_res", str(res),
                         max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
 
-    @app.get("/-/ui/schedules/list", include_in_schema=False)
-    def schedules_list_fragment(request: Request, typ: str | None = None, status: str | None = None,
-                                sort: str | None = None, dir: str | None = None):
-        # Filter-fähiges Fragment — Self-Poll-Ziel + Ziel der Filter-Dropdowns
-        # (der tatsächliche Request beim Ändern eines Filters, s.
-        # _set_filter_cookies oben).
-        from bibi import config
-        eff_typ, eff_status = _effective_filter(request, typ, status)
-        eff_sort, eff_dir = _effective_sort(request, sort, dir)
-        items = render.filter_schedules(_schedules(), typ=eff_typ, status=eff_status)
-        resp = HTMLResponse(render.schedules_fragment(
-            items, typ=eff_typ, status=eff_status, public_host=config.public_host(),
-            sort=eff_sort, direction=eff_dir))
-        _set_filter_cookies(resp, eff_typ, eff_status)
-        _set_sort_cookies(resp, eff_sort, eff_dir)
-        return resp
-
     @app.get("/-/ui/archive", include_in_schema=False)
     def archive_screen():
         _sched = _scheduler_status()
@@ -456,8 +409,7 @@ def add_controller_routes(
         return HTMLResponse(render.archive_page(
             all_scheds, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(),
-            public_host=config.public_host(),
-            sparklines=_sched_sparkline_series(all_scheds), scheduler=_sched[0], scheduler_stale_since=_sched[1]))
+            public_host=config.public_host(), scheduler=_sched[0], scheduler_stale_since=_sched[1]))
 
     @app.get("/-/ui/archive/list", include_in_schema=False)
     def archive_list_fragment():
@@ -670,21 +622,6 @@ def add_controller_routes(
         workers = [_host_worker_entry(), *(_status().get("workers") or [])]
         return HTMLResponse(render.clients_fragment(workers))
 
-    @app.get("/-/ui/schedules/timeseries", include_in_schema=False)
-    def schedules_timeseries_fragment(request: Request, res: int | None = None):
-        # Bus-Refetch-Ziel des Stat-Grid/Charts (Target "chart") — eigene
-        # Route, eigene Datenquelle (journal_landings/job_stats statt
-        # /-/schedule). ``res`` trägt die vom User gewählte Auflösung
-        # (Bucket-Minuten) über den Swap hinweg (s. render.
-        # timeseries_fragment()'s Refetch-URL); fehlt er (frischer
-        # Seitenaufbau), auf das Cookie zurückfallen (User-Fund: "warum wird
-        # die Auflösung ... nicht gespeichert?").
-        eff_res = _effective_resolution(request, res)
-        resp = HTMLResponse(render.timeseries_fragment(
-            _landings(), _status().get("job_stats"), bucket_minutes=eff_res))
-        _set_resolution_cookie(resp, eff_res)
-        return resp
-
     @app.get("/-/ui/logs", include_in_schema=False)
     def logs_page():
         _sched = _scheduler_status()
@@ -752,108 +689,6 @@ def add_controller_routes(
 
     _SPARKLINE_SINCE_DAYS = 30
 
-    def _job_sparkline_series(rows: list[dict], *, namespace: str = "jobs") -> dict[str, list[int]]:
-        """Sparkline-Zähl-Buckets je Job (Bibi4-Iteration, User-Fund: "eine
-        Sparkline, die die durch den Agenten verursachten git Änderungen
-        repräsentiert"). Ein einziges ``git log``-Paar (Änderungen +
-        Merge-Erkennung, analog ``feed.aggregate_feed()``) für ALLE Jobs auf
-        einmal, kein Aufruf je Zeile — Präfix ist der Case-Ordner des Jobs
-        (``repo_path``s Verzeichnis), nicht nur die job.md-Datei selbst, damit
-        z. B. begleitende Notizen im selben Case-Ordner mitzählen. Nur vom
-        initialen Seitenaufbau aufgerufen (``jobs_screen()``/``schedules_screen()``/
-        ``archive_screen()``), bewusst nicht vom 2s-Self-Poll (s.
-        ``render._sparkline_cell()``-Docstring).
-
-        ``namespace`` (Batch 9 Punkt 1: dieselbe Funktion jetzt auch für die
-        Host-Schedules-Liste, nicht mehr nur die Client-Jobs-Liste) wählt den
-        Cache-Slot (``_sparkline_cache_slot()``) — Jobs und Schedules sind
-        unabhängige Slug-Domänen, ein gemeinsamer Slot würde sich auf einem
-        Knoten mit beiden Rollen gegenseitig laufend invalidieren.
-
-        ``own_paths`` (Bugfix, User-Fund: "warum haben alle Runner die
-        gleiche Sparkline" — mehrere Jobs im selben Case-Ordner, z. B.
-        ``Runner``/``Runner 1``.../``Runner 5``, teilten sich zuvor exakt
-        dieselbe Serie, s. ``feed.activity_series_by_prefix()``-Docstring)
-        disambiguiert Änderungen an einer ANDEREN Job-eigenen MD im selben
-        Ordner — nur echte Begleitdateien zählen weiter für alle.
-
-        TTL-Cache (User-Feedback: "Performance ist schlecht ... stündliches
-        Update genügt"): ``git log`` über 30 Tage ist auf großen Repos
-        spürbar (0,65s/Aufruf lokal gemessen, zwei Aufrufe pro Seitenaufbau)
-        — Ergebnis wird ``_SPARKLINE_CACHE_TTL`` Sekunden lang wiederverwendet.
-        Zusätzlich ans Slug-Set gebunden (nicht nur Zeit): ein frisch
-        entdeckter Job stünde sonst bis zu eine Stunde lang ganz ohne
-        Sparkline da, weil sein Slug im gecachten Ergebnis-Dict fehlt.
-
-        ``_sparkline_lock`` (zweite Bibi4-Iteration, Sparkline-Entkopplung):
-        seit ``jobs_screen()`` selbst nicht mehr eager rechnet, sondern jede
-        Zeile per ``hx-trigger=\"load\"`` einen eigenen Request gegen
-        ``/-/ui/jobs/{slug}/sparkline`` feuert, träfen bei kaltem Cache sonst
-        N gleichzeitige Requests auf N redundante ``git log``-Läufe
-        (thundering herd) — schlechter als der alte, einmalige Blockier-
-        Aufruf. Double-checked locking: nur der erste Anfragende rechnet,
-        alle anderen warten kurz auf den Lock und lesen danach den frisch
-        befüllten Cache."""
-        from pathlib import Path
-        from bibi import feed as feed_mod
-        from bibi import repo as repo_mod
-        prefixes = {
-            row["slug"]: str(Path(row["repo_path"]).parent) + "/"
-            for row in rows if row.get("repo_path")
-        }
-        if not prefixes:
-            return {}
-        slugs = frozenset(prefixes)
-
-        def _fresh(cached: dict, now: float) -> bool:
-            return (cached["result"] is not None and slugs == cached["slugs"]
-                    and now - cached["computed_at"] < _SPARKLINE_CACHE_TTL)
-
-        now = time.time()
-        cached = _sparkline_cache_slot(namespace)
-        if _fresh(cached, now):
-            return cached["result"]
-        with _sparkline_lock:
-            now = time.time()
-            cached = _sparkline_cache_slot(namespace)
-            if _fresh(cached, now):  # ein anderer Thread hat inzwischen befüllt
-                return cached["result"]
-            own_paths = {row["slug"]: row["repo_path"] for row in rows if row.get("repo_path")}
-            root = repo_mod.root()
-            commits = feed_mod.collect_commits(root, since_days=_SPARKLINE_SINCE_DAYS)
-            agent_shas = feed_mod.agent_commit_shas(root, since_days=_SPARKLINE_SINCE_DAYS)
-            result = feed_mod.activity_series_by_prefix(
-                commits, agent_shas, prefixes, since_days=_SPARKLINE_SINCE_DAYS,
-                own_paths=own_paths)
-            cached["result"], cached["computed_at"], cached["slugs"] = result, now, slugs
-            return result
-
-    def _sched_sparkline_series(schedules: list[dict]) -> dict[str, list[int]]:
-        """Batch 9 Punkt 1 (Host-Sparkline-Spalte): dieselbe Aggregation wie
-        ``_job_sparkline_series()``, nur für Host-Schedules statt Client-Jobs
-        — eigener Cache-Slot (``namespace="schedules"``, s. dortiger
-        Docstring). ``schedule_view()`` liefert ``schedule_ref`` case-dir-
-        relativ (wie ``pr.schedule_ref`` bei ``_local_schedules()``), hier zu
-        repo-root-relativem ``repo_path`` aufgelöst, damit
-        ``_job_sparkline_series()`` dieselbe Präfix-Ableitung
-        (``Path(repo_path).parent``) wie beim Client verwenden kann."""
-        from bibi import repo as repo_mod
-        try:
-            case_dir, root = repo_mod.case_dir(), repo_mod.root()
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            return {}
-        rows = []
-        for s in schedules:
-            ref = s.get("schedule_ref")
-            if not ref:
-                continue
-            try:
-                repo_path = (case_dir / ref).relative_to(root).as_posix()
-            except Exception:  # noqa: BLE001 — defensiv (§2.7)
-                continue
-            rows.append({"slug": s["slug"], "repo_path": repo_path})
-        return _job_sparkline_series(rows, namespace="schedules")
-
     def _jobs_archive_runs() -> list:
         # Flache Journal-Liste über alle lokalen Jobs (Bibi4-Iteration,
         # Archive-Screen Client) — dieselbe Quelle, die vorher nur für
@@ -863,44 +698,6 @@ def add_controller_routes(
             return client.run_journal(limit=200)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             return []
-
-    @app.get("/-/ui/jobs/{slug}/sparkline", include_in_schema=False)
-    def jobs_sparkline(slug: str):
-        # Pro-Slug-Gegenstück zu jobs_screen()s lazy_sparklines=True — jede
-        # Zeile feuert das beim initialen Laden einmal selbst (s. render.
-        # _sparkline_cell_lazy()). Ruft dieselbe gecachte, jetzt gesperrte
-        # _job_sparkline_series() wie zuvor auf (s. dortiger Docstring) —
-        # kein neuer Berechnungspfad, nur ein neuer Zugriffspunkt darauf.
-        #
-        # Bugfix (User-Fund 2026-07-22, "zieht meinen ganzen Rechner in die
-        # Knie. Immer noch!"): rief hier bis eben _jobs_data() — vault-weite
-        # Discovery + git-status-Subprozess + zwei HTTP-Selbstaufrufe
-        # (run_live_list()/run_journal()) — pro Zeile auf, obwohl
-        # _job_sparkline_series() aus jeder Zeile ausschließlich slug+
-        # repo_path liest; git_status/live/local_runs wurden berechnet und
-        # sofort verworfen. Bei N Jobs multiplizierte das die teuerste
-        # Teil-Pipeline (Discovery-Scan) von 1x auf N+1x pro Seitenaufbau —
-        # jetzt _local_schedules() direkt, ohne Git-Subprozess und ohne die
-        # zwei Selbstaufrufe.
-        rows = [{"slug": s, "repo_path": v["repo_path"]}
-                for s, v in _local_schedules().items() if v.get("repo_path")]
-        sparklines = _job_sparkline_series(rows)
-        return HTMLResponse(render._sparkline_cell(slug, sparklines))
-
-    @app.get("/-/ui/jobs/board", include_in_schema=False)
-    def jobs_board(request: Request, typ: str | None = None, status: str | None = None,
-                   sort: str | None = None, dir: str | None = None):
-        # Bus-Refetch-Ziel von #jobsboard (Target "jobs").
-        from bibi import config
-        rows, local_runs = _jobs_data()
-        eff_typ, eff_status = _effective_filter(request, typ, status)
-        eff_sort, eff_dir = _effective_sort(request, sort, dir)
-        resp = HTMLResponse(render.jobs_fragment(
-            rows, local_runs, public_host=config.public_host(),
-            typ=eff_typ, status=eff_status, sort=eff_sort, direction=eff_dir))
-        _set_filter_cookies(resp, eff_typ, eff_status)
-        _set_sort_cookies(resp, eff_sort, eff_dir)
-        return resp
 
     @app.get("/-/ui/jobs/archive", include_in_schema=False)
     def jobs_archive_screen():

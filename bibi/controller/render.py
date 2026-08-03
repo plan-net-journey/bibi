@@ -423,7 +423,6 @@ th.sorted { font-weight: 700; }
 .chip.synced { background: var(--greensoft); color: var(--green); }
 .chip.ahead { background: var(--ambersoft); color: var(--amber); }
 .chip.behind, .chip.diverged { background: var(--redsoft); color: var(--red); }
-.sparkline { display: block; vertical-align: middle; }
 .startbtn { font: inherit; font-size: .78rem; background: var(--bluesoft); border: 1px solid var(--blueline);
         border-radius: .35rem; padding: .2rem .55rem; cursor: pointer; color: inherit; font-weight: 600;
         white-space: nowrap; }
@@ -474,7 +473,7 @@ th.sorted { font-weight: 700; }
                   gap: .3rem; font-size: .75rem; color: var(--faint); margin-top: .35rem; }
 .heatmap-legend .hm-cell { flex: none; width: 9px; height: 9px; }
 /* Lauf-Historie-Chart (PLAN-21 Befund 11) — eine Karte über die volle Breite
-   (Kopf mit Titel+Auflösung, Zustands-Chips, Chart.js-Canvas, s. render.py).
+   (Kopf mit Titel, Zustands-Chips).
    User-Fund 2026-07-08 (2. Runde, "gefällt mir an Variante C"): kein
    separates Stat-Grid mehr, keine Chart-Legende mehr (die Chips tragen
    dieselben Farben wie die Chart-Segmente und übernehmen die Legenden-
@@ -675,8 +674,7 @@ def _group_schedules(schedules: list[dict]) -> tuple[list[dict], list[dict], lis
     return active, archive, journaled
 
 
-def _sched_row(s: dict, now: float, *, public_host: str = "localhost",
-              sparklines: dict[str, list[int]] | None = None) -> str:
+def _sched_row(s: dict, now: float, *, public_host: str = "localhost",) -> str:
     raw_slug = s.get("slug")
     slug = _e(raw_slug)
     st = _e(s.get("last_status"))
@@ -716,11 +714,6 @@ def _sched_row(s: dict, now: float, *, public_host: str = "localhost",
     else:
         status_cell = f'<span class="st {st}">{st}</span>'
         ago_cell = ago
-    # Batch 9 Punkt 1 (Host-Sparkline-Spalte): dieselbe hx-preserve-Zelle wie
-    # die Jobs-Tabelle (_jobs_row()) — sparklines kommt nur vom initialen
-    # Seitenaufbau (schedules_screen()/archive_screen()), der Bus-Refetch
-    # übergibt None (s. _sparkline_cell()-Docstring).
-    spark_cell = _sparkline_cell(raw_slug, sparklines)
     return (
         "<tr>"
         f'<td><a class="slug" href="/-/ui/schedule/{slug}">{slug}</a></td>'
@@ -728,13 +721,12 @@ def _sched_row(s: dict, now: float, *, public_host: str = "localhost",
         f"<td>{status_cell}</td>"
         f"<td>{ago_cell}</td>"
         f'<td><a class="rowlink" href="/-/ui/schedule/{slug}">{nxt}</a></td>'
-        f"<td>{spark_cell}</td>"
+        f"<td></td>"
         "</tr>"
     )
 
 
 def _sched_table(items: list[dict], now: float, *, public_host: str = "localhost",
-                 sparklines: dict[str, list[int]] | None = None,
                  sort: str | None = None, direction: str | None = None,
                  sort_url: str = "/-/ui/schedules/list",
                  sort_target: str = "#schedules") -> str:
@@ -742,7 +734,7 @@ def _sched_table(items: list[dict], now: float, *, public_host: str = "localhost
     # der Client sagt für dieselbe Spalte schon "Slug" (_jobs_table()) — auch
     # dein ursprünglicher Batch-1-Spaltenplan für den Host wollte "Slug" als
     # erste Spalte, das war nie nachgezogen worden.
-    rows = "".join(_sched_row(s, now, public_host=public_host, sparklines=sparklines)
+    rows = "".join(_sched_row(s, now, public_host=public_host)
                   for s in items)
     head = _sortable_head(
         [("Slug", "slug"), ("Type", "type"), ("Status", "status"),
@@ -751,93 +743,27 @@ def _sched_table(items: list[dict], now: float, *, public_host: str = "localhost
     return f'<table class="sched">{head}<tbody>{rows}</tbody></table>'
 
 
-def _schedule_active_block(schedules: list[dict], now: float,
-                           *, sort: str | None = None, direction: str | None = None,
-                           public_host: str = "localhost",
-                           sparklines: dict[str, list[int]] | None = None) -> str:
-    head = f'<h2>Schedules ({len(schedules)})</h2>'
-    if not schedules:
-        return head + '<p class="out-empty">— no schedules —</p>'
-    active, _archive, _journaled = _group_schedules(schedules)
-    body = (_sched_table(active, now, public_host=public_host, sparklines=sparklines,
-                         sort=sort, direction=direction) if active
-            else '<p class="out-empty">— no active schedules —</p>')
-    return head + body
-
-
-def _schedule_archive_block(schedules: list[dict], now: float,
-                            *, public_host: str = "localhost",
-                            sparklines: dict[str, list[int]] | None = None) -> str:
-    if not schedules:
-        return ""
-    _active, archive, journaled = _group_schedules(schedules)
-    body = ""
-    if archive:
-        body += (f'<h3>Archive ({len(archive)})</h3>'
-                + _sched_table(archive, now, public_host=public_host, sparklines=sparklines))
-    if journaled:
-        body += (f'<h3>Journal — history only ({len(journaled)})</h3>'
-                + _sched_table(journaled, now, public_host=public_host, sparklines=sparklines))
-    return body
-
-
 def schedule_list(schedules: list[dict], now: float | None = None,
-                  *, public_host: str = "localhost",
-                  sparklines: dict[str, list[int]] | None = None) -> str:
+                  *, public_host: str = "localhost",) -> str:
     """Die volle Liste, gruppiert nach Registrierungs-Zustand (PLAN-14 Stufe
     14.6, erweitert PLAN-23 Befund 2): Aktiv (MD entdeckt) / Archive (MD
     entfernt ODER abgeschlossener oneshot) / Journal (nur Journal-Historie).
     Flach + immer sichtbar, kein Klapp mehr — überlebt so jeden Swap ohne
     Expand-Verlust."""
     now = time.time() if now is None else now
-    return (_schedule_active_block(schedules, now, public_host=public_host, sparklines=sparklines)
-           + _schedule_archive_block(schedules, now, public_host=public_host, sparklines=sparklines))
-
-
-def schedules_fragment(schedules: list[dict], now: float | None = None,
-                       *, typ: str | None = None, status: str | None = None,
-                       public_host: str = "localhost",
-                       sparklines: dict[str, list[int]] | None = None,
-                       sort: str | None = None, direction: str | None = None) -> str:
-    """Bus-getriebener Wrapper (Target ``jobs``) um die (bereits gefilterte)
-    aktive Schedule-Liste. Der Refetch-Link trägt den aktiven Filter in der
-    URL, damit er den Swap überlebt. Ziel = ``/-/ui/schedules/list`` (das Fragment;
-    die Seite liegt auf ``/-/ui/schedules``). Archive/Journal sitzen seit der
-    Bibi4-Iteration nicht mehr hier, sondern auf einem eigenen Screen
-    (``archive_fragment()``/``archive_page()``, User-Fund: "Archive wird
-    verschoben auf einen eigenen Screen") — löst PLAN-25 Befund 6 (3 Rahmen
-    Chart/Schedules/Archive auf einer Seite) ab. ``sparklines`` (Batch 9
-    Punkt 1) kommt nur vom initialen Seitenaufbau (``schedules_page()``); der
-    Bus-Refetch (``schedules_list_fragment()``) übergibt ``None``, analog zu
-    ``jobs_fragment()``/``jobs_board()``."""
-    now = time.time() if now is None else now
-    schedules = sort_rows(schedules, sort, direction)   # m.rau/bibi#66
-    qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status),
-                                          ("sort", sort), ("dir", direction))
-                  if v and v != "alle")
-    url = "/-/ui/schedules/list" + (f"?{qs}" if qs else "")
-    attrs = (f'id="schedules" data-bus="jobs" data-bus-refetch="{url}"')
-    # m.rau/bibi#64: die Filterleiste gehoert IN die Karte, an ihren oberen
-    # linken Rand — vorher stand sie in schedules_page() zwischen Histogramm
-    # und Karte. Sie wandert damit auch durch jeden Bus-Refetch mit, statt beim
-    # Swap des Fragments zurueckzubleiben.
-    active_html = (f'<div class="panel-card">{_filter_bar(typ, status)}'
-                  f'{_schedule_active_block(schedules, now, public_host=public_host, sparklines=sparklines, sort=sort, direction=direction)}</div>')
-    return f"<div {attrs}>{active_html}</div>"
+    return (_schedule_active_block(schedules, now, public_host=public_host)
+           + _schedule_archive_block(schedules, now, public_host=public_host))
 
 
 def archive_fragment(schedules: list[dict], now: float | None = None,
-                     *, public_host: str = "localhost",
-                     sparklines: dict[str, list[int]] | None = None) -> str:
+                     *, public_host: str = "localhost",) -> str:
     """Bus-getriebener Archive-Screen-Kern (Host) — Bibi4-Iteration, User-Fund:
     "Archive wird verschoben auf einen eigenen Screen". Zeigt dieselben
     Archive-/Journal-Gruppen wie zuvor der untere Teil von ``/-/ui/schedules``
     (``_schedule_archive_block()``), jetzt eigenständig unter ``/-/ui/archive``.
-    Ziel = ``/-/ui/archive/list``. ``sparklines`` (Batch 9 Punkt 1) nur vom
-    initialen Seitenaufbau (``archive_page()``), der Bus-Refetch
     (``archive_list_fragment()``) übergibt ``None``."""
     now = time.time() if now is None else now
-    body = _schedule_archive_block(schedules, now, public_host=public_host, sparklines=sparklines)
+    body = _schedule_archive_block(schedules, now, public_host=public_host)
     if not body:
         body = '<p class="out-empty">— kein Archiv —</p>'
     attrs = 'id="archive" data-bus="jobs" data-bus-refetch="/-/ui/archive/list"'
@@ -847,7 +773,6 @@ def archive_fragment(schedules: list[dict], now: float | None = None,
 def archive_page(schedules: list[dict], now: float | None = None,
                  *, daemon_status: dict | None = None, git_status: dict | None = None,
                  host_url: str | None = None, public_host: str = "localhost",
-                 sparklines: dict[str, list[int]] | None = None,
         scheduler: dict | None = None,
         scheduler_stale_since: float | None = None,) -> str:
     """Archive-Screen (Host, Bibi4-Iteration) — eigene Seite für Archive/
@@ -870,7 +795,7 @@ def archive_page(schedules: list[dict], now: float | None = None,
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Archive', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
-        f"{archive_fragment(schedules, now, public_host=public_host, sparklines=sparklines)}"
+        f"{archive_fragment(schedules, now, public_host=public_host)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
@@ -1323,7 +1248,6 @@ _LIVE_COLOR = "#5a9fe0"
 #: keine Chart-Farbe, nur einen von allen Chart-Tönen unterscheidbaren.
 _WAITING_COLOR = "#d6a23e"
 
-#: Anzeige-Reihenfolge + Farbe je Terminal-Status (Chart.js-Datasets, gestapelt,
 #: UND Zustands-Chips im Chart-Kopf — dieselbe Farbe an beiden Stellen macht
 #: eine separate Legende redundant, User-Fund 2026-07-08). Sechs klar
 #: unterscheidbare Töne — vorher teilten sich error/zombie sowie killed/
@@ -1348,12 +1272,6 @@ _RESOLUTION_LABEL = {1440: "24h/1m", 480: "8h/1w", 180: "3h/3d", 120: "2h/2d",
                      15: "15min/24h", 5: "5min/8h", 1: "1min/2h"}
 _DEFAULT_RESOLUTION_MINUTES = 15
 
-#: Chart.js UMD-Bundle — lokal ausgeliefert wie htmx (PLAN-36-Nachtrag,
-#: 2026-07-27): nach der htmx-Lokalisierung in 36.0 war das die letzte externe
-#: Abhängigkeit einer Seite; im Tailnet-only-/Offline-Setup starb damit das
-#: Chart auf /-/ui/schedules. Versionierter Pfad = Cache-Busting, s.
-#: controller/__init__.py::chartjs_asset().
-_CHARTJS = "/-/static/chartjs-4.4.4.min.js"
 
 
 def _landings_buckets(landings: list[dict], *, now: float,
@@ -1379,51 +1297,6 @@ def _landings_buckets(landings: list[dict], *, now: float,
             counts[status][idx] += 1
     labels = [start + i * bucket_s for i in range(n)]
     return labels, counts
-
-
-def _landings_chart_html(labels: list[float], counts: dict[str, list[int]],
-                         chart_id: str = "landingsChart") -> str:
-    """``<canvas>`` + Chart.js-Init-Script (gestapelter Bar-Chart). Wird bei
-    jedem Poll-Swap des umgebenden Fragments neu instanziiert (htmx führt
-    ``<script>``-Tags in geswapptem Content per Default aus) — dieselbe
-    "ganzes Fragment ersetzen"-Konvention wie überall sonst im Code, kein
-    Diffing/Update-in-place nötig. Kein eigenes Chart.js-Legend-Plugin mehr
-    (User-Fund 2026-07-08): die Zustands-Chips im Chart-Kopf
-    (``_current_state_chips``) tragen dieselben Farben und übernehmen die
-    Legenden-Funktion — pro Balkensegment zeigt Chart.js' Standard-Tooltip
-    beim Hover trotzdem den Status-Namen.
-
-    X-Achsen-Labels tragen das Datum (``TT.MM HH:MM``) statt nur ``HH:MM``,
-    sobald das Fenster mehr als einen Tag umfasst (Bibi4-Iteration, User-Fund:
-    "bei ein oder mehreren Tagen muss in der X-Achse das Datum ... angezeigt
-    werden" — reine Uhrzeit war über mehrere Tage sonst mehrdeutig, z. B. bei
-    den groben Auflösungen 8h/1w oder 24h/1m). Bei ≤1 Tag bleibt die knappe
-    ``HH:MM``-Form (unaufdringlich, keine Mehrdeutigkeit innerhalb eines
-    Tages) — Spannweite kommt direkt aus den Labels selbst, kein zusätzlicher
-    Parameter nötig."""
-    if not labels:
-        return '<div class="chart-wrap"><p class="out-empty">— noch keine Daten —</p></div>'
-    spans_multiple_days = len(labels) > 1 and (labels[-1] - labels[0]) > 86400
-    fmt = "%d.%m %H:%M" if spans_multiple_days else "%H:%M"
-    tick_labels = [datetime.datetime.fromtimestamp(t).strftime(fmt) for t in labels]
-    datasets = [
-        {"label": status, "data": counts[status], "backgroundColor": _LANDING_COLOR[status]}
-        for status in _LANDING_ORDER
-    ]
-    payload = json.dumps({"labels": tick_labels, "datasets": datasets})
-    return (
-        f'<div class="chart-wrap"><canvas id="{chart_id}"></canvas></div>'
-        "<script>(function(){"
-        f"const d={payload};"
-        f'const el=document.getElementById("{chart_id}");'
-        "if(!el)return;"
-        "new Chart(el,{type:'bar',data:d,options:{"
-        "responsive:true,maintainAspectRatio:false,animation:false,"
-        "scales:{x:{stacked:true},y:{stacked:true,beginAtZero:true,ticks:{precision:0}}},"
-        "plugins:{legend:{display:false}}"
-        "}});"
-        "})();</script>"
-    )
 
 
 def _current_state_chips(counts: dict[str, int], running_since_uptime: int) -> str:
@@ -1580,8 +1453,8 @@ def _sortable_head(columns: list[tuple[str, str | None]], *, sort: str | None,
     irgendeiner Oberfläche bedient, und eine Abweichung davon müsste man
     erklären.
 
-    Spalten ohne Schlüssel (``None``) bleiben gewöhnliche Köpfe. „Activity" ist
-    eine Sparkline; ein Sortier-Link darauf wäre ein Angebot, das nichts
+    Spalten ohne Schlüssel (``None``) bleiben gewöhnliche Köpfe — ein
+    Sortier-Link auf etwas Unsortierbares wäre ein Angebot, das nichts
     einlöst.
     """
     cells = []
@@ -2049,54 +1922,6 @@ def _header(active: str, status: dict | None = None, *,
             f'{_live_clock(scheduler_now, now)}{_theme_toggle()}')
     return (f'<header><div class="nav-left">{left}</div>'
             f'<div class="nav-right">{right}</div></header>')
-
-
-def schedules_page(schedules: list[dict], typ: str | None = None,
-                   status: str | None = None, now: float | None = None,
-                   *, daemon_status: dict | None = None,
-                   landings: list[dict] | None = None,
-                   git_status: dict | None = None, host_url: str | None = None,
-                   bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES,
-                   public_host: str = "localhost",
-                   sparklines: dict[str, list[int]] | None = None,
-                   sort: str | None = None, direction: str | None = None,
-        scheduler: dict | None = None,
-        scheduler_stale_since: float | None = None,) -> str:
-    """Der Schedules-Screen: Nav + Ops-Handles (RESCAN/MAINT, User-Feedback
-    2026-07-03) + Status-Kacheln (Host/Mode/Git/Job-Status, User-Fund: "diesen
-    Header möchte ich auch im /-/ui/schedules haben" — dieselbe
-    ``feed_status_fragment()`` wie auf ``/-/``) + Stat-Grid/Landungs-
-    Histogramm (PLAN-21 Befund 11) + Filterleiste + (gefilterte) self-
-    pollende Liste. ``schedules`` ist bereits gefiltert; ``typ``/``status``
-    spiegeln die Auswahl — ``status`` ist hier der Filterwert (z. B.
-    "error"), nicht zu verwechseln mit ``daemon_status`` (``/-/status``-JSON
-    für den MAINT-Toggle **und** die Stat-Grid-Zählung,
-    ``daemon_status["job_stats"]``). ``bucket_minutes`` ist die initiale Chart-
-    Auflösung beim ersten Laden (User-Fund: "warum wird die Auflösung ...
-    nicht gespeichert?") — der Aufrufer (``controller/__init__.py``) ermittelt
-    sie aus Query-Param/Cookie, bevor der Refetch-Link die URL selbst trägt."""
-    now = time.time() if now is None else now
-    daemon_status = daemon_status or {}
-    return (
-        "<!DOCTYPE html>\n"
-        '<html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>bibi · Schedules</title>"
-        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
-        f'<script src="{_CHARTJS}" crossorigin="anonymous"></script>'
-        f"<style>{_CSS}</style></head><body>"
-        f"{_header('Jobs', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
-        f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now, bucket_minutes=bucket_minutes)}"
-        f"{schedules_fragment(schedules, now, typ=typ, status=status, public_host=public_host, sparklines=sparklines, sort=sort, direction=direction)}"
-        f"<script>{_EVENTS_JS}</script>"
-        f"<script>{_CLOCK_JS}</script>"
-        f"<script>{_OPS_HANDLES_JS}</script>"
-        f"<script>{_JOBS_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
-        f"<script>{_THEME_JS}</script>"
-        "</body></html>"
-    )
 
 
 # ── Live-Log-Panel (§5.4 Slice C) — EventSource gegen /-/log/stream ──────────
@@ -2683,91 +2508,6 @@ _GIT_STATUS_LABEL = {
 _SPARK_W, _SPARK_H = 72, 20
 
 
-def _sparkline_svg(counts: list[int]) -> str:
-    """Kleines Inline-SVG für die Jobs-Sparkline (Bibi4-Iteration, User-Fund:
-    "eine Sparkline, die die durch den Agenten verursachten git Änderungen
-    repräsentiert"). Reine Darstellung — die Zähl-Buckets kommen von
-    ``feed.activity_series_by_prefix()``. Leerer String, wenn nirgends
-    Aktivität war (kein Bild statt einer flachen Nulllinie)."""
-    if not counts or not any(counts):
-        return ""
-    peak = max(counts)
-    n = len(counts)
-    step = _SPARK_W / max(n - 1, 1)
-    points = " ".join(
-        f"{i * step:.1f},{_SPARK_H - 1 - (c / peak) * (_SPARK_H - 2):.1f}"
-        for i, c in enumerate(counts)
-    )
-    return (f'<svg class="sparkline" viewBox="0 0 {_SPARK_W} {_SPARK_H}" '
-           f'width="{_SPARK_W}" height="{_SPARK_H}" preserveAspectRatio="none">'
-           f'<polyline points="{points}" fill="none" stroke="#5fb37a" '
-           f'stroke-width="1.5"/></svg>')
-
-
-def _sparkline_cell(slug: str, series_by_slug: dict[str, list[int]] | None) -> str:
-    """``hx-preserve``-Zelle (Bibi4-Iteration) — dieselbe Technik wie
-    ``.liveterm``-Boxen (render.py, ``_LIVE_JS``-Kommentar: "hx-preserve hält
-    die Box ... über den 2s-Poll am Leben"): die zugrunde liegende Aggregation
-    (``feed.collect_commits()`` + ``agent_commit_shas()`` über 30 Tage) ist
-    Git-Subprozess-lastig, dieselbe Kostenklasse wie die Git-Karte — zu teuer
-    für jeden Tabellen-Refetch. ``series_by_slug`` kommt deshalb nur vom
-    initialen Seitenaufbau (``jobs_page()``); der Bus-Refetch
-    (``jobs_board()``) übergibt ``None`` und rendert eine leere Zelle mit
-    derselben ``id`` — htmx behält dank ``hx-preserve`` das schon vorhandene
-    Sparkline-Element, statt es durch die leere Variante zu ersetzen.
-    Aktualisiert sich dadurch bei Seitenaufruf/Reload, nicht bei jedem
-    Tabellen-Swap."""
-    svg = _sparkline_svg((series_by_slug or {}).get(slug, []))
-    return f'<span id="spark-{_e(slug)}" hx-preserve="true">{svg}</span>'
-
-
-def _sparkline_cell_lazy(slug: str, index: int = 0) -> str:
-    """Entkoppelter Platzhalter (Bibi4-Iteration, User-Fund: "Sparklines
-    dauern beim Reload immer") — löst ``jobs_screen()``s bisherige, den
-    kompletten Seitenaufbau blockierende ``_job_sparkline_series()``-
-    Berechnung ab. Statt die Serie eager mitzuliefern, feuert die Zelle
-    selbst einen ``hx-get`` gegen eine eigene Pro-Slug-Route
-    (``/-/ui/jobs/{slug}/sparkline``), sobald sie ins DOM eingehängt wird.
-    Analog zum bestehenden ``hx-trigger=\"revealed\"``-Muster in
-    ``_journal_sentinel_row()``, hier ``load`` statt ``revealed`` — eine
-    normale Jobs-Tabelle braucht kein Scroll-Gating, alle Zeilen sind eh
-    sichtbar.
-
-    ``delay:{index*120}ms`` (Bugfix, User-Fund 2026-07-22: "zieht meinen
-    ganzen Rechner in die Knie. Immer noch!", eskaliert bis zum Browser-Tab-
-    Crash) — ohne Staffelung feuern bei N Zeilen alle N ``hx-get``s im
-    selben Tick (das war die ursprüngliche, im Case-Dokument selbst
-    gewünschte "eine nach der anderen"-Ladefolge, die hier zuvor NICHT
-    umgesetzt war). Jede Anfrage bringt unabhängig von
-    ``_job_sparkline_series()``s Cache/Lock ihre eigene
-    ``jobs_sparkline()``-Route-Kosten mit (Discovery-Scan über
-    ``_local_schedules()``) — N gleichzeitige Anfragen multiplizieren das,
-    N gestaffelte über ~120ms Abstand nicht. Reiner Anzeige-Effekt (die
-    Zellen füllen sich sichtbar nacheinander statt schlagartig), keine
-    Server-Änderung nötig.
-
-    ``hx-preserve=\"true\"`` **hier auch schon im unaufgelösten Zustand**
-    (Regression, User-Fund nach Deploy: "Sparklines erscheinen jetzt gar
-    nicht mehr") — ohne das riss der damalige 2s-Self-Poll (``#jobsboard``,
-    ``jobs_board()``, rendert jede Zeile mit ``sparklines=None`` neu) diesen
-    Platzhalter samt seines noch laufenden ``hx-get``s aus dem DOM, sobald
-    der Poll vor dessen Auflösung feuerte (praktisch immer bei mehreren
-    Zeilen; heute swappt dieselbe Region bei jedem ``jobs``-Bus-Event, das
-    Schutzbedürfnis bleibt identisch). Die dadurch neu
-    eingesetzte, leere ``_sparkline_cell(slug, None)``-Zelle hat zwar selbst
-    ``hx-preserve``, aber das schützt nur VOR zukünftigen Swaps, nicht
-    rückwirkend — die Zeile blieb ab dann für immer leer, ohne dass je
-    wieder ein Ladeversuch angestoßen wurde. Jetzt tragen beide Zustände
-    (unaufgelöst hier, aufgelöst in ``_sparkline_cell()``) dieselbe ``id``
-    UND ``hx-preserve`` — welcher Zustand auch gerade im DOM steht, ein
-    Ancestor-Poll lässt ihn unangetastet, bis der eigene ``hx-get`` (falls
-    noch unaufgelöst) durch ist und sich selbst per ``hx-swap=\"outerHTML\"``
-    ersetzt."""
-    s = _e(slug)
-    return (f'<span id="spark-{s}" hx-preserve="true" '
-           f'hx-get="/-/ui/jobs/{s}/sparkline" hx-trigger="load" hx-swap="outerHTML"></span>')
-
-
 def _jobs_type_cell(row: dict, public_host: str) -> str:
     """Type-Zelle nur für die Jobs-Tabelle (PLAN-29 Befund 2, User-Fund:
     "Type, bei Apps mit Port und als Link (auch wenn die App down ist)").
@@ -2787,8 +2527,7 @@ def _jobs_type_cell(row: dict, public_host: str) -> str:
 
 
 def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
-              *, public_host: str = "localhost", sparklines: dict[str, list[int]] | None = None,
-              lazy_sparklines: bool = False, index: int = 0) -> str:
+              *, public_host: str = "localhost", index: int = 0) -> str:
     """Eine Zeile: Slug(+Git-Chip)/Type/Status/last-since/Runtime (Bibi4-
     Iteration, User-Fund: "Slug/Type/Status/last-since/Runtime" — löst die
     vorherige 7-Spalten-Form (eigene Git-Spalte, getrennte Start/Ende-Spalten)
@@ -2853,85 +2592,25 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
         last_cell = runtime_cell = "—"
 
     type_cell = _jobs_type_cell(row, public_host)
-    spark_cell = (_sparkline_cell_lazy(slug, index) if lazy_sparklines
-                  else _sparkline_cell(slug, sparklines))
 
     return (f"<tr><td>{slug_cell}</td><td>{type_cell}</td><td>{status_cell}</td>"
-            f"<td>{last_cell}</td><td>{runtime_cell}</td><td>{spark_cell}</td></tr>")
+            f"<td>{last_cell}</td><td>{runtime_cell}</td><td></td></tr>")
 
 
 def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
-                *, public_host: str = "localhost", sparklines: dict[str, list[int]] | None = None,
-                lazy_sparklines: bool = False,
+                *, public_host: str = "localhost",
                 sort: str | None = None, direction: str | None = None,
                 sort_url: str = "/-/ui/jobs/board",
                 sort_target: str = "#jobsboard") -> str:
     if not rows:
         return '<p class="out-empty">— keine Job-MDs im Repository gefunden —</p>'
-    body = "".join(_jobs_row(r, local_runs, now, public_host=public_host, sparklines=sparklines,
-                            lazy_sparklines=lazy_sparklines, index=i)
+    body = "".join(_jobs_row(r, local_runs, now, public_host=public_host, index=i)
                   for i, r in enumerate(rows))
     head = _sortable_head(
         [("Slug", "slug"), ("Type", "type"), ("Status", "status"),
          ("last / since", "last"), ("Runtime", "runtime"), ("Activity", None)],
         sort=sort, direction=direction, url=sort_url, target=sort_target)
     return f"<table>{head}<tbody>{body}</tbody></table>"
-
-
-def jobs_fragment(
-    rows: list[dict], local_runs: dict[str, dict],
-    *, now: float | None = None, public_host: str = "localhost",
-    sparklines: dict[str, list[int]] | None = None,
-    lazy_sparklines: bool = False,
-    typ: str | None = None, status: str | None = None,
-    sort: str | None = None, direction: str | None = None,
-) -> str:
-    """Der austauschbare Jobs-Kern (``#jobsboard``): lokale Job-MDs + Git-
-    Status + letzter Start/Ende/Laufzeit je Zeile (PLAN-21 Befund 10 — löst
-    die vorherige Lokal/Remote-Abgleich-Tabelle ab, kein Netzaufruf/Remote-
-    Bezug mehr, dient ausschließlich dem Review der lokalen Repository-
-    Realität; PLAN-28 User-Feedback: kein Start-CTA mehr hier, Start gibt es
-    nur noch auf der Job-Detailseite). Bus-getrieben wie die anderen Screens
-    (Target ``jobs``), damit ein anderswo (Detailseite, CLI) gestarteter
-    Lauf ohne Warten sichtbar wird.
-
-    "Lokale Läufe" (die frühere zweite Sektion hier) lebt seit der Bibi4-
-    Iteration auf einem eigenen Screen (``jobs_archive_fragment()``/
-    ``jobs_archive_page()``, User-Fund: "der untere Abschnitt lokale Läufe
-    wandert in den eigenen Screen Archive") — löst PLAN-29 Befund 1 (2
-    Panel-Cards hier) auf 1 Panel-Card ab, analog zu ``schedules_fragment()``
-    beim Host.
-
-    ``sparklines`` (Bibi4-Iteration, User-Fund: "eine Sparkline ... git
-    Änderungen") kommt nur vom initialen Seitenaufbau (``jobs_page()``) — der
-    Bus-Refetch hier übergibt bewusst ``None``, s. ``_sparkline_cell()``-
-    Docstring (hx-preserve, zu teuer für jeden Tabellen-Refetch).
-
-    ``lazy_sparklines`` (zweite Bibi4-Iteration, User-Fund: "Sparklines dauern
-    beim Reload immer") — der initiale Seitenaufbau selbst rechnet die Serie
-    nicht mehr, sondern rendert nur noch Platzhalter, s. ``_sparkline_cell_lazy()``."""
-    now = time.time() if now is None else now
-    # m.rau/bibi#65: dieselbe Filterleiste und dieselbe Filterfunktion wie beim
-    # Host. Moeglich wird das erst durch enrich_client_rows() — die Client-Zeile
-    # traegt `last_status` nicht von sich aus, und ohne ihn griffe der
-    # Status-Filter nie.
-    rows = enrich_client_rows(rows, local_runs)
-    rows = filter_schedules(rows, typ=typ, status=status, now=now)
-    # m.rau/bibi#66: serverseitig sortiert, und die Sortierung reist in der
-    # Refetch-URL mit — sonst spraenge sie beim naechsten Bus-Ereignis zurueck.
-    rows = sort_rows(rows, sort, direction)
-    qs = "&".join(f"{k}={v}" for k, v in (("typ", typ), ("status", status),
-                                          ("sort", sort), ("dir", direction))
-                  if v and v != "alle")
-    url = "/-/ui/jobs/board" + (f"?{qs}" if qs else "")
-    bar = _filter_bar(typ, status, url="/-/ui/jobs/board", target="#jobsboard")
-    return (
-        f'<div id="jobsboard" data-bus="jobs" data-bus-refetch="{_e(url)}">'
-        '<div class="panel-card"><h2>Jobs</h2>'
-        f"{bar}"
-        f"{_jobs_table(rows, local_runs, now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines, sort=sort, direction=direction)}</div>"
-        "</div>"
-    )
 
 
 def _client_archive_row(r: dict, now: float) -> str:
@@ -3031,56 +2710,6 @@ def jobs_archive_page(runs: list[dict], now: float | None = None,
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
-        f"<script>{_THEME_JS}</script>"
-        "</body></html>"
-    )
-
-
-def jobs_page(
-    rows: list[dict], local_runs: dict[str, dict],
-    *, daemon_status: dict | None = None, git_status: dict | None = None,
-    host_url: str | None = None,
-    now: float | None = None, public_host: str = "localhost",
-    sparklines: dict[str, list[int]] | None = None,
-    lazy_sparklines: bool = False,
-    typ: str | None = None, status: str | None = None,
-    sort: str | None = None, direction: str | None = None,
-        scheduler: dict | None = None,
-        scheduler_stale_since: float | None = None,) -> str:
-    """Jobs-Screen (PLAN-17 Stufe 17.2, umgebaut PLAN-21 Befund 10): lokale
-    Repository-Realität + Git-Status + letzter Start/Ende/Laufzeit je Zeile.
-    Rein lokal — funktioniert auch auf einem reinen Client (kein Scheduler/
-    Worker im Ruhezustand), ohne je den Scheduler zu kontaktieren. Status-
-    Kacheln (Host/Mode/Git/Job-Status) seit demselben ``feed_status_fragment()``
-    wie ``/-/``/``/-/ui/schedules``/Live-Log (PLAN-28 User-Feedback: "Der
-    Header soll auch auf der Client Job Seite angezeigt werden" — PLAN-27
-    Befund 2 hatte das nur fürs Live-Log erledigt). Lokale Lauf-Historie lebt
-    seit der Bibi4-Iteration auf ``jobs_archive_page()``, s. dortiger
-    Docstring.
-
-    ``status`` ist — wie bei ``schedules_page()`` — der **Filterwert** (z. B.
-    "failed"), nicht zu verwechseln mit ``daemon_status`` (``/-/status``-JSON).
-    m.rau/bibi#90: genau diese Verwechslung stand hier bis 2026-08-01, das
-    lokale ``status = daemon_status or {}`` verdrängte den Filterwert. Das Dict
-    reiste von hier nach ``filter_schedules()``, galt dort als aktiver Filter
-    und verglich einen String gegen ein Dict — jede Zeile fiel weg, der Screen
-    war beim Seitenaufbau immer leer."""
-    now = time.time() if now is None else now
-    daemon_status = daemon_status or {}
-    return (
-        "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>bibi · Jobs</title>"
-        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
-        f"<style>{_CSS}</style></head><body>"
-        f"{_header('Jobs', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
-        f"<script>{_CLOCK_JS}</script>"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now, client_rows=rows)}"
-        f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines, typ=typ, status=status, sort=sort, direction=direction)}"
-        f"<script>{_EVENTS_JS}</script>"
-        f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"

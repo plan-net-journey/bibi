@@ -69,29 +69,6 @@ def test_load_more_is_left_aligned():
 
 # --- #64: Type/Status-Filter gehört in die Schedules-Karte, links oben -------
 
-def test_filter_bar_is_inside_the_schedules_card():
-    html = render.schedules_fragment([], now=0.0, typ=None, status=None)
-    card = html.index('<div class="panel-card">')
-    bar = html.index('class="logbar"')
-    assert card < bar, "die Filterleiste steht vor der Karte statt in ihr"
-
-
-def test_schedules_page_does_not_render_the_bar_twice():
-    """Sie wandert, sie verdoppelt sich nicht — sonst stünde nach jedem
-    Bus-Refetch eine zweite Leiste da."""
-    html = render.schedules_page([], now=0.0, daemon_status={}, typ=None, status=None)
-    assert html.count('class="logbar"') == 1
-
-
-# --- #65: Filter auch in der Client-Ansicht ----------------------------------
-#
-# Die im Issue geforderte Prüfung ("ob Typ und Status auf der Client-Seite
-# dieselbe Wertemenge haben") fiel gegen die Annahme aus: die Host-Zeile trägt
-# `last_status`, die Client-Zeile holt ihren Status aus `local_runs[slug]` bzw.
-# aus `row["live"]`. `filter_schedules()` hätte dort aufgerufen werden können,
-# ohne dass etwas bricht — der Status-Filter hätte nur nie gegriffen. Ein
-# Bedienelement, das sichtbar da ist und nichts tut, ist der schlechtere
-# Zustand als gar keins.
 
 
 def test_client_status_follows_the_live_run_first():
@@ -142,12 +119,6 @@ def test_client_filter_bar_targets_the_client_board():
     assert "/-/ui/jobs/board" in bar and "#jobsboard" in bar
     assert "/-/ui/schedules/list" not in bar
 
-
-def test_client_jobs_card_carries_the_filter_bar():
-    html = render.jobs_fragment([], {}, now=0.0, typ=None, status=None)
-    card = html.index('<div class="panel-card">')
-    bar = html.index('class="logbar"')
-    assert card < bar
 
 
 def test_client_type_filter_reads_the_same_field_as_the_host():

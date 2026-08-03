@@ -17,17 +17,6 @@ def test_live_clock_markup():
     assert 'id="liveclock"' in html and "live" in html
 
 
-def test_schedules_page_ticks_clock():
-    html = render.schedules_page([], now=1.0)
-    assert 'id="liveclock"' in html
-    assert "setInterval" in html and "toLocaleTimeString" in html  # tickt clientseitig
-
-
-def test_schedules_page_has_clock():
-    assert 'id="liveclock"' in render.schedules_page([], now=1.0)
-
-
-# ── Nav-Konsistenz + Log-Links ────────────────────────────────────────────────
 
 
 def test_log_page_has_nav_and_clock():
