@@ -81,7 +81,8 @@ def test_scheduler_block_has_its_four_rows():
     html = _header()
     for label in ("clients", "next job", "uptime"):
         assert label in html, label
-    assert "2 connected" in html
+    # Seit der Kuerzung: "2, connected <Uhrzeit>" statt "2 connected".
+    assert re.search(r"2, connected \d{2}:\d{2}:\d{2}", html)
 
 
 # ── Offline: dimmen, nicht leeren ───────────────────────────────────────────
@@ -93,7 +94,7 @@ def test_offline_keeps_the_last_values_and_dates_them():
     „2 connected" von vor einer Minute oder von gestern stammt."""
     html = _header(scheduler=SCHEDULER_STATUS, scheduler_stale_since=NOW - 240)
     assert "no contact for" in html
-    assert "2 connected" in html, "die letzten Werte bleiben stehen"
+    assert re.search(r"2, connected", html), "die letzten Werte bleiben stehen"
     assert "dimmed" in html or "stale" in html
 
 
@@ -201,36 +202,87 @@ def test_times_older_than_a_day_carry_their_date():
     assert re.search(r"\d{2}/\d{2} \d{2}:\d{2}", html), "kein Datum bei altem Zeitstempel"
 
 
-def test_uptime_reads_as_a_point_in_time():
-    """„up since 14:32" statt „13h 25m up" — es steht jetzt ein Zeitpunkt da,
-    und die Beschriftung muss das sagen."""
-    html = _header()
-    assert "up since" in html and "connected since" in html
 
 
-def test_the_header_carries_a_running_clock():
-    """**Befund m.rau, 2026-08-03:** „ich tappe total im Dunkeln, weil keine
-    Sekundenanzeige da ist!"
+# ── Abnahme am Bild (m.rau, 2026-08-03) ────────────────────────────────────
 
-    Absolute Zeiten sind nur lesbar, wenn der Bezugspunkt danebensteht. Meine
-    Begründung dafür lautete, die Uhr in der App-Bar leiste das — sie steht
-    aber oben rechts, während die Werte links im Header stehen. Diagonal über
-    den Bildschirm ist nicht „daneben".
 
-    Die laufende Uhr gehört deshalb in die Titelzeile des CLIENT-Blocks,
-    unmittelbar über `heartbeat`. Dann ist „14:15:44" gegen „14:15:52" eine
-    Ablesung statt einer Rechenaufgabe.
+def test_both_blocks_carry_a_bullet():
+    """„ein Kreis/Bullet vor Client dann genau so wie vor Scheduler."
+
+    Zwei Titelzeilen, die dasselbe sind, müssen auch gleich aussehen. Der
+    Punkt trägt links denselben Sinn wie rechts: ist diese Seite in Ordnung?
+    Für den Client heißt das, ob sein Heartbeat durchkommt.
     """
     html = _header()
-    assert 'id="hdr-clock"' in html
-    # Sie sitzt im linken Block, nicht irgendwo.
-    links = html.split("SCHEDULER", 1)[0]
-    assert 'id="hdr-clock"' in links
+    links = html.split("CLIENT", 1)[0]
+    mitte = html.split("CLIENT", 1)[1].split("SCHEDULER", 1)[0]
+    assert "●" in links, "der CLIENT-Block braucht denselben Punkt"
+    assert "●" in mitte, "der SCHEDULER-Punkt steht weiterhin vor seinem Wort"
 
 
-def test_the_header_clock_ticks_every_second():
-    """Sie zeigt Sekunden und laeuft — sonst waere sie nur ein weiterer Wert,
-    der einfriert."""
-    js = render._CLOCK_JS
-    assert "hdr-clock" in js
-    assert "setInterval" in js
+def test_the_client_bullet_reports_the_heartbeat():
+    """Er ist kein Ornament: bricht der Heartbeat ab, wird er rot — dieselbe
+    Bedeutung wie rechts, nur für die andere Seite."""
+    aus = dict(CLIENT_STATUS)
+    aus["connect"] = {"ok": False, "last_at": NOW - 300}
+    html = render.status_header(aus, GIT, scheduler=SCHEDULER_STATUS, now=NOW,
+                                scheduler_host="sarasate")
+    kopf = html.split("SCHEDULER", 1)[0]
+    assert "bad" in kopf
+
+
+def test_labels_are_tinted():
+    """„ein bisschen Farbe wäre schön! Die Keys farbig, dezent?" — die
+    Beschriftungen bekommen einen eigenen Ton, nicht die Werte: sie sind das
+    Gerüst, an dem das Auge die Zeile findet."""
+    assert ".hdr-label" in render._CSS
+    assert "--hdr-key" in render._CSS
+
+
+def test_uptime_and_clients_are_terse():
+    """„bei uptime schreib kürzer: up 01/08 23:32" und „bei clients: 2,
+    connected 14:19:23". Beide Zeilen brachen vorher um."""
+    html = _header()
+    # Unter 24 h nur die Uhrzeit, darueber mit Datum — hier liegt der Start
+    # 13,4 h zurueck.
+    assert re.search(r"up \d{2}:\d{2}:\d{2}", html)
+    assert "up since" not in html
+    assert re.search(r"2, connected \d{2}:\d{2}:\d{2}", html)
+    assert "2 connected" not in html
+
+
+def test_no_clock_anywhere_in_the_header():
+    html = _header()
+    assert "hdr-clock" not in html
+
+
+def test_the_app_bar_clock_shows_the_schedulers_time():
+    """„Am liebsten hätte ich die scheduler Uhrzeit!" — und zwar „rechts oben
+    mit Ticker, und sonst nirgends".
+
+    Die lokale Zeit hat jeder in seiner Menüleiste; die des Schedulers steht
+    nirgends. In einem verteilten System ist sie die interessantere: sie ist
+    der Bezugspunkt für alles, was der rechte Block zeigt, und ein
+    Auseinanderlaufen der Uhren wird genau hier sichtbar.
+    """
+    html = render._live_clock(scheduler_now=NOW, now=NOW - 3)
+    assert 'id="liveclock"' in html
+    # Der Versatz zur eigenen Uhr reist mit, damit der Ticker die *fremde*
+    # Zeit hochzählt statt der eigenen.
+    assert re.search(r'data-offset="3(\.0)?"', html)
+
+
+def test_the_clock_falls_back_to_local_time_without_a_scheduler():
+    """Ohne erreichbaren Host gibt es keine fremde Zeit — dann zeigt die Uhr
+    wieder die eigene, statt stehenzubleiben. Eine stehende Uhr sieht aus wie
+    eine Zeit und ist keine."""
+    html = render._live_clock(scheduler_now=None, now=NOW)
+    assert 'id="liveclock"' in html
+    assert re.search(r'data-offset="0(\.0)?"', html)
+
+
+def test_the_clock_js_applies_the_offset():
+    """Ohne den Versatz zeigte die Uhr die lokale Zeit unter fremdem Namen."""
+    # Im Skript heisst das Attribut `dataset.offset`, im HTML `data-offset`.
+    assert "dataset.offset" in render._CLOCK_JS

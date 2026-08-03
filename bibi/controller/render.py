@@ -52,6 +52,9 @@ _CSS = """
   --line: #00000012; --line-hard: #00000024; --hover: #00000008;
   --brand: #c25f3c;
   --green: #3f7d52; --blue: #3a6f9e; --amber: #a3762a; --red: #b0342b;
+  /* Beschriftungen im Header: erkennbar farbig, aber ruhig —
+     sie sind das Geruest, an dem das Auge die Zeile findet, nicht der Wert. */
+  --hdr-key: #5d7f9d;
   --btnbg: #00000008; --btnline: #00000022;
   --greensoft: #3f7d5222; --bluesoft: #3a6f9e1a; --blueline: #3a6f9e55;
   --ambersoft: #a3762a22; --amberline: #a3762a55;
@@ -70,6 +73,9 @@ _CSS = """
     --line: #ffffff12; --line-hard: #ffffff26; --hover: #ffffff08;
     --brand: #d97757;
     --green: #6aa87e; --blue: #6b9fd0; --amber: #cb9a4a; --red: #d4534a;
+  /* Beschriftungen im Header: erkennbar farbig, aber ruhig —
+     sie sind das Geruest, an dem das Auge die Zeile findet, nicht der Wert. */
+  --hdr-key: #8aa7c2;
     --btnbg: #ffffff0d; --btnline: #ffffff26;
     --greensoft: #6aa87e26; --bluesoft: #6b9fd022; --blueline: #6b9fd055;
     --ambersoft: #cb9a4a26; --amberline: #cb9a4a55;
@@ -90,6 +96,9 @@ _CSS = """
   --line: #00000012; --line-hard: #00000024; --hover: #00000008;
   --brand: #c25f3c;
   --green: #3f7d52; --blue: #3a6f9e; --amber: #a3762a; --red: #b0342b;
+  /* Beschriftungen im Header: erkennbar farbig, aber ruhig —
+     sie sind das Geruest, an dem das Auge die Zeile findet, nicht der Wert. */
+  --hdr-key: #5d7f9d;
   --btnbg: #00000008; --btnline: #00000022;
   --greensoft: #3f7d5222; --bluesoft: #3a6f9e1a; --blueline: #3a6f9e55;
   --ambersoft: #a3762a22; --amberline: #a3762a55;
@@ -104,6 +113,9 @@ _CSS = """
   --line: #ffffff12; --line-hard: #ffffff26; --hover: #ffffff08;
   --brand: #d97757;
   --green: #6aa87e; --blue: #6b9fd0; --amber: #cb9a4a; --red: #d4534a;
+  /* Beschriftungen im Header: erkennbar farbig, aber ruhig —
+     sie sind das Geruest, an dem das Auge die Zeile findet, nicht der Wert. */
+  --hdr-key: #8aa7c2;
   --btnbg: #ffffff0d; --btnline: #ffffff26;
   --greensoft: #6aa87e26; --bluesoft: #6b9fd022; --blueline: #6b9fd055;
   --ambersoft: #cb9a4a26; --amberline: #cb9a4a55;
@@ -297,9 +309,8 @@ button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnlin
 .hdr-host { font-weight: 400; margin-left: .9rem; }
 /* Der Bezugspunkt der absoluten Zeiten. Rechtsbuendig im Block, damit er die
    Werte darunter nicht verdraengt, aber im selben Blickfeld bleibt. */
-.hdr-clock { float: right; font-weight: 400; font-variant-numeric: tabular-nums; }
 .hdr-row { display: flex; gap: .8rem; line-height: 1.5; }
-.hdr-label { color: var(--muted); min-width: 5.5rem; flex: 0 0 auto; }
+.hdr-label { color: var(--hdr-key); min-width: 5.5rem; flex: 0 0 auto; }
 .hdr-row .hdr-value { color: var(--fg); }
 /* Ausfall: der Block behaelt seine Werte und wird gedimmt. Ein alter Wert mit
    Datum sagt mehr als acht Platzhalter. */
@@ -810,7 +821,7 @@ def archive_page(schedules: list[dict], now: float | None = None,
         "<title>bibi · Archive</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Archive', daemon_status)}"
+        f"{_header('Archive', daemon_status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{archive_fragment(schedules, now, public_host=public_host, sparklines=sparklines)}"
         f"<script>{_EVENTS_JS}</script>"
@@ -1224,7 +1235,7 @@ def clients_page(workers: list[dict], now: float | None = None, *,
         "<title>bibi · Nodes</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Nodes', daemon_status)}"
+        f"{_header('Nodes', daemon_status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{clients_fragment(workers, now)}"
         f"<script>{_EVENTS_JS}</script>"
@@ -1768,14 +1779,15 @@ def status_header(
     if engine.get("needs_update"):
         version += ' <span class="bad">requires upgrade</span>'
 
+    # Derselbe Punkt wie rechts, mit derselben Bedeutung fuer diese Seite:
+    # kommt der eigene Heartbeat durch? Zwei Titelzeilen, die dasselbe sind,
+    # muessen auch gleich aussehen (m.rau, 2026-08-03).
+    hb_ok = (status.get("connect") or {}).get("ok")
+    eigen_klasse = "ok" if hb_ok is not False else "bad"
     links = (
-        f'<div class="hdr-block"><div class="hdr-title">CLIENT'
-        f'<span class="hdr-host">{eigener}</span>'
-        # Der Bezugspunkt fuer alle absoluten Zeiten daneben — nicht in der
-        # App-Bar oben rechts, wo er zwar steht, aber diagonal weg vom Wert,
-        # den er einordnen soll (Befund m.rau, 2026-08-03: "ich tappe total im
-        # Dunkeln, weil keine Sekundenanzeige da ist").
-        f'<span class="hdr-clock" id="hdr-clock">--:--:--</span></div>'
+        f'<div class="hdr-block"><div class="hdr-title">'
+        f'<span class="{eigen_klasse}">●</span> CLIENT'
+        f'<span class="hdr-host">{eigener}</span></div>'
         + _hdr_row("heartbeat", heartbeat, klasse=hb_klasse)
         + _hdr_row("project", projekt, klasse=projekt_klasse)
         + _hdr_row("bibi", version)
@@ -1802,15 +1814,17 @@ def status_header(
 
     hoch = sched.get("started_at")
     verbunden = (status.get("connect") or {}).get("since") or status.get("started_at")
-    # "since", weil hier jetzt ein Zeitpunkt steht und keine Dauer mehr.
-    uptime = f'up since {_uhrzeit(hoch, now)} · connected since {_uhrzeit(verbunden, now)}'
+    # Knapp, weil beide Zeilen sonst umbrechen: das "since" ist aus "up"
+    # ohnehin zu lesen, und "connected" ist zur clients-Zeile gewandert — dort
+    # gehoert es hin, weil es diese Verbindung meint (m.rau, 2026-08-03).
+    uptime = f'up {_uhrzeit(hoch, now)}'
 
     dim = " dimmed" if stale else ""
     rechts = (
         f'<div class="hdr-block{dim}"><div class="hdr-title">'
         f'<span class="{host_klasse}">{punkt}</span> SCHEDULER'
         f'<span class="hdr-host {host_klasse}">{host}</span>{titel_zusatz}</div>'
-        + _hdr_row("clients", f"{clients} connected")
+        + _hdr_row("clients", f"{clients}, connected {_uhrzeit(verbunden, now)}")
         + _hdr_row("next job", next_job)
         + _hdr_row("uptime", uptime)
         + "</div>"
@@ -1845,29 +1859,41 @@ def _screen_nav(active: str, roles: list[str] | None = None) -> str:
     return '<span class="muted">' + " · ".join(items) + "</span>"
 
 
-def _live_clock() -> str:
-    """Tickende Lebendigkeits-Anzeige (Feedback Z. 2) — von ``_CLOCK_JS`` gesetzt.
-    Rechts-Gruppe der Nav (PLAN-21 Befund 1, User-Fund: "Datum, Uhrzeit, Theme
-    hätte ich gerne abgegrenzt rechts ausgerichtet") — zeigt seither Datum +
-    Uhrzeit statt nur Uhrzeit."""
-    return '<span class="liveclock" id="liveclock">● live --.--.---- --:--:--</span>'
+def _live_clock(scheduler_now: float | None = None, now: float | None = None) -> str:
+    """Die **eine** Uhr des UI, oben rechts — und sie zeigt die Zeit des
+    Schedulers.
+
+    Entscheidung m.rau (2026-08-03): *„Am liebsten hätte ich die scheduler
+    Uhrzeit! ... rechts oben mit Ticker, und sonst nirgends."* Die lokale Zeit
+    hat jeder in seiner Menüleiste; die des Hosts steht sonst an keiner Stelle.
+    In einem verteilten System ist sie die interessantere — sie ist der
+    Bezugspunkt für alles, was der rechte Header-Block zeigt, und ein
+    Auseinanderlaufen der Uhren wird genau hier sichtbar.
+
+    ``data-offset`` ist der Versatz in Sekunden (Scheduler minus eigene Uhr).
+    Der Ticker im Browser zählt die eigene Zeit hoch und addiert ihn — sonst
+    zeigte er die lokale Zeit unter fremdem Namen. Ohne erreichbaren Host ist
+    der Versatz 0: dann läuft die eigene Uhr weiter, statt stehenzubleiben.
+    Eine stehende Uhr sieht aus wie eine Zeit und ist keine.
+    """
+    versatz = 0.0
+    if scheduler_now is not None and now is not None:
+        versatz = round(scheduler_now - now, 1)
+    return (f'<span class="liveclock" id="liveclock" data-offset="{versatz}">'
+            f'--.--.---- --:--:--</span>')
 
 
 #: Setzt die Uhr sekündlich (rein client-seitig) — „wir leben noch".
 _CLOCK_JS = """
 (function(){
   const c = document.getElementById('liveclock');
-  const h = document.getElementById('hdr-clock');
-  if (!c && !h) return;
+  if (!c) return;
+  // Versatz zur Scheduler-Uhr in Sekunden; 0 = kein Host erreichbar, dann
+  // laeuft die eigene Zeit weiter (eine stehende Uhr waere schlimmer).
+  const versatz = parseFloat(c.dataset.offset || '0') * 1000;
   const tick = () => {
-    const now = new Date();
-    const uhr = now.toLocaleTimeString('en-GB');
-    if (c) c.textContent = now.toLocaleDateString('en-GB') + ' ' + uhr;
-    // Die Uhr im Header ist der Bezugspunkt der absoluten Zeiten darunter.
-    // Sie wird bei jedem Bus-Swap neu eingesetzt, deshalb hier per id gesucht
-    // statt einmal gemerkt.
-    const hh = h || document.getElementById('hdr-clock');
-    if (hh) hh.textContent = uhr;
+    const t = new Date(Date.now() + versatz);
+    c.textContent = t.toLocaleDateString('en-GB') + ' ' + t.toLocaleTimeString('en-GB');
   };
   tick(); setInterval(tick, 1000);
 })();
@@ -1954,7 +1980,8 @@ _TIME_JS = """
 """
 
 
-def _header(active: str, status: dict | None = None) -> str:
+def _header(active: str, status: dict | None = None, *,
+            scheduler_now: float | None = None, now: float | None = None) -> str:
     """Gemeinsame obere Navigationsleiste: links Titel + reine Tab-Leiste,
     rechts alle Toggles (FOLLOW/RESCAN/MAINT/Datum-Uhrzeit/THEME) — Bibi4-
     Iteration, User-Fund: "Tabs links, Toggles rechts" (löst die PLAN-21-
@@ -1966,8 +1993,10 @@ def _header(active: str, status: dict | None = None) -> str:
     (``/-/status``), keine neue Datenquelle nötig."""
     roles = (status or {}).get("roles")
     left = f'<h1>bibi</h1>{_screen_nav(active, roles)}'
+    # Die Uhr zeigt die Zeit des Schedulers, nicht die eigene — deshalb reisen
+    # sein `now` und der Renderzeitpunkt bis hierher durch.
     right = (f'{_ops_handles(status)}{_time_toggle()}'
-            f'{_live_clock()}{_theme_toggle()}')
+            f'{_live_clock(scheduler_now, now)}{_theme_toggle()}')
     return (f'<header><div class="nav-left">{left}</div>'
             f'<div class="nav-right">{right}</div></header>')
 
@@ -2006,7 +2035,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f'<script src="{_CHARTJS}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Jobs', daemon_status)}"
+        f"{_header('Jobs', daemon_status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now, bucket_minutes=bucket_minutes)}"
         f"{schedules_fragment(schedules, now, typ=typ, status=status, public_host=public_host, sparklines=sparklines, sort=sort, direction=direction)}"
@@ -2126,7 +2155,7 @@ def log_page(daemon_status: dict | None = None, *, git_status: dict | None = Non
         "<title>bibi · Live-Log</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Live Log', status)}"
+        f"{_header('Live Log', status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{_log_panel()}"
@@ -2944,7 +2973,7 @@ def jobs_archive_page(runs: list[dict], now: float | None = None,
         "<title>bibi · Archive</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Archive', daemon_status)}"
+        f"{_header('Archive', daemon_status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{jobs_archive_fragment(runs, now)}"
         f"<script>{_EVENTS_JS}</script>"
@@ -2994,7 +3023,7 @@ def jobs_page(
         "<title>bibi · Jobs</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Jobs', daemon_status)}"
+        f"{_header('Jobs', daemon_status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, client_rows=rows)}"
         f"{jobs_fragment(rows, local_runs, now=now, public_host=public_host, sparklines=sparklines, lazy_sparklines=lazy_sparklines, typ=typ, status=status, sort=sort, direction=direction)}"
@@ -3460,7 +3489,7 @@ def feed_page(
         "<title>bibi · Feed</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Feed', status)}"
+        f"{_header('Feed', status, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{feed_fragment(feed_data, days=days, weeks=weeks, now=now)}"
