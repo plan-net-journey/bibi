@@ -4471,9 +4471,14 @@ def job_runs_fragment(gruppen: list, *, now: float) -> str:
                 'holds its history.</div>')
     aus = []
     for g in gruppen:
-        status = g.slot.get("status") or "pending"
+        status = g.slot.get("status")
         reason = g.slot.get("reason")
-        zustand = f"{status} &middot; {_e(reason)}" if reason else _e(status)
+        if not status:
+            # Kein Platz auf dieser Seite — die Laeufe stehen trotzdem da
+            # (`bibi-ctrl run` legt keinen Slot fuer den Basis-Slug an).
+            zustand = '<span class="slot-none">no slot &mdash; local runs only</span>'
+        else:
+            zustand = f"{_e(status)} &middot; {_e(reason)}" if reason else _e(status)
         titel = f"{g.quelle}" + (f" &middot; {_e(g.host)}" if g.host else "")
         n = g.gesamt
         aus.append(

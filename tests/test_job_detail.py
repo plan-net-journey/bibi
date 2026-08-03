@@ -332,3 +332,27 @@ def test_an_empty_run_list_says_what_to_do(client):
     c, _ = _md_job(client)
     text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
     assert "No runs yet" in text
+
+
+def test_a_side_that_has_runs_but_no_slot_still_gets_a_group():
+    """Live gefunden (2026-08-03): `EngineCI` hat lokale Laeufe, aber keinen
+    lokalen Slot — `bibi-ctrl run` legt Pseudo-Jobs mit Zufallssuffix an
+    (`EngineCI-46ec57c7`), der Basis-Slug hat dort keine Zeile. Die Bedingung
+    "kein Slot ⇒ keine Gruppe" schluckte damit die Laeufe mit.
+
+    §5.1 sagt: eine Gruppe fehlt, wenn die Seite den Job **nicht kennt** —
+    "keine MD, **nie gelaufen**". Wer gelaufen ist, ist bekannt. Die Gruppe
+    erscheint also, nur ohne Slot-Zustand und ohne Knoepfe: es gibt keinen
+    Platz zu bedienen, aber sehr wohl etwas zu zeigen."""
+    gruppen = _grp(scheduler_slot={"status": "pending"},
+                   local_runs=[{"finished_at": 1_754_000_000.0, "status": "complete"}])
+    assert [g.quelle for g in gruppen] == ["SCHEDULER", "LOCAL"]
+    lokal = gruppen[1]
+    assert lokal.slot == {}          # kein Platz
+    assert lokal.aktionen == frozenset()
+    assert len(lokal.runs) == 1      # aber Historie
+
+
+def test_a_side_with_neither_slot_nor_runs_stays_hidden():
+    """Die Gegenprobe — sonst zeigte jeder Job zwei Gruppen, davon eine leer."""
+    assert [g.quelle for g in _grp(scheduler_slot={"status": "pending"})] == ["SCHEDULER"]

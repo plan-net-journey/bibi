@@ -486,7 +486,19 @@ def build_groups(*, scheduler_slot: dict | None, local_slot: dict | None,
         ("SCHEDULER", scheduler_slot, scheduler_runs, scheduler_host, scheduler_total),
         ("LOCAL", local_slot, local_runs, local_host, local_total),
     ):
+        if zeile is None and not runs:
+            continue
         if zeile is None:
+            # Kennt die Seite, hat aber keinen Platz: so sieht ein Job aus, der
+            # lokal nur über `bibi-ctrl run` lief — `run_pinned()` legt je Lauf
+            # einen Pseudo-Job mit Zufallssuffix an, der Basis-Slug bekommt dort
+            # nie eine Zeile. §5.1 lässt eine Gruppe nur weg, wenn die Seite den
+            # Job *nicht kennt* („keine MD, nie gelaufen") — wer gelaufen ist,
+            # ist bekannt. Ohne diesen Zweig verschwänden live sämtliche lokalen
+            # Läufe (Befund bei der Abnahme, 2026-08-03).
+            aus.append(RunGroup(
+                quelle=quelle, host=host, slot={}, aktionen=frozenset(),
+                runs=list(runs), gesamt=gesamt if gesamt is not None else len(runs)))
             continue
         status = zeile.get("status") or "pending"
         try:
