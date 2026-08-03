@@ -296,6 +296,7 @@ def add_controller_routes(
 
     @app.get("/-/", include_in_schema=False)
     def root(request: Request, days: int | None = None, weeks: int | None = None):
+        _sched = _scheduler_status()
         # Home = Feed (PLAN-18 Stufe 18.3, löst 2026-07-04 "Home = Schedules"
         # bewusst ab). Browser → Feed-Screen; Nicht-Browser → JSON-Deskriptor
         # (§1.1 bleibt an der Wurzel gewahrt). Schedules bleibt unter
@@ -308,7 +309,7 @@ def add_controller_routes(
                 _feed_data(eff_days, eff_weeks), git_status=_feed_git_status(),
                 host_url=_scheduler_url(), days=eff_days, weeks=eff_weeks,
                 daemon_status=_status(),
-                client_rows=_client_rows_for_status()))
+                client_rows=_client_rows_for_status(), scheduler=_sched[0], scheduler_stale_since=_sched[1]))
         return JSONResponse(service_descriptor(roles))
 
     @app.get("/-/ui/feed/board", include_in_schema=False)
@@ -323,9 +324,11 @@ def add_controller_routes(
         # Bus-Refetch-Ziel von #feedstatus (Target "feedstatus", PLAN-36
         # Stufe 36.3; zusätzlich bibiMaintChanged-Trigger des MAINT-Toggles)
         # — dieselben Datenquellen wie root(), nur ohne Heatmap/Änderungsliste.
+        sched, stale = _scheduler_status()
         return HTMLResponse(render.feed_status_fragment(
             _status(), _feed_git_status(), _scheduler_url(), time.time(),
-            client_rows=_client_rows_for_status()))
+            client_rows=_client_rows_for_status(),
+            scheduler=sched, scheduler_stale_since=stale))
 
     @app.post("/-/ui/self/update", include_in_schema=False)
     def self_update():
@@ -352,9 +355,11 @@ def add_controller_routes(
         # Kurz warten, damit die neu gerenderte Kachel nicht noch den alten
         # Zustand zeigt und der Knopf folgenlos wirkt (wie bei den Node-Verben).
         time.sleep(1.0)
+        sched, stale = _scheduler_status()
         return HTMLResponse(render.feed_status_fragment(
             _status(), _feed_git_status(), _scheduler_url(), time.time(),
-            client_rows=_client_rows_for_status()))
+            client_rows=_client_rows_for_status(),
+            scheduler=sched, scheduler_stale_since=stale))
 
     @app.get("/-/ui/feed/jobstatus", include_in_schema=False)
     def feed_jobstatus():
@@ -425,6 +430,7 @@ def add_controller_routes(
     def schedules_screen(request: Request, typ: str | None = None, status: str | None = None,
                          sort: str | None = None, dir: str | None = None,
                          res: int | None = None):
+        _sched = _scheduler_status()
         # Der Schedules-Screen (Seite): Nav + Ops-Handles + Status-Kacheln
         # (Host/Mode/Git/Job-Status, wie /-/) + Stat-Grid/Landungs-Histogramm
         # (PLAN-21 Befund 11) + Filter + gefilterte, self-pollende Liste.
@@ -444,7 +450,7 @@ def add_controller_routes(
             landings=_landings(), git_status=_feed_git_status(), host_url=_scheduler_url(),
             bucket_minutes=eff_res,
             public_host=config.public_host(), sparklines=sparklines,
-            sort=eff_sort, direction=eff_dir))
+            sort=eff_sort, direction=eff_dir, scheduler=_sched[0], scheduler_stale_since=_sched[1]))
         _set_filter_cookies(resp, eff_typ, eff_status)
         _set_sort_cookies(resp, eff_sort, eff_dir)
         _set_resolution_cookie(resp, eff_res)
@@ -469,6 +475,7 @@ def add_controller_routes(
 
     @app.get("/-/ui/archive", include_in_schema=False)
     def archive_screen():
+        _sched = _scheduler_status()
         # Archive-Screen (Host, Bibi4-Iteration) — eigener Screen für Archive/
         # Journal, seit dieser Iteration nicht mehr Teil von /-/ui/schedules
         # (User-Fund: "Archive wird verschoben auf einen eigenen Screen").
@@ -480,7 +487,7 @@ def add_controller_routes(
             all_scheds, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(),
             public_host=config.public_host(),
-            sparklines=_sched_sparkline_series(all_scheds)))
+            sparklines=_sched_sparkline_series(all_scheds), scheduler=_sched[0], scheduler_stale_since=_sched[1]))
 
     @app.get("/-/ui/archive/list", include_in_schema=False)
     def archive_list_fragment():
@@ -558,6 +565,7 @@ def add_controller_routes(
 
     @app.get("/-/ui/clients", include_in_schema=False)
     def clients_screen():
+        _sched = _scheduler_status()
         # Nodes-Screen (Host, Bibi4-Iteration, Batch 9 Punkt 3 umbenannt von
         # "Clients") — Backend (WorkerRegistry, /-/worker) existierte schon
         # lange, hier nur die Darstellung. status["workers"] kommt schon über
@@ -567,7 +575,7 @@ def add_controller_routes(
         workers = [_host_worker_entry(), *(status.get("workers") or [])]
         return HTMLResponse(render.clients_page(
             workers, daemon_status=status, git_status=_feed_git_status(),
-            host_url=_scheduler_url()))
+            host_url=_scheduler_url(), scheduler=_sched[0], scheduler_stale_since=_sched[1]))
 
     @app.get("/-/ui/clients/board", include_in_schema=False)
     def clients_board_fragment():
@@ -709,10 +717,11 @@ def add_controller_routes(
 
     @app.get("/-/ui/logs", include_in_schema=False)
     def logs_page():
+        _sched = _scheduler_status()
         return HTMLResponse(render.log_page(
             daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(),
-            client_rows=_client_rows_for_status()))
+            client_rows=_client_rows_for_status(), scheduler=_sched[0], scheduler_stale_since=_sched[1]))
 
     def _jobs_data() -> tuple[list, dict]:
         """PLAN-21 Befund 10, User-Entscheidung: der Jobs-Screen dient
@@ -888,6 +897,7 @@ def add_controller_routes(
     @app.get("/-/ui/jobs", include_in_schema=False)
     def jobs_screen(request: Request, typ: str | None = None, status: str | None = None,
                     sort: str | None = None, dir: str | None = None):
+        _sched = _scheduler_status()
         # Revert (User-Fund 2026-07-22, live: die Lazy-Variante (19 Pro-Slug-
         # hx-get-Requests + 2s-Self-Poll gleichzeitig) hängte den Browser-Tab
         # komplett auf — reproduziert in mehreren frischen Tabs, Server
@@ -909,7 +919,7 @@ def add_controller_routes(
             rows, local_runs, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(),
             public_host=config.public_host(), sparklines=sparklines,
-            typ=eff_typ, status=eff_status, sort=eff_sort, direction=eff_dir))
+            typ=eff_typ, status=eff_status, sort=eff_sort, direction=eff_dir, scheduler=_sched[0], scheduler_stale_since=_sched[1]))
         _set_filter_cookies(resp, eff_typ, eff_status)
         _set_sort_cookies(resp, eff_sort, eff_dir)
         return resp
@@ -954,6 +964,7 @@ def add_controller_routes(
 
     @app.get("/-/ui/jobs/archive", include_in_schema=False)
     def jobs_archive_screen():
+        _sched = _scheduler_status()
         # Archive-Screen (Client, Bibi4-Iteration) — eigener Screen für die
         # lokale Lauf-Historie, seit dieser Iteration nicht mehr Teil von
         # /-/ui/jobs (User-Fund: "der untere Abschnitt lokale Läufe wandert
@@ -962,7 +973,7 @@ def add_controller_routes(
         return HTMLResponse(render.jobs_archive_page(
             _jobs_archive_runs(), daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(),
-            client_rows=_client_rows_for_status()))
+            client_rows=_client_rows_for_status(), scheduler=_sched[0], scheduler_stale_since=_sched[1]))
 
     @app.get("/-/ui/jobs/archive/list", include_in_schema=False)
     def jobs_archive_list_fragment():

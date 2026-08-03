@@ -122,3 +122,31 @@ def test_no_job_matrix_and_no_status_cards():
     html = _header()
     assert "statuscards" not in html
     assert "jobmatrix" not in html and "job-matrix" not in html
+
+
+# ── die Werte, die live gefehlt haben (Live-Abnahme 2026-08-03) ────────────
+
+
+def test_project_row_shows_the_short_commit():
+    """`synced: 4715f43` — der Stand gehört an die Sync-Angabe, sonst sagt
+    „synced" nur, dass es *irgendwann* stimmte. Das Feld heißt `oid` und ist
+    der volle Hash; angezeigt werden sieben Zeichen."""
+    git = dict(GIT)
+    git.pop("commit", None)
+    git["oid"] = "4715f4319ab2c8d7e6f5a4b3c2d1e0f9a8b7c6d5"
+    html = render.status_header(CLIENT_STATUS, git, scheduler=SCHEDULER_STATUS, now=NOW,
+                                scheduler_host="sarasate")
+    assert "synced: 4715f43" in html
+    assert "4715f4319ab2" not in html, "gekürzt, nicht voll"
+
+
+def test_next_job_reads_the_schedulers_own_field():
+    """Die Zeit bis zur nächsten Feuerung steht in `job_stats.next_due_at` —
+    live stand hier `—`, weil ich das Feld auf oberster Ebene erwartet hatte."""
+    sched = {"hostname": "sarasate", "workers": [],
+             "job_stats": {"counts": {"complete": 9, "killed": 1},
+                           "next_due_at": NOW + 120}}
+    html = render.status_header(CLIENT_STATUS, GIT, scheduler=sched, now=NOW,
+                                scheduler_host="sarasate")
+    assert "in 2 min" in html
+    assert "1 stopped, 9 finished" in html

@@ -786,7 +786,9 @@ def archive_fragment(schedules: list[dict], now: float | None = None,
 def archive_page(schedules: list[dict], now: float | None = None,
                  *, daemon_status: dict | None = None, git_status: dict | None = None,
                  host_url: str | None = None, public_host: str = "localhost",
-                 sparklines: dict[str, list[int]] | None = None) -> str:
+                 sparklines: dict[str, list[int]] | None = None,
+        scheduler: dict | None = None,
+        scheduler_stale_since: float | None = None,) -> str:
     """Archive-Screen (Host, Bibi4-Iteration) — eigene Seite für Archive/
     Journal, abgetrennt von der aktiven Schedule-Liste auf ``/-/ui/schedules``.
     Dieselben Nav/Ops-Bausteine wie jede andere Seite (``_header()``).
@@ -806,7 +808,7 @@ def archive_page(schedules: list[dict], now: float | None = None,
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Archive', daemon_status)}"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{archive_fragment(schedules, now, public_host=public_host, sparklines=sparklines)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
@@ -1198,7 +1200,9 @@ def clients_fragment(workers: list[dict], now: float | None = None, *,
 
 def clients_page(workers: list[dict], now: float | None = None, *,
                  daemon_status: dict | None = None, git_status: dict | None = None,
-                 host_url: str | None = None) -> str:
+                 host_url: str | None = None,
+        scheduler: dict | None = None,
+        scheduler_stale_since: float | None = None,) -> str:
     """Nodes-Screen (Batch 9 Punkt 3: umbenannt von "Clients" — Nav-Label +
     Tabellen-Überschrift, Route/interne Namen bewusst unverändert, analog zur
     Host/Client-Jobs-Umbenennung weiter oben) — nur für die ``scheduler``-
@@ -1218,7 +1222,7 @@ def clients_page(workers: list[dict], now: float | None = None, *,
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Nodes', daemon_status)}"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{clients_fragment(workers, now)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
@@ -1706,8 +1710,11 @@ def status_header(
     zweig = git_status.get("branch") or "—"
     baum = git_status.get("tree") or "—"
     sync = git_status.get("sync") or "—"
-    commit = git_status.get("commit")
-    projekt = f'{zweig} · {baum} · {sync}' + (f': {commit}' if commit else "")
+    # `oid` ist der volle Hash aus `working_tree_status()`; sieben Zeichen
+    # genuegen und sind das, was man weitergibt. `commit` bleibt als Alias
+    # zugelassen, weil aeltere Aufrufer ihn kurz uebergeben.
+    oid = git_status.get("oid") or git_status.get("commit")
+    projekt = f'{zweig} · {baum} · {sync}' + (f': {oid[:7]}' if oid else "")
     # Eskalierte Merge-Quarantäne (`stuck`) gehört in diese Zeile, obwohl die
     # FE-Spezifikation §2 sie nicht nennt: bisher hatte sie eine eigene Zahl in
     # der Git-Kachel, und ein Branch, der dreimal nicht mergen konnte, wartet
@@ -1742,10 +1749,13 @@ def status_header(
     titel_zusatz = f' — no contact for {_human_duration(now - scheduler_stale_since)}' if stale else ""
 
     clients = len(sched.get("workers") or [])
-    counts = ((sched.get("job_stats") or {}).get("counts") or {})
+    counts_quelle = sched.get("job_stats") or {}
+    counts = counts_quelle.get("counts") or {}
     gestoppt = sum(counts.get(z, 0) for z in _STOPPED_STATES)
     fertig = counts.get("complete", 0)
-    naechster = _until(sched.get("next_fire_at"), now)
+    # `next_due_at` liegt in `job_stats`, nicht auf oberster Ebene — live stand
+    # hier ein Strich, weil ich es eine Ebene zu hoch gesucht hatte.
+    naechster = _until(counts_quelle.get("next_due_at") or sched.get("next_fire_at"), now)
     next_job = f'{naechster}, {gestoppt} stopped, {fertig} finished'
 
     hoch = sched.get("started_at")
@@ -1921,7 +1931,9 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
                    bucket_minutes: int = _DEFAULT_RESOLUTION_MINUTES,
                    public_host: str = "localhost",
                    sparklines: dict[str, list[int]] | None = None,
-                   sort: str | None = None, direction: str | None = None) -> str:
+                   sort: str | None = None, direction: str | None = None,
+        scheduler: dict | None = None,
+        scheduler_stale_since: float | None = None,) -> str:
     """Der Schedules-Screen: Nav + Ops-Handles (RESCAN/MAINT, User-Feedback
     2026-07-03) + Status-Kacheln (Host/Mode/Git/Job-Status, User-Fund: "diesen
     Header möchte ich auch im /-/ui/schedules haben" — dieselbe
@@ -1946,7 +1958,7 @@ def schedules_page(schedules: list[dict], typ: str | None = None,
         f'<script src="{_CHARTJS}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Jobs', daemon_status)}"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{timeseries_fragment(landings or [], daemon_status.get('job_stats'), now, bucket_minutes=bucket_minutes)}"
         f"{schedules_fragment(schedules, now, typ=typ, status=status, public_host=public_host, sparklines=sparklines, sort=sort, direction=direction)}"
         f"<script>{_EVENTS_JS}</script>"
@@ -2042,7 +2054,9 @@ def _log_panel() -> str:
 
 def log_page(daemon_status: dict | None = None, *, git_status: dict | None = None,
              host_url: str | None = None, now: float | None = None,
-             client_rows: list[dict] | None = None) -> str:
+             client_rows: list[dict] | None = None,
+        scheduler: dict | None = None,
+        scheduler_stale_since: float | None = None,) -> str:
     """Live-Log-Panel (§5.4 Slice C): EventSource gegen ``/-/log/stream``, mit
     Level- + Text-Filter (Rolle/Event/slug/msg). Reines FE; der Daemon liefert
     die Events als SSE (der Log-Stream bleibt bewusst ein eigener Strom neben
@@ -2065,7 +2079,7 @@ def log_page(daemon_status: dict | None = None, *, git_status: dict | None = Non
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Live Log', status)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows)}"
+        f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{_log_panel()}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
@@ -2864,7 +2878,9 @@ def jobs_archive_fragment(runs: list[dict], now: float | None = None) -> str:
 def jobs_archive_page(runs: list[dict], now: float | None = None,
                       *, daemon_status: dict | None = None, git_status: dict | None = None,
                       host_url: str | None = None,
-                      client_rows: list[dict] | None = None) -> str:
+                      client_rows: list[dict] | None = None,
+        scheduler: dict | None = None,
+        scheduler_stale_since: float | None = None,) -> str:
     """Archive-Screen (Client, Bibi4-Iteration) — eigene Seite für die lokale
     Lauf-Historie, abgetrennt von der Jobs-Liste auf ``/-/ui/jobs``. Dieselben
     Nav/Ops-Bausteine wie jede andere Seite (``_header()``), analog zu
@@ -2880,7 +2896,7 @@ def jobs_archive_page(runs: list[dict], now: float | None = None,
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Archive', daemon_status)}"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now, client_rows=client_rows)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{jobs_archive_fragment(runs, now)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
@@ -2900,7 +2916,8 @@ def jobs_page(
     lazy_sparklines: bool = False,
     typ: str | None = None, status: str | None = None,
     sort: str | None = None, direction: str | None = None,
-) -> str:
+        scheduler: dict | None = None,
+        scheduler_stale_since: float | None = None,) -> str:
     """Jobs-Screen (PLAN-17 Stufe 17.2, umgebaut PLAN-21 Befund 10): lokale
     Repository-Realität + Git-Status + letzter Start/Ende/Laufzeit je Zeile.
     Rein lokal — funktioniert auch auf einem reinen Client (kein Scheduler/
@@ -3380,7 +3397,8 @@ def feed_page(
     days: int | None = None, weeks: int | None = None,
     daemon_status: dict | None = None, now: float | None = None,
     client_rows: list[dict] | None = None,
-) -> str:
+        scheduler: dict | None = None,
+        scheduler_stale_since: float | None = None,) -> str:
     """Feed-Screen — jetzt Home (``/-/``): fixierte Status-Kacheln (Host/Mode/
     Git, PLAN-19 Befund 4) + Heatmap + aggregierte Änderungsliste. Kein
     Daemon-Log hier (User-Entscheidung, PLAN-18 Rückmeldung 11)."""
@@ -3395,7 +3413,7 @@ def feed_page(
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Feed', status)}"
         f"<script>{_CLOCK_JS}</script>"
-        f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows)}"
+        f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{feed_fragment(feed_data, days=days, weeks=weeks, now=now)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
