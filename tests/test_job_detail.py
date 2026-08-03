@@ -90,6 +90,10 @@ class _FakeClient:
     def journal(self, **_):
         return []
 
+    def run_output(self, jid):
+        # Der Host haelt den Output seiner eigenen Laeufe.
+        return {"events": [{"text": f"scheduler run {jid}"}]} if jid == 23611 else {}
+
     def run_journal(self, **_):
         return []
 
@@ -439,3 +443,17 @@ def test_every_run_keeps_its_own_url(client):
     jid = _seed_run(root)
     text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
     assert f'data-jid="{jid}"' in text
+
+
+def test_the_output_of_a_scheduler_run_comes_from_the_host(client):
+    """Live gefunden: die Journal-IDs der beiden Seiten sind verschiedene
+    Zaehler — lokal reicht er bis 2224, beim Scheduler bis 23611. Eine
+    Output-Route, die nur lokal sucht, antwortet fuer fast jeden Lauf des
+    Screens mit 404, weil die meisten drueben liefen.
+
+    Beide Seiten sind eigenstaendig (Zustandsmodell §1); zusammengefuehrt wird
+    in der Anzeige, und dazu gehoert, den Output dort zu holen, wo er liegt."""
+    c, _ = _md_job(client)
+    r = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs/23611/output")
+    assert r.status_code == 200
+    assert "scheduler run 23611" in r.text

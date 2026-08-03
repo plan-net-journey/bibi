@@ -1320,7 +1320,21 @@ def add_controller_routes(
         finally:
             conn.close()
         if zeile is None:
-            return PlainTextResponse("", status_code=404)
+            # Nicht lokal: dann lief er drueben. Die Journal-IDs der beiden
+            # Seiten sind verschiedene Zaehler (live: lokal bis 2224, beim
+            # Scheduler bis 23611) — wer nur lokal sucht, antwortet fuer fast
+            # jeden Lauf des Screens mit 404. Beide Seiten sind eigenstaendig
+            # (Zustandsmodell §1); zusammengefuehrt wird in der Anzeige, und
+            # dazu gehoert, den Output dort zu holen, wo er liegt.
+            try:
+                antwort = _host_client().run_output(jid) or {}
+            except Exception:  # noqa: BLE001 — defensiv (§2.7)
+                antwort = {}
+            ereignisse = antwort.get("events") or []
+            if not ereignisse:
+                return PlainTextResponse("", status_code=404)
+            return PlainTextResponse("\n".join(
+                str(e.get("text") or e.get("line") or "") for e in ereignisse))
         from bibi import repo as repo_mod
         pfad = repo_mod.root() / (zeile.get("output_ref") or "")
         try:
