@@ -405,3 +405,35 @@ def sortiere(rows: list[JobRow], *, nach: str, richtung: str = "asc") -> list[Jo
         mit.sort(key=lambda r: _sortwert(r, nach), reverse=umgekehrt)
         aus.extend(mit + ohne)
     return aus
+
+
+def slug_for(job_uid_gesucht: str, kandidaten) -> str | None:
+    """Der Weg von der URL zurück zum Job: ``job_uid`` → Slug.
+
+    ``job_uid`` ist ``md5(slug)`` und damit nicht umkehrbar — gesucht wird
+    deshalb vorwärts: jeden bekannten Slug hashen und vergleichen. Das ist
+    kein Umweg, sondern genau die Eigenschaft, die den Schlüssel brauchbar
+    macht: er ist deterministisch und ohne Absprache auf jeder Seite
+    berechenbar (Zustandsmodell §6).
+
+    **Warum nicht ``SELECT slug FROM jobs WHERE job_uid=?``:** das findet nur,
+    was eine Job-Zeile hat. Ein Lauf aus der Historie, dessen MD gelöscht
+    wurde (``dropped``), hat keine — und in Bestandszeilen ist die Spalte
+    ohnehin ``NULL``, weil die Migration bewusst ohne Backfill lief. Eine
+    Kandidatenliste aus Slugs deckt beide Fälle ab, ohne eine zweite Wahrheit
+    einzuführen; wer die Kandidaten beschafft, entscheidet der Aufrufer.
+
+    ``None``, wenn nichts passt — daraus macht der Aufrufer ein 404. Das gilt
+    auch für offensichtlichen Unsinn: ein Sonderweg für kaputte Eingaben
+    brächte einen zweiten Ausgang für dieselbe Antwort.
+    """
+    from bibi.schedule.models import job_uid as _uid
+
+    gesehen: set[str] = set()
+    for slug in kandidaten:
+        if not slug or slug in gesehen:
+            continue
+        gesehen.add(slug)
+        if _uid(slug) == job_uid_gesucht:
+            return slug
+    return None

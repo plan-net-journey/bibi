@@ -4432,3 +4432,53 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
+
+
+def job_detail_page_v5(*, slug: str, spec: dict, now: float,
+                       daemon_status: dict | None = None,
+                       git_status: dict | None = None, host_url: str | None = None,
+                       scheduler: dict | None = None,
+                       scheduler_stale_since: float | None = None,
+                       beziehung: str | None = None) -> str:
+    """Job Detail (FE-Spezifikation §5) — Hülle, Kopfzeile, Quell-Gruppen.
+
+    Der Screen führt **einen** Job und darunter je Quelle eine faltbare Gruppe.
+    Jede Gruppe trägt in ihrer Kopfzeile den **Slot** dieser Seite samt seiner
+    Aktionen; darunter stehen die archivierten Läufe derselben Quelle. Der Slot
+    steht damit unmittelbar über der Liste, in die sein Inhalt wandert: wird
+    ein Lauf terminal, rutscht er aus der Kopfzeile in die erste Zeile darunter.
+    """
+    from bibi.schedule.models import job_uid as _uid
+
+    trigger = spec.get("schedule") or spec.get("at_iso") or "—"
+    typ = spec.get("kind") or "job"
+    rel = f' <span class="rel">({_e(beziehung)})</span>' if beziehung else ""
+    kopf = (
+        '<div class="jd-head">'
+        '<a class="back" href="/-/jobs">&#9666; jobs</a>'
+        f'<span class="jd-slug">{_e(slug)}</span>{rel}'
+        f'<span class="jd-meta">{_e(typ)} &middot; {_e(str(trigger))}</span>'
+        f'<a class="cta" href="/-/jobs/{_uid(slug)}/attrs">[ATTRS]</a>'
+        "</div>"
+    )
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>bibi &middot; {_e(slug)}</title>"
+        f"<style>{_CSS}</style>"
+        f'<script src="/-/static/htmx-1.9.12.min.js"></script>'
+        "</head><body>"
+        f"{_header('Jobs', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
+        f"{kopf}"
+        # Am Bus: `archived` meldet, dass ein Lauf ins Journal gewandert ist —
+        # die einzige Verbindung zwischen Strom und Liste (m.rau/bibi#108).
+        '<div id="runs" data-bus="archived">'
+        "</div>"
+        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_TIME_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )

@@ -1214,6 +1214,52 @@ def add_controller_routes(
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             return []
 
+    def _slug_kandidaten() -> list[str]:
+        """Alle Slugs, hinter denen ein ``job_uid`` stecken kann.
+
+        Drei Quellen, weil keine allein reicht: die lokalen MDs (auch für
+        Jobs, die noch nie liefen), die Scheduler-Schedules (auch für solche
+        ohne lokale MD) und das Journal (auch für heimatlose Läufe, deren MD
+        gelöscht wurde — sonst wäre der Archive-Screen ein Weg ins Nichts).
+        """
+        aus: list[str] = []
+        for e in _local_job_mds():
+            if e.get("slug"):
+                aus.append(e["slug"])
+        for e in _host_schedules():
+            if e.get("slug"):
+                aus.append(e["slug"])
+        for e in _journal_for_rows():
+            if e.get("slug"):
+                aus.append(e["slug"])
+        return aus
+
+    @app.get("/-/jobs/{job_uid}", include_in_schema=False)
+    def screen_job_detail(request: Request, job_uid: str):  # noqa: ARG001
+        """Ein Job, seine Slots und seine Läufe (FE-Spezifikation §5).
+
+        Die URL trägt den ``job_uid``; der Weg zurück zum Slug läuft über
+        ``jobs_view.slug_for()`` — md5 ist nicht umkehrbar, also wird über die
+        bekannten Slugs gesucht.
+        """
+        import time as _t
+
+        from bibi.controller import jobs_view
+        slug = jobs_view.slug_for(job_uid, _slug_kandidaten())
+        if slug is None:
+            return JSONResponse(status_code=404,
+                                content={"error": "job not found", "job_uid": job_uid})
+        spec: dict = {}
+        for e in _local_job_mds():
+            if e.get("slug") == slug:
+                spec = e
+                break
+        _sched = _scheduler_status()
+        return HTMLResponse(render.job_detail_page_v5(
+            slug=slug, spec=spec, now=_t.time(), daemon_status=_status(),
+            git_status=_feed_git_status(), host_url=_scheduler_url(),
+            scheduler=_sched[0], scheduler_stale_since=_sched[1]))
+
     def _local_run_status() -> dict:
         """Letzter lokaler Lauf je Slug — die rechte Hälfte der Zeile."""
         try:
