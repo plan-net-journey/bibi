@@ -649,13 +649,17 @@ def test_finish_exhausted_retries_reaches_error_not_stuck_running(tmp_path):
 
     c2 = job_db.connect(db_path)
     row = c2.execute("SELECT status, reason, exit_code FROM jobs WHERE id='z11'").fetchone()
-    jrows = job_db.list_journal(c2)
-    c2.close()
     assert row["status"] == "error"
     assert row["reason"] == "nonzero_exit"
     assert row["exit_code"] == 1
-    # Genau ein Journal-Eintrag — der transiente "failed"-Zwischenschritt ist
-    # nicht TERMINAL, erzeugt also keinen zweiten (doppelten) Eintrag.
+    # A2 (m.rau/bibi#101): der erschoepfte Lauf bleibt im Slot stehen.
+    assert job_db.list_journal(c2) == []
+    # Die eigentliche Aussage bleibt: beim Abraeumen entsteht genau EIN Eintrag
+    # — der transiente "failed"-Zwischenschritt ist nicht terminal und erzeugt
+    # keinen zweiten (doppelten).
+    job_db.start_now(c2, "z11")
+    jrows = job_db.list_journal(c2)
+    c2.close()
     assert len(jrows) == 1 and jrows[0]["status"] == "error"
 
 

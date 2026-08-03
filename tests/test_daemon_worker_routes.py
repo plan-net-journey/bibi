@@ -298,6 +298,11 @@ def test_kill_writes_output_ref_into_journal(client):
     assert r.status_code == 200
     conn = job_db.connect()
     try:
+        # A2 (m.rau/bibi#101): `killed` blockiert den Slot, die Journal-Zeile
+        # entsteht erst beim Abraeumen. Der Verweis muss die Wartezeit im Slot
+        # ueberstehen — genau das prueft dieser Test jetzt zusaetzlich mit.
+        assert job_db.list_journal(conn) == []
+        job_db.start_now(conn, jid)
         row = conn.execute(
             "SELECT output_ref FROM journal WHERE run_id=? AND status='killed'",
             (run_id,)).fetchone()

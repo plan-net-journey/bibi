@@ -27,7 +27,18 @@ from bibi.schedule import discovery, dispatcher, lifecycle
 from bibi.schedule.models import Kind, Status, display_kind, job_uid
 from bibi.schedule.parser import SPECIAL_SCHEDULES, ParseResult
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
+
+#: Terminalzustände, die den Slot **blockieren** statt ihn freizugeben — alle
+#: außer ``complete`` (Archivierungsregel A2, Zustandsmodell §3). Sie bleiben in
+#: der Scheduler-DB stehen, bis ein Mensch START oder RESET auslöst; solange
+#: feuert der Job nicht mehr, auch wenn sein Cron-Ausdruck weiter gilt. Das ist
+#: eine bewusste Entscheidung mit Preis (m.rau, 2026-08-02: „error bleibt
+#: terminal"), abgefedert durch die Retry-Kette davor: ``error`` wird erst nach
+#: ``exhaust`` erreicht, also nachdem die Wiederholungen aufgebraucht sind.
+_BLOCKS_THE_SLOT = frozenset(
+    {Status.ERROR, Status.INACTIVE, Status.ZOMBIE, Status.KILLED}
+)
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -211,6 +222,19 @@ def _mig_job_uid(conn: sqlite3.Connection) -> None:  # v19 → v20
                          "ON journal (job_uid)")
 
 
+def _mig_jobs_commit(conn: sqlite3.Connection) -> None:  # v20 → v21
+    # Der Slot muss den Worktree-Commit seines Laufs halten (m.rau/bibi#101).
+    # Bis zur Archivierungsregel A2 gab es dafür keinen Grund: `commit_sha` und
+    # `branch` kamen als Parameter des Terminal-Reports und wanderten im selben
+    # Aufruf in die Journal-Zeile — zwischen Report und Archivierung lag kein
+    # Zeitraum. Unter A2 liegen dort Tage, in denen der blockierte Lauf im Slot
+    # steht; ohne Ablage wäre die Verbindung Lauf ↔ Vault-Wirkung genau bei den
+    # Läufen verloren, bei denen sie am meisten hilft.
+    for col in ("commit_sha", "branch"):
+        if _has_table(conn, "jobs") and not _has_column(conn, "jobs", col):
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -234,6 +258,7 @@ _MIGRATIONS: dict[int, list] = {
     17: [_mig_approved_nodes],
     18: [_mig_jobs_docker_args],
     19: [_mig_job_uid],
+    20: [_mig_jobs_commit],
 }
 
 
@@ -985,6 +1010,10 @@ def report_status(
         fields["finished_at"] = None
         fields["exit_code"] = None
         fields["output_ref"] = None
+        # Auch der Worktree-Commit gehört dem abgeschlossenen Zyklus (v21) —
+        # er ist zu diesem Zeitpunkt schon archiviert (A2, s. u.).
+        fields["commit_sha"] = None
+        fields["branch"] = None
         # Reset respektiert den Trigger, statt blind sofort zu feuern (User-
         # Feedback: RESET reihte bei `schedule: never` fälschlich einen neuen
         # Lauf ein — "steht ja auf never"). Wiederkehrende Schedules bekommen
@@ -1036,6 +1065,13 @@ def report_status(
         fields["worker"] = worker
     if output_ref is not None:  # nur Referenz — der Scheduler bleibt output-frei (§4.4)
         fields["output_ref"] = output_ref
+    # (v21) Der Slot hält den Worktree-Commit, solange sein Lauf dort steht.
+    # Unter A2 liegen zwischen Terminal-Report und Archivierung Tage; ohne
+    # diese Ablage wäre die Verbindung Lauf ↔ Vault-Wirkung genau dort weg.
+    if commit_sha is not None:
+        fields["commit_sha"] = commit_sha
+    if branch is not None:
+        fields["branch"] = branch
     if target is Status.AWAITING:
         if app_url is not None:
             fields["app_url"] = app_url
@@ -1055,10 +1091,32 @@ def report_status(
         assignments += ", fire=fire+1"
     fields["id"] = job_id
 
-    # Terminal-Übergang → eine Journal-Zeile (disponierte Domäne, §1.4). complete
-    # rearmt NICHT mehr sofort hier — das übernimmt reserve_next() lazy, sobald der
-    # nächste next_fire_at-Tick tatsächlich fällig ist (siehe Kommentar oben).
+    # ── Wann archiviert wird: die Regel A1/A2 (m.rau/bibi#101) ──────────────
     #
+    # Der Übergang ins Journal ist **nicht statusgetrieben**. Er hat genau zwei
+    # Auslöser, und der Unterschied zwischen ihnen ist die Asymmetrie der Folgen:
+    #
+    # **A1 — `complete` archiviert sofort und von selbst.** Bliebe der Lauf
+    # stehen, fände der nächste keinen Platz und die Automatisierung stünde
+    # still. (Das Rearming des Slots übernimmt `reserve_next()` lazy, sobald der
+    # nächste Tick fällig ist — der Platz ist damit frei, ohne dass hier ein
+    # Trigger neu gerechnet wird.)
+    #
+    # **A2 — jeder andere terminale Zustand wartet auf einen Menschen.**
+    # `error`/`inactive`/`zombie`/`killed` bleiben im Slot stehen, bis START
+    # oder RESET sie abräumt; erst diese Aktion schreibt sie ins Journal. Ein
+    # Fehler, der sich selbst archiviert, verschwindet unbemerkt — er wäre nur
+    # noch in einer Liste zu finden, in der niemand nachsieht, während der Job
+    # scheinbar unauffällig weiterläuft.
+    #
+    # Die Archivierung hängt deshalb am **Übergang**, nicht am Zustand: beim
+    # Erreichen von `complete`, und beim Verlassen eines blockierten Slots nach
+    # `pending`. Dass beide Verben (START und RESET) über denselben Übergang
+    # laufen, ist der Grund, warum hier eine Bedingung genügt statt zweier
+    # Sonderwege in den Verb-Funktionen.
+    archives = target is Status.COMPLETE or (
+        current in _BLOCKS_THE_SLOT and target is Status.PENDING)
+
     # **Status und Journal-Zeile sind EIN Vorgang** (m.rau/bibi#95). Ohne Klammer
     # committen sie einzeln (``connect()``: „übrige Schreibpfade committen je
     # Statement") — und dazwischen liegt ein Fenster, in dem jeder Leser einen
@@ -1066,19 +1124,37 @@ def report_status(
     # FE, CLI und jeder andere Knoten lesen dieselbe DB. „Fertig" ist logisch
     # ein Vorgang und darf nicht als zwei sichtbar werden.
     #
-    # Nur der terminale Fall wird geklammert: sonst ist das UPDATE ein einzelnes
-    # Statement und für sich atomar. Eine fremde Transaktion wird nicht
-    # angetastet — dann committet der Aufrufer.
-    if target not in lifecycle.TERMINAL:
+    # Nur der archivierende Fall wird geklammert: sonst ist das UPDATE ein
+    # einzelnes Statement und für sich atomar. Eine fremde Transaktion wird
+    # nicht angetastet — dann committet der Aufrufer.
+    if not archives:
         conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
         return "ok"
+
+    # Die Reihenfolge ist bei den beiden Auslösern verschieden, und sie folgt
+    # daraus, *welchen* Lauf die Journal-Zeile beschreibt:
+    #
+    # A1 — archiviert wird der Lauf, der gerade endet. Erst das UPDATE, dann
+    #      die Zeile: `_write_journal()` liest die Job-Zeile und braucht dort
+    #      den frischen Endzustand (`complete`, `finished_at`, `exit_code`).
+    # A2 — archiviert wird der Lauf, der *vorher* dastand. Erst die Zeile, dann
+    #      das UPDATE: der PENDING-Zweig oben räumt `started_at`, `exit_code`,
+    #      `output_ref` und den Commit weg, und danach wäre der Lauf, den wir
+    #      gerade sichern wollen, nicht mehr rekonstruierbar. Nebenbei trägt die
+    #      Zeile so noch den alten `fire`-Zähler — genau den, unter dem der Lauf
+    #      lief, während `fire+1` schon dem neuen Zyklus gehört.
+    archive_first = target is Status.PENDING
 
     own_tx = not conn.in_transaction
     if own_tx:
         conn.execute("BEGIN IMMEDIATE")
     try:
-        conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
-        _write_journal(conn, job_id, now, commit_sha=commit_sha, branch=branch)
+        if archive_first:
+            _write_journal(conn, job_id, now, commit_sha=commit_sha, branch=branch)
+            conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
+        else:
+            conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
+            _write_journal(conn, job_id, now, commit_sha=commit_sha, branch=branch)
     except BaseException:
         if own_tx:
             conn.execute("ROLLBACK")
@@ -1530,7 +1606,13 @@ def _write_journal(
             "started_at": row["started_at"], "finished_at": row["finished_at"],
             "exit_code": row["exit_code"], "exec_runtime": exec_runtime,
             "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
-            "commit_sha": commit_sha, "branch": branch, "payload": row["payload"],
+            # Der Report reicht sie direkt durch (A1); fehlen sie, stammt der
+            # Aufruf von START/RESET auf einem blockierten Slot (A2) und die
+            # Werte liegen dort, wo der Lauf sie beim Terminal-Report abgelegt
+            # hat (v21).
+            "commit_sha": commit_sha if commit_sha is not None else row["commit_sha"],
+            "branch": branch if branch is not None else row["branch"],
+            "payload": row["payload"],
             "pinned_host": row["pinned_host"],
             # job_full_view() statt job_view() (User-Feedback 2026-07-03: "ein
             # Schedule oder Attempts kann sich ändern" — der Snapshot muss ALLE

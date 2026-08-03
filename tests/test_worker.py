@@ -235,6 +235,10 @@ def test_wall_time_kills_job(gitrepo: Path):
     assert row["status"] == "killed" and row["reason"] == "by_wall_time"
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     try:
+        # A2 (m.rau/bibi#101): `killed` blockiert den Slot, erst das Abraeumen
+        # archiviert — der Reason reist dabei mit.
+        assert job_db.list_journal(conn) == []
+        job_db.start_now(conn, jid)
         assert job_db.list_journal(conn)[0]["reason"] == "by_wall_time"
     finally:
         conn.close()
@@ -290,6 +294,10 @@ def test_retry_then_error(gitrepo: Path, monkeypatch):
     row = _wait_terminal(gitrepo, jid)
     assert row["status"] == "error"
     conn = job_db.connect(dbp)
+    # A2 (m.rau/bibi#101): der erschoepfte Lauf bleibt im Slot stehen — dort ist
+    # er zu sehen. Ins Journal wandert er erst, wenn ihn jemand abraeumt.
+    assert job_db.list_journal(conn) == []
+    job_db.start_now(conn, jid)
     assert any(j["status"] == "error" for j in job_db.list_journal(conn))
     conn.close()
 
@@ -313,6 +321,9 @@ def test_attempts_zero_reaches_error_without_hanging(gitrepo: Path, monkeypatch)
     assert row["attempt"] == 0
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     try:
+        # A2 (m.rau/bibi#101): erst das Abraeumen archiviert.
+        assert job_db.list_journal(conn) == []
+        job_db.start_now(conn, jid)
         assert any(j["status"] == "error" for j in job_db.list_journal(conn))
     finally:
         conn.close()
@@ -358,6 +369,9 @@ def test_retry_exponential_3x_to_error(gitrepo: Path, monkeypatch):
             assert row["status"] == "error"
 
     conn = job_db.connect(dbp)
+    # A2 (m.rau/bibi#101): erst das Abraeumen archiviert.
+    assert job_db.list_journal(conn) == []
+    job_db.start_now(conn, jid)
     assert any(j["status"] == "error" for j in job_db.list_journal(conn))
     conn.close()
 

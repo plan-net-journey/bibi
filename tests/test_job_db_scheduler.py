@@ -288,6 +288,12 @@ def test_report_status_same_terminal_status_is_noop(conn):
         "SELECT finished_at, updated_at, reason FROM jobs WHERE id=?", (jid,)).fetchone()
     assert after["finished_at"] == before["finished_at"] == 100.0
     assert after["updated_at"] == before["updated_at"] == 100.0
+    # A2 (m.rau/bibi#101): `killed` blockiert den Slot und wandert erst auf
+    # START/RESET ins Journal — bis dahin steht dort nichts.
+    assert job_db.list_journal(conn) == []
+    # Die eigentliche Aussage bleibt und wird schärfer: auch nach zwei Reports
+    # entsteht beim Abräumen genau EIN Eintrag, nicht zwei.
+    job_db.start_now(conn, jid, now=300.0)
     assert len(job_db.list_journal(conn)) == 1
 
 
@@ -413,6 +419,10 @@ def test_journal_landings_since_filters(conn):
     jid = _insert(conn, "a", 0, time.time())
     job_db.reserve_next(conn, now=100.0)
     job_db.report_status(conn, jid, status="killed", now=200.0)
+    # A2 (m.rau/bibi#101): erst das Abräumen archiviert. `finished_at` bleibt
+    # dabei der Zeitpunkt des Laufs (200.0) — der Filter arbeitet weiter auf
+    # der Lauf-Zeit, nicht auf der Aufräum-Zeit.
+    job_db.start_now(conn, jid, now=900.0)
     assert job_db.journal_landings(conn, since=250.0) == []
     assert job_db.journal_landings(conn, since=150.0) == [
         {"status": "killed", "finished_at": 200.0}]
@@ -527,6 +537,12 @@ def test_sweep_failed_without_next_fire_at_to_error(conn):
     res = job_db.sweep(conn, now=time.time())
     assert res["errored"] == 1
     assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "error"
+    # A2 (m.rau/bibi#101): der Fehler bleibt im Slot stehen und ist dort zu
+    # sehen; ins Journal wandert er erst, wenn ihn jemand abräumt. Der Beleg
+    # für "erschöpft" ist deshalb der Slot-Zustand, nicht die Journal-Zeile —
+    # was er ohnehin genauer trifft.
+    assert job_db.list_journal(conn) == []
+    job_db.start_now(conn, jid, now=time.time())
     assert any(j["status"] == "error" for j in job_db.list_journal(conn))
 
 

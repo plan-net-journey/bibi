@@ -72,6 +72,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     host            TEXT,
     worker          TEXT,
     output_ref      TEXT,                      -- referenziert output.jsonl (§1.4)
+    -- (v21) Worktree-Commit des laufenden/blockierten Laufs. Der Slot hält ihn,
+    -- solange der Lauf dort steht: unter der Archivierungsregel A2 wandert ein
+    -- terminaler Fehler erst auf START/RESET ins Journal, und bis dahin gäbe es
+    -- sonst keinen Ort für die Verbindung Lauf ↔ Vault-Wirkung.
+    commit_sha      TEXT,
+    branch          TEXT,                      -- agent/<slug>
     pid             INTEGER,                   -- Wrapper-PID (v9, Orphan-Erkennung §10.2)
     pid_started_at  TEXT,                      -- Prozess-Startzeit opak (PID-Recycling-Guard)
     app_url         TEXT,                      -- HITL-Eingabe-Endpunkt der App (v10, §10.4)

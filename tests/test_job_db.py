@@ -573,33 +573,44 @@ def test_reset_increments_fire_and_allows_new_journal_entry(conn, tmp_path: Path
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = conn.execute("SELECT id FROM jobs WHERE slug='once'").fetchone()["id"]
 
-    # Erster Lauf → error
+    def _journal():
+        return conn.execute(
+            "SELECT run_id, status FROM journal WHERE slug='once' ORDER BY id").fetchall()
+
+    # Erster Lauf → error. A2 (m.rau/bibi#101): der Fehler bleibt im Slot
+    # stehen und ist dort zu sehen; das Journal ist noch leer.
     job_db.report_status(conn, jid, status="starting")  # #38: pending -> starting -> running
     job_db.report_status(conn, jid, status="running")
     job_db.report_status(conn, jid, status="failed")
     job_db.report_status(conn, jid, status="error")
     fire1 = conn.execute("SELECT fire FROM jobs WHERE id=?", (jid,)).fetchone()["fire"]
-    j1 = conn.execute("SELECT run_id, status FROM journal WHERE slug='once' ORDER BY id").fetchall()
-    assert len(j1) == 1 and j1[0]["status"] == "error"
+    assert _journal() == []
 
-    # RESET muss fire++ (neue run_id für den nächsten Lauf)
+    # RESET archiviert den blockierten Lauf UND macht fire++ (neue run_id für
+    # den nächsten). Beides ist derselbe Vorgang: der Platz wird geräumt.
     job_db.report_status(conn, jid, status="pending")
+    j1 = _journal()
+    assert len(j1) == 1 and j1[0]["status"] == "error"
     fire2 = conn.execute("SELECT fire FROM jobs WHERE id=?", (jid,)).fetchone()["fire"]
     assert fire2 == fire1 + 1, "fire muss beim RESET erhöht werden"
 
-    # Zweiter Lauf → gleicher Terminal-Status (error), muss trotzdem in den Journal
+    # Zweiter Lauf → gleicher Terminal-Status (error), muss trotzdem einen
+    # eigenen Eintrag bekommen, sobald auch er abgeräumt wird.
     job_db.report_status(conn, jid, status="starting")  # #38: pending -> starting -> running
     job_db.report_status(conn, jid, status="running")
     job_db.report_status(conn, jid, status="failed")
     job_db.report_status(conn, jid, status="error")
-    j2 = conn.execute("SELECT run_id, status FROM journal WHERE slug='once' ORDER BY id").fetchall()
-    assert len(j2) == 2, "zweiter Lauf muss eigenen Journal-Eintrag bekommen"
-    assert j2[0]["run_id"] != j2[1]["run_id"], "run_id muss sich zwischen den Läufen unterscheiden"
 
-    # schedule_view: last_status soll den letzten Lauf zeigen (error, neuere finished_at)
+    # schedule_view: last_status soll den letzten Lauf zeigen — solange er im
+    # Slot steht, ist das der Slot-Zustand selbst.
     scheds = job_db.list_schedules(conn)
     s = next(x for x in scheds if x["slug"] == "once")
     assert s["last_status"] == "error"
+
+    job_db.report_status(conn, jid, status="pending")
+    j2 = _journal()
+    assert len(j2) == 2, "zweiter Lauf muss eigenen Journal-Eintrag bekommen"
+    assert j2[0]["run_id"] != j2[1]["run_id"], "run_id muss sich zwischen den Läufen unterscheiden"
 
 
 def test_reset_from_killed_resets_attempt_to_zero(conn, tmp_path: Path):
@@ -645,14 +656,22 @@ def test_kill_from_complete_archives_and_keeps_old_journal_entry(conn, tmp_path:
     assert row["fire"] == fire1 + 1, "eigener run_id fuer den neuen Zyklus"
     assert row["next_fire_at"] is None, "Lazy Rearm darf diesen Zustand nicht ueberholen"
 
-    entries = conn.execute(
-        "SELECT run_id, status FROM journal WHERE slug='once' ORDER BY id").fetchall()
-    assert [e["status"] for e in entries] == ["complete", "killed"]
-    assert entries[0]["run_id"] != entries[1]["run_id"]
+    def _entries():
+        return conn.execute(
+            "SELECT run_id, status FROM journal WHERE slug='once' ORDER BY id").fetchall()
+
+    # A2 (m.rau/bibi#101): `complete` hat sich selbst archiviert, der frische
+    # `killed`-Zyklus blockiert den Slot und wartet auf einen Menschen.
+    assert [e["status"] for e in _entries()] == ["complete"]
 
     # RESET holt den Job trotzdem jederzeit zurueck in den Schedule (reine
-    # Lauf-Ebene, keine MD-Aenderung noetig).
+    # Lauf-Ebene, keine MD-Aenderung noetig) — und archiviert dabei den
+    # killed-Zyklus. Die eigentliche Aussage bleibt: beide Eintraege stehen
+    # danach nebeneinander, mit verschiedenen run_ids.
     assert job_db.report_status(conn, jid, status="pending") == "ok"
+    entries = _entries()
+    assert [e["status"] for e in entries] == ["complete", "killed"]
+    assert entries[0]["run_id"] != entries[1]["run_id"]
 
 
 def test_schedule_view_shows_pending_after_reset_not_stale_terminal_status(conn, tmp_path: Path):
