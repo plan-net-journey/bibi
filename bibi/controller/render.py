@@ -4471,7 +4471,7 @@ def job_runs_fragment(gruppen: list, *, now: float) -> str:
                 'holds its history.</div>')
     aus = []
     for g in gruppen:
-        status = g.slot.get("status")
+        status = g.slot_status
         reason = g.slot.get("reason")
         if not status:
             # Kein Platz auf dieser Seite — die Laeufe stehen trotzdem da

@@ -454,6 +454,9 @@ class RunGroup:
     host: str | None
     slot: dict
     aktionen: frozenset
+    #: Der Zustand des Slots, aus der Zeile gelesen statt geraten. ``None``
+    #: heisst „diese Seite hat keinen Platz" — nicht ``pending``.
+    slot_status: str | None = None
     runs: list = field(default_factory=list)
     gesamt: int = 0
 
@@ -500,9 +503,13 @@ def build_groups(*, scheduler_slot: dict | None, local_slot: dict | None,
                 quelle=quelle, host=host, slot={}, aktionen=frozenset(),
                 runs=list(runs), gesamt=gesamt if gesamt is not None else len(runs)))
             continue
-        status = zeile.get("status") or "pending"
+        # `row_status` zuerst: so heisst das Feld in den Scheduler-Zeilen aus
+        # `/-/schedule`, wo `status` schlicht `None` ist. Kein Rueckfall auf
+        # `pending` — ein geratener Zustand ist im Bild nicht von einem
+        # gemeldeten zu unterscheiden (Befund bei der Abnahme, 2026-08-03).
+        status = zeile.get("row_status") or zeile.get("status")
         try:
-            aktionen = slot_mod.actions(status)
+            aktionen = slot_mod.actions(status) if status else frozenset()
         except ValueError:
             # Ein Zustand, den das Modell nicht kennt: keine Knöpfe, aber die
             # Gruppe bleibt. Die Läufe sind echt, auch wenn der Slot unklar ist
@@ -510,6 +517,7 @@ def build_groups(*, scheduler_slot: dict | None, local_slot: dict | None,
             aktionen = frozenset()
         aus.append(RunGroup(
             quelle=quelle, host=host, slot=zeile, aktionen=aktionen,
+            slot_status=status,
             runs=list(runs), gesamt=gesamt if gesamt is not None else len(runs)))
     return aus
 

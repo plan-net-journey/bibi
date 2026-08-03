@@ -1277,7 +1277,11 @@ def add_controller_routes(
         sched_runs: list = []
         lokal_runs: list = []
         try:
-            sched_runs = client.journal(slug=slug, limit=200) or []
+            # `_host_client()`, nicht `client`: letzterer zeigt auf den eigenen
+            # Daemon, und dann stünden in der SCHEDULER-Gruppe die lokalen
+            # Läufe — beide Gruppen zeigten dasselbe. Derselbe Fehler wie beim
+            # Bus und beim Jobs-Screen, zum dritten Mal (Befund 2026-08-03).
+            sched_runs = _host_client().journal(slug=slug, limit=200) or []
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
         try:

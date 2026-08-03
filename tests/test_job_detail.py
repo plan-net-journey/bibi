@@ -356,3 +356,27 @@ def test_a_side_that_has_runs_but_no_slot_still_gets_a_group():
 def test_a_side_with_neither_slot_nor_runs_stays_hidden():
     """Die Gegenprobe — sonst zeigte jeder Job zwei Gruppen, davon eine leer."""
     assert [g.quelle for g in _grp(scheduler_slot={"status": "pending"})] == ["SCHEDULER"]
+
+
+def test_the_scheduler_row_uses_row_status_not_status():
+    """Live gefunden: die Scheduler-Zeile aus `/-/schedule` heisst `row_status`,
+    nicht `status` — `status` ist dort `None`. Ein `or "pending"` kaschierte
+    das und zeigte einen Zustand, den niemand gemeldet hatte: geraten statt
+    gelesen, und im Bild nicht von einer echten Reservierung zu unterscheiden.
+    """
+    from bibi.controller import jobs_view
+    g = jobs_view.build_groups(
+        scheduler_slot={"slug": "x", "row_status": "complete", "status": None},
+        local_slot=None, scheduler_runs=[], local_runs=[])[0]
+    assert g.slot_status == "complete"
+
+
+def test_a_slot_without_any_status_is_not_invented():
+    """Kein Rateschritt: fehlt jeder Zustand, sagt der Screen das, statt
+    `pending` zu behaupten."""
+    from bibi.controller import jobs_view
+    g = jobs_view.build_groups(
+        scheduler_slot={"slug": "x"}, local_slot=None,
+        scheduler_runs=[], local_runs=[])[0]
+    assert g.slot_status is None
+    assert g.aktionen == frozenset()
