@@ -1057,6 +1057,19 @@ def run_pinned(
         if pr is None or pr.spec is None:
             raise LookupError(f"kein Schedule mit Slug {slug!r}")
         s = pr.spec
+        if s.at is not None:
+            # `at` ist der einzige Trigger, der sich verbraucht — und damit die
+            # einzige Ausführungsgarantie „genau einmal" im System
+            # (m.rau/bibi#111, Zustandsmodell §5). Ein lokaler Lauf wäre ein
+            # zweiter Verbrauch desselben Termins: der Scheduler feuert seinen
+            # eigenen trotzdem, der Job liefe zweimal und die Garantie wäre
+            # gebrochen, ohne dass es jemand merkt. Abbruch **vor** dem INSERT,
+            # sonst bliebe eine gepinnte Zeile stehen, die nie läuft.
+            raise ValueError(
+                f"{s.slug!r} ist ein Oneshot (at: {s.at}) und läuft nur über den "
+                f"Scheduler — der garantiert genau einmal, ein lokaler Lauf wäre "
+                f"ein zweiter Verbrauch desselben Termins. Soll der Job wiederholt "
+                f"auf Zuruf laufen, gehört 'schedule: adhoc' in die MD statt 'at:'.")
         eff_slug, payload, eff_kind, eff_model = s.slug, s.payload, s.kind.value, s.model
         eff_soul, eff_session = s.soul, s.session
         eff_schedule_ref = pr.schedule_ref
