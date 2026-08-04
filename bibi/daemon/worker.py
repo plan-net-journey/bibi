@@ -1206,18 +1206,42 @@ class Worker:
     def output_path(self, job_id: str) -> Path:
         """``output.jsonl``-Pfad des **aktuellen** Laufs eines Jobs (Live-Routen).
 
-        Löst die stabile ``job_id`` über die DB auf den laufenden run_id
-        (``run_id_for()``) auf — so zeigt ``/-/job/{id}/…`` immer nur den
-        jüngsten Lauf (Historie früherer Läufe läuft über ``output_ref`` im
-        Journal). Ist die ID unbekannt (z. B. ephemerer ``/run``), bleibt sie
-        selbst der Pfad."""
+        **Erst ``jobs.output_ref``, dann die Neuberechnung** — dieselbe
+        Reihenfolge wie ``app.py::_journal_output_path()`` für Journal-Zeilen.
+        Der Verweis ist der Pfad, unter dem der Lauf **tatsächlich** geschrieben
+        hat; die Neuberechnung ist eine Ableitung aus dem Zustand der Zeile
+        *jetzt*. Wo beide auseinanderlaufen, gewinnt die Datei auf Platte.
+
+        Gefunden 2026-08-04 an einem Slot-Lauf auf sarasate (``m.rau/bibi#131``-
+        Nachlauf): ``20260702.at-080500-aa2b`` steht seit dem 3. Juli auf
+        ``error``, seine Ausgabe liegt unter ``data/job/414d6af0/`` — der blossen
+        ``job_id``, wie **alle** Läufe von vor ``run_id_for()`` (2026-07-01, live
+        noch sieben Verzeichnisse). Die Neuberechnung ergab
+        ``data/job/20260702.at-080500-aa2b:0:414d6af0/``, das es nie gab, und die
+        Kachel meldete ``output unavailable``, obwohl die Zeile den richtigen
+        Pfad die ganze Zeit mitführte.
+
+        **Der Fallback bleibt der Normalfall und trägt weiter**: während
+        ``starting``/``running``/``awaiting`` ist die Spalte immer ``NULL`` (der
+        Wrapper füllt sie erst beim Terminal-Report, s. ``local_run_live()``) —
+        also genau in dem Fenster, für das die Live-Routen existieren. Ein
+        veralteter Verweis kann dabei nicht gewinnen: jeder Weg in einen neuen
+        Lauf nullt ihn (``reserve_next()`` beim Lazy Rearm aus ``complete``,
+        ``report_status()`` beim Übergang nach ``pending``, ``_rearm_after_kill()``),
+        und wo ``fire`` gleich bleibt (Retry aus ``failed``/``deferred``), zeigen
+        Verweis und Neuberechnung ohnehin auf dieselbe Datei.
+
+        Ist die ID unbekannt (z. B. ephemerer ``/run``), bleibt sie selbst der
+        Pfad."""
         root, _ = self._roots()
         conn = job_db.connect(self.db_path)
         try:
             row = conn.execute(
-                "SELECT slug, fire FROM jobs WHERE id=?", (job_id,)).fetchone()
+                "SELECT slug, fire, output_ref FROM jobs WHERE id=?", (job_id,)).fetchone()
         finally:
             conn.close()
+        if row is not None and row["output_ref"]:
+            return root / row["output_ref"]
         run_id = job_db.run_id_for(row["slug"], job_id, row["fire"]) if row else job_id
         return _output_path(root, run_id)
 

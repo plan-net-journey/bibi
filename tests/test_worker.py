@@ -1230,6 +1230,45 @@ def test_output_path_resolves_current_run(gitrepo: Path):
     assert w.output_path(jid) == gitrepo / "data" / "job" / run_id / "output.jsonl"
 
 
+def test_output_path_prefers_output_ref(team_repo: Path):
+    # Der Verweis der Zeile schlaegt die Neuberechnung: Laeufe von vor
+    # run_id_for() (2026-07-01) liegen unter der blossen job_id, live noch
+    # sieben Stueck auf sarasate. Wer den Pfad neu rechnet, greift bei ihnen
+    # ins Leere — dieselbe Reihenfolge wie in app.py::_journal_output_path().
+    jid = secrets.token_hex(4)
+    conn = job_db.connect()
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+            "output_ref, enqueued_at, fire) VALUES (?,?,?,?,?, 'error', ?,?,0)",
+            (jid, "alt", "alt.md", "job", "echo", f"data/job/{jid}/output.jsonl",
+             time.time()),
+        )
+    finally:
+        conn.close()
+    w = Worker(autopoll=False, worker_name="w1")
+    assert w.output_path(jid) == team_repo / "data" / "job" / jid / "output.jsonl"
+
+
+def test_output_path_falls_back_without_output_ref(team_repo: Path):
+    # Gegenprobe zum vorigen: ohne Verweis bleibt es bei der Neuberechnung —
+    # waehrend `running` ist die Spalte immer NULL (der Wrapper fuellt sie erst
+    # beim Terminal-Report), und genau dafuer existieren die Live-Routen.
+    jid = secrets.token_hex(4)
+    conn = job_db.connect()
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+            "enqueued_at, fire) VALUES (?,?,?,?,?, 'running', ?,7)",
+            (jid, "alt", "alt.md", "job", "echo", time.time()),
+        )
+    finally:
+        conn.close()
+    w = Worker(autopoll=False, worker_name="w1")
+    run_id = job_db.run_id_for("alt", jid, 7)
+    assert w.output_path(jid) == team_repo / "data" / "job" / run_id / "output.jsonl"
+
+
 @pytest.mark.slow
 def test_report_level_by_status():
     import logging

@@ -118,6 +118,56 @@ def test_job_output_empty_for_unknown(client):
     assert r.json() == {"events": [], "kind": "job"}
 
 
+def _seed_old_layout(lines: list[tuple[str, str]]) -> str:
+    """Ein Lauf, dessen Datei **nicht** am berechneten ``run_id``-Pfad liegt.
+
+    Genau das ist der Live-Bestand: sieben Verzeichnisse unter
+    ``/srv/bibi-notes/data/job/`` tragen noch die blosse ``job_id`` als Namen —
+    sie stammen aus der Zeit vor ``run_id_for()`` (2026-07-01). ``output_ref``
+    zeigt korrekt darauf, die Neuberechnung ``slug:fire:job_id`` geht daneben.
+    Alle anderen Helfer dieser Datei legen die Datei am berechneten Pfad ab und
+    koennen den Unterschied deshalb strukturell nicht sehen.
+    """
+    jid = secrets.token_hex(4)
+    conn = job_db.connect()
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, host, "
+            "worker, output_ref, enqueued_at, fire) "
+            "VALUES (?,?,?,?,?, 'error', 'h','w1',?,?,0)",
+            (jid, "alt1", "alt1.md", "job", "echo", f"data/job/{jid}/output.jsonl",
+             time.time()),
+        )
+    finally:
+        conn.close()
+    out = repo.data() / "job" / jid / "output.jsonl"
+    for stream, line in lines:
+        output.append(out, stream, line)
+    return jid
+
+
+def test_job_output_prefers_output_ref_over_recomputed_path(client):
+    # m.rau/bibi#131-Nachlauf: die Kachel zeigte `output unavailable`, obwohl
+    # die Datei liegt — die Route rechnete den Pfad aus der run_id NEU, statt
+    # den Verweis zu lesen, den die Zeile traegt. _journal_output_path() macht
+    # es fuer Journal-Zeilen laengst richtig (erst output_ref, dann Fallback).
+    jid = _seed_old_layout([("out", "aus dem altlauf")])
+    berechnet = repo.data() / "job" / job_db.run_id_for("alt1", jid, 0) / "output.jsonl"
+    assert not berechnet.exists()  # Gegenprobe: der Fallback kann hier nichts finden
+    r = client.get(f"/-/job/{jid}/output")
+    assert r.status_code == 200
+    assert [e["line"] for e in r.json()["events"]] == ["aus dem altlauf"]
+
+
+def test_job_log_prefers_output_ref_over_recomputed_path(client):
+    # Dieselbe Quelle (worker.output_path), deshalb dieselbe Falle: /log liest
+    # die Rohdatei und lieferte fuer Altlaeufe stumm einen leeren Body.
+    jid = _seed_old_layout([("out", "rohzeile")])
+    r = client.get(f"/-/job/{jid}/log")
+    assert r.status_code == 200
+    assert "rohzeile" in r.text
+
+
 def test_job_output_formats_claude_stream_json(client):
     # PLAN-12 Stufe 12.5: claude:-Payload → effektiver kind="claude", die
     # rohen stream-json-Zeilen werden zu Klartext/Tool-Use-Summaries formatiert.
