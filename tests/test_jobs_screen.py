@@ -25,8 +25,11 @@ from bibi.daemon.app import create_app
 
 
 class _FakeClient:
-    def __init__(self, status: dict) -> None:
+    def __init__(self, status: dict, *, run_journal: list[dict] | None = None,
+                 run_live: dict[str, dict] | None = None) -> None:
         self._status = status
+        self._run_journal = run_journal or []
+        self._run_live = run_live or {}
 
     def status(self) -> dict:
         return self._status
@@ -38,7 +41,10 @@ class _FakeClient:
         return []
 
     def run_journal(self, **_):
-        return []
+        return self._run_journal
+
+    def run_live_list(self):
+        return self._run_live
 
     def jobs(self, **_):
         return []
@@ -46,8 +52,12 @@ class _FakeClient:
 
 @pytest.fixture
 def app_with(team_repo: Path):
-    def _make(status: dict):
-        return create_app(roles.resolve({"controller"}), controller_client=_FakeClient(status))
+    def _make(status: dict, *, run_journal: list[dict] | None = None,
+              run_live: dict[str, dict] | None = None):
+        return create_app(
+            roles.resolve({"controller"}),
+            controller_client=_FakeClient(status, run_journal=run_journal,
+                                          run_live=run_live))
     return _make
 
 NOW = 1_000_000.0
@@ -108,6 +118,175 @@ def test_the_two_blocks_are_labelled():
     und die beiden zeigen regelmäßig Verschiedenes."""
     html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
     assert "SCHEDULER" in html and "LOCAL" in html
+
+
+# ── Die LOCAL-Spalte liest beide Speicher ──────────────────────────────────
+
+
+def _zeile_von(html: str, slug: str) -> str:
+    """Die eine ``<tr>`` dieses Slugs — nicht die ganze Seite.
+
+    Die vierte Lehre aus m.rau/bibi#131: ein ``"X" in html`` prüft die Seite und
+    nicht das Element. ``running`` steht auch im Filter-Knopf der Kopfleiste,
+    ein Test darauf wäre grün, ohne dass die Zelle je gefüllt würde.
+    """
+    for tr in re.findall(r"<tr>.*?</tr>", html, re.S):
+        if f'title="{slug}"' in tr:
+            return tr
+    raise AssertionError(f"keine Zeile für {slug!r} im Screen")
+
+
+def _mit_job_md(root: Path, slug: str) -> None:
+    ordner = root / "vault" / "case" / "x"
+    ordner.mkdir(parents=True, exist_ok=True)
+    (ordner / f"{slug}.md").write_text(
+        f"---\nslug: {slug}\nschedule: adhoc\njob: sleep 9000\n---\n", encoding="utf-8")
+
+
+def test_a_locally_running_job_shows_its_state(app_with, team_repo: Path):
+    """**Der laufende lokale Lauf gehört in die LOCAL-Spalte** (FE §4.3: dort
+    steht der *„Zustand in der lokalen Job-DB"*, und das ist der Slot).
+
+    Live gefunden am 2026-08-04, unmittelbar nachdem der Mac-Client auf bibi5
+    umgestellt war: `burndown-app` lief seit einem Tag lokal, Job Detail zeigte
+    `running · 1d 9h` und `client 1` — der Jobs-Screen zeigte in derselben
+    Zeile `—`. Zwei Screens, dieselbe Tatsache, zwei Antworten.
+
+    Die Ursache ist **eine Quelle zu wenig**: `_local_run_status()` liest nur
+    `run_journal()`, also archivierte Läufe. Nach A1/A2 (Zustandsmodell §3) ist
+    ein laufender Lauf gerade *nicht* archiviert, er steht im Slot. Ein Job,
+    dessen einziger lokaler Lauf gerade läuft, sah deshalb aus wie einer, der
+    nie lokal lief — und was die Spalte stattdessen zeigte, war bei
+    `hitl-test-app` ein `killed` vom 4. Juli.
+
+    Der passende Helfer war die ganze Zeit da: `client.run_live_list()`, dessen
+    Docstring ihn wörtlich *„für die Jobs-Liste"* nennt. Der bibi4-Pfad
+    `_jobs_data()` benutzt ihn auch; beim v5-Umbau ist er nicht mitgekommen.
+    Das ist die dritte Lehre in neuem Gewand — die Journal-Hälfte wurde auf
+    ihren neuen Träger gestellt, die Live-Hälfte mit dem alten gelöscht.
+    """
+    _mit_job_md(team_repo, "laeuft")
+    app = app_with({"roles": ["controller"]},
+                   run_live={"laeuft": {"id": "abc", "started_at": NOW - 60,
+                                        "status": "running"}})
+    with TestClient(app) as c:
+        html = c.get("/-/jobs", headers={"accept": "text/html"}).text
+    assert "<td>running</td>" in _zeile_von(html, "laeuft")
+
+
+def test_the_running_run_beats_the_archived_one(app_with, team_repo: Path):
+    """Der Slot ist jünger als jedes Archiv — sonst stünde er nicht im Slot.
+
+    Ohne diese Vorrangregel gewänne der letzte archivierte Lauf, und die Zeile
+    zeigte `complete`, während der Job gerade läuft. Das ist schlimmer als das
+    `—` von vorher: ein leeres Feld ist erkennbar unvollständig, ein falscher
+    Zustand nicht.
+    """
+    _mit_job_md(team_repo, "laeuft")
+    app = app_with(
+        {"roles": ["controller"]},
+        run_journal=[{"slug": "laeuft", "status": "complete",
+                      "finished_at": NOW - 3600, "exec_runtime": 4.2}],
+        run_live={"laeuft": {"id": "abc", "started_at": NOW - 60,
+                             "status": "running"}})
+    with TestClient(app) as c:
+        html = c.get("/-/jobs", headers={"accept": "text/html"}).text
+    zeile = _zeile_von(html, "laeuft")
+    assert "<td>running</td>" in zeile
+    assert "<td>complete</td>" not in zeile
+
+
+def test_without_a_running_run_the_archive_still_shows(app_with, team_repo: Path):
+    """Die Gegenprobe: der Live-Zweig darf den bestehenden nicht verdrängen.
+
+    Was da sein muss **und** was nicht da sein darf — die zweite Hälfte der
+    vierten Lehre. Ohne sie wäre ein `return live_only` genauso grün.
+    """
+    _mit_job_md(team_repo, "laeuft")
+    app = app_with(
+        {"roles": ["controller"]},
+        run_journal=[{"slug": "laeuft", "status": "complete",
+                      "finished_at": NOW - 3600, "exec_runtime": 4.2}])
+    with TestClient(app) as c:
+        html = c.get("/-/jobs", headers={"accept": "text/html"}).text
+    assert "<td>complete</td>" in _zeile_von(html, "laeuft")
+
+
+# ── Ein abwesender Scheduler kostet einen Versuch, nicht drei ──────────────
+
+
+class _ToterScheduler:
+    """Ein ``ControllerClient``, der auf jeden Aufruf mit einem Ausfall
+    antwortet und mitzählt, wie oft er es tun musste."""
+
+    def __init__(self, versuche: list) -> None:
+        self._versuche = versuche
+
+    def __call__(self, url: str, *, timeout: float = 5.0):
+        aufrufer = self
+
+        class _Verbindung:
+            def __getattr__(self, name: str):
+                def _ruf(*_a, **_kw):
+                    aufrufer._versuche.append((name, timeout))
+                    raise OSError("scheduler weg")
+                return _ruf
+
+        return _Verbindung()
+
+
+def test_an_absent_scheduler_costs_one_attempt_per_page(app_with, team_repo: Path,
+                                                        monkeypatch):
+    """**m.rau/bibi#122, der einzige P1.** Ist der Scheduler weg, darf ein
+    Seitenaufbau *einen* Timeout kosten — nicht drei hintereinander.
+
+    Live gemessen am 2026-08-04 gegen eine Blackhole-Adresse: fünf Aufrufe von
+    `/-/jobs` brauchten **11,9 · 10,3 · 11,8 · 10,3 · 11,8 Sekunden**. Das
+    Ticket nennt 5 s; es sind gut doppelt so viele, und der Backoff greift
+    sichtbar nicht — sonst wäre der zweite Aufruf schnell gewesen.
+
+    Der Grund ist eine **halbe** Reparatur. Klasse A (`a75026f`) hat Timeout und
+    Merker eingebaut, aber nur an `_scheduler_status()`. Der Screen fragt den
+    Host jedoch dreimal, und die beiden Datenabrufe gehen ungeschützt über
+    `_host_client()` mit vollen 5 s: 1,5 + 5 + 5 = 11,5 — die gemessene Zahl.
+
+    **Ein Merker für alle drei** kostet schon den ersten Aufbau nur den ersten
+    Timeout: der Fehlschlag überspringt die beiden folgenden Abrufe sofort. Das
+    ist die sechste Lehre wörtlich — nicht mehr Sorgfalt an drei Stellen,
+    sondern eine Stelle.
+    """
+    from bibi import controller as controller_pkg
+
+    versuche: list = []
+    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://10.255.255.1:8780")
+    monkeypatch.setattr(controller_pkg, "ControllerClient", _ToterScheduler(versuche))
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        assert c.get("/-/jobs", headers={"accept": "text/html"}).status_code == 200
+    assert len(versuche) == 1, (
+        f"ein abwesender Scheduler wurde {len(versuche)}× gefragt: {versuche}")
+
+
+def test_the_absent_scheduler_stays_unasked_for_a_while(app_with, team_repo: Path,
+                                                        monkeypatch):
+    """Der zweite Seitenaufbau innerhalb der Pause fragt gar nicht mehr.
+
+    Ohne diese Hälfte wäre die Reparatur nur ein Drittel wert: der Screen wird
+    im Ausfall ja nicht einmal geladen, sondern immer wieder.
+    """
+    from bibi import controller as controller_pkg
+
+    versuche: list = []
+    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://10.255.255.1:8780")
+    monkeypatch.setattr(controller_pkg, "ControllerClient", _ToterScheduler(versuche))
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        c.get("/-/jobs", headers={"accept": "text/html"})
+        vorher = len(versuche)
+        c.get("/-/jobs", headers={"accept": "text/html"})
+        c.get("/-/jobs", headers={"accept": "text/html"})
+    assert len(versuche) == vorher, (
+        f"in der Backoff-Pause wurde erneut gefragt: {versuche[vorher:]}")
 
 
 # ── Was fehlt, wenn nichts da ist ──────────────────────────────────────────

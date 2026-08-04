@@ -101,6 +101,54 @@ class _Backoff:
     def erfolg(self) -> None:
         self._bis = None
 
+
+class _MitMerker:
+    """Ein Scheduler-Client, der den Ausfall-Merker führt statt ihn zu ignorieren.
+
+    **Warum hier und nicht bei den Aufrufern** (m.rau/bibi#122): der Merker lag
+    zuerst nur an ``_scheduler_status()``. Der Jobs-Screen fragt den Host aber
+    dreimal — Status, Journal, Schedules —, und die beiden Datenabrufe liefen
+    ungeschützt in ihre vollen 5 s. Live gemessen bei abwesendem Scheduler:
+    **11,9 s je Seitenaufbau**, immer wieder, weil kein Abruf sich merkte, was
+    der vorige schon wusste. Das Ticket nannte 5 s.
+
+    Jeder Aufruf durch dieses Objekt prüft den Merker **vor** dem Netz und
+    wirft sofort, wenn der Host als abwesend gilt. Die Aufrufer bleiben
+    unverändert: sie fangen ohnehin jede Ausnahme und liefern ihren Default —
+    ein sofortiger Wurf ist für sie derselbe Fall wie ein Timeout, nur ohne die
+    fünf Sekunden.
+
+    Damit kostet der **erste** Aufbau einen Timeout statt drei (der erste
+    Fehlschlag überspringt die folgenden Abrufe) und jeder weitere innerhalb
+    der Pause gar keinen. Das ist die Fassung der sechsten Lehre für dieses
+    Problem: nicht mehr Sorgfalt an drei Stellen, sondern eine Stelle.
+    """
+
+    def __init__(self, echt, backoff: _Backoff) -> None:
+        self._echt = echt
+        self._backoff = backoff
+
+    def __getattr__(self, name: str):
+        methode = getattr(self._echt, name)
+        if not callable(methode):
+            return methode
+
+        def _ruf(*args, **kwargs):
+            jetzt = time.time()
+            if not self._backoff.darf(now=jetzt):
+                raise OSError(
+                    f"Scheduler gilt als nicht erreichbar, {name!r} übersprungen "
+                    "(m.rau/bibi#122)")
+            try:
+                wert = methode(*args, **kwargs)
+            except Exception:
+                self._backoff.fehlschlag(now=jetzt)
+                raise
+            self._backoff.erfolg()
+            return wert
+
+        return _ruf
+
 #: Suffix, den ``worker.run_pinned()`` je Lauf anhängt (``token_hex(4)``).
 _PIN_SUFFIX = re.compile(r"^(.*)-[0-9a-f]{8}$")
 
@@ -1229,11 +1277,16 @@ def add_controller_routes(
 
         Trägt dieser Knoten die scheduler-Rolle selbst, ist der eigene Client
         der richtige: ein HTTP-Aufruf über sich selbst wäre ein Umweg.
+
+        **Der Ausfall-Merker sitzt hier** (m.rau/bibi#122, s. ``_MitMerker``):
+        an der einen Stelle, die jeder Scheduler-Abruf passiert. Am eigenen
+        Client hängt er bewusst nicht — dort gibt es kein Netz, das ausfallen
+        könnte, und eine Sperre wäre ein Selbstblock.
         """
         url = _scheduler_url()
         if not url:
             return client
-        return ControllerClient(url, timeout=5.0)
+        return _MitMerker(ControllerClient(url, timeout=5.0), _sched_backoff)
 
     def _journal_for_rows() -> list:
         """Nur so viel Journal, wie die Klassifikation braucht: welche Slugs
@@ -1710,12 +1763,40 @@ def add_controller_routes(
             scheduler_stale_since=_sched[1]))
 
     def _local_run_status() -> dict:
-        """Letzter lokaler Lauf je Slug — die rechte Hälfte der Zeile."""
+        """Letzter lokaler Lauf je Slug — die rechte Hälfte der Zeile.
+
+        **Zwei Speicher, nicht einer** (Zustandsmodell §1). Das Journal trägt
+        die archivierten Läufe, der Slot den laufenden — und nach A1/A2 ist ein
+        laufender Lauf gerade *nicht* archiviert. Wer nur das Journal liest,
+        zeigt für einen Job, der in diesem Moment lokal läuft, ``—``: er sieht
+        aus wie einer, der nie lokal lief.
+
+        Live gefunden am 2026-08-04 auf dem eben umgestellten Mac-Client:
+        ``burndown-app`` lief seit einem Tag, Job Detail zeigte ``running ·
+        1d 9h``, diese Spalte ``—``. Was sie stattdessen zeigte, war bei
+        ``hitl-test-app`` ein ``killed`` vom 4. Juli.
+
+        **Der Slot gewinnt gegen das Archiv**, ohne Zeitvergleich: stünde er
+        nicht im Slot, wäre er archiviert. Seine Laufzeit muss hier entstehen,
+        weil ``exec_runtime`` erst beim Archivieren geschrieben wird — die
+        Zelle liest genau dieses Feld.
+        """
+        import time as _t
+
         try:
             eintraege = client.run_journal(limit=500)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            return {}
-        return _local_run_status_aus(eintraege)
+            eintraege = []
+        aus = _local_run_status_aus(eintraege)
+        try:
+            live = client.run_live_list()
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            live = {}
+        jetzt = _t.time()
+        for slug, lauf in live.items():
+            begonnen = lauf.get("started_at") or jetzt
+            aus[slug] = {**lauf, "exec_runtime": max(0.0, jetzt - begonnen)}
+        return aus
 
     @app.get("/-/jobs/list", include_in_schema=False)
     def screen_jobs_list(request: Request, sort: str | None = None,
