@@ -1163,3 +1163,95 @@ def test_terminal_status_is_never_visible_without_its_journal_row(tmp_path: Path
             "Journal-Zeile noch nicht committet ist — genau das Fenster aus #95.")
     finally:
         conn.close()
+
+
+# ── P90-Laufzeit je Job (m.rau/bibi#132) ───────────────────────────────────
+#
+# **Vorgabe m.rau:** *„Die Runtime ist ebenfalls eine Scheduler Eigenschaft. Sie
+# kommt vom Scheduler und ist der 90. Perzentil P90 der Laufzeit der letzten 30
+# Laeufe."* Vorher stand dort die Dauer des *letzten* Laufs, und die springt —
+# derselbe Job zeigte mal `2.8s`, mal `4m 34s`. Ein Perzentil beantwortet „wie
+# lange dauert das normalerweise", und das ist die Frage, die man vor einer
+# Laufzeitspalte hat.
+
+
+def _lauf(conn, slug: str, runtime: float | None, *, status: str = "complete",
+          reason: str | None = None, domain: str = "scheduled") -> None:
+    conn.execute(
+        "INSERT INTO journal (run_id, slug, kind, status, reason, exec_runtime, "
+        "finished_at, archived_at, domain) VALUES (?,?,?,?,?,?,?,?,?)",
+        (f"{slug}:{conn.total_changes}", slug, "job", status, reason, runtime,
+         1000.0, 1000.0, domain))
+
+
+def test_runtime_p90_is_the_ninetieth_percentile_not_the_last_run(conn):
+    """Dreissig Laeufe von 1 bis 30 Sekunden: P90 ist der 27. Wert.
+
+    Nearest-rank, nicht interpoliert — die Zahl soll ein **beobachteter** Lauf
+    sein und keine erfundene Zwischengroesse. Bei dreissig Werten ist der
+    27. genau der, unter dem 90 % liegen.
+    """
+    for i in range(1, 31):
+        _lauf(conn, "a", float(i))
+    assert job_db.runtime_p90(conn)["a"] == 27.0
+
+
+def test_runtime_p90_stays_silent_below_five_runs(conn):
+    """Ein P90 ueber drei Werte ist eine Behauptung, keine Statistik."""
+    for i in range(4):
+        _lauf(conn, "a", 10.0)
+    assert "a" not in job_db.runtime_p90(conn)
+    _lauf(conn, "a", 10.0)
+    assert job_db.runtime_p90(conn)["a"] == 10.0
+
+
+def test_runtime_p90_ignores_runs_that_never_finished_computing(conn):
+    """**Der Fall aus m.rau/bibi#123.** `gmail-transfer-d03e0d2e` „lief" vom
+    14.07. bis zum 20.07. und wurde zusammen mit einem zweiten Lauf auf dieselbe
+    Sekunde beendet — das war kein Lauf ueber sechs Tage, sondern ein
+    Aufraeumvorgang. `exec_runtime` misst dort die **Standzeit**.
+
+    Erkannt wird das nicht am Aufraeumen, sondern am Ergebnis: **nur ein
+    `complete` hat zu Ende gerechnet.** Auf der Scheduler-DB nachgemessen
+    (23 793 Laeufe): jeder einzelne Wert ueber einer Stunde gehoert zu einem
+    `killed` — `by_user` (13), `by_wall_time` (4), `no_process` (4). Kein
+    `complete` liegt darueber. Die einfachere Regel ist hier zugleich die
+    schaerfere.
+    """
+    for _ in range(9):
+        _lauf(conn, "a", 2.0)
+    _lauf(conn, "a", 522_318.5, status="killed", reason="by_user")
+    assert job_db.runtime_p90(conn)["a"] == 2.0
+
+
+def test_runtime_p90_looks_only_at_the_last_thirty(conn):
+    """Was vor dem Fenster liegt, zaehlt nicht — sonst waere die Zahl ein
+    Gedaechtnis statt einer Auskunft ueber jetzt."""
+    for _ in range(20):
+        _lauf(conn, "a", 900.0)      # alte, langsame Laeufe
+    for _ in range(30):
+        _lauf(conn, "a", 3.0)        # die letzten dreissig
+    assert job_db.runtime_p90(conn)["a"] == 3.0
+
+
+def test_runtime_p90_ignores_local_runs(conn):
+    """`domain='local'` sind `bibi-ctrl run`-Laeufe eines Clients. Die Spalte
+    ist eine **Scheduler**-Eigenschaft (FE §4.3) — eine Zahl, die beide Seiten
+    mischt, beantwortet keine der beiden Fragen."""
+    for _ in range(9):
+        _lauf(conn, "a", 2.0)
+    for _ in range(9):
+        _lauf(conn, "a", 500.0, domain="local")
+    assert job_db.runtime_p90(conn)["a"] == 2.0
+
+
+def test_list_schedules_carries_the_p90(conn):
+    """Die Zahl gehoert an die Schedule-Zeile, nicht in einen zweiten Abruf:
+    der Jobs-Screen holt ohnehin `/-/schedule` je Seitenaufbau."""
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, schedule, status) "
+        "VALUES ('i1','a','x/a.md','job','echo x','0 * * * *','pending')")
+    for i in range(1, 31):
+        _lauf(conn, "a", float(i))
+    zeile = next(s for s in job_db.list_schedules(conn) if s["slug"] == "a")
+    assert zeile["runtime_p90"] == 27.0

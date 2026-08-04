@@ -103,6 +103,32 @@ def local_files_status(root: Path | None, paths: list[str]) -> dict[str, str]:
     Split auf die Präfix-Felder, ein Leerzeichen im Pfad bleibt im letzten
     Element erhalten — analog zum ``? ``-Zweig, der mit ``line[2:]`` von
     Anfang an korrekt war."""
+    dirty = dirty_files(root)
+    # "deleted" gibt es hier bewusst nicht: eine gelöschte Job-MD verschwindet
+    # von selbst aus `paths` (``discovery.discover()`` findet sie nicht mehr),
+    # und wo sie doch noch mitkommt, ist "modified" die alte, bewährte Antwort.
+    return {p: ("modified" if dirty.get(p) == "deleted" else dirty.get(p, "clean"))
+            for p in paths}
+
+
+def dirty_files(root: Path | None = None) -> dict[str, str]:
+    """Alle offenen Änderungen im Arbeitsbaum: Pfad → ``new`` | ``modified`` |
+    ``deleted`` | ``conflict``. Ein sauberer Baum liefert ein leeres Dict.
+
+    Die Gegenfrage zu :func:`local_files_status`, die wissen will, wie es um
+    **bestimmte** Pfade steht: hier ist die Menge selbst die Antwort. Der Feed
+    braucht das für den ``UNCOMMITTED``-Block (m.rau/bibi#133) — was noch nicht
+    committet ist, steht in keinem ``git log`` und wäre sonst der einzige
+    Zustand des Vaults, den der Feed nicht kennt.
+
+    ``deleted`` ist der Unterschied zur älteren Funktion: dort war das
+    ausdrücklich kein eigener Zustand, hier ist das Verschwinden die Nachricht.
+    Porcelain v2 trägt es im ``XY``-Feld der ``1 ``-Zeile — ``D`` an einer der
+    beiden Stellen (gestaged oder im Arbeitsbaum).
+
+    Ein einziger ``git status``-Aufruf, ``--no-renames``: ein Rename erscheint
+    damit als gelöscht + neu, was hier die ehrlichere Auskunft ist.
+    """
     proc = subprocess.run(
         ["git", "--no-optional-locks", "status", "--porcelain=v2",
          "--untracked-files=all", "--no-renames"],
@@ -116,5 +142,6 @@ def local_files_status(root: Path | None, paths: list[str]) -> dict[str, str]:
             elif line.startswith("u "):
                 dirty[line.split(" ", 10)[-1]] = "conflict"
             elif line.startswith("1 "):
-                dirty[line.split(" ", 8)[-1]] = "modified"
-    return {p: dirty.get(p, "clean") for p in paths}
+                felder = line.split(" ", 8)
+                dirty[felder[-1]] = "deleted" if "D" in felder[1] else "modified"
+    return dirty

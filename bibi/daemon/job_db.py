@@ -12,6 +12,7 @@ Schema-Versionierung über ``PRAGMA user_version``: die Basis (v1) liegt in
 from __future__ import annotations
 
 import json
+import math
 import secrets
 import shutil
 import socket
@@ -599,6 +600,59 @@ def get_job_exec_mode(conn: sqlite3.Connection, job_id: str) -> tuple[str, str |
     return (row["slug"], row["exec_mode"]) if row else None
 
 
+#: Wie viele Läufe in das Perzentil eingehen, und wie viele es mindestens
+#: braucht (m.rau/bibi#132). Ein P90 über drei Werte ist eine Behauptung.
+_P90_FENSTER = 30
+_P90_MINDESTBESTAND = 5
+
+
+def runtime_p90(conn: sqlite3.Connection, *, fenster: int = _P90_FENSTER,
+                mindestbestand: int = _P90_MINDESTBESTAND) -> dict[str, float]:
+    """Die übliche Laufzeit je Slug: P90 der letzten ``fenster`` Läufe.
+
+    **Vorgabe m.rau** (m.rau/bibi#132): *„Die Runtime ist ebenfalls eine
+    Scheduler Eigenschaft. Sie kommt vom Scheduler und ist der 90. Perzentil P90
+    der Laufzeit der letzten 30 Laeufe."* Vorher stand in der Spalte die Dauer
+    des *letzten* Laufs — derselbe Job zeigte mal ``2.8s``, mal ``4m 34s``, je
+    nachdem was zuletzt geschah. Ein Perzentil beantwortet „wie lange dauert das
+    normalerweise"; der Ausreißer bleibt in der Lauf-Liste sichtbar.
+
+    **Nur ``complete`` zählt.** Das ist zugleich die Antwort auf m.rau/bibi#123
+    (``exec_runtime`` misst bei einem aufgeräumten Lauf die Standzeit statt der
+    Rechenzeit) — und sie fällt schärfer aus als „Aufräum-Läufe erkennen". Auf
+    der Scheduler-DB nachgemessen, 23 793 Läufe: **jeder** Wert über einer
+    Stunde gehört zu einem ``killed`` (``by_user`` 13, ``by_wall_time`` 4,
+    ``no_process`` 4), kein einziger zu einem ``complete``. Ein Lauf, der
+    abgebrochen wurde, hat nie zu Ende gerechnet — seine Dauer beantwortet die
+    Frage der Spalte gar nicht.
+
+    **Nearest-rank statt Interpolation:** die Zahl ist ein beobachteter Lauf und
+    keine erfundene Zwischengröße. Bei dreißig Werten ist es der 27.
+
+    Nur ``domain='scheduled'``: ``bibi-ctrl run``-Läufe eines Clients gehören der
+    anderen Seite der Zeile, und eine Zahl, die beide mischt, beantwortet keine
+    der beiden Fragen.
+    """
+    werte: dict[str, list[float]] = {}
+    for r in conn.execute(
+        "SELECT slug, exec_runtime FROM ("
+        "  SELECT slug, exec_runtime,"
+        "         ROW_NUMBER() OVER (PARTITION BY slug ORDER BY id DESC) AS rn"
+        "    FROM journal"
+        "   WHERE domain='scheduled' AND status='complete'"
+        "     AND exec_runtime IS NOT NULL"
+        ") WHERE rn <= ?", (fenster,)
+    ).fetchall():
+        werte.setdefault(r["slug"], []).append(float(r["exec_runtime"]))
+    aus: dict[str, float] = {}
+    for slug, v in werte.items():
+        if len(v) < mindestbestand:
+            continue
+        v.sort()
+        aus[slug] = v[math.ceil(0.9 * len(v)) - 1]
+    return aus
+
+
 def list_schedules(conn: sqlite3.Connection) -> list[dict]:
     # Letzten disponierten Lauf je Slug aus dem Journal (für STATUS = „letzter Lauf",
     # nicht der nach Cron-Re-Arm harmlose Zeilen-Status `pending`).
@@ -609,8 +663,11 @@ def list_schedules(conn: sqlite3.Connection) -> list[dict]:
         ") m ON j.id = m.mx"
     ).fetchall():
         last[r["slug"]] = {"id": r["id"], "status": r["status"], "finished_at": r["finished_at"]}
+    # Eine Abfrage für alle Slugs, nicht eine je Zeile (m.rau/bibi#132).
+    p90 = runtime_p90(conn)
     rows = conn.execute("SELECT * FROM jobs ORDER BY slug").fetchall()
-    out = [schedule_view(r, last_run=last.get(r["slug"])) for r in rows]
+    out = [schedule_view(r, last_run=last.get(r["slug"]), runtime_p90=p90.get(r["slug"]))
+           for r in rows]
 
     # Journal-only-Phantome (PLAN-14 Stufe 14.6): Slugs mit disponierter
     # Journal-Historie, aber ohne (mehr) zugehörige jobs-Zeile — vor Stufe 14.5
@@ -705,7 +762,8 @@ def get_job_by_slug(conn: sqlite3.Connection, slug: str) -> dict | None:
 _LIVE_ROW_STATUSES = {"starting", "running", "failed", "awaiting", "deferred", "pending"}
 
 
-def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
+def schedule_view(row: sqlite3.Row, last_run: dict | None = None, *,
+                  runtime_p90: float | None = None) -> dict:
     trigger = row["schedule"] if row["schedule"] is not None else row["at_iso"]
     row_status = row["status"]
     # STATUS-Spalte: gerade aktiv (_LIVE_ROW_STATUSES) → Zeilen-Status direkt;
@@ -741,6 +799,10 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
         "slug": row["slug"], "kind": row["kind"], "trigger": trigger or "",
         "next_fire_at": row["next_fire_at"], "last_status": last_status,
         "last_run_at": last_run_at, "last_run_id": last_run_id, "row_status": row_status,
+        # Wie lange das normalerweise dauert — P90 der letzten 30 Läufe
+        # (m.rau/bibi#132). Steht neben `next_fire_at`, weil beide Fragen dem
+        # Scheduler gehören: wann es *wieder* läuft, und wie lange es *dauert*.
+        "runtime_p90": runtime_p90,
         # One-shot (at:) hat kein wiederkehrendes schedule — Basis fürs Archiv (§4.4).
         "oneshot": row["schedule"] is None,
         # kind ist seit PLAN-10 (Unified Job Model) immer "job" — payload/app_port

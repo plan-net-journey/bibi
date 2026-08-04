@@ -132,3 +132,48 @@ def test_outside_git_repo_all_clean_no_crash(tmp_path: Path):
     (tmp_path / "a.md").write_text("x", encoding="utf-8")
     result = local_files_status(tmp_path, ["a.md"])
     assert result == {"a.md": "clean"}
+
+
+# ── dirty_files(): alle offenen Aenderungen, nicht nur die erfragten (#133) ─
+#
+# `local_files_status()` beantwortet „wie steht es um DIESE Pfade" — der Feed
+# fragt umgekehrt „was ist ueberhaupt offen". Beide lesen denselben
+# `git status`; getrennt sind nur die Fragen.
+
+
+from bibi.git_status import dirty_files  # noqa: E402
+
+
+def test_dirty_files_reports_new_modified_and_deleted(team_repo: Path):
+    """`deleted` ist der Fall, den `local_files_status()` bewusst nicht kennt:
+    eine geloeschte Job-MD verschwindet dort von selbst aus der Liste. Im Feed
+    ist genau ihr Verschwinden die Nachricht."""
+    (team_repo / "vault/case/bleibt.md").write_text("x", encoding="utf-8")
+    (team_repo / "vault/case/geht.md").write_text("x", encoding="utf-8")
+    (team_repo / "vault/case/aendert.md").write_text("x", encoding="utf-8")
+    _commit_all(team_repo)
+    (team_repo / "vault/case/geht.md").unlink()
+    (team_repo / "vault/case/aendert.md").write_text("y", encoding="utf-8")
+    (team_repo / "vault/case/neu.md").write_text("z", encoding="utf-8")
+    assert dirty_files(team_repo) == {
+        "vault/case/geht.md": "deleted",
+        "vault/case/aendert.md": "modified",
+        "vault/case/neu.md": "new",
+    }
+
+
+def test_dirty_files_is_empty_on_a_clean_tree(team_repo: Path):
+    (team_repo / "vault/case/a.md").write_text("x", encoding="utf-8")
+    _commit_all(team_repo)
+    assert dirty_files(team_repo) == {}
+
+
+def test_local_files_status_still_hides_deletions(team_repo: Path):
+    """Die Gegenprobe zur gemeinsamen Basis: dass beide denselben `git status`
+    lesen, darf die aeltere Frage nicht umdeuten. Eine geloeschte Job-MD war
+    dort nie ein eigener Zustand."""
+    (team_repo / "vault/case/weg.md").write_text("x", encoding="utf-8")
+    _commit_all(team_repo)
+    (team_repo / "vault/case/weg.md").unlink()
+    assert local_files_status(team_repo, ["vault/case/weg.md"]) == {
+        "vault/case/weg.md": "modified"}

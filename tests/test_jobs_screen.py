@@ -539,3 +539,122 @@ def test_the_list_fragment_is_the_refetch_target():
     Ereignis die Scroll-Position und den Fokus."""
     html = render.jobs_page_v5([], now=NOW)
     assert '<div id="jobs"' in html
+
+
+# ── RUNTIME ist eine Scheduler-Eigenschaft und ein Perzentil (#132) ────────
+
+
+def test_runtime_shows_the_p90_from_the_scheduler():
+    """**Vorgabe m.rau:** *„Die Runtime ist ebenfalls eine Scheduler
+    Eigenschaft. Sie kommt vom Scheduler und ist der 90. Perzentil P90 der
+    Laufzeit der letzten 30 Laeufe."*
+
+    Vorher stand dort `exec_runtime` des letzten **lokalen** Laufs — zwei
+    Abweichungen in einer Zelle: die falsche Seite und die falsche Frage.
+    """
+    html = render.jobs_screen(
+        _zeilen(local=[_md("EngineCI")],
+                scheduler=[{"slug": "EngineCI", "status": "complete",
+                            "schedule": "0 * * * *", "runtime_p90": 231.9}]),
+        now=NOW)
+    assert "<td>3m 51s</td>" in _zeile_von(html, "EngineCI")
+
+
+def test_runtime_stays_empty_without_a_p90():
+    """Die Gegenprobe: die alte Quelle darf nicht mehr durchschlagen.
+
+    Ohne sie waere ein `or l.get("exec_runtime")` genauso gruen — und die Zelle
+    zeigte weiter die Dauer des letzten lokalen Laufs, nur seltener. Unter fuenf
+    Laeufen liefert der Scheduler bewusst nichts; dann steht dort ein Strich und
+    keine Zahl, die niemand tragen kann.
+    """
+    zeile = _zeile_von(
+        render.jobs_screen(
+            _zeilen(local=[_md("EngineCI")],
+                    scheduler=[{"slug": "EngineCI", "status": "complete",
+                                "schedule": "0 * * * *"}],
+                    local_runs={"EngineCI": {"status": "error", "exec_runtime": 231.9}}),
+            now=NOW),
+        "EngineCI")
+    assert "3m 51s" not in zeile
+    assert "<td>error</td>" in zeile, "der lokale Zustand bleibt, nur seine Dauer geht"
+
+
+def test_runtime_sits_on_the_scheduler_side_of_the_row():
+    """FE §4.3: *„der Scheduler weiss, wann es wieder laeuft, und wie lange es
+    dauert. Beide Angaben sind gefragt, beide gehoeren ihm."* Also steht die
+    Spalte unter `SCHEDULER` neben `NEXT` — nicht unter `LOCAL`, wo die
+    ASCII-Skizze aus §4.2 sie noch fuehrte.
+    """
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    assert '<th colspan="4" class="grp">SCHEDULER</th>' in html
+    assert '<th colspan="1" class="grp">LOCAL</th>' in html
+
+
+# ── Die Baenderung ist abschaltbar, das `@` macht die Zeile selbsttragend ──
+#
+# **Wunsch m.rau (m.rau/bibi#134):** *„Ich haette schon gerne das Grouping. Mit
+# Grouping aus wird eine Liste ohne Unterteilung produziert. […] Eine
+# Unterscheidung zwischen Schedule (next) und At (`@`) sowie zwischen ad-hoc
+# (kein Next und kein `@`) ist sogar immer noch moeglich."*
+#
+# Das Handle war gestrichen worden, weil die Baender als **Klassifikation**
+# gedacht sind und nicht als Sortierordnung (FE §4.6). Der Vorschlag dreht das
+# um, und er ist staerker als die alte Begruendung: traegt die Zeile ihre Gruppe
+# selbst, ist die Baenderung nur noch eine Darstellungsform — und dann darf man
+# sie abschalten, ohne Information zu verlieren.
+
+
+def _oneshot(slug: str, **kw) -> dict:
+    return {"slug": slug, "schedule": None, "at": "2026-08-05T15:07:00",
+            "payload": "claude: erzaehl was", "repo_path": f"case/x/{slug}.md", **kw}
+
+
+def test_a_oneshot_says_so_in_its_type_column():
+    """Das `@` ist der ganze Unterschied zwischen „Gruppierung entfernen" und
+    „Gruppierung ausblenden"."""
+    html = render.jobs_screen(_zeilen(local=[_oneshot("20260805.at-150738-81ec")]),
+                              now=NOW)
+    assert "<td>@claude</td>" in _zeile_von(html, "20260805.at-150738-81ec")
+
+
+def test_a_recurring_job_carries_no_at():
+    """Die Gegenprobe. Ein `@` an jeder Zeile unterschiede nichts mehr."""
+    assert "<td>job</td>" in _zeile_von(
+        render.jobs_screen(_zeilen(local=[_md("EngineCI")]), now=NOW), "EngineCI")
+
+
+def test_grouping_off_produces_one_list_without_bands():
+    html = render.jobs_screen(_zeilen(local=[_md("a"), _md("b", schedule="adhoc")]),
+                              now=NOW, group=False)
+    for band in ("SCHEDULE", "ADHOC", "JOURNAL"):
+        assert f">{band} " not in html, band
+    assert 'class="band"' not in html
+
+
+def test_grouping_off_loses_no_row():
+    """Die Gegenprobe zur Gegenprobe: eine Liste ohne Unterteilung ist keine
+    Liste ohne Zeilen. Ohne diese Haelfte waere ein leerer Screen genauso
+    gruen — und die Baender sind bisher die Einzigen, die Zeilen ausgeben."""
+    zeilen = _zeilen(local=[_md("a"), _md("b", schedule="adhoc"), _md("c")])
+    html = render.jobs_screen(zeilen, now=NOW, group=False)
+    for slug in ("a", "b", "c"):
+        assert _zeile_von(html, slug)
+
+
+def test_grouping_is_on_by_default():
+    assert 'class="band"' in render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+
+
+def test_the_bar_carries_the_group_handle():
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    assert 'data-group=' in html
+
+
+def test_the_route_takes_the_handle(app_with, team_repo: Path):
+    _mit_job_md(team_repo, "flach")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        html = c.get("/-/jobs?group=off", headers={"accept": "text/html"}).text
+    assert 'class="band"' not in html
+    assert _zeile_von(html, "flach")

@@ -511,3 +511,80 @@ def test_group_entries_leaves_a_real_slug_alone(vault: Path):
     commits = [_c("a", 100.0, "m.rau", "vault/memo/News/1.md")]
     rows = group_entries(commits, {"a": "20260728.at-150738-81ec"}, cases=cases)
     assert rows[0].authors == frozenset({"20260728.at-150738-81ec"})
+
+
+# ── UNCOMMITTED: was noch nicht committet ist (m.rau/bibi#133) ─────────────
+#
+# **Anforderung m.rau:** *„Die lokalen Aenderungen muessen in den Feed
+# hineinsortiert werden. Also dort, wo lokale Aenderungen vorliegen, muss
+# modified, deleted, new erscheinen sowie der Autor."*
+#
+# Die Aggregation ist dieselbe — `unit_for_path()` bildet die Pfade aus
+# `git status` auf genau dieselben Einheiten ab wie die aus `git log`. **Zwei
+# Dinge sind anders**, und deshalb ein eigener Block statt Einsortieren: eine
+# ungespeicherte Aenderung hat **keinen Zeitpunkt** im git-Sinn (nur eine
+# Datei-Mtime) und **keinen Commit**.
+
+
+from bibi.feed import uncommitted_units  # noqa: E402
+
+
+def test_uncommitted_groups_into_the_same_units(repo: Path):
+    """Der Kern: derselbe Ordner, dieselbe Einheit — egal ob die Aenderung
+    schon committet ist oder noch nicht."""
+    (repo / "vault/case/20260601.FooBar-aa11/Notiz.md").write_text("a", encoding="utf-8")
+    (repo / "vault/case/20260601.FooBar-aa11/attach/Bild.md").parent.mkdir()
+    (repo / "vault/case/20260601.FooBar-aa11/attach/Bild.md").write_text(
+        "b", encoding="utf-8")
+    eintraege = uncommitted_units(repo)
+    assert [e.unit for e in eintraege] == ["20260601.FooBar-aa11"]
+    assert eintraege[0].changes == 2
+
+
+def test_uncommitted_carries_the_states_not_a_count_alone(repo: Path):
+    """`modified, deleted, new` sind die Nachricht — eine Zahl allein sagt
+    nicht, ob da etwas entstand oder verschwand."""
+    _case(repo, "vault/case/20260601.FooBar-aa11", "FooBar")   # README geaendert
+    (repo / "vault/case/20260601.FooBar-aa11/README.md").write_text(
+        "---\nslug: FooBar\nstatus: open\n---\n\ngeaendert\n", encoding="utf-8")
+    (repo / "vault/case/20260601.FooBar-aa11/Neu.md").write_text("c", encoding="utf-8")
+    e = uncommitted_units(repo)[0]
+    assert e.states == ("modified", "new")
+
+
+def test_uncommitted_reports_a_deletion(repo: Path):
+    (repo / "vault/case/20260601.FooBar-aa11/README.md").unlink()
+    e = uncommitted_units(repo)[0]
+    assert e.states == ("deleted",)
+
+
+def test_uncommitted_ignores_everything_outside_the_vault(repo: Path):
+    """Dieselbe Grenze wie im committeten Feed: `unit_for_path()` nimmt nur
+    Markdown unter `vault/`. Ein geaenderter `pyproject.toml` ist keine
+    Vault-Arbeit."""
+    (repo / "pyproject.toml").write_text("[project]\nx=1", encoding="utf-8")
+    (repo / "notiz.txt").write_text("x", encoding="utf-8")
+    assert uncommitted_units(repo) == []
+
+
+def test_uncommitted_is_empty_on_a_clean_tree(repo: Path):
+    assert uncommitted_units(repo) == []
+
+
+def test_uncommitted_sorts_by_mtime_newest_first(repo: Path):
+    import os
+    _case(repo, "vault/case/20260602.Zweiter-bb22", "Zweiter")
+    _commit_as(repo, "Alice", "alice@x.io", "case: init Zweiter")
+    (repo / "vault/case/20260601.FooBar-aa11/Alt.md").write_text("alt", encoding="utf-8")
+    (repo / "vault/case/20260602.Zweiter-bb22/Neu.md").write_text("neu", encoding="utf-8")
+    os.utime(repo / "vault/case/20260601.FooBar-aa11/Alt.md", (1000, 1000))
+    os.utime(repo / "vault/case/20260602.Zweiter-bb22/Neu.md", (2000, 2000))
+    assert [e.unit for e in uncommitted_units(repo)] == [
+        "20260602.Zweiter-bb22", "20260601.FooBar-aa11"]
+
+
+def test_a_deleted_file_contributes_no_time(repo: Path):
+    """Eine geloeschte Datei hat keine Mtime mehr. Eine zu erfinden — „jetzt" —
+    hiesse, den Zeitpunkt des Ansehens als den der Aenderung auszugeben."""
+    (repo / "vault/case/20260601.FooBar-aa11/README.md").unlink()
+    assert uncommitted_units(repo)[0].last_changed is None

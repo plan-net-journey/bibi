@@ -69,6 +69,13 @@ class JobRow:
     #: Die 24H-Kennzahl. ``None``, solange sie nicht berechnet wurde — sie
     #: braucht das Journal, und das holt der Aufrufer.
     quote: "Quote | None" = None
+    #: Ein Termin statt eines Rhythmus (``at:``). Steht an der **Zeile** und
+    #: nicht nur im Segment, weil die Bänderung abschaltbar ist
+    #: (m.rau/bibi#134): trägt die Zeile ihre Gruppe selbst — ``@`` für den
+    #: Oneshot, ein ``next`` für den Rhythmus, keins von beidem für ``adhoc``
+    #: —, ist die Bänderung nur noch eine Darstellungsform und darf weg, ohne
+    #: dass dabei Information verlorengeht.
+    oneshot: bool = False
 
 
 def _trigger(eintrag: dict) -> str | None:
@@ -85,7 +92,14 @@ def _trigger(eintrag: dict) -> str | None:
 
 
 def _ist_oneshot(eintrag: dict) -> bool:
-    return bool(eintrag.get("at"))
+    """Ein Termin statt eines Rhythmus.
+
+    Zwei Formen, weil zwei Quellen: die Discovery liest ``at:`` aus dem
+    Frontmatter, ``/-/schedule`` meldet stattdessen ``oneshot`` (dort ist
+    ``at`` schon in ``trigger`` aufgegangen). Für eine Zeile, die es nur beim
+    Scheduler gibt, ist die zweite Form die einzige.
+    """
+    return bool(eintrag.get("at")) or bool(eintrag.get("oneshot"))
 
 
 def _segment_fuer(lokal: dict | None, sched: dict | None, hat_historie: bool) -> Segment | None:
@@ -181,6 +195,7 @@ def build_rows(
             local=local_runs.get(slug, {}),
             paths=tuple(md.get("repo_path", "") for md in mds if md.get("repo_path")),
             spec=lokal or sched or {},
+            oneshot=_ist_oneshot(lokal or sched or {}),
         ))
     return zeilen
 

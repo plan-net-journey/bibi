@@ -301,6 +301,75 @@ def aggregate_feed(
     return group_entries(commits, slugs, cases=cases)
 
 
+@dataclass(frozen=True, slots=True)
+class UncommittedEntry:
+    """Eine Einheit mit offenen Änderungen — dieselbe Form wie ein
+    :class:`FeedEntry`, zwei Felder anders.
+
+    ``last_changed`` ist eine **Datei-Mtime** und darf ``None`` sein: eine
+    gelöschte Datei hat keine mehr, und „jetzt" einzusetzen hieße, den Zeitpunkt
+    des Ansehens als den der Änderung auszugeben. Einen Commit gibt es
+    naturgemäß nicht — genau deshalb ist das ein eigener Block und keine
+    einsortierte Zeile (Zustimmung m.rau, m.rau/bibi#133).
+    """
+
+    unit: str
+    last_changed: float | None
+    author: str
+    states: tuple[str, ...]   # `new` · `modified` · `deleted` · `conflict`
+    changes: int
+
+
+def uncommitted_units(root: Path, *, case_dir_name: str = "case",
+                      author: str | None = None,
+                      cases: set[str] | None = None) -> list[UncommittedEntry]:
+    """Offene Änderungen im Vault, als Einheiten — neueste zuerst.
+
+    **Die einzige Stelle, an der der Feed etwas anderes liest als ``git log``.**
+    Die Aggregation bleibt dieselbe: ``unit_for_path()`` bildet die Pfade aus
+    ``git status`` auf genau dieselben Einheiten ab, damit ein Ordner nicht
+    einmal so und einmal anders heißt, je nachdem ob seine Arbeit schon
+    gespeichert ist.
+
+    Der Urheber ist fest **der Mensch** (``git config user.name``): ein Job
+    committet, was er tut, ungespeicherte Arbeit stammt also von dem, der hier
+    sitzt.
+
+    Einheiten ohne jede Mtime (nur Löschungen) stehen hinten — ohne Zeitpunkt
+    gibt es nichts zu sortieren, und eine erfundene Zahl wäre schlimmer als das
+    Ende der Liste.
+    """
+    from bibi import git_ops
+    from bibi.git_status import dirty_files
+
+    # `cases` durchreichbar: die Feed-Route hat den Verzeichnis-Scan schon
+    # gemacht, und zweimal dasselbe zu begehen kostet ohne Gewinn.
+    if cases is None:
+        cases = discover_cases(root, case_dir_name=case_dir_name)
+    wer = author if author is not None else (git_ops.git_user_name(root) or "—")
+    buckets: dict[str, dict] = {}
+    for pfad, zustand in dirty_files(root).items():
+        unit = unit_for_path(pfad, cases=cases)
+        if unit is None:
+            continue
+        b = buckets.setdefault(unit, {"mtime": None, "states": set(), "changes": 0})
+        b["states"].add(zustand)
+        b["changes"] += 1
+        try:
+            m = (root / pfad).stat().st_mtime
+        except OSError:      # gelöscht — dann trägt diese Datei keine Zeit bei
+            continue
+        if b["mtime"] is None or m > b["mtime"]:
+            b["mtime"] = m
+    eintraege = [
+        UncommittedEntry(unit=unit, last_changed=b["mtime"], author=wer,
+                         states=tuple(sorted(b["states"])), changes=b["changes"])
+        for unit, b in buckets.items()
+    ]
+    return sorted(eintraege, key=lambda e: (e.last_changed is not None,
+                                            e.last_changed or 0.0), reverse=True)
+
+
 def remote_commit_base_url(root: Path) -> str | None:
     """Gitea-Basis-URL für Commit-Links, aus dem ``origin``-Remote abgeleitet;
     der Aufrufer hängt ``/commit/<sha>`` an. ``None`` ohne ``origin``."""

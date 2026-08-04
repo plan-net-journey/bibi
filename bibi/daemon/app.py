@@ -1739,9 +1739,19 @@ def create_app(
         slugs = feed_mod.agent_slugs(root, since_days=days)
         cases = feed_mod.discover_cases(root, case_dir_name=repo.case_dir_name())
         entries = feed_mod.group_entries(commits, slugs, cases=cases)
+        # Was noch nicht committet ist, steht in keinem `git log` und waere
+        # sonst der einzige Zustand des Vaults, den der Feed nicht kennt
+        # (m.rau/bibi#133). Haengt bewusst nicht am `days`-Fenster: offen ist
+        # offen, unabhaengig davon, wie weit man zurueckblickt.
+        offen = feed_mod.uncommitted_units(root, cases=cases)
         return {
             "since_days": days,
             "commit_base_url": feed_mod.remote_commit_base_url(root),
+            "uncommitted": [
+                {"unit": e.unit, "last_changed": e.last_changed,
+                 "author": e.author, "states": list(e.states), "changes": e.changes}
+                for e in offen
+            ],
             "entries": [
                 {"unit": e.unit, "last_changed": e.last_changed,
                  "last_commit_sha": e.last_commit_sha,

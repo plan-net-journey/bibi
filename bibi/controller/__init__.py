@@ -1163,7 +1163,8 @@ def add_controller_routes(
             zeilen, now=jetzt, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), scheduler=_sched[0], scheduler_stale_since=_sched[1],
             typ=q.getlist("typ"), status=q.getlist("status"),
-            journal=q.getlist("journal"), sort=sort, direction=(dir or "asc")))
+            journal=q.getlist("journal"), sort=sort, direction=(dir or "asc"),
+            group=q.get("group") != "off"))
 
     def _quoten(zeilen: list, historie: list, jetzt: float) -> None:
         """Die 24H-Kennzahl an jede Zeile haengen.
@@ -1815,7 +1816,8 @@ def add_controller_routes(
         q = request.query_params
         return HTMLResponse(render.jobs_screen(
             zeilen, jetzt, typ=q.getlist("typ"), status=q.getlist("status"),
-            journal=q.getlist("journal"), sort=sort, direction=(dir or "asc")))
+            journal=q.getlist("journal"), sort=sort, direction=(dir or "asc"),
+            group=q.get("group") != "off"))
 
     @app.get("/-/nodes", include_in_schema=False)
     def screen_nodes():

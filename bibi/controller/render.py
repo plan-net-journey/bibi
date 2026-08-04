@@ -2667,14 +2667,50 @@ def _feed_empty(days: int | None) -> str:
            "<code>vault/</code> shows up here — widen the window with LOAD MORE.</p>")
 
 
+def _uncommitted_row(entry: dict) -> str:
+    """Eine offene Änderung — dieselben Spalten wie eine committete Zeile.
+
+    Zwei Zellen sagen etwas anderes: die Zeit ist eine Datei-Mtime und darf
+    fehlen, und statt des Commits stehen die Zustände (``modified`` ·
+    ``deleted`` · ``new``). Genau diese beiden Unterschiede sind der Grund für
+    einen eigenen Block statt einer einsortierten Zeile.
+    """
+    ts = entry.get("last_changed")
+    n = int(entry.get("changes") or 0)
+    umfang = f"{n} change" if n == 1 else f"{n} changes"
+    chips = "".join(f'<span class="chip {_e(z)}">{_e(z)}</span> '
+                    for z in (entry.get("states") or []))
+    return ('<div class="frow">'
+           f'<span class="t">{_e(_abs_time(ts)) if ts else "—"}</span>'
+           f'<span class="msg">{_e(entry.get("unit") or "—")}</span>'
+           f'<span class="cnt">{_e(umfang)}</span>'
+           f'<span class="who">{_e(entry.get("author") or "—")}</span>'
+           f"{chips}"
+           "</div>")
+
+
 def _feed_list(entries: list[dict], *, days: int | None = None,
-              commit_base_url: str | None = None) -> str:
+              commit_base_url: str | None = None,
+              uncommitted: list[dict] | None = None) -> str:
     """Tageweise gruppiert, jüngster Tag zuerst — dasselbe Idiom wie die
-    Lauf-Liste in Job Detail, damit beide Listen gleich gelesen werden."""
+    Lauf-Liste in Job Detail, damit beide Listen gleich gelesen werden.
+
+    **Über der ersten Tagestrennlinie steht, was noch nicht committet ist**
+    (m.rau/bibi#133). Der Ort folgt aus der Sache: ungespeicherte Arbeit ist
+    jünger als jeder Commit, hat aber keinen Tag, unter den sie gehörte.
+    """
+    uncommitted = uncommitted or []
+    kopf = ""
+    if uncommitted:
+        kopf = ('<div class="fday">UNCOMMITTED</div>'
+                '<div class="feedlist">'
+                + "".join(_uncommitted_row(e) for e in uncommitted) + "</div>")
     if not entries:
-        return _feed_empty(days)
+        # Ein Vault, in dem gearbeitet und noch nichts committet wurde, hat sehr
+        # wohl etwas zu zeigen — die Leermeldung wäre dort eine Falschaussage.
+        return kopf or _feed_empty(days)
     from bibi.controller import jobs_view
-    teile = []
+    teile = [kopf]
     for tag, zeilen in jobs_view.by_day(entries, ts_key="last_changed"):
         teile.append(f'<div class="fday">{_e(tag)}</div>')
         teile.append('<div class="feedlist">' + "".join(
@@ -2721,7 +2757,7 @@ def feed_fragment(feed_data: dict, *, days: int | None = None,
     return (
         '<div id="feedboard"><div class="panel-card">'
         f"{_feed_reach(entries, days)}"
-        f"{_feed_list(entries, days=days, commit_base_url=commit_base_url)}"
+        f"{_feed_list(entries, days=days, commit_base_url=commit_base_url, uncommitted=feed_data.get('uncommitted') or [])}"
         f"{load_more}"
         "</div></div>"
     )
@@ -3924,14 +3960,23 @@ def _jobs_zeile(row, now: float) -> str:
         "<tr>"
         f'<td class="slug"><a href="/-/jobs/{job_uid(row.slug)}" title="{row.slug}">'
         f"{_slug_kurz(row.slug)}</a>{beziehung}</td>"
-        f'<td>{models.display_kind(row.spec.get("payload"), row.spec.get("app_port"))}</td>'
+        # Das `@` traegt die Gruppenzugehoerigkeit an der Zeile (m.rau/bibi#134):
+        # `@` = Oneshot, ein `next` daneben = Rhythmus, keins von beidem =
+        # adhoc. Genau daran haengt der Unterschied zwischen „Gruppierung
+        # entfernen" und „Gruppierung ausblenden".
+        f'<td>{"@" if row.oneshot else ""}'
+        f'{models.display_kind(row.spec.get("payload"), row.spec.get("app_port"))}</td>'
         # `row_status` ist der Slot-Zustand der Scheduler-DB; `status` heisst
         # dieses Feld nur in der lokalen Job-DB (live abgenommen 2026-08-03).
         f'<td>{s.get("row_status") or s.get("status") or "—"}</td>'
         f'<td>{_uhrzeit(s.get("last_run_at"), now)}</td>'
         f'<td>{_uhrzeit(s.get("next_fire_at"), now)}</td>'
+        # RUNTIME gehört auf diese Seite und ist ein Perzentil (m.rau/bibi#132):
+        # P90 der letzten 30 Läufe, nicht die Dauer des letzten. Die sprang —
+        # derselbe Job zeigte mal `2.8s`, mal `4m 34s`, je nachdem was zuletzt
+        # geschah. Unter fünf Läufen liefert der Scheduler bewusst nichts.
+        f'<td>{_human_duration(s.get("runtime_p90"))}</td>'
         f'<td>{l.get("status") or "—"}</td>'
-        f'<td>{_human_duration(l.get("exec_runtime")) if l.get("exec_runtime") else "—"}</td>'
         f'<td>{row.quote or "—"}</td>'
         "</tr>"
     )
@@ -3969,8 +4014,9 @@ def _sort_kopf(schluessel: str, label: str, sort: str | None, richtung: str) -> 
 
 def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
                 status: list[str] | None = None, journal: list[str] | None = None,
-                sort: str | None = None, direction: str = "asc") -> str:
-    """Die drei Bänder mit ihren Zeilen.
+                sort: str | None = None, direction: str = "asc",
+                group: bool = True) -> str:
+    """Die drei Bänder mit ihren Zeilen — oder eine Liste ohne Unterteilung.
 
     Alle drei stehen immer da, auch leer: sonst verschöbe sich das Layout je
     nachdem, was gerade existiert, und man suchte ein Band, das nur gerade
@@ -3981,6 +4027,17 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
     die gestaffelte Filtermenge: `TYPE` und `STATUS` wirken überall, die drei
     Journal-Filter nur im dritten Band, und eine gestaffelte Filtermenge
     braucht einen Ort je Staffel.
+
+    **``group=False`` blendet sie aus** (m.rau/bibi#134). Das ist kein
+    Widerspruch zur Klassifikation, sondern ihre Folge: seit die Zeile ihre
+    Gruppe selbst trägt (``@`` beim Oneshot, ein ``next`` beim Rhythmus,
+    keins von beidem bei ``adhoc``), ist die Bänderung nur noch eine
+    Darstellungsform. Die Sortierung wirkt dann über die ganze Liste — genau
+    das ist der Zweck des Schalters.
+
+    Die drei Journal-Filter bleiben dabei erreichbar: sie wandern in die
+    Kopfleiste, statt mit ihrem Band zu verschwinden. Ein Filter, den man nur
+    in einer Ansicht erreicht, ist in der anderen ein toter Knopf.
     """
     if not rows:
         return (
@@ -4005,24 +4062,44 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
         f'<span class="fltr-grp">{name}</span>'
         + "".join(_filter_knopf(w, typ if name == "TYPE" else status) for w in werte)
         for name, werte in _FILTER_OBEN)
+    if not group:
+        # Ohne Bänder gäbe es für die drei Journal-Filter keinen Ort mehr —
+        # sie stünden am Band, das gerade nicht da ist. Also hier.
+        gruppen += ('<span class="fltr-grp">JOURNAL</span>'
+                    + "".join(_filter_knopf(w, journal) for w in _FILTER_JOURNAL))
     leiste = (f'<div class="fltr-bar">{gruppen}'
+              f'<button class="fltr{" on" if group else ""}" data-group='
+              f'"{"off" if group else "on"}">group</button>'
               f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
 
     kopf = (
         "<thead>"
         '<tr class="gruppen"><th></th><th></th>'
-        '<th colspan="3" class="grp">SCHEDULER</th>'
-        '<th colspan="2" class="grp">LOCAL</th><th></th></tr>'
+        # RUNTIME ist seit m.rau/bibi#132 eine Scheduler-Eigenschaft: er weiss,
+        # wann es *wieder* laeuft, und wie lange es *dauert*. Beide Angaben sind
+        # gefragt, beide gehoeren ihm — LOCAL bleibt der reine Zustand.
+        '<th colspan="4" class="grp">SCHEDULER</th>'
+        '<th colspan="1" class="grp">LOCAL</th><th></th></tr>'
         "<tr>"
         + _sort_kopf("slug", "SLUG", sort, direction)
         + _sort_kopf("type", "TYPE", sort, direction)
         + _sort_kopf("status", "STATUS", sort, direction)
         + _sort_kopf("last", "LAST", sort, direction)
         + _sort_kopf("next", "NEXT", sort, direction)
-        + "<th>STATUS</th><th>RUNTIME</th>"
+        # Nicht sortierbar: FE §4.6 fuehrt sechs klickbare Spalten, RUNTIME ist
+        # keine davon. Dass die Zahl jetzt tragfaehig ist, macht das Sortieren
+        # naheliegend — aber das ist eine Erweiterung der Vorgabe, keine Folge
+        # aus ihr.
+        + "<th>RUNTIME</th><th>STATUS</th>"
         + _sort_kopf("24h", "24H", sort, direction)
         + "</tr></thead>"
     )
+
+    if not group:
+        # Eine Liste ohne Unterteilung. Die Sortierung wirkt damit über alles,
+        # statt innerhalb jedes Bandes — genau der Zweck des Schalters.
+        zeilen = "".join(_jobs_zeile(r, now) for r in rows)
+        return f'{leiste}<table class="jobs">{kopf}<tbody>{zeilen}</tbody></table>'
 
     teile = []
     for seg in (Segment.SCHEDULE, Segment.ADHOC, Segment.JOURNAL):
@@ -4064,8 +4141,17 @@ _JOBS_JS = """
     if (['waiting','running','stopped'].includes(wert)) return 'status';
     return 'journal';
   };
-  document.querySelectorAll('.fltr').forEach(b => {
+  document.querySelectorAll('.fltr[data-filter]').forEach(b => {
     b.addEventListener('click', () => mehrfach(gruppe(b.dataset.filter), b.dataset.filter));
+  });
+  // Das group-Handle ist kein Mehrfach-Toggle, sondern ein Schalter mit zwei
+  // Stellungen -- der Knopf traegt die Stellung, die er herstellt.
+  document.querySelectorAll('.fltr[data-group]').forEach(b => {
+    b.addEventListener('click', () => {
+      if (b.dataset.group === 'off') url.searchParams.set('group', 'off');
+      else url.searchParams.delete('group');
+      window.location.href = url.toString();
+    });
   });
   document.querySelectorAll('th[data-sort]').forEach(th => {
     th.addEventListener('click', () => {
@@ -4088,7 +4174,8 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
                  scheduler_stale_since: float | None = None,
                  typ: list[str] | None = None, status: list[str] | None = None,
                  journal: list[str] | None = None,
-                 sort: str | None = None, direction: str = "asc") -> str:
+                 sort: str | None = None, direction: str = "asc",
+                 group: bool = True) -> str:
     """Die Jobs-Seite: Hülle plus die drei Bänder.
 
     Getrennt von :func:`jobs_screen`, weil die Bänder als Fragment nachgeladen
@@ -4114,7 +4201,7 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         f'<div id="jobs" data-bus="jobs" data-bus-refetch="/-/jobs/list" '
         f'hx-get="/-/jobs/list" hx-trigger="bibiJobsChanged from:body" '
         f'hx-swap="innerHTML">'
-        f'{jobs_screen(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction)}</div>'
+        f'{jobs_screen(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group)}</div>'
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"

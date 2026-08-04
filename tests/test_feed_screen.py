@@ -308,3 +308,57 @@ def test_the_exception_list_has_no_dead_entries():
     verwaist = sorted(_CSS_OHNE_MARKUP - definiert)
     assert not verwaist, (
         f"{len(verwaist)} Ausnahmen ohne CSS-Regel: {', '.join(verwaist)}")
+
+
+# ── Der UNCOMMITTED-Block (m.rau/bibi#133) ────────────────────────────────
+
+
+def _uncommitted(unit="Bibi5", states=("modified",), changes=2, ts=1_000_000.0):
+    return [{"unit": unit, "last_changed": ts, "author": "m.rau",
+             "states": list(states), "changes": changes}]
+
+
+def test_uncommitted_stands_above_the_first_day_line():
+    """*„Block `UNCOMMITTED` **ueber** der ersten Tagestrennlinie"* — was noch
+    nicht gespeichert ist, ist juenger als jeder Commit."""
+    html = render._feed_list(
+        [{"unit": "Alt", "last_changed": 900_000.0, "changes": 1,
+          "authors": ["bob"], "last_commit_sha": "abc1234"}],
+        uncommitted=_uncommitted())
+    # Nicht `index('class="fday"')`: die UNCOMMITTED-Zeile traegt dieselbe
+    # Klasse und faende sich selbst. Die vierte Lehre aus m.rau/bibi#131 —
+    # gemessen wird die Folge der Trennlinien, nicht die Stelle eines Wortes.
+    trennlinien = re.findall(r'<div class="fday">(.*?)</div>', html)
+    assert trennlinien[0] == "UNCOMMITTED"
+    assert len(trennlinien) == 2, "die Tagestrennlinie muss darunter stehen bleiben"
+
+
+def test_uncommitted_names_the_states_and_the_human():
+    """*„muss modified, deleted, new erscheinen sowie der Autor"* — der Urheber
+    ist fest der Mensch: ein Job committet, was er tut."""
+    html = render._feed_list([], uncommitted=_uncommitted(states=("deleted", "new")))
+    assert "deleted" in html and "new" in html
+    assert "m.rau" in html
+
+
+def test_uncommitted_carries_no_commit():
+    """Es gibt keinen — genau deshalb ist es ein eigener Block."""
+    html = render._feed_list([], uncommitted=_uncommitted())
+    assert 'class="commit"' not in html
+
+
+def test_without_uncommitted_the_block_is_absent():
+    """Die Gegenprobe: ein leerer Block waere eine dauerhafte Zeile, die nichts
+    meldet — und im Normalfall (sauberer Baum) genau das."""
+    html = render._feed_list(
+        [{"unit": "Alt", "last_changed": 900_000.0, "changes": 1,
+          "authors": ["bob"], "last_commit_sha": "abc1234"}], uncommitted=[])
+    assert "UNCOMMITTED" not in html
+
+
+def test_uncommitted_alone_is_not_the_empty_state():
+    """Ein Vault, in dem noch nichts committet, aber schon gearbeitet ist, hat
+    etwas zu zeigen — die Leermeldung waere hier eine Falschaussage."""
+    html = render._feed_list([], days=7, uncommitted=_uncommitted())
+    assert "No changes" not in html
+    assert "Bibi5" in html
