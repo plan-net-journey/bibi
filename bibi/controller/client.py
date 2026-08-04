@@ -15,6 +15,37 @@ class ControllerClient:
     def __init__(self, base_url: str, *, timeout: float = 5.0) -> None:
         self.base = base_url.rstrip("/")
         self.timeout = timeout
+        self._node_id: str | None = None
+
+    def _identity(self) -> str | None:
+        """Die eigene ``node_id`` für den ``X-Bibi-Node-Id``-Header.
+
+        **Ohne sie sind die Job-Control-Routen des Hosts für uns geschlossen**
+        (``_require_approved_or_local``, seit 2026-07-25): ein entfernter
+        Aufruf muss sich ausweisen *und* freigeschaltet sein, fail-closed. Der
+        Controller tat es nicht — live gemessen am 2026-08-04, Mac gegen
+        sarasate: ohne Header ``403 node approval required``, mit Header
+        ``404 job not found``. Dieselbe Anfrage, nur die Identität fehlte.
+
+        Unsichtbar blieb das, solange sarasate selbst die ``controller``-Rolle
+        trug: dort war jeder Klick ein Loopback-Aufruf ohne Header, und der ist
+        ausdrücklich erlaubt. Mit dem Wegfall der Rolle am 2026-08-04 wurde aus
+        demselben Klick ein entfernter Aufruf — und alle vier Verben der
+        SCHEDULER-Kachel antworteten ``403``.
+
+        Einmal je Client aufgelöst, nicht je Request: ``node_id()`` liest die
+        ``env``-Datei, und der Wert ändert sich nach dem ersten Schreiben nicht
+        mehr. Scheitert sie, bleibt der Header weg — dann verhält sich der
+        Client wie bisher, statt den Aufruf an einem Konfigurationsfehler zu
+        verlieren.
+        """
+        if self._node_id is None:
+            from bibi import config
+            try:
+                self._node_id = config.node_id()
+            except Exception:  # noqa: BLE001 — defensiv (§2.7)
+                self._node_id = ""
+        return self._node_id or None
 
     def _request(self, method: str, path: str, params: dict | None = None,
                  *, json_body: dict | None = None) -> object:
@@ -23,6 +54,12 @@ class ControllerClient:
             url += "?" + urllib.parse.urlencode({k: v for k, v in params.items()
                                                  if v is not None})
         headers = {"Accept": "application/json"}
+        # Auch an GETs, nicht nur an den Verben: der Host gated `/-/job` (die
+        # Liste) mit derselben Abhängigkeit. Ein Header nur am POST hätte den
+        # halben Bug stehen lassen.
+        node = self._identity()
+        if node:
+            headers["X-Bibi-Node-Id"] = node
         data = None
         if json_body is not None:
             data = json.dumps(json_body).encode("utf-8")
