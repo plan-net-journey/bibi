@@ -70,6 +70,17 @@ class ScheduleView(BaseModel):
     last_status: Status | None = None
     last_run_at: float | None = None
     oneshot: bool = False  # One-shot (at:) — Basis fürs Archiv (§4.4)
+    # Der Lauf, der gerade im Slot steht (m.rau/bibi#131). Bis zu seiner
+    # Archivierung gibt es ihn nur hier: unter A2 wandert ein terminaler Fehler
+    # erst auf START/RESET ins Journal. `fire` bildet mit Slug und Job-ID die
+    # kanonische `run_id` (`job_db.run_id_for()`) — ohne sie gäbe es weder einen
+    # Weg zum Output noch einen stabilen Deep-Link.
+    started_at: float | None = None
+    finished_at: float | None = None
+    exit_code: int | None = None
+    output_ref: str | None = None
+    commit_sha: str | None = None
+    fire: int = 0
 
 
 class NextRequest(BaseModel):

@@ -149,11 +149,20 @@ def test_an_unknown_job_uid_is_a_404(client):
 
 def test_the_page_carries_the_shell(client):
     """App-Bar und Header stehen auf **jedem** Screen und jeder Unterseite
-    (FE-Spezifikation §1) — sie sind der Rahmen, nicht Screen-Inhalt."""
+    (FE-Spezifikation §1) — sie sind der Rahmen, nicht Screen-Inhalt.
+
+    Der Test verlangte bis `#131` zusaetzlich `Archive` und war **gruen aus dem
+    falschen Grund**: der Tab ist seit `#130` weg, gefunden wurde das Wort in
+    einem CSS-Kommentar, den dieselbe Seite einbettet. Genau die Kategorie, die
+    `#130` an zwei anderen Tests aufgedeckt hat — ein Substring-Test bindet an
+    das ganze Dokument, nicht an die Stelle, die er meint. Deshalb steht hier
+    jetzt die Gegenprobe mit dabei."""
     c, _ = _md_job(client)
     text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
-    for teil in ("Feed", "Jobs", "Archive", "Nodes", "Live", "Log"):
-        assert teil in text
+    from bibi.controller import render
+    for name, _ in render.SCREENS:
+        assert f">{name}<" in text, f"{name} fehlt in der App-Bar"
+    assert ">Archive<" not in text
     assert "CLIENT" in text and "SCHEDULER" in text
 
 
@@ -208,55 +217,6 @@ def test_attrs_of_an_unknown_job_is_a_404(client):
 # ── Quell-Gruppen und Lauf-Liste (FE-Spezifikation §5.1–§5.3) ────────────────
 
 
-def _grp(**kw):
-    from bibi.controller import jobs_view
-    basis = dict(scheduler_slot=None, local_slot=None,
-                 scheduler_runs=[], local_runs=[],
-                 scheduler_host="sarasate", local_host="Mac.fritz.box")
-    basis.update(kw)
-    return jobs_view.build_groups(**basis)
-
-
-def test_a_group_is_missing_when_there_is_no_slot_at_all():
-    """Der Unterschied zwischen *kein Platz* und *freier Platz* (§5.1): eine
-    Gruppe fehlt genau dann, wenn diese Seite den Job gar nicht kennt — nicht,
-    wenn ihr Slot gerade leer ist. Das ersetzt das ausgegraute Control."""
-    gruppen = _grp(scheduler_slot={"status": "pending"})
-    assert [g.quelle for g in gruppen] == ["SCHEDULER"]
-
-
-def test_both_groups_appear_when_both_sides_know_the_job():
-    gruppen = _grp(scheduler_slot={"status": "pending"},
-                   local_slot={"status": "error"})
-    assert [g.quelle for g in gruppen] == ["SCHEDULER", "LOCAL"]
-
-
-def test_a_group_survives_an_empty_slot_if_the_side_knows_the_job():
-    """`adhoc`: die Seite kennt ihn, gerade ist nichts los. `pending` ohne
-    `next` ist ein *freier* Platz, kein fehlender."""
-    gruppen = _grp(scheduler_slot={"status": "pending", "next_fire_at": None})
-    assert len(gruppen) == 1 and gruppen[0].slot["status"] == "pending"
-
-
-def test_the_slot_carries_its_own_actions():
-    """Die vier Knopf-Gesichter kommen aus `slot.actions()` — dieselbe Quelle
-    wie die Engine, damit Oberflaeche und Zustandsmaschine nicht auseinander
-    laufen koennen."""
-    from bibi.schedule import slot
-    g = _grp(scheduler_slot={"status": "error"})[0]
-    assert g.aktionen == slot.actions("error")
-    assert slot.Verb.START in g.aktionen and slot.Verb.KILL not in g.aktionen
-
-
-def test_a_consumed_oneshot_offers_no_action_bar():
-    """`done` ist die Ausnahme von „ausgegraut statt ausgeblendet": ein
-    verbrauchter Slot zeigt keine toten Knoepfe, das Fehlen der Leiste ist
-    selbst die Aussage."""
-    from bibi.schedule import slot
-    g = _grp(scheduler_slot={"status": slot.DONE})[0]
-    assert g.aktionen == frozenset()
-
-
 def test_runs_are_grouped_by_day_newest_first():
     """Tagesgruppen geben einen greifbaren Anker („was lief gestern?"), den
     eine gleichfoermige Endlosliste nicht hat (§5.3)."""
@@ -287,30 +247,94 @@ def test_runs_are_sorted_by_finished_at_not_by_archived_at():
     assert tage[0][1][0] is neu  # der juengere *Lauf* steht oben
 
 
-def test_the_group_counts_all_runs_not_just_the_loaded_page():
-    """`45 runs` in der Kopfzeile meint die Gesamtzahl — sonst zaehlte die
-    Zahl mit jedem LOAD MORE hoch und saehe aus wie Zuwachs."""
-    g = _grp(scheduler_slot={"status": "pending"},
-             scheduler_runs=[{"finished_at": 1.0}], scheduler_total=45)[0]
-    assert g.gesamt == 45
-
-
-def test_the_page_shows_both_groups_with_their_slots(client):
-    """Der Screen im Bild (§5.1): je Quelle eine faltbare Gruppe, der Slot in
-    der Kopfzeile, die Laeufe darunter."""
+def _laufender_slot(client):
+    """Ein Job, dessen lokaler Slot einen laufenden Lauf haelt."""
     c, root = _md_job(client)
     from bibi.daemon import job_db
     conn = job_db.connect()
     try:
-        jid = conn.execute("SELECT id FROM jobs WHERE slug='EngineCI'").fetchone()["id"]
-        job_db.report_status(conn, jid, status="starting")
+        conn.execute("UPDATE jobs SET next_fire_at=1.0 WHERE slug='EngineCI'")
+        jid = job_db.reserve_next(conn, worker="w1", host="h")["id"]
         job_db.report_status(conn, jid, status="running")
     finally:
         conn.close()
+    return c, root
+
+
+def test_the_page_shows_the_tiles_above_and_one_list_below(client):
+    """Der Screen im Bild (§5.1): oben die Kacheln — was ich tun kann —, unten
+    **eine** Liste ueber beide Quellen — was geschehen ist. Die frueheren zwei
+    faltbaren Gruppen sind weg; mit ihnen die Faltung und der zweite Ort fuer
+    den Output."""
+    c, _ = _laufender_slot(client)
     text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
-    assert "LOCAL" in text
-    assert "slot:" in text
+    assert 'class="tile' in text
     assert "running" in text
+    # Genau **eine** Lauf-Tabelle, nicht je Quelle eine.
+    assert text.count('<table class="runs"') == 1
+    # Und keine Faltung mehr: sie war der Ersatz fuer den Herkunftsfilter.
+    assert "data-fold=" not in text
+
+
+def test_the_list_carries_a_source_column(client):
+    """`S`/`C` (§5.3). Die Spalte stand im urspruenglichen Entwurf und war nur
+    der Faltung zum Opfer gefallen — die es nicht mehr gibt. Ohne sie waere die
+    zusammengefuehrte Liste nicht mehr lesbar: dieselbe Zeile saehe fuer einen
+    Scheduler- und einen lokalen Lauf gleich aus."""
+    c, _ = _laufender_slot(client)
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    kopf = text[text.index('<table class="runs"'):]
+    for spalte in ("TIME", "SRC", "STATUS", "EXIT", "RUNTIME", "COMMIT"):
+        assert f"<th>{spalte}</th>" in kopf, f"Spalte {spalte} fehlt"
+    # Das Datum steht in der Tagestrennlinie, nicht noch einmal je Zeile.
+    assert "<th>DATE</th>" not in kopf
+
+
+def test_the_run_in_the_slot_is_marked_in_the_list(client):
+    """Die Marke bedeutet „steht im Slot", nicht „laeuft" — sie traegt beide
+    Faelle, die ein Slot kennen kann. **Sie ist der Bezug zwischen oben und
+    unten:** die Kachel gehoert zu der Zeile, die ihre Marke traegt."""
+    c, _ = _laufender_slot(client)
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    # An der Zeile geprueft, nicht am Dokument: `run-in-slot` steht auch im
+    # eingebetteten CSS, und ein blosses `in text` waere dort schon gruen —
+    # dieselbe Falle wie beim `Archive`-Rest aus `#130`.
+    assert 'class="run run-in-slot"' in text
+
+
+def test_terminal_becoming_moves_nothing(client):
+    """§5.1: *„Beim Terminalwerden bewegt sich nichts."* Der Nachweis ist die
+    `run_id`: dieselbe Zeile traegt sie vor und nach der Archivierung, deshalb
+    bleibt auch der Ausklappbereich, wo er ist. Vorher war es ein Sprung
+    zwischen zwei Bereichen — Slot-Kopfzeile und Liste."""
+    from bibi.daemon import job_db
+    c, _ = _laufender_slot(client)
+    conn = job_db.connect()
+    try:
+        zeile = conn.execute("SELECT id, slug, fire FROM jobs WHERE slug='EngineCI'").fetchone()
+        rid = job_db.run_id_for(zeile["slug"], zeile["id"], zeile["fire"])
+    finally:
+        conn.close()
+    vorher = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    assert f'data-run="{rid}"' in vorher
+    conn = job_db.connect()
+    try:
+        jid = conn.execute("SELECT id FROM jobs WHERE slug='EngineCI'").fetchone()["id"]
+        job_db.report_status(conn, jid, status="complete", exit_code=0)
+    finally:
+        conn.close()
+    nachher = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    assert f'data-run="{rid}"' in nachher   # dieselbe Zeile, nur archiviert
+    assert nachher.count(f'data-run="{rid}"') == 1   # und nicht doppelt
+
+
+def test_a_pending_slot_shows_a_tile_but_no_row(client):
+    """§5.1: ein `pending`-Slot bekommt keine Zeile, weil es noch keinen Lauf
+    gibt. Sein Zustand steht in der Kachel — und **nur** dort."""
+    c, _ = _md_job(client)
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    assert 'class="tile' in text and "pending" in text
+    assert 'class="run run-in-slot"' not in text
 
 
 def test_a_running_slot_offers_kill_but_not_start(client):
@@ -342,61 +366,431 @@ def test_an_empty_run_list_says_what_to_do(client):
     assert "No runs yet" in text
 
 
-def test_a_side_that_has_runs_but_no_slot_still_gets_a_group():
-    """Live gefunden (2026-08-03): `EngineCI` hat lokale Laeufe, aber keinen
-    lokalen Slot — `bibi-ctrl run` legt Pseudo-Jobs mit Zufallssuffix an
-    (`EngineCI-46ec57c7`), der Basis-Slug hat dort keine Zeile. Die Bedingung
-    "kein Slot ⇒ keine Gruppe" schluckte damit die Laeufe mit.
-
-    §5.1 sagt: eine Gruppe fehlt, wenn die Seite den Job **nicht kennt** —
-    "keine MD, **nie gelaufen**". Wer gelaufen ist, ist bekannt. Die Gruppe
-    erscheint also, nur ohne Slot-Zustand und ohne Knoepfe: es gibt keinen
-    Platz zu bedienen, aber sehr wohl etwas zu zeigen."""
-    gruppen = _grp(scheduler_slot={"status": "pending"},
-                   local_runs=[{"finished_at": 1_754_000_000.0, "status": "complete"}])
-    assert [g.quelle for g in gruppen] == ["SCHEDULER", "LOCAL"]
-    lokal = gruppen[1]
-    assert lokal.slot == {}          # kein Platz
-    assert lokal.aktionen == frozenset()
-    assert len(lokal.runs) == 1      # aber Historie
-
-
 def test_a_side_with_neither_slot_nor_runs_stays_hidden():
     """Die Gegenprobe — sonst zeigte jeder Job zwei Gruppen, davon eine leer."""
     assert [g.quelle for g in _grp(scheduler_slot={"status": "pending"})] == ["SCHEDULER"]
 
 
-def test_the_scheduler_row_uses_row_status_not_status():
+# ── Der Lauf, der im Slot steht (m.rau/bibi#131) ─────────────────────────────
+#
+# Die Liste fuehrt **jeden** Lauf, auch den noch nicht archivierten. Welche
+# Slot-Zustaende einen solchen Lauf halten, sagt die Archivierungsregel
+# (Zustandsmodell §3) und nicht eine Statusliste: `pending` hat noch keinen,
+# `complete` ist nach A1 laengst im Journal, `done` ist verbraucht. Alles
+# dazwischen haelt einen Lauf, der nirgendwo sonst steht.
+
+
+def test_a_running_slot_becomes_the_topmost_run():
+    """Der Fall, der `#131` ausgeloest hat: *„wenn in den Kacheln der current
+    Job Status steht, wo steht dann der Output?"* — er steht in der Liste, wie
+    jeder andere Lauf auch."""
+    zeile = jobs_view.slot_run(
+        {"id": "j1", "slug": "EngineCI", "fire": 7, "row_status": "running",
+         "started_at": 1_754_000_000.0},
+        src="S", now=1_754_000_003.0)
+    assert zeile is not None
+    assert zeile["in_slot"] is True and zeile["src"] == "S"
+    assert zeile["status"] == "running"
+
+
+@pytest.mark.parametrize("status", ["pending", "complete", "done"])
+def test_three_slot_states_hold_no_run_of_their_own(status):
+    """Die drei Ausnahmen, jede aus einem anderen Grund: `pending` hat noch
+    keinen Lauf (§5.1: „bekommt keine Zeile"), `complete` ist nach A1 schon
+    archiviert — eine zweite Zeile waere derselbe Lauf doppelt —, und `done`
+    ist ein verbrauchter Slot, kein Lauf."""
+    assert jobs_view.slot_run(
+        {"id": "j1", "slug": "EngineCI", "fire": 7, "row_status": status,
+         "started_at": 1_754_000_000.0, "finished_at": 1_754_000_005.0},
+        src="S", now=2_000_000_000.0) is None
+
+
+@pytest.mark.parametrize("status", ["error", "inactive", "zombie", "killed"])
+def test_a_blocked_terminal_run_stays_in_the_list(status):
+    """A2: diese vier bleiben stehen, bis ein Mensch START oder RESET
+    ausloest. Bis dahin gibt es sie **nur** im Slot — ohne diese Zeile waere
+    ein gescheiterter Lauf der einzige, dessen Output niemand sehen kann."""
+    zeile = jobs_view.slot_run(
+        {"id": "j1", "slug": "EngineCI", "fire": 7, "row_status": status,
+         "reason": "nonzero_exit", "started_at": 1_754_000_000.0,
+         "finished_at": 1_754_000_231.9, "exit_code": 1},
+        src="S", now=1_754_100_000.0)
+    assert zeile is not None and zeile["status"] == status
+    assert zeile["reason"] == "nonzero_exit" and zeile["exit_code"] == 1
+
+
+def test_a_slot_without_a_start_has_nothing_to_show():
+    """Ein Zustand allein macht noch keinen Lauf: ohne `started_at` hat nie
+    einer begonnen. Der Fall entsteht nach RESET, das `started_at` ausdruecklich
+    raeumt (`report_status()`)."""
+    assert jobs_view.slot_run(
+        {"id": "j1", "slug": "EngineCI", "fire": 7, "row_status": "error"},
+        src="S", now=1_754_100_000.0) is None
+
+
+def test_the_slot_run_carries_the_canonical_run_id():
+    """Derselbe `run_id`, den der Worker bildet — sonst zeigte der Deep-Link
+    `#run=` vor der Archivierung auf etwas anderes als danach, und der
+    Ausklappbereich waere an die Zeilenposition gebunden statt an den Lauf."""
+    from bibi.daemon import job_db
+    zeile = jobs_view.slot_run(
+        {"id": "j1", "slug": "EngineCI", "fire": 7, "row_status": "running",
+         "started_at": 1_754_000_000.0}, src="S", now=1_754_000_003.0)
+    assert zeile["run_id"] == job_db.run_id_for("EngineCI", "j1", 7)
+
+
+def test_a_running_run_is_sorted_by_its_start():
+    """`finished_at` fehlt, solange der Lauf laeuft — die Liste sortiert und
+    gruppiert deshalb nach `sort_at`, das darauf zurueckfaellt. Ohne das fiele
+    der laufende Lauf aus den Tagesgruppen heraus (`by_day()` ueberspringt, was
+    keinen Zeitstempel hat) und waere gerade der eine nicht sichtbar, den man
+    sucht."""
+    zeile = jobs_view.slot_run(
+        {"id": "j1", "slug": "EngineCI", "fire": 7, "row_status": "running",
+         "started_at": 1_754_000_000.0}, src="S", now=1_754_000_003.0)
+    assert zeile["finished_at"] is None
+    assert zeile["sort_at"] == 1_754_000_000.0
+
+
+def test_a_running_run_shows_how_long_it_has_been_going():
+    """`3.0s` im Wireframe (§5.1): die RUNTIME-Spalte eines laufenden Laufs
+    misst gegen jetzt, weil es noch kein Ende gibt."""
+    zeile = jobs_view.slot_run(
+        {"id": "j1", "slug": "EngineCI", "fire": 7, "row_status": "running",
+         "started_at": 1_754_000_000.0}, src="S", now=1_754_000_003.0)
+    assert zeile["exec_runtime"] == pytest.approx(3.0)
+
+
+def test_a_finished_run_measures_against_its_end_not_against_now():
+    """Die Gegenprobe zum vorigen: ein blockierter Lauf steht tagelang im Slot,
+    und seine Laufzeit darf nicht mitwachsen. Genau dieser Fehler steckt in
+    `exec_runtime` des Schedulers (`6d 1h` fuer einen 3-Sekunden-Lauf,
+    m.rau/bibi#123) — hier wird er nicht wiederholt."""
+    zeile = jobs_view.slot_run(
+        {"id": "j1", "slug": "EngineCI", "fire": 7, "row_status": "error",
+         "started_at": 1_754_000_000.0, "finished_at": 1_754_000_231.9},
+        src="S", now=1_754_600_000.0)
+    assert zeile["exec_runtime"] == pytest.approx(231.9)
+
+
+def test_the_slot_run_reads_row_status_not_status():
+    """Dieselbe Falle wie bei den Kacheln: in der Scheduler-Antwort heisst das
+    Feld `row_status`, `status` ist dort `None`."""
+    zeile = jobs_view.slot_run(
+        {"id": "j1", "slug": "EngineCI", "fire": 7, "row_status": "running",
+         "status": None, "started_at": 1_754_000_000.0}, src="S", now=1_754_000_003.0)
+    assert zeile["status"] == "running"
+
+
+# ── Kacheln und EINE Lauf-Liste (FE-Spezifikation §5.1–§5.3) ─────────────────
+
+
+def _liste(**kw):
+    basis = dict(scheduler_slot=None, client_slot=None,
+                 scheduler_runs=[], client_runs=[],
+                 scheduler_host="sarasate", client_host="Mac.fritz.box",
+                 now=1_754_100_000.0)
+    basis.update(kw)
+    return jobs_view.build_run_list(**basis)
+
+
+def test_a_tile_is_missing_when_the_side_has_no_slot():
+    """Der Unterschied zwischen *kein Platz* und *freier Platz* (§5.1.1): eine
+    Kachel fehlt genau dann, wenn diese Seite keinen Slot hat — nicht, wenn er
+    gerade leer ist."""
+    assert [k.quelle for k in _liste(scheduler_slot={"row_status": "pending"}).tiles] \
+        == ["SCHEDULER"]
+
+
+def test_both_tiles_appear_side_by_side_when_both_sides_know_the_job():
+    """Zwei Kacheln **nebeneinander**, weil sie gleichrangig sind und man sie
+    staendig vergleicht („laeuft es beim Scheduler, aber lokal nicht?")."""
+    kacheln = _liste(scheduler_slot={"row_status": "pending"},
+                     client_slot={"status": "error"}).tiles
+    assert [k.quelle for k in kacheln] == ["SCHEDULER", "CLIENT"]
+
+
+def test_an_empty_slot_still_gets_its_tile():
+    """`adhoc`: die Seite kennt ihn, gerade ist nichts los. `pending` ohne
+    `next` ist ein *freier* Platz, kein fehlender."""
+    kacheln = _liste(scheduler_slot={"row_status": "pending",
+                                     "next_fire_at": None}).tiles
+    assert len(kacheln) == 1 and kacheln[0].status == "pending"
+
+
+def test_the_tile_carries_the_actions_of_its_state():
+    """Die vier Knopf-Gesichter kommen aus `slot.actions()` — dieselbe Quelle
+    wie die Engine, damit Oberflaeche und Zustandsmaschine nicht auseinander
+    laufen koennen."""
+    from bibi.schedule import slot
+    k = _liste(scheduler_slot={"row_status": "error"}).tiles[0]
+    assert k.aktionen == slot.actions("error")
+    assert slot.Verb.START in k.aktionen and slot.Verb.KILL not in k.aktionen
+
+
+def test_a_consumed_oneshot_offers_no_action_bar():
+    """`done` ist die Ausnahme von „ausgegraut statt ausgeblendet": ein
+    verbrauchter Slot zeigt keine toten Knoepfe, das Fehlen der Leiste ist
+    selbst die Aussage (§5.2)."""
+    from bibi.schedule import slot
+    assert _liste(scheduler_slot={"row_status": slot.DONE}).tiles[0].aktionen \
+        == frozenset()
+
+
+def test_the_tile_reads_row_status_not_status():
     """Live gefunden: die Scheduler-Zeile aus `/-/schedule` heisst `row_status`,
-    nicht `status` — `status` ist dort `None`. Ein `or "pending"` kaschierte
-    das und zeigte einen Zustand, den niemand gemeldet hatte: geraten statt
-    gelesen, und im Bild nicht von einer echten Reservierung zu unterscheiden.
-    """
-    from bibi.controller import jobs_view
-    g = jobs_view.build_groups(
-        scheduler_slot={"slug": "x", "row_status": "complete", "status": None},
-        local_slot=None, scheduler_runs=[], local_runs=[])[0]
-    assert g.slot_status == "complete"
+    `status` ist dort `None`. Ein `or "pending"` kaschierte das und zeigte einen
+    Zustand, den niemand gemeldet hatte."""
+    k = _liste(scheduler_slot={"slug": "x", "row_status": "complete",
+                               "status": None}).tiles[0]
+    assert k.status == "complete"
 
 
 def test_a_slot_without_any_status_is_not_invented():
     """Kein Rateschritt: fehlt jeder Zustand, sagt der Screen das, statt
     `pending` zu behaupten."""
-    from bibi.controller import jobs_view
-    g = jobs_view.build_groups(
-        scheduler_slot={"slug": "x"}, local_slot=None,
-        scheduler_runs=[], local_runs=[])[0]
-    assert g.slot_status is None
-    assert g.aktionen == frozenset()
+    k = _liste(scheduler_slot={"slug": "x"}).tiles[0]
+    assert k.status is None and k.aktionen == frozenset()
+
+
+def test_one_list_carries_both_sources():
+    """**Eine** Liste statt zweier Gruppen (§5.3). Die fruehere Faltung entstand
+    gegen die Auffindbarkeit (1064 Scheduler-Laeufe gegen 9 lokale); das loest
+    der Herkunftsfilter mit Zaehlung, und er zeigt zusaetzlich, *dass* es lokale
+    gibt — eine zugeklappte Gruppe sagte das auch, aber nur, wenn man sie fand.
+    """
+    liste = _liste(
+        scheduler_runs=[{"finished_at": 1_754_000_000.0, "status": "complete"}],
+        client_runs=[{"finished_at": 1_754_003_600.0, "status": "error"}])
+    assert [r["src"] for r in liste.runs] == ["C", "S"]  # juengster zuerst
+
+
+def test_the_origin_filter_counts_both_sides():
+    """`scheduler 182 · client 9` — die Zaehlung ist der Ersatz fuer die
+    Faltung: sie beantwortet „gibt es hier ueberhaupt lokale Laeufe?", ohne dass
+    man eine Gruppe aufklappen muss."""
+    liste = _liste(scheduler_runs=[{"finished_at": 1.0, "status": "complete"}],
+                   client_runs=[{"finished_at": 2.0, "status": "complete"}],
+                   scheduler_total=182, client_total=9)
+    assert liste.counts == {"S": 182, "C": 9}
+
+
+def test_the_count_is_the_total_not_the_loaded_page():
+    """Sonst zaehlte die Zahl mit jedem LOAD MORE hoch und saehe aus wie
+    Zuwachs statt wie Fortschritt."""
+    liste = _liste(scheduler_runs=[{"finished_at": 1.0, "status": "complete"}],
+                   scheduler_total=45)
+    assert liste.counts["S"] == 45
+
+
+def test_the_run_in_the_slot_is_part_of_the_same_list():
+    """Der Kern von `#131`: der laufende Lauf steht nicht mehr an der
+    Slot-Kopfzeile, sondern als Zeile in derselben Liste — mit Marke."""
+    liste = _liste(
+        scheduler_slot={"id": "j1", "slug": "EngineCI", "fire": 7,
+                        "row_status": "running", "started_at": 1_754_099_997.0},
+        scheduler_runs=[{"finished_at": 1_754_000_000.0, "status": "complete"}])
+    assert len(liste.runs) == 2
+    assert liste.runs[0]["in_slot"] is True and liste.runs[0]["status"] == "running"
+    assert liste.runs[1].get("in_slot") is not True
+
+
+def test_the_slot_run_counts_towards_its_source():
+    """Sonst zeigte der Filter `scheduler 0`, waehrend eine Scheduler-Zeile
+    sichtbar in der Liste steht."""
+    liste = _liste(
+        scheduler_slot={"id": "j1", "slug": "EngineCI", "fire": 7,
+                        "row_status": "running", "started_at": 1_754_099_997.0},
+        scheduler_total=0)
+    assert liste.counts["S"] == 1
+
+
+def test_a_pending_slot_adds_no_row():
+    """§5.1: „Ein `pending`-Slot bekommt keine Zeile, weil es noch keinen Lauf
+    gibt; sein Zustand steht nur in der Kachel."""
+    liste = _liste(scheduler_slot={"id": "j1", "slug": "EngineCI",
+                                   "row_status": "pending",
+                                   "next_fire_at": 1_754_200_000.0})
+    assert liste.runs == [] and liste.tiles[0].status == "pending"
+
+
+def test_a_run_in_both_stores_is_one_row_and_it_is_marked():
+    """Ein Lauf kann in **beiden** Speichern stehen, und das ist kein Rennen,
+    sondern der Normalfall nach einem KILL: der Lauf ist archiviert, der Slot
+    traegt seinen Zustand weiter, bis jemand START oder RESET drueckt.
+
+    **Live gefunden (2026-08-04):** `Runner` zeigte in der Kachel `killed ·
+    by_user`, und die Liste fuehrte den Lauf nicht als Slot-Lauf — die erste
+    Fassung verwarf ihn zugunsten des Journal-Eintrags. Damit verlor die Zeile
+    ihre Marke, fiel aus dem Fenster-Schutz und die Kachel zeigte ins Leere.
+
+    Richtig ist: **eine** Zeile, und sie traegt die Marke. Der Lauf ist
+    derselbe, egal in welchem Speicher er gerade liegt — die Marke sagt „steht
+    im Slot", nicht „ist unarchiviert"."""
+    from bibi.daemon import job_db
+    rid = job_db.run_id_for("EngineCI", "j1", 7)
+    liste = _liste(
+        scheduler_slot={"id": "j1", "slug": "EngineCI", "fire": 7,
+                        "row_status": "killed", "started_at": 1_754_000_000.0,
+                        "finished_at": 1_754_000_010.0},
+        scheduler_runs=[{"run_id": rid, "id": 1938, "finished_at": 1_754_000_010.0,
+                         "status": "killed"}])
+    assert len(liste.runs) == 1
+    assert liste.runs[0]["in_slot"] is True
+    # Und es bleibt der **archivierte** Eintrag: nur er hat die Journal-ID, ueber
+    # die sein Output erreichbar ist.
+    assert liste.runs[0]["id"] == 1938
+
+
+def test_a_side_without_a_slot_keeps_its_runs():
+    """Live gefunden (2026-08-03) und mit der Umstellung auf eine Liste neu zu
+    beantworten: `EngineCI` hat lokale Laeufe, aber keinen lokalen Slot —
+    `bibi-ctrl run` legt Pseudo-Jobs mit Zufallssuffix an, der Basis-Slug hat
+    dort keine Zeile.
+
+    Frueher rettete das eine Gruppe *ohne* Slot. Jetzt braucht es sie nicht
+    mehr: die Laeufe stehen in der gemeinsamen Liste, und der Herkunftsfilter
+    zaehlt sie. Die Kachel entfaellt, weil es keinen Platz zu bedienen gibt —
+    genau das, was §5.1.1 verlangt."""
+    liste = _liste(scheduler_slot={"row_status": "pending"},
+                   client_runs=[{"finished_at": 1_754_000_000.0,
+                                 "status": "complete"}])
+    assert [k.quelle for k in liste.tiles] == ["SCHEDULER"]
+    assert [r["src"] for r in liste.runs] == ["C"]
+    assert liste.counts["C"] == 1
+
+
+def test_a_side_with_neither_slot_nor_runs_stays_hidden():
+    """Die Gegenprobe zur Kachel-Regel — sonst zeigte jeder Job zwei Kacheln,
+    davon eine leere. Eine leere Kachel behauptet einen Platz, den es nicht
+    gibt, und ihre tote Knopfleiste sieht aus wie eine bedienbare."""
+    liste = _liste(scheduler_slot={"row_status": "pending"})
+    assert [k.quelle for k in liste.tiles] == ["SCHEDULER"]
+    assert liste.counts["C"] == 0
+
+
+def test_runs_are_sorted_by_when_they_ran_not_by_when_they_were_filed():
+    """Der Kern der Entscheidung aus §5.3: unter A2 laufen Lauf- und
+    Aufraeum-Zeit beliebig weit auseinander. Ein Lauf, der tagelang blockiert
+    stand, gehoert an seinen Lauf-Tag — nicht an den Tag, an dem ihn jemand
+    abgeraeumt hat."""
+    alt_aber_frisch_archiviert = {"finished_at": 1_753_800_000.0,
+                                  "archived_at": 1_754_100_000.0, "status": "killed"}
+    neu = {"finished_at": 1_754_000_000.0, "archived_at": 1_754_000_100.0,
+           "status": "complete"}
+    liste = _liste(scheduler_runs=[alt_aber_frisch_archiviert, neu])
+    assert liste.runs[0]["finished_at"] == 1_754_000_000.0
+
+
+def test_every_run_can_be_grouped_by_day():
+    """Die Tagesgruppen brauchen einen Zeitstempel, den **jeder** Lauf hat —
+    auch der laufende, dem `finished_at` noch fehlt. Ohne `sort_at` fiele
+    gerade er heraus."""
+    liste = _liste(
+        scheduler_slot={"id": "j1", "slug": "EngineCI", "fire": 7,
+                        "row_status": "running", "started_at": 1_754_099_997.0},
+        scheduler_runs=[{"finished_at": 1_754_000_000.0, "status": "complete"}])
+    tage = jobs_view.by_day(liste.runs, ts_key="sort_at")
+    assert sum(len(l) for _, l in tage) == 2
+
+
+# ── LOAD MORE erweitert um eine Menge, nicht um einen Tag (§5.3) ─────────────
+
+
+def _tage(*abstaende: float, jetzt: float = 1_754_100_000.0) -> list[dict]:
+    """Laeufe, je einer `n` Tage vor `jetzt`."""
+    return [{"sort_at": jetzt - t * 86_400, "status": "complete"} for t in abstaende]
+
+
+def test_load_more_widens_until_ten_new_entries():
+    """Der Knopf nimmt Tage dazu, **bis zehn neue Eintraege zusammenkommen** —
+    sonst verspricht er „mehr" und liefert an einem ruhigen Tag eine einzige
+    Zeile. Das war der Befund am Feed (Klasse A), und dieselbe Falle steht hier
+    noch einmal."""
+    runs = _tage(*[1.0] * 3, *[9.0] * 12)   # 3 nah, 12 in neun Tagen
+    fenster = jobs_view.naechstes_fenster(runs, aktuell=2, jetzt=1_754_100_000.0)
+    assert fenster is not None and fenster >= 10
+
+
+def test_load_more_gives_up_after_thirty_empty_days():
+    """Die Gegenrichtung: nach dreissig Tagen am Stueck ohne Zuwachs hoert er
+    auf zu suchen. Ohne diese Grenze liefe die Erweiterung bei einem Job mit
+    einer langen Pause bis zum aeltesten Lauf durch — und laedt dann alles auf
+    einmal, statt „mehr"."""
+    runs = _tage(1.0, 2.0, 200.0)          # eine sehr lange Luecke
+    fenster = jobs_view.naechstes_fenster(runs, aktuell=3, jetzt=1_754_100_000.0)
+    assert fenster == 33                    # 3 + 30, dann Schluss
+
+
+def test_load_more_disappears_when_nothing_is_left():
+    """`None` heisst „kein Knopf". Ein Knopf, der nichts mehr laedt, ist
+    schlimmer als keiner — er sieht aus wie ein Weg (§5.3: die Reichweite muss
+    „da war nichts" von „noch nicht geladen" unterscheidbar machen)."""
+    runs = _tage(1.0, 2.0)
+    assert jobs_view.naechstes_fenster(runs, aktuell=30, jetzt=1_754_100_000.0) is None
+
+
+def test_the_window_cuts_by_run_time():
+    """Das Fenster schneidet nach der **Lauf**-Zeit, wie die Sortierung auch —
+    nicht nach `archived_at`. Sonst faellt ein Lauf aus dem Fenster, weil ihn
+    jemand spaet abgeraeumt hat, und die Reichweiten-Angabe stimmte nicht mehr
+    mit den Tagestrennlinien ueberein."""
+    runs = _tage(1.0, 5.0, 40.0)
+    drin = jobs_view.im_fenster(runs, tage=30, jetzt=1_754_100_000.0)
+    assert len(drin) == 2
+
+
+def test_the_window_never_cuts_away_the_run_in_the_slot():
+    """**Live gefunden (2026-08-04, Browser-Abnahme):** `Runner` trug in seiner
+    CLIENT-Kachel `killed · by_user`, und die Liste fuehrte diesen Lauf nicht —
+    er endete vor 31,0 Tagen und fiel damit knapp aus dem 30-Tage-Fenster.
+
+    Damit zeigte die Kachel auf eine Zeile, die es nicht gab, und der Bezug
+    zwischen oben und unten (§5.1: „die Kachel gehoert zu der Zeile, die ihre
+    Marke traegt") lief ins Leere. Der Slot-Lauf ist **kein Historieneintrag**,
+    sondern der aktuelle Zustand — ein Zeitfenster ueber die Historie darf ihn
+    nicht wegschneiden."""
+    alt = jobs_view.slot_run(
+        {"id": "j1", "slug": "Runner", "fire": 1140, "row_status": "killed",
+         "reason": "by_user", "started_at": 1_751_400_000.0,
+         "finished_at": 1_751_401_000.0},          # 31 Tage vor `jetzt`
+        src="C", now=1_754_100_000.0)
+    drin = jobs_view.im_fenster([alt], tage=30, jetzt=1_754_100_000.0)
+    assert drin == [alt]
+
+
+def test_the_state_filter_is_multiple_choice():
+    """On/off und mehrfach waehlbar (§5.3) — „zeig mir alles, was schiefging"
+    ist eine Frage, nicht fuenf."""
+    runs = [{"status": "complete", "src": "S"}, {"status": "error", "src": "S"},
+            {"status": "killed", "src": "C"}]
+    assert len(jobs_view.gefiltert(runs, status=["error", "killed"], src=[])) == 2
+    # Kein Filter heisst **alle**, nicht keine.
+    assert len(jobs_view.gefiltert(runs, status=[], src=[])) == 3
+
+
+def test_the_origin_filter_narrows_to_one_side():
+    """Genau das, was die Faltung konnte — nur sichtbar und ohne Suchen."""
+    runs = [{"status": "complete", "src": "S"}, {"status": "complete", "src": "C"}]
+    assert [r["src"] for r in jobs_view.gefiltert(runs, status=[], src=["C"])] == ["C"]
 
 
 # ── Output ausklappen statt Unterseite (FE-Spezifikation §5.4) ───────────────
 
 
-def _seed_run(root, slug: str = "EngineCI", *, out: str = "hallo welt") -> int:
-    """Eine archivierte Journal-Zeile mit Output auf Platte."""
+def _seed_run(root, slug: str = "EngineCI", *, out: str = "hallo welt",
+              vor_tagen: float = 0.0) -> int:
+    """Eine archivierte Journal-Zeile mit Output auf Platte.
+
+    **Mit einer echten Zeit, nicht mit `1.0`.** Die Liste zeigt seit `#131` ein
+    Zeitfenster (Default 30 Tage) — ein Lauf, der laut Fixture 1970 endete,
+    faellt heraus, und der Test praeft dann eine leere Liste. Genau die Sorte
+    Fixture, die ihre eigene Erfindung prueft.
+    """
+    import time as _t
     from bibi.daemon import job_db
     from bibi.wrapper import output as out_mod
+    ende = _t.time() - vor_tagen * 86_400
     rel = f"data/job/{slug}-1/output.jsonl"
     p = root / rel
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -407,7 +801,8 @@ def _seed_run(root, slug: str = "EngineCI", *, out: str = "hallo welt") -> int:
             "INSERT INTO journal (run_id, slug, kind, status, started_at, "
             "finished_at, exit_code, output_ref, archived_at, domain) "
             "VALUES (?,?,?,?,?,?,?,?,?, 'local')",
-            (f"{slug}:1:a", slug, "job", "complete", 1.0, 2.0, 0, rel, 2.0))
+            (f"{slug}:{int(vor_tagen)}:a", slug, "job", "complete",
+             ende - 5, ende, 0, rel, ende))
         return cur.lastrowid
     finally:
         conn.close()
@@ -447,6 +842,46 @@ def test_every_run_keeps_its_own_url(client):
     jid = _seed_run(root)
     text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
     assert f'data-jid="{jid}"' in text
+
+
+def test_the_output_of_the_running_job_can_be_fetched(client):
+    """**Der Fall, der `#131` ausgeloest hat:** *„wenn in den Kacheln der
+    current Job Status steht, wo steht dann der Output?"*
+
+    Ein Lauf, der noch im Slot steht, hat keine Journal-Zeile — unter A2
+    entsteht sie erst auf START/RESET. Die Output-Route suchte aber
+    ausschliesslich dort. Damit waere ausgerechnet der laufende Job der einzige
+    gewesen, dessen Ausgabe niemand oeffnen kann, und die neue Liste haette
+    eine Zeile mit einem `show` gezeigt, das ins Leere greift."""
+    import time as _t
+    from bibi.daemon import job_db
+    from bibi.wrapper import output as out_mod
+    c, root = _md_job(client)
+    conn = job_db.connect()
+    try:
+        conn.execute("UPDATE jobs SET next_fire_at=1.0 WHERE slug='EngineCI'")
+        jid = job_db.reserve_next(conn, worker="w1", host="h")["id"]
+        rel = "data/job/laeuft/output.jsonl"
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        out_mod.append(p, "out", "147 passed, 2 skipped", t=_t.time())
+        job_db.report_status(conn, jid, status="running", output_ref=rel)
+    finally:
+        conn.close()
+    r = c.get(f"/-/jobs/{job_uid('EngineCI')}/slot/client/{jid}/output")
+    assert r.status_code == 200
+    assert "147 passed" in r.text
+
+
+def test_the_running_row_points_at_the_slot_not_at_a_journal_id(client):
+    """Die Zeile muss selbst sagen, woher ihr Output kommt. Ein `data-jid` auf
+    einem Lauf ohne Journal-Zeile waere leer — und die Route antwortete mit
+    404, obwohl die Ausgabe auf Platte liegt."""
+    c, _ = _laufender_slot(client)
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    zeile = text[text.index('class="run run-in-slot"'):][:700]
+    assert 'data-slot="' in zeile and 'data-src="C"' in zeile
+    assert 'data-jid=""' not in zeile
 
 
 def test_the_output_of_a_scheduler_run_comes_from_the_host(client):
@@ -558,11 +993,17 @@ def test_a_job_that_only_ran_locally_is_still_reachable(client):
     assert f'/-/jobs/{job_uid("Runner-Container")}' in text
 
 
-def test_the_run_list_of_a_job_pages_too(client):
+def test_the_run_list_of_a_job_loads_more(client):
+    """Die Liste laedt nach — **um ein Zeitfenster, nicht um einen Offset**.
+
+    Das ist die Umstellung aus `#131`: die Liste ist tageweise gruppiert, und
+    ein Nachladen „um eine Seite" schnitte mitten in einen Tag. Der Knopf
+    verbreitert deshalb das Fenster, und er erscheint nur, wenn ausserhalb
+    wirklich noch etwas liegt."""
     c, root = _md_job(client)
-    for _ in range(3):
-        _seed_run(root, "EngineCI")
-    text = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs?limit=2").text
+    _seed_run(root, "EngineCI")
+    _seed_run(root, "EngineCI", vor_tagen=40)   # ausserhalb des 30-Tage-Fensters
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs").text
     assert "LOAD MORE" in text
 
 
@@ -580,18 +1021,22 @@ def test_load_more_disappears_when_everything_is_shown(client):
     assert "LOAD MORE" not in text
 
 
-def test_the_next_page_continues_where_the_first_ended(client):
-    """Kein Ueberlappen und kein Loch: Seite zwei beginnt beim ersten Lauf, den
-    Seite eins nicht mehr trug. Ebenfalls gerettet — die Aussage gilt fuer jede
-    Liste mit `LOAD MORE`, und nach dem Wegfall des Archivs ist die Lauf-Liste
-    die einzige, die es noch gibt."""
+def test_loading_more_adds_without_losing(client):
+    """Kein Loch und kein Verlust: nach dem Klick steht mehr da, und nichts
+    faellt weg.
+
+    Dieselbe Aussage wie beim frueheren Offset-Paging („kein Ueberlappen und
+    kein Loch"), auf den neuen Traeger gestellt. Beim Fenster stellt sie sich
+    anders: das breitere **enthaelt** das schmalere, statt daneben zu liegen —
+    deshalb kann es hier kein Loch geben, wohl aber einen Verlust, wenn das
+    Fenster falsch herum schnitte."""
     c, root = _md_job(client)
-    ids = [_seed_run(root, "EngineCI") for _ in range(4)]
-    erste = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs?limit=2").text
-    zweite = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs?limit=2&offset=2").text
-    drin = lambda t: {i for i in ids if f'data-jid="{i}"' in t}
-    assert drin(erste) and drin(zweite)
-    assert not (drin(erste) & drin(zweite)), "Seite eins und zwei ueberlappen"
+    neu = _seed_run(root, "EngineCI")
+    alt = _seed_run(root, "EngineCI", vor_tagen=40)
+    eng = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs").text
+    weit = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs?days=90").text
+    assert f'data-jid="{neu}"' in eng and f'data-jid="{alt}"' not in eng
+    assert f'data-jid="{neu}"' in weit and f'data-jid="{alt}"' in weit
 
 
 def test_runtime_is_human_readable_not_raw_seconds():
@@ -611,8 +1056,8 @@ def test_runtime_is_human_readable_not_raw_seconds():
 
     detail = render.job_detail_page_v5(
         slug="EngineCI", spec={"slug": "EngineCI"}, now=1785833600.0,
-        gruppen=_grp(scheduler_slot={"status": "pending"},
-                     scheduler_runs=[dict(lauf)]))
+        liste=_liste(scheduler_slot={"row_status": "pending"},
+                     scheduler_runs=[dict(lauf)], now=1785833600.0))
     assert "2.8007938861846924" not in detail, "rohe Sekunden in der Lauf-Liste"
     assert "2.8s" in detail
 
@@ -627,8 +1072,8 @@ def test_long_runtime_is_shown_in_minutes():
             "exec_runtime": 274.1314046382904}
     html = render.job_detail_page_v5(
         slug="EngineCI", spec={"slug": "EngineCI"}, now=1785833600.0,
-        gruppen=_grp(scheduler_slot={"status": "pending"},
-                     scheduler_runs=[lang]))
+        liste=_liste(scheduler_slot={"row_status": "pending"},
+                     scheduler_runs=[lang], now=1785833600.0))
     assert "274.1314046382904" not in html
     assert "4m 34s" in html
 
@@ -650,10 +1095,10 @@ def test_slot_buttons_carry_target_and_id():
     Rot war: `data-id` und `data-ziel` fehlten im Markup.
     """
     from bibi.controller import render
-    gruppen = _grp(scheduler_slot={"status": "error", "id": "sched-77"},
-                   local_slot={"status": "pending", "id": "local-42"})
+    liste = _liste(scheduler_slot={"row_status": "error", "id": "sched-77"},
+                   client_slot={"status": "pending", "id": "local-42"})
     html = render.job_detail_page_v5(slug="EngineCI", spec={"slug": "EngineCI"},
-                                     now=1785833600.0, gruppen=gruppen)
+                                     now=1785833600.0, liste=liste)
     assert 'data-verb="start"' in html
     assert 'data-id="sched-77"' in html and 'data-ziel="scheduler"' in html
     assert 'data-id="local-42"' in html and 'data-ziel="client"' in html
@@ -662,9 +1107,9 @@ def test_slot_buttons_carry_target_and_id():
 def test_slot_buttons_have_a_handler():
     """Ohne Handler ist `data-verb` nur Dekoration."""
     from bibi.controller import render
-    gruppen = _grp(scheduler_slot={"status": "error", "id": "sched-77"})
+    liste = _liste(scheduler_slot={"row_status": "error", "id": "sched-77"})
     html = render.job_detail_page_v5(slug="EngineCI", spec={"slug": "EngineCI"},
-                                     now=1785833600.0, gruppen=gruppen)
+                                     now=1785833600.0, liste=liste)
     assert "slot-do" in html
     assert "addEventListener" in html, "kein JavaScript, das die Knoepfe bedient"
     assert "/-/ui/jobs/verb/" in html, "kein Ziel, an das gepostet wird"
@@ -675,9 +1120,9 @@ def test_unavailable_verbs_stay_disabled_not_clickable():
     posten. Sonst wirkt ein toter Knopf wie ein defekter."""
     from bibi.controller import render
     # `running`: nur KILL ist zulaessig
-    gruppen = _grp(scheduler_slot={"status": "running", "id": "sched-77"})
+    liste = _liste(scheduler_slot={"row_status": "running", "id": "sched-77"})
     html = render.job_detail_page_v5(slug="EngineCI", spec={"slug": "EngineCI"},
-                                     now=1785833600.0, gruppen=gruppen)
+                                     now=1785833600.0, liste=liste)
     assert 'data-verb="kill"' in html
     assert 'data-verb="start"' not in html
     assert "START" in html  # sichtbar, aber als .slot-off

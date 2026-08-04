@@ -439,86 +439,259 @@ def slug_for(job_uid_gesucht: str, kandidaten) -> str | None:
     return None
 
 
-@dataclass
-class RunGroup:
-    """Eine Quelle des Job-Details: ihr Slot und die Läufe darunter.
+#: Slot-Zustände, die **keinen** eigenen Lauf halten — je aus einem anderen
+#: Grund, und das ist der Punkt: nicht eine Statusliste entscheidet, sondern die
+#: Archivierungsregel (Zustandsmodell §3). ``pending`` hat noch keinen Lauf
+#: (§5.1: „bekommt keine Zeile"), ``complete`` ist nach A1 bereits im Journal —
+#: eine Zeile aus dem Slot wäre derselbe Lauf ein zweites Mal —, und ``done``
+#: ist ein verbrauchter Slot, kein Lauf. Alles andere hält einen Lauf, den es
+#: bis zu seiner Archivierung **nirgendwo sonst** gibt.
+OHNE_EIGENEN_LAUF = frozenset({"pending", "complete", "done"})
 
-    Es gibt bis zu zwei — ``SCHEDULER`` und ``LOCAL``. Der Slot steht in der
-    Kopfzeile, unmittelbar über der Liste, in die sein Inhalt wandert: wird ein
-    Lauf terminal, rutscht er aus der Kopfzeile in die erste Zeile darunter.
-    Die Bewegung bleibt sichtbar, ohne dass eine Sonderzeile in der Tabelle
-    steht.
+
+def slot_run(slot: dict, *, src: str, now: float) -> dict | None:
+    """Der Lauf, der im Slot steht — als Zeile der Lauf-Liste (m.rau/bibi#131).
+
+    Die Liste führt **jeden** Lauf, auch den noch nicht archivierten. Vorher
+    hing er an der Slot-Kopfzeile und die Liste führte „ausschließlich
+    archivierte Läufe" — zwei Orte für dieselbe Sache, zwischen denen ein Lauf
+    beim Terminalwerden hin- und herrutschte. Jetzt gibt es einen Ort, und die
+    Marke sagt, dass dieser Lauf noch im Slot steht.
+
+    ``None`` heißt „hier steht kein Lauf", nicht „hier ist nichts": ein
+    ``pending``-Slot ist ein reservierter Platz und steht in der Kachel.
+    """
+    from bibi.daemon import job_db
+
+    # `row_status` zuerst — in der Scheduler-Antwort heißt das Feld so, und
+    # `status` ist dort `None` (Befund bei der Abnahme, 2026-08-03).
+    status = slot.get("row_status") or slot.get("status")
+    if not status or status in OHNE_EIGENEN_LAUF:
+        return None
+    started = slot.get("started_at")
+    if started is None:
+        # Ein Zustand allein macht keinen Lauf. `RESET` räumt `started_at`
+        # ausdrücklich (`report_status()`), und ohne diese Prüfung erschiene
+        # danach eine Zeile für einen Lauf, den es nie gab.
+        return None
+    finished = slot.get("finished_at")
+    return {
+        "run_id": job_db.run_id_for(slot.get("slug") or "", slot.get("id") or "",
+                                    slot.get("fire") or 0),
+        # Der Bezug zwischen Kachel und Zeile: die Kachel gehört zu der Zeile,
+        # die ihre Marke trägt (§5.1).
+        "in_slot": True,
+        "src": src,
+        "job_id": slot.get("id"),
+        "slug": slot.get("slug"),
+        "status": status,
+        "reason": slot.get("reason"),
+        "started_at": started,
+        "finished_at": finished,
+        # Wonach die Liste sortiert und gruppiert. `finished_at` fehlt, solange
+        # der Lauf läuft — ohne diesen Rückfall fiele gerade der eine Lauf aus
+        # den Tagesgruppen, den man sucht (`by_day()` überspringt, was keinen
+        # Zeitstempel hat). Er steht damit oben, weil er der jüngste ist, und
+        # nicht durch eine Sonderregel.
+        "sort_at": finished if finished is not None else started,
+        "exit_code": slot.get("exit_code"),
+        # Gegen das Ende gemessen, wo es eines gibt, sonst gegen jetzt. Ein
+        # blockierter Lauf steht unter A2 tagelang im Slot, und seine Laufzeit
+        # darf dabei nicht mitwachsen — genau der Fehler, den `exec_runtime`
+        # beim Scheduler macht (`6d 1h` für einen Drei-Sekunden-Lauf,
+        # m.rau/bibi#123).
+        "exec_runtime": (finished if finished is not None else now) - started,
+        "commit_sha": slot.get("commit_sha"),
+        "host": slot.get("host"),
+        "worker": slot.get("worker"),
+        "output_ref": slot.get("output_ref"),
+    }
+
+
+@dataclass
+class Tile:
+    """Eine Slot-Kachel: was ich auf dieser Seite tun kann (FE §5.1.1).
+
+    Zustand und die drei Verben, sonst nichts. Was *geschehen* ist, steht
+    unten in der Liste — die Trennung nach Aufgabe ist der Grund, warum es
+    für den Output nur noch einen Ort gibt.
     """
 
     quelle: str
     host: str | None
     slot: dict
+    #: Aus der Zeile gelesen, nicht geraten. ``None`` heißt „diese Seite meldet
+    #: keinen Zustand" und wird nicht zu ``pending`` ergänzt.
+    status: str | None
     aktionen: frozenset
-    #: Der Zustand des Slots, aus der Zeile gelesen statt geraten. ``None``
-    #: heisst „diese Seite hat keinen Platz" — nicht ``pending``.
-    slot_status: str | None = None
-    runs: list = field(default_factory=list)
-    gesamt: int = 0
 
 
-def build_groups(*, scheduler_slot: dict | None, local_slot: dict | None,
-                 scheduler_runs: list, local_runs: list,
-                 scheduler_host: str | None = None, local_host: str | None = None,
-                 scheduler_total: int | None = None,
-                 local_total: int | None = None) -> list[RunGroup]:
-    """Die Quell-Gruppen des Job-Details (FE-Spezifikation §5.1).
+@dataclass
+class RunList:
+    """Der untere Teil des Screens: **eine** Liste über beide Quellen.
 
-    **Eine Gruppe fehlt genau dann, wenn es dort keinen Slot gibt** — nicht,
-    wenn er leer ist. Das ist der Unterschied zwischen *kein Platz* und
-    *freier Platz*, und er ersetzt das ausgegraute Control: eine Seite, die den
-    Job gar nicht kennt, zeigt keine Gruppe; eine, die ihn kennt und gerade
-    nichts zu tun hat (``adhoc``), zeigt ``pending`` ohne ``next``.
+    ``counts`` ist der Ersatz für die frühere Faltung. Die entstand gegen ein
+    echtes Problem — ``gmail-transfer`` hat 1064 Scheduler-Läufe gegen wenige
+    lokale, der erste lokale stünde unerreichbar weit unten. Die Zählung löst
+    dasselbe und leistet mehr: sie zeigt, *dass* es lokale gibt, ohne dass man
+    eine Gruppe finden und aufklappen muss.
+    """
 
-    Ein ``at``-Job hat auf einem Client deshalb keine ``LOCAL``-Gruppe: dort
-    kann nie ein Lauf entstehen (Zustandsmodell §5).
+    tiles: list[Tile]
+    runs: list[dict]
+    #: Läufe je Herkunft (``S``/``C``), Gesamtzahl — nicht der geladene
+    #: Ausschnitt.
+    counts: dict[str, int]
 
-    Die Aktionen kommen aus :func:`bibi.schedule.slot.actions` — dieselbe
-    Quelle, aus der die Engine ihre Übergänge nimmt. Zwei Listen, die dasselbe
-    behaupten, laufen sonst auseinander, und die Oberfläche zeigt einen Knopf,
-    den der Scheduler ablehnt.
+
+def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
+                   scheduler_runs: list, client_runs: list, now: float,
+                   scheduler_host: str | None = None, client_host: str | None = None,
+                   scheduler_total: int | None = None,
+                   client_total: int | None = None) -> RunList:
+    """Kacheln und die eine Lauf-Liste (FE §5.1–§5.3, m.rau/bibi#131).
+
+    **Oben, die Kacheln: was ich tun kann. Unten, die Liste: was geschehen
+    ist.** Die frühere Fassung hatte je Quelle eine faltbare Gruppe, den Slot in
+    ihrer Kopfzeile und den laufenden Output daran hängend — das ergab zwei
+    Orte für dieselbe Sache, zwischen denen ein Lauf beim Terminalwerden hin-
+    und herrutschte.
+
+    Eine **Kachel** fehlt genau dann, wenn es dort keinen Slot gibt — nicht,
+    wenn er leer ist. Eine Seite, die nur Läufe hat (``bibi-ctrl run`` legt
+    Pseudo-Jobs mit Zufallssuffix an, der Basis-Slug bekommt dort nie eine
+    Zeile), bekommt deshalb keine Kachel: es gibt keinen Platz zu bedienen.
+    Ihre Läufe gehen trotzdem nicht verloren — sie stehen in derselben Liste,
+    und die Zählung nennt sie.
     """
     from bibi.schedule import slot as slot_mod
 
-    aus: list[RunGroup] = []
-    for quelle, zeile, runs, host, gesamt in (
-        ("SCHEDULER", scheduler_slot, scheduler_runs, scheduler_host, scheduler_total),
-        ("LOCAL", local_slot, local_runs, local_host, local_total),
+    tiles: list[Tile] = []
+    runs: list[dict] = []
+    counts: dict[str, int] = {}
+    for quelle, src, zeile, journal, host, gesamt in (
+        ("SCHEDULER", "S", scheduler_slot, scheduler_runs, scheduler_host, scheduler_total),
+        ("CLIENT", "C", client_slot, client_runs, client_host, client_total),
     ):
-        if zeile is None and not runs:
-            continue
-        if zeile is None:
-            # Kennt die Seite, hat aber keinen Platz: so sieht ein Job aus, der
-            # lokal nur über `bibi-ctrl run` lief — `run_pinned()` legt je Lauf
-            # einen Pseudo-Job mit Zufallssuffix an, der Basis-Slug bekommt dort
-            # nie eine Zeile. §5.1 lässt eine Gruppe nur weg, wenn die Seite den
-            # Job *nicht kennt* („keine MD, nie gelaufen") — wer gelaufen ist,
-            # ist bekannt. Ohne diesen Zweig verschwänden live sämtliche lokalen
-            # Läufe (Befund bei der Abnahme, 2026-08-03).
-            aus.append(RunGroup(
-                quelle=quelle, host=host, slot={}, aktionen=frozenset(),
-                runs=list(runs), gesamt=gesamt if gesamt is not None else len(runs)))
-            continue
-        # `row_status` zuerst: so heisst das Feld in den Scheduler-Zeilen aus
-        # `/-/schedule`, wo `status` schlicht `None` ist. Kein Rueckfall auf
-        # `pending` — ein geratener Zustand ist im Bild nicht von einem
-        # gemeldeten zu unterscheiden (Befund bei der Abnahme, 2026-08-03).
-        status = zeile.get("row_status") or zeile.get("status")
-        try:
-            aktionen = slot_mod.actions(status) if status else frozenset()
-        except ValueError:
-            # Ein Zustand, den das Modell nicht kennt: keine Knöpfe, aber die
-            # Gruppe bleibt. Die Läufe sind echt, auch wenn der Slot unklar ist
-            # — sie zu verstecken wäre der falsche Ausgang.
-            aktionen = frozenset()
-        aus.append(RunGroup(
-            quelle=quelle, host=host, slot=zeile, aktionen=aktionen,
-            slot_status=status,
-            runs=list(runs), gesamt=gesamt if gesamt is not None else len(runs)))
+        status = None
+        if zeile is not None:
+            # `row_status` zuerst: so heißt das Feld in den Scheduler-Zeilen aus
+            # `/-/schedule`, wo `status` schlicht `None` ist.
+            status = zeile.get("row_status") or zeile.get("status")
+            try:
+                aktionen = slot_mod.actions(status) if status else frozenset()
+            except ValueError:
+                # Ein Zustand, den das Modell nicht kennt: keine Knöpfe, aber
+                # die Kachel bleibt — sie sagt dann wenigstens, was dort steht.
+                aktionen = frozenset()
+            tiles.append(Tile(quelle=quelle, host=host, slot=zeile,
+                              status=status, aktionen=aktionen))
+        eigene = [{**r, "src": src, "sort_at": r.get("finished_at")} for r in journal]
+        im_slot = slot_run(zeile, src=src, now=now) if zeile is not None else None
+        if im_slot is not None:
+            # Ein Lauf kann in **beiden** Speichern stehen — nach einem KILL ist
+            # das der Normalfall: der Lauf ist archiviert, der Slot trägt seinen
+            # Zustand weiter, bis jemand START oder RESET drückt. Dann gibt es
+            # trotzdem nur **eine** Zeile, und sie bekommt die Marke: der Lauf
+            # ist derselbe, egal wo er liegt. Der archivierte Eintrag bleibt
+            # dabei der Träger — nur er hat die Journal-ID, über die sein Output
+            # erreichbar ist.
+            doppelt = next((r for r in eigene if r.get("run_id") == im_slot["run_id"]), None)
+            if doppelt is not None:
+                doppelt["in_slot"] = True
+            else:
+                eigene.insert(0, im_slot)
+                if gesamt is not None:
+                    gesamt += 1
+        runs += eigene
+        counts[src] = gesamt if gesamt is not None else len(eigene)
+    # Fix nach der Lauf-Zeit sortiert, absteigend (§5.3). Nicht nach
+    # `archived_at`: unter A2 laufen beide beliebig weit auseinander, und die
+    # Tagestrennlinien sollen sagen, *wann etwas lief*, nicht wann jemand
+    # aufgeräumt hat.
+    runs.sort(key=lambda r: r.get("sort_at") or 0, reverse=True)
+    return RunList(tiles=tiles, runs=runs, counts=counts)
+
+
+#: Wie viele neue Einträge ein ``LOAD MORE`` mindestens bringen soll, und wie
+#: viele leere Tage er dafür höchstens überspringt (FE §5.3).
+MEHR_EINTRAEGE = 10
+MEHR_LEERE_TAGE = 30
+
+#: Läufe je Quelle, die eine Abfrage höchstens holt. **Das ist die echte
+#: Grenze der Lauf-Liste** — ein zeitbasiertes Pruning gibt es nicht (das
+#: einzige ``DELETE FROM journal`` löscht eine Zeile per ID), und der
+#: gestrichene Archive-Screen behauptete mit ``pruned after 3 months`` eine
+#: Schranke, die es nie gab. Diese hier gibt es.
+RUN_LIMIT = 500
+
+
+def naechstes_fenster(runs: list, *, aktuell: int, jetzt: float,
+                      ts_key: str = "sort_at") -> int | None:
+    """Das nächste Zeitfenster in Tagen — oder ``None``, wenn nichts folgt.
+
+    **Der Knopf erweitert um eine Menge, nicht um einen Tag.** Er nimmt Tage
+    dazu, bis :data:`MEHR_EINTRAEGE` neue zusammenkommen oder
+    :data:`MEHR_LEERE_TAGE` am Stück nichts brachten. Ohne das erste verspricht
+    er „mehr" und liefert an einem ruhigen Tag eine einzige Zeile; ohne das
+    zweite läuft er bei einem Job mit langer Pause bis zum ältesten Lauf durch
+    und lädt dann alles auf einmal.
+    """
+    aelter = sorted(
+        (jetzt - (r.get(ts_key) or 0)) / 86_400
+        for r in runs if (r.get(ts_key) or 0) and (jetzt - r[ts_key]) / 86_400 > aktuell)
+    if not aelter:
+        # Kein Knopf. Einer, der nichts mehr lädt, ist schlimmer als keiner —
+        # er sieht aus wie ein Weg.
+        return None
+    neu = 0
+    fenster = aktuell
+    for abstand in aelter:
+        if abstand - fenster > MEHR_LEERE_TAGE:
+            # Die Lücke ist zu groß: hier ist Schluss, auch wenn noch etwas
+            # käme. Der nächste Klick geht weiter.
+            return aktuell + MEHR_LEERE_TAGE
+        neu += 1
+        fenster = abstand
+        if neu >= MEHR_EINTRAEGE:
+            break
+    # Aufgerundet, damit der Tag des letzten Treffers vollständig hineinfällt.
+    return max(aktuell + 1, int(fenster) + 1)
+
+
+def im_fenster(runs: list, *, tage: int, jetzt: float,
+               ts_key: str = "sort_at") -> list[dict]:
+    """Die Läufe der letzten ``tage`` — geschnitten nach der **Lauf**-Zeit.
+
+    Dieselbe Größe, nach der auch sortiert und gruppiert wird. Nach
+    ``archived_at`` geschnitten fiele ein Lauf aus dem Fenster, weil ihn jemand
+    spät abgeräumt hat, und die Reichweiten-Angabe stimmte nicht mehr mit den
+    Tagestrennlinien überein.
+
+    **Der Lauf im Slot bleibt immer drin**, egal wie alt er ist. Er ist kein
+    Historieneintrag, sondern der aktuelle Zustand: unter A2 steht ein
+    blockierter Lauf, bis ein Mensch ihn abräumt, und das kann Monate dauern.
+    Live gefunden — ``Runner`` trug ``killed · by_user`` in der Kachel, während
+    die Liste den Lauf nicht führte (31 Tage alt, Fenster 30). Die Kachel zeigte
+    damit auf eine Zeile, die es nicht gab.
+    """
+    grenze = jetzt - tage * 86_400
+    return [r for r in runs
+            if r.get("in_slot") is True or (r.get(ts_key) or 0) >= grenze]
+
+
+def gefiltert(runs: list, *, status: list[str], src: list[str]) -> list[dict]:
+    """Zustands- und Herkunftsfilter (FE §5.3).
+
+    Beide sind on/off und mehrfach wählbar; **kein Filter heißt alle**, nicht
+    keine. Der Herkunftsfilter ist der Ersatz für die frühere Faltung — er
+    leistet dasselbe und zeigt zusätzlich, *dass* es die andere Seite gibt.
+    """
+    aus = runs
+    if status:
+        aus = [r for r in aus if (r.get("status") or "") in status]
+    if src:
+        aus = [r for r in aus if r.get("src") in src]
     return aus
 
 

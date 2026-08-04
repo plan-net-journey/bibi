@@ -758,6 +758,28 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
         # baut — dieselbe Ableitung wie schon lange bei job_full_view()
         # (Zeile oben), hier nur zusätzlich in der schlankeren Listen-Sicht.
         "schedule_ref": row["schedule_ref"],
+        # ── Der Lauf, der gerade im Slot steht (m.rau/bibi#131) ──────────────
+        # Bis zu seiner Archivierung gibt es ihn **nur** hier: unter A2 wandert
+        # ein terminaler Fehler erst auf START/RESET ins Journal, und ein
+        # laufender hat dort ohnehin noch keine Zeile. Die Lauf-Liste in Job
+        # Detail führt ihn trotzdem — dafür braucht sie mehr als `row_status`.
+        #
+        # `fire` ist dabei der Schlüssel im Wortsinn: erst damit lässt sich die
+        # kanonische `run_id` bilden (`run_id_for()`), und ohne die gäbe es
+        # weder einen Weg zum Output noch einen stabilen Deep-Link.
+        #
+        # Nicht zu verwechseln mit `last_status`/`last_run_at` darüber: die
+        # mischen Zeile und Journal zu einer Anzeige-Aussage. Hier stehen die
+        # rohen Slot-Felder unter ihren DB-Namen.
+        "reason": row["reason"],
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+        "exit_code": row["exit_code"],
+        "output_ref": row["output_ref"],
+        "commit_sha": row["commit_sha"],
+        "fire": row["fire"],
+        "host": row["host"],
+        "worker": row["worker"],
     }
 
 

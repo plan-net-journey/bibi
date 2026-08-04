@@ -412,6 +412,58 @@ def test_schedule_view_exposes_exec_mode(conn, tmp_path: Path):
     assert sched["containerjob"]["exec_mode"] == "container"
 
 
+def test_schedule_view_carries_the_run_standing_in_the_slot(conn, tmp_path: Path):
+    """m.rau/bibi#131: die Lauf-Liste fuehrt auch den Lauf, der noch im Slot
+    steht — und der existiert bis zu seiner Archivierung **nur** hier.
+
+    Bis dahin trug diese Sicht nur `row_status` und `last_run_at`. Damit liess
+    sich eine Lauf-Zeile nicht bilden: kein Beginn, kein Ende, kein Exit-Code,
+    kein Commit, und ohne `fire` auch keine `run_id` — also auch kein Weg zum
+    Output. Ein laufender Job war beim Scheduler damit der einzige, dessen
+    Ausgabe niemand oeffnen konnte.
+    """
+    _write(tmp_path / "case" / "läuft.md", '---\nschedule: "* * * * *"\njob: "echo hi"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    # Ueber die echte Reservierung, nicht ueber ein UPDATE von Hand: `started_at`
+    # setzt `reserve_next()`, und nur dieser Weg vergibt auch das `fire`, aus
+    # dem die `run_id` entsteht.
+    conn.execute("UPDATE jobs SET next_fire_at=1.0 WHERE slug='läuft'")  # fällig
+    jid = job_db.reserve_next(conn, worker="w1", host="h")["id"]
+    job_db.report_status(conn, jid, status="running", output_ref="data/job/x/output.jsonl")
+    sched = next(s for s in job_db.list_schedules(conn) if s["slug"] == "läuft")
+    assert sched["started_at"] is not None
+    assert sched["output_ref"] == "data/job/x/output.jsonl"
+    # `fire` ist der Teil, der die `run_id` ueberhaupt erst bildbar macht —
+    # dieselbe, die der Worker vergibt (`run_id_for()`).
+    assert sched["fire"] == conn.execute(
+        "SELECT fire FROM jobs WHERE id=?", (jid,)).fetchone()["fire"]
+
+
+def test_schedule_view_carries_reason_exit_code_and_commit(conn, tmp_path: Path):
+    """Der blockierte Fall (A2): `error · nonzero_exit`, Exit-Code und der
+    Worktree-Commit. Genau fuer ihn wurde `jobs.commit_sha` in v21 angelegt —
+    *„unter A2 wandert ein terminaler Fehler erst auf START/RESET ins Journal,
+    und bis dahin gaebe es sonst keinen Ort fuer die Verbindung Lauf ↔
+    Vault-Wirkung"*. Ohne diese Felder bliebe die COMMIT-Spalte des einen
+    Laufs leer, den man am ehesten nachverfolgen will."""
+    _write(tmp_path / "case" / "kaputt.md", '---\nschedule: "* * * * *"\njob: "false"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    conn.execute("UPDATE jobs SET next_fire_at=1.0 WHERE slug='kaputt'")  # fällig
+    jid = job_db.reserve_next(conn, worker="w1", host="h")["id"]
+    job_db.report_status(conn, jid, status="running")
+    # Der echte Weg nach `error` fuehrt ueber `failed` (exhaust) — `running` geht
+    # nicht direkt dorthin. Ein Test, der die Zustandsfolge erfindet, prueft
+    # seine eigene Erfindung.
+    job_db.report_status(conn, jid, status="failed", reason="nonzero_exit", exit_code=1)
+    job_db.report_status(conn, jid, status="error", reason="nonzero_exit",
+                         exit_code=1, commit_sha="b6f8967")
+    sched = next(s for s in job_db.list_schedules(conn) if s["slug"] == "kaputt")
+    assert sched["reason"] == "nonzero_exit"
+    assert sched["exit_code"] == 1
+    assert sched["finished_at"] is not None
+    assert sched["commit_sha"] == "b6f8967"
+
+
 def test_get_job_exec_mode(conn, tmp_path: Path):
     _write(tmp_path / "case" / "containerjob.md",
           '---\nschedule: never\njob: "echo hi"\nexec_mode: container\n---\n')

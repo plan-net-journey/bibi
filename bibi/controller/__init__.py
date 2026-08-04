@@ -1302,9 +1302,14 @@ def add_controller_routes(
                 aus.append(e["slug"])
         return aus
 
+    #: Das voreingestellte Zeitfenster der Lauf-Liste in Tagen. `LOAD MORE`
+    #: verbreitert es (FE §5.3).
+    _RUN_TAGE = 30
+
     @app.get("/-/jobs/{job_uid}", include_in_schema=False)
-    def screen_job_detail(request: Request, job_uid: str):  # noqa: ARG001
-        """Ein Job, seine Slots und seine Läufe (FE-Spezifikation §5).
+    def screen_job_detail(request: Request, job_uid: str,  # noqa: ARG001
+                          days: int = _RUN_TAGE, status: str = "", src: str = ""):
+        """Ein Job: oben die Kacheln, unten **eine** Lauf-Liste (FE §5).
 
         Die URL trägt den ``job_uid``; der Weg zurück zum Slug läuft über
         ``jobs_view.slug_for()`` — md5 ist nicht umkehrbar, also wird über die
@@ -1323,19 +1328,36 @@ def add_controller_routes(
                 spec = e
                 break
         _sched = _scheduler_status()
+        jetzt = _t.time()
+        liste, reach, weiter = _job_lauf_liste(slug, now=jetzt, days=days,
+                                               status=status, src=src)
         return HTMLResponse(render.job_detail_page_v5(
-            slug=slug, spec=spec, now=_t.time(), gruppen=_job_gruppen(slug),
+            slug=slug, spec=spec, now=jetzt, liste=liste,
+            days=days, reach=reach, weiter=weiter,
+            aktiv={"status": _mehrfach(status), "src": _mehrfach(src), "days": days},
             daemon_status=_status(),
             git_status=_feed_git_status(), host_url=_scheduler_url(),
             scheduler=_sched[0], scheduler_stale_since=_sched[1]))
 
-    def _job_gruppen(slug: str, *, offset: int = 0, limit: int | None = None) -> list:
-        """Slot und Läufe beider Quellen für ``build_groups()`` beschaffen.
+    def _mehrfach(wert: str) -> list[str]:
+        """``complete,error`` → ``["complete", "error"]``. Leer heißt „alle"."""
+        return [t for t in (wert or "").split(",") if t]
 
-        Nur Beschaffung — welche Gruppe es gibt und welche Knöpfe sie trägt,
-        entscheidet die reine Funktion.
+    def _job_lauf_liste(slug: str, *, now: float, days: int = _RUN_TAGE,
+                        status: str = "", src: str = ""):
+        """Slots und Läufe beider Quellen für ``build_run_list()`` beschaffen.
+
+        Nur Beschaffung — welche Kachel es gibt, welche Knöpfe sie trägt und
+        wie die Liste zusammenläuft, entscheidet die reine Funktion.
+
+        **Das Limit ist die echte Grenze der Liste** (``jobs_view.RUN_LIMIT``).
+        Ein zeitbasiertes Pruning gibt es nicht — der gestrichene
+        Archive-Screen behauptete mit ``pruned after 3 months`` eine Schranke,
+        die nie existierte (m.rau/bibi#130). Diese hier existiert, und die
+        Reichweiten-Angabe nennt sie genau dann, wenn die Liste an sie stößt.
         """
         from bibi.controller import jobs_view
+        grenze = jobs_view.RUN_LIMIT
         sched_slot = None
         for e in _host_schedules():
             if e.get("slug") == slug:
@@ -1346,10 +1368,10 @@ def add_controller_routes(
         lokal_runs: list = []
         try:
             # `_host_client()`, nicht `client`: letzterer zeigt auf den eigenen
-            # Daemon, und dann stünden in der SCHEDULER-Gruppe die lokalen
-            # Läufe — beide Gruppen zeigten dasselbe. Derselbe Fehler wie beim
+            # Daemon, und dann stünden in der SCHEDULER-Spalte die lokalen
+            # Läufe — beide Quellen zeigten dasselbe. Derselbe Fehler wie beim
             # Bus und beim Jobs-Screen, zum dritten Mal (Befund 2026-08-03).
-            sched_runs = _host_client().journal(slug=slug, limit=200) or []
+            sched_runs = _host_client().journal(slug=slug, limit=grenze) or []
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
         try:
@@ -1359,24 +1381,26 @@ def add_controller_routes(
                 zeile = conn.execute(
                     "SELECT * FROM jobs WHERE slug=?", (slug,)).fetchone()
                 lokal_slot = dict(zeile) if zeile else None
-                lokal_runs = job_db.list_journal(conn, slug=slug, limit=200)
+                lokal_runs = job_db.list_journal(conn, slug=slug, limit=grenze)
             finally:
                 conn.close()
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
-        # Die Gesamtzahl gehoert in die Kopfzeile, der Ausschnitt in die
-        # Liste: `45 runs` darf nicht mit jedem LOAD MORE hochzaehlen, sonst
-        # saehe es aus wie Zuwachs statt wie Fortschritt.
-        sched_gesamt, lokal_gesamt = len(sched_runs), len(lokal_runs)
-        if limit is not None:
-            sched_runs = sched_runs[offset:offset + limit]
-            lokal_runs = lokal_runs[offset:offset + limit]
-        return jobs_view.build_groups(
-            scheduler_slot=sched_slot, local_slot=lokal_slot,
-            scheduler_runs=sched_runs, local_runs=lokal_runs,
-            scheduler_total=sched_gesamt, local_total=lokal_gesamt,
+        gekappt = grenze if (len(sched_runs) >= grenze or len(lokal_runs) >= grenze) else 0
+        liste = jobs_view.build_run_list(
+            scheduler_slot=sched_slot, client_slot=lokal_slot,
+            scheduler_runs=sched_runs, client_runs=lokal_runs, now=now,
+            scheduler_total=len(sched_runs), client_total=len(lokal_runs),
             scheduler_host=(_scheduler_url() or "").split("//")[-1].split(":")[0] or None,
-            local_host=_status().get("host"))
+            client_host=_status().get("host"))
+        gesamt = len(liste.runs)
+        # Erst das Fenster, dann die Filter: `LOAD MORE` verbreitert die
+        # Reichweite und darf nicht davon abhängen, was gerade ausgeblendet ist.
+        weiter = jobs_view.naechstes_fenster(liste.runs, aktuell=days, jetzt=now)
+        liste.runs = jobs_view.im_fenster(liste.runs, tage=days, jetzt=now)
+        liste.runs = jobs_view.gefiltert(liste.runs, status=_mehrfach(status),
+                                         src=_mehrfach(src))
+        return liste, {"total": gesamt, "days": days, "capped": gekappt}, weiter
 
     #: Die drei Verben aus der Slot-Kachel. `client` wirkt auf den eigenen
     #: Daemon, `scheduler` auf den Host — dieselbe Job-ID meint auf beiden
@@ -1420,6 +1444,56 @@ def add_controller_routes(
                                 content={"error": str(e), "verb": verb, "ziel": ziel})
         return {"ok": True, "verb": verb, "ziel": ziel, "id": job_id,
                 "antwort": antwort}
+
+    @app.get("/-/jobs/{job_uid}/slot/{ziel}/{job_id}/output", include_in_schema=False)
+    def screen_job_slot_output(request: Request, job_uid: str,  # noqa: ARG001
+                               ziel: str, job_id: str):
+        """Die Ausgabe des Laufs, der **noch im Slot steht** (m.rau/bibi#131).
+
+        Er hat keine Journal-Zeile: unter A2 entsteht die erst auf START/RESET,
+        und ein laufender Lauf hat dort ohnehin nichts. Ohne diesen Weg wäre
+        ausgerechnet der laufende Job der einzige, dessen Ausgabe niemand öffnen
+        kann — und die Liste zeigte eine Zeile mit einem ``show``, das ins Leere
+        greift.
+
+        ``ziel`` sagt, **wo** der Slot liegt: dieselbe Job-ID meint auf beiden
+        Seiten einen anderen Job, weil beide ihre eigene DB führen
+        (Zustandsmodell §1). Dieselbe Unterscheidung wie bei den drei Verben.
+        """
+        if _job_by_uid(job_uid) is None:
+            return PlainTextResponse("", status_code=404)
+        if ziel == "scheduler":
+            try:
+                antwort = _host_client().job_output(job_id) or {}
+            except Exception:  # noqa: BLE001 — defensiv (§2.7)
+                antwort = {}
+            ereignisse = antwort.get("events") or []
+            if not ereignisse:
+                return PlainTextResponse("", status_code=404)
+            return PlainTextResponse("\n".join(
+                str(e.get("text") or e.get("line") or "") for e in ereignisse))
+        from bibi.daemon import job_db
+        conn = job_db.connect()
+        try:
+            zeile = conn.execute(
+                "SELECT output_ref FROM jobs WHERE id=?", (job_id,)).fetchone()
+        finally:
+            conn.close()
+        if zeile is None:
+            return PlainTextResponse("", status_code=404)
+        from bibi import repo as repo_mod
+        pfad = repo_mod.root() / (zeile["output_ref"] or "")
+        try:
+            from bibi.wrapper import output as output_mod
+            zeilen = output_mod.read_events(pfad)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            zeilen = []
+        if not zeilen:
+            # Kein Output ist eine Aussage, kein Fehler: ein Job kann
+            # schweigend laufen — gerade am Anfang ist das der Normalfall.
+            return PlainTextResponse("(no output yet)")
+        return PlainTextResponse(
+            "\n".join(str(e.get("text") or e.get("line") or "") for e in zeilen))
 
     @app.get("/-/jobs/{job_uid}/runs/{jid}/output", include_in_schema=False)
     def screen_job_run_output(request: Request, job_uid: str, jid: int):  # noqa: ARG001
@@ -1470,17 +1544,24 @@ def add_controller_routes(
 
     @app.get("/-/jobs/{job_uid}/runs", include_in_schema=False)
     def screen_job_runs(request: Request, job_uid: str,  # noqa: ARG001
-                        limit: int = 100, offset: int = 0):
-        """Nur die Gruppen — das Nachlade-Ziel des ``archived``-Ereignisses."""
+                        days: int = _RUN_TAGE, status: str = "", src: str = ""):
+        """Nur die Liste — das Nachlade-Ziel des ``archived``-Ereignisses.
+
+        **Ohne die Kacheln**, und das ist Absicht: sie tragen die Knöpfe, und
+        ein Nachladen mitten im Klick nähme sie unter der Hand weg.
+        """
         import time as _t
 
         treffer = _job_by_uid(job_uid)
         if treffer is None:
             return HTMLResponse("", status_code=404)
         slug, _ = treffer
+        jetzt = _t.time()
+        liste, reach, weiter = _job_lauf_liste(slug, now=jetzt, days=days,
+                                               status=status, src=src)
         return HTMLResponse(render.job_runs_fragment(
-            _job_gruppen(slug, offset=offset, limit=limit), now=_t.time(),
-            job_uid=job_uid, offset=offset, limit=limit))
+            liste, now=jetzt, job_uid=job_uid, days=days, reach=reach, weiter=weiter,
+            aktiv={"status": _mehrfach(status), "src": _mehrfach(src), "days": days}))
 
     def _job_by_uid(job_uid: str):
         """``job_uid`` → (Slug, lokale Spec) oder ``None``.

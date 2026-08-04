@@ -501,16 +501,52 @@ th.sorted { font-weight: 700; }
 .subhead { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap;
            margin: .9rem 0 .35rem; font-size: .8rem; color: var(--dim); }
 
-/* Slot-Kachel: Zustand und Verben. Steuerung, sonst nichts. */
-.slot { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap;
-        padding: .5rem .7rem; margin: .6rem 0 .2rem;
+/* Slot-Kacheln: Zustand und Verben. Steuerung, sonst nichts (FE §5.1.1).
+   **Nebeneinander**, weil sie gleichrangig sind und staendig verglichen werden
+   („laeuft es beim Scheduler, aber lokal nicht?"). `1fr` je Kachel statt
+   `auto`: sonst waere die mit dem laengeren Zustand breiter, und die beiden
+   Seiten saehen ungleich gewichtet aus, obwohl sie es nicht sind. */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+         gap: .6rem; margin: .7rem 0 .9rem; }
+.tile { display: flex; flex-direction: column; gap: .3rem;
+        padding: .55rem .7rem;
         border: 1px solid var(--line-hard); border-radius: .4rem; }
-.grp-head { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap;
-            width: 100%; }
-.grp-title { font-weight: 700; font-size: .82rem; letter-spacing: .02em; }
-.grp-count { color: var(--faint); font-size: .78rem; margin-left: auto;
-             font-family: ui-monospace, monospace; }
+.tile-head { font-weight: 700; font-size: .78rem; letter-spacing: .03em;
+             color: var(--hdr-key); }
+.tile-state { font-family: ui-monospace, monospace; font-size: .85rem; }
 .slot-none { color: var(--faint); font-size: .8rem; font-style: italic; }
+
+/* Kopfzeile der Lauf-Liste: Herkunft mit Zaehlung, Zustaende, Reichweite.
+   Die Zaehlung ist der Ersatz fuer die frueher faltbaren Quell-Gruppen — sie
+   zeigt, *dass* es die andere Seite gibt, ohne dass man sie aufklappen muss. */
+.runs-head { display: flex; align-items: baseline; gap: .8rem; flex-wrap: wrap;
+             margin: .2rem 0 .35rem; font-size: .8rem; }
+.runs-title { font-weight: 700; letter-spacing: .03em; color: var(--hdr-key); }
+.runs-src, .runs-states { display: inline-flex; align-items: baseline; gap: .3rem;
+                          flex-wrap: wrap; }
+/* Die Filter-Chips brauchen einen **sichtbaren** An-Zustand: ein Toggle, dem
+   man nicht ansieht, ob er greift, ist keiner. Terracotta traegt in dieser UI
+   genau eine Bedeutung — Interaktion —, gefuellt heisst „wirkt gerade". */
+.runs-head .chip { text-decoration: none; color: var(--faint);
+                   border: 1px solid transparent; font-weight: 600; }
+.runs-head .chip:hover { color: inherit; border-color: var(--btnline); }
+.runs-head .chip-on { color: var(--bg); background: var(--brand);
+                      border-color: var(--brand); }
+/* Die Reichweite ganz rechts: sie beantwortet „ist da noch mehr?", und diese
+   Frage stellt sich am Ende des Lesens, nicht am Anfang. */
+.runs-reach { margin-left: auto; color: var(--faint);
+              font-family: ui-monospace, monospace; font-size: .78rem; }
+/* Die Marke „steht im Slot": schmal, damit sie nicht als Spalte gelesen wird —
+   sie gehoert zur Zeile, nicht zu den Werten. */
+.mark { width: 1.1rem; color: var(--brand); text-align: center; }
+.src { color: var(--faint); font-family: ui-monospace, monospace; }
+/* Ein Lauf, der noch im Slot steht, ist der einzige, den man beeinflussen
+   kann — deshalb hebt ihn ein Rand hervor und keine Flaeche: eine gefaerbte
+   Zeile laese sich als Fehler lesen.
+
+   Nur die **erste** Zelle traegt die Linie. Auf allen `td` gesetzt zeichnet sie
+   an jeder Zellgrenze und die Zeile sieht aus wie ein Gitter — live gesehen. */
+.run-in-slot td:first-child { box-shadow: inset 2px 0 0 var(--brand); }
 /* Die Leiste haelt Abstand zum Zustand links — sonst klebt `[START]` am Wort. */
 .slot-bar { display: inline-flex; align-items: center; gap: .45rem; }
 /* Ein verfuegbares Verb muss sich vom ausgegrauten unterscheiden — sonst
@@ -4121,23 +4157,25 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
     )
 
 
-#: Faltung der Quell-Gruppen und Ausklappen einer Lauf-Ausgabe.
+#: Ausklappen einer Lauf-Ausgabe.
 #:
-#: Beides ist reine Anzeige und bleibt deshalb im Browser: der Server weiss
-#: nicht, was jemand gerade aufgeklappt hat, und soll es auch nicht wissen —
-#: sonst waere jeder Klick ein Roundtrip und der Faltzustand ginge bei jedem
-#: Nachladen verloren.
+#: Reine Anzeige und deshalb im Browser: der Server weiss nicht, was jemand
+#: gerade aufgeklappt hat, und soll es auch nicht wissen — sonst waere jeder
+#: Klick ein Roundtrip.
+#:
+#: **Die Faltung der Quell-Gruppen ist weg** (m.rau/bibi#131): es gibt nur noch
+#: eine Liste, und was die Faltung leistete — die wenigen lokalen Laeufe neben
+#: 1064 Scheduler-Laeufen auffindbar zu halten —, leistet der Herkunftsfilter
+#: mit seiner Zaehlung besser.
+#:
+#: **Zwei Wege zum Output, weil es zwei Speicher gibt:** ein archivierter Lauf
+#: hat eine Journal-ID, ein im Slot stehender hat keine (unter A2 entsteht sie
+#: erst auf START/RESET). Welcher Weg gilt, entscheidet der Server beim
+#: Rendern und legt es in die Zeile — der Browser raet nicht.
 _JOB_DETAIL_JS = """
 (() => {
+  const SEITE = {S: 'scheduler', C: 'client'};
   document.addEventListener('click', async (ev) => {
-    const fold = ev.target.closest('[data-fold]');
-    if (fold) {
-      const grp = fold.closest('.grp');
-      const zu = grp.classList.toggle('folded');
-      // Die Marke ist der Zustand: wer sie liest, weiss es, ohne zu klicken.
-      fold.innerHTML = zu ? '&#9656;' : '&#9662;';
-      return;
-    }
     const show = ev.target.closest('.run-show');
     if (!show) return;
     const zeile = document.getElementById('run-' + show.dataset.run);
@@ -4148,17 +4186,25 @@ _JOB_DETAIL_JS = """
     const feld = zeile.querySelector('.out-body');
     if (feld.dataset.geladen) return;
     feld.textContent = 'loading …';
+    // Der Pfad ohne Query: `?days=90` gehoert zur Liste, nicht zum Lauf.
+    const basis = location.pathname;
+    const ziel = show.dataset.slot
+      ? `${basis}/slot/${SEITE[show.dataset.src] || 'client'}/${show.dataset.slot}/output`
+      : `${basis}/runs/${show.dataset.jid}/output`;
     try {
-      const r = await fetch(location.pathname + '/runs/' + show.dataset.jid + '/output');
+      const r = await fetch(ziel);
       feld.textContent = r.ok ? await r.text() : 'output unavailable';
-      if (r.ok) feld.dataset.geladen = '1';
+      // Ein laufender Lauf ist noch nicht fertig — sein Output darf beim
+      // naechsten Aufklappen nicht aus dem Cache kommen.
+      if (r.ok && !show.dataset.slot) feld.dataset.geladen = '1';
     } catch (e) { feld.textContent = 'output unavailable'; }
   });
-  // Deep-Link: `#run=<run_id>` oeffnet genau diese Zeile.
+  // Deep-Link: `#run=<run_id>` oeffnet genau diese Zeile. Er ueberlebt die
+  // Archivierung, weil der Bereich am Lauf haengt und nicht an der Position.
   const m = location.hash.match(/^#run=(.+)$/);
   if (m) {
     const b = document.querySelector('.run-show[data-run="' + m[1] + '"]');
-    if (b) b.click();
+    if (b) { b.click(); b.scrollIntoView({block: 'start'}); }
   }
 })();
 """
@@ -4224,95 +4270,261 @@ _SLOT_JS = """
 """
 
 
-def job_runs_fragment(gruppen: list, *, now: float, job_uid: str | None = None,
-                      offset: int = 0, limit: int | None = None) -> str:
-    """Die Quell-Gruppen mit ihren Läufen — das Nachlade-Ziel von ``archived``.
+def _slot_kachel(kachel, *, now: float) -> str:
+    """Eine Slot-Kachel: Zustand und die drei Verben, sonst nichts (FE §5.1.1).
 
-    Je Gruppe eine Kopfzeile mit dem Slot und darunter die archivierten Läufe,
-    tageweise getrennt. Der Slot steht unmittelbar über der Liste, in die sein
-    Inhalt wandert: wird ein Lauf terminal, rutscht er aus der Kopfzeile in die
-    erste Zeile darunter.
+    Was *geschehen* ist, steht unten in der Liste. Diese Trennung nach Aufgabe
+    ist der Grund, warum es für den Output nur noch einen Ort gibt — vorher hing
+    der laufende an der Slot-Kopfzeile und der beendete in der Liste, und beim
+    Terminalwerden rutschte er von einem zum anderen.
+    """
+    ziel = "scheduler" if kachel.quelle == "SCHEDULER" else "client"
+    titel = kachel.quelle + (f" &middot; {_e(kachel.host)}" if kachel.host else "")
+    if not kachel.status:
+        # Kein Rateschritt: fehlt jeder Zustand, sagt die Kachel das, statt
+        # `pending` zu behaupten (Befund bei der Abnahme, 2026-08-03).
+        zustand = '<span class="slot-none">no state reported</span>'
+    else:
+        teile = [_e(kachel.status)]
+        if kachel.slot.get("reason"):
+            teile.append(_e(kachel.slot["reason"]))
+        begonnen, beendet = kachel.slot.get("started_at"), kachel.slot.get("finished_at")
+        if kachel.status == "pending" and kachel.slot.get("next_fire_at"):
+            # `pending · next 12:00` — ein reservierter Platz mit Termin. Ohne
+            # `next` bleibt es beim blossen `pending`: das ist `adhoc`, ein
+            # freier Platz ohne Verabredung.
+            teile.append(f'next {_abs_time(kachel.slot["next_fire_at"])}')
+        elif begonnen is not None and kachel.status not in jobs_view_ohne_lauf():
+            # Eine Dauer, kein Zeitpunkt — FE §2 verlangt absolute *Zeitpunkte*
+            # und lässt Dauern ausdrücklich zu (`no contact for 4m`). Gemessen
+            # gegen das Ende, wo es eines gibt: ein blockierter Lauf steht unter
+            # A2 tagelang, und seine Laufzeit darf dabei nicht mitwachsen.
+            teile.append(_human_duration((beendet if beendet is not None else now) - begonnen))
+        zustand = " &middot; ".join(teile)
+    return (
+        f'<div class="tile"><div class="tile-head">{titel}</div>'
+        f'<div class="tile-state">{zustand}</div>'
+        f'{_slot_leiste(kachel.aktionen, job_id=kachel.slot.get("id"), ziel=ziel)}'
+        "</div>"
+    )
+
+
+def jobs_view_ohne_lauf() -> frozenset:
+    """Die Slot-Zustände ohne eigenen Lauf — eine Quelle, nicht zwei."""
+    from bibi.controller import jobs_view
+    return jobs_view.OHNE_EIGENEN_LAUF
+
+
+def job_tiles_fragment(tiles: list, *, now: float) -> str:
+    """Die Kacheln nebeneinander (FE §5.1).
+
+    **Nebeneinander, weil sie gleichrangig sind** und man sie ständig
+    vergleicht („läuft es beim Scheduler, aber lokal nicht?"). Eine Kachel
+    fehlt genau dann, wenn es dort keinen Slot gibt — nicht, wenn er leer ist.
+    """
+    if not tiles:
+        return ""
+    return ('<div class="tiles">'
+            + "".join(_slot_kachel(k, now=now) for k in tiles)
+            + "</div>")
+
+
+def job_runs_fragment(liste, *, now: float, job_uid: str | None = None,
+                      days: int | None = None, reach: dict | None = None,
+                      aktiv: dict | None = None, weiter: int | None = None) -> str:
+    """Die **eine** Lauf-Liste über beide Quellen (FE §5.3, m.rau/bibi#131).
+
+    Sie führt jeden Lauf — die archivierten aus dem Journal **und** den, der
+    noch im Slot steht, mit einer Marke. Damit gibt es für den Output genau
+    einen Ort, und beim Terminalwerden bewegt sich nichts: die Zeile bleibt, wo
+    sie ist, nur ihr Zustand ändert sich.
+
+    Die frühere Faltung je Quelle ist ersatzlos weg. Sie entstand gegen ein
+    echtes Problem (``gmail-transfer``: 1064 Scheduler-Läufe gegen 9 lokale),
+    aber der Herkunftsfilter mit Zählung löst dasselbe und leistet mehr — er
+    zeigt, *dass* es lokale gibt, ohne dass man eine Gruppe finden muss.
     """
     from bibi.controller import jobs_view
 
-    if not gruppen:
+    if not liste.tiles and not liste.runs:
         # Kein Verweis mehr auf den Archive-Screen (m.rau/bibi#130): der ist
         # gestrichen, und ein Text, der auf einen Screen zeigt, den es nicht
         # gibt, ist derselbe tote Weg wie ein toter Link — nur ohne href, also
         # ohne dass ein Routen-Test ihn faende.
         return ('<div class="empty">This job is unknown on both sides — no slot, '
                 'no runs. It may have been renamed.</div>')
-    aus = []
-    for g in gruppen:
-        status = g.slot_status
-        reason = g.slot.get("reason")
-        if not status:
-            # Kein Platz auf dieser Seite — die Laeufe stehen trotzdem da
-            # (`bibi-ctrl run` legt keinen Slot fuer den Basis-Slug an).
-            zustand = '<span class="slot-none">no slot &mdash; local runs only</span>'
-        else:
-            zustand = f"{_e(status)} &middot; {_e(reason)}" if reason else _e(status)
-        titel = f"{g.quelle}" + (f" &middot; {_e(g.host)}" if g.host else "")
-        n = g.gesamt
-        aus.append(
-            f'<div class="grp"><div class="grp-head">'
-            f'<span class="fold" data-fold="{_e(g.quelle)}">&#9662;</span> '
-            f'<span class="grp-title">{titel}</span>'
-            f'<span class="slot">slot: {zustand}</span>'
-            f'{_slot_leiste(g.aktionen, job_id=g.slot.get("id"), ziel=("scheduler" if g.quelle == "SCHEDULER" else "client"))}'
-            f'<span class="grp-count">{n} run{"" if n == 1 else "s"}</span>'
-            "</div>")
-        if not g.runs:
-            aus.append('<div class="empty">No runs yet — trigger one with START, '
-                       "or wait for the schedule.</div></div>")
-            continue
-        aus.append('<table class="runs"><thead><tr>'
-                   "<th>DATE</th><th>TIME</th><th>STATUS</th><th>EXIT</th>"
-                   "<th>RUNTIME</th><th>COMMIT</th><th></th></tr></thead><tbody>")
-        for tag, laeufe in jobs_view.by_day(g.runs):
-            aus.append(f'<tr class="day"><td colspan="7">{_e(tag)}</td></tr>')
-            for r in laeufe:
-                st = r.get("status") or ""
-                rs = r.get("reason")
-                aus.append(
-                    "<tr>"
-                    f'<td>{_e(tag)}</td>'
-                    f'<td class="t" data-ts="{r.get("finished_at") or ""}">'
-                    f'{_abs_time(r.get("finished_at"))}</td>'
-                    f'<td>{_e(st)}{" &middot; " + _e(rs) if rs else ""}</td>'
-                    f'<td>{_e(r.get("exit_code"))}</td>'
-                    f'<td>{_human_duration(r.get("exec_runtime"))}</td>'
-                    f'<td>{_e((r.get("commit_sha") or "")[:7])}</td>'
-                    f'<td><button class="cta run-show" data-jid="{_e(r.get("id"))}" '
-                    f'data-run="{_e(r.get("run_id"))}">[show]</button></td>'
-                    "</tr>"
-                    # Der Ausklappbereich gehoert zum Lauf, nicht zur Zeile:
-                    # derselbe `run_id` zeigt vor der Archivierung auf die
-                    # Slot-Kopfzeile und danach hierher (FE-Spezifikation §5.4).
-                    f'<tr class="out" id="run-{_e(r.get("run_id"))}" hidden>'
-                    f'<td colspan="7"><pre class="out-body"></pre></td></tr>')
-        aus.append("</tbody></table>")
-        # Mehr, als diese Seite trägt: der Zähler in der Kopfzeile kennt die
-        # Gesamtzahl, die Liste nur ihren Ausschnitt.
-        if limit and job_uid and g.gesamt > offset + len(g.runs):
-            aus.append(_load_more(f"/-/jobs/{job_uid}/runs", offset + limit, limit))
-        aus.append("</div>")
+    basis = f"/-/jobs/{job_uid}" if job_uid else ""
+    aus = [_runs_filterzeile(liste, basis=basis, aktiv=aktiv, reach=reach)]
+    if not liste.runs:
+        return "".join([*aus, '<div class="empty">No runs yet — trigger one with '
+                        "START, or wait for the schedule.</div>"])
+    aus.append('<table class="runs"><thead><tr>'
+               '<th class="mark"></th><th>TIME</th><th>SRC</th><th>STATUS</th>'
+               "<th>EXIT</th><th>RUNTIME</th><th>COMMIT</th><th></th>"
+               "</tr></thead><tbody>")
+    for tag, laeufe in jobs_view.by_day(liste.runs, ts_key="sort_at"):
+        aus.append(f'<tr class="day"><td colspan="8">{_e(tag)}</td></tr>')
+        for r in laeufe:
+            aus.append(_run_zeile(r))
+    aus.append("</tbody></table>")
+    # Der Knopf erscheint **nur**, wenn es wirklich mehr gibt, und er erweitert
+    # um eine Menge statt um einen Tag — `weiter` ist das Fenster, das die
+    # nächsten zehn Einträge trägt (§5.3, `jobs_view.naechstes_fenster()`).
+    if job_uid and weiter and weiter != days:
+        aus.append(_mehr_tage(basis, aktiv or {}, weiter))
     return "".join(aus)
 
 
-def job_detail_page_v5(*, slug: str, spec: dict, now: float, gruppen: list | None = None,
+def _mehr_tage(basis: str, aktiv: dict, tage: int) -> str:
+    """``LOAD MORE`` als Fenster-Erweiterung, nicht als Offset.
+
+    Die Liste ist tageweise gruppiert, und ein Nachladen „um eine Seite"
+    schnitte mitten in einen Tag. Der Knopf verbreitert deshalb das Zeitfenster
+    — und zwar so weit, dass wirklich etwas dazukommt: sonst verspricht er
+    „mehr" und liefert an einem ruhigen Tag eine einzige Zeile.
+    """
+    teile = [f"days={tage}"]
+    for a in ("status", "src"):
+        if aktiv.get(a):
+            teile.append(f"{a}={','.join(aktiv[a])}")
+    return (f'<div class="more"><a class="cta" href="{basis}?{"&".join(teile)}">'
+            "[ LOAD MORE ]</a></div>")
+
+
+#: Die terminalen Zustände, nach denen die Lauf-Liste filtert (FE §5.3). Es
+#: sind genau die, die ein *Lauf* erreichen kann — `done` fehlt, weil das ein
+#: Slot-Zustand ist und nie im Journal steht (Zustandsmodell §1).
+RUN_FILTER = ("complete", "error", "killed", "zombie", "inactive")
+
+
+def _filter_link(basis: str, aktiv: dict, achse: str, wert: str,
+                 beschriftung: str | None = None) -> str:
+    """Ein Filter-Knopf, der sich selbst umschaltet.
+
+    Serverseitig statt im Browser, weil die Tagestrennlinien sonst nicht mehr
+    stimmen: ein ausgeblendeter Lauf hinterlässt einen leeren Tag, und der
+    behauptet „an diesem Tag lief nichts".
+    """
+    gewaehlt = list(aktiv.get(achse) or [])
+    neu = [w for w in gewaehlt if w != wert] if wert in gewaehlt else [*gewaehlt, wert]
+    teile = []
+    for a in ("status", "src"):
+        werte = neu if a == achse else list(aktiv.get(a) or [])
+        if werte:
+            teile.append(f"{a}={','.join(werte)}")
+    if aktiv.get("days"):
+        teile.append(f"days={aktiv['days']}")
+    ziel = basis + ("?" + "&".join(teile) if teile else "")
+    klasse = "chip chip-on" if wert in gewaehlt else "chip"
+    return f'<a class="{klasse}" href="{ziel}">{_e(beschriftung or wert)}</a>'
+
+
+def _runs_filterzeile(liste, *, basis: str = "", aktiv: dict | None = None,
+                      reach: dict | None = None) -> str:
+    """Kopfzeile der Lauf-Liste: Herkunft mit Zählung, Zustände, Reichweite.
+
+    **Die Zählung ist der Ersatz für die frühere Faltung** (§5.3). Die entstand
+    gegen ein echtes Problem — ``gmail-transfer`` hat 1064 Scheduler-Läufe
+    gegen wenige lokale, der erste lokale stünde unerreichbar weit unten. Der
+    Filter löst dasselbe und leistet mehr: er zeigt, *dass* es lokale gibt.
+    Eine zugeklappte Gruppe sagte das auch, aber nur, wenn man sie fand.
+    """
+    aktiv = aktiv or {}
+    s, c = liste.counts.get("S", 0), liste.counts.get("C", 0)
+    # Beschriftung **und** Zahl im Link, nicht der Buchstabe daneben: `S` als
+    # Klickziel neben einem toten `scheduler 500` liest sich wie vier Elemente
+    # statt zwei — und die Zahl ist genau das, was die Faltung ersetzt.
+    herkunft = (f'{_filter_link(basis, aktiv, "src", "S", f"scheduler {s}")}'
+                f'{_filter_link(basis, aktiv, "src", "C", f"client {c}")}')
+    zustaende = "".join(_filter_link(basis, aktiv, "status", w) for w in RUN_FILTER)
+    return ('<div class="runs-head">'
+            '<span class="runs-title">RUNS</span>'
+            f'<span class="runs-src">{herkunft}</span>'
+            f'<span class="runs-states">{zustaende}</span>'
+            f'{_runs_reichweite(reach)}'
+            "</div>")
+
+
+def _runs_reichweite(reach: dict | None) -> str:
+    """Wie weit die Liste zurückreicht — und wo ihre echte Grenze liegt.
+
+    Sie kommt vom gestrichenen Archive-Screen (§6) und muss bleiben: **ein
+    ``LOAD MORE``, das nichts mehr lädt, muss sich von „da war nichts"
+    unterscheiden lassen.**
+
+    Dort stand ``showing 1 month · pruned after 3 months`` — und das war eine
+    Falschaussage im UI: ein zeitbasiertes Pruning gibt es nicht, das einzige
+    ``DELETE FROM journal`` löscht eine Zeile per ID. Die echte Grenze ist das
+    Abfragelimit von :data:`RUN_LIMIT` Läufen **je Quelle**. Sie wird deshalb
+    nur genannt, wenn die Liste tatsächlich daran anstößt — sonst behauptete
+    der Screen eine Schranke, die für diesen Job nie greift.
+    """
+    if not reach:
+        return ""
+    teile = [f'{reach.get("total", 0)}']
+    if reach.get("days"):
+        tage = reach["days"]
+        teile.append(f'showing {tage} day{"" if tage == 1 else "s"}')
+    if reach.get("capped"):
+        teile.append(f'capped at {reach["capped"]} per source')
+    return f'<span class="runs-reach">{" &middot; ".join(teile)}</span>'
+
+
+def _run_zeile(r: dict) -> str:
+    """Eine Zeile der Lauf-Liste plus ihr (zugeklappter) Ausklappbereich."""
+    st = r.get("status") or ""
+    rs = r.get("reason")
+    im_slot = r.get("in_slot") is True
+    # Die Marke bedeutet „steht im Slot", nicht „läuft" — sie trägt beide
+    # Fälle, die ein Slot kennen kann: den laufenden Lauf und den blockierten
+    # terminalen, der nach A2 auf einen Menschen wartet. Sie ist der Bezug
+    # zwischen oben und unten: die Kachel gehört zu der Zeile, die sie trägt.
+    marke = '&#9656;' if im_slot else ""
+    # Woher der Output kommt, entscheidet sich hier und nicht im Browser: ein
+    # archivierter Lauf hat eine Journal-ID, ein im Slot stehender hat keine —
+    # ihn trägt nur die Job-Zeile, und die liegt je nach Herkunft hier oder
+    # beim Scheduler.
+    if im_slot:
+        holen = (f'data-slot="{_e(r.get("job_id"))}" '
+                 f'data-src="{_e(r.get("src"))}"')
+    else:
+        holen = f'data-jid="{_e(r.get("id"))}"'
+    return (
+        f'<tr class="{"run run-in-slot" if im_slot else "run"}">'
+        f'<td class="mark">{marke}</td>'
+        f'<td class="t" data-ts="{r.get("sort_at") or ""}">'
+        f'{_abs_time(r.get("sort_at"))}</td>'
+        f'<td class="src">{_e(r.get("src"))}</td>'
+        f'<td>{_e(st)}{" &middot; " + _e(rs) if rs else ""}</td>'
+        f'<td>{_e(r.get("exit_code"))}</td>'
+        f'<td>{_human_duration(r.get("exec_runtime"))}</td>'
+        f'<td>{_e((r.get("commit_sha") or "")[:7])}</td>'
+        f'<td><button class="cta run-show" {holen} '
+        f'data-run="{_e(r.get("run_id"))}">[show]</button></td>'
+        "</tr>"
+        # Der Ausklappbereich gehoert zum **Lauf**, nicht zur Zeilenposition —
+        # deshalb ueberlebt der Deep-Link `#run=` die Archivierung (§5.4).
+        f'<tr class="out" id="run-{_e(r.get("run_id"))}" hidden>'
+        f'<td colspan="8"><pre class="out-body"></pre></td></tr>')
+
+
+def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
                        daemon_status: dict | None = None,
                        git_status: dict | None = None, host_url: str | None = None,
                        scheduler: dict | None = None,
                        scheduler_stale_since: float | None = None,
-                       beziehung: str | None = None) -> str:
-    """Job Detail (FE-Spezifikation §5) — Hülle, Kopfzeile, Quell-Gruppen.
+                       beziehung: str | None = None,
+                       days: int | None = None, reach: dict | None = None,
+                       aktiv: dict | None = None, weiter: int | None = None) -> str:
+    """Job Detail (FE-Spezifikation §5) — Hülle, Kopfzeile, Kacheln, Liste.
 
-    Der Screen führt **einen** Job und darunter je Quelle eine faltbare Gruppe.
-    Jede Gruppe trägt in ihrer Kopfzeile den **Slot** dieser Seite samt seiner
-    Aktionen; darunter stehen die archivierten Läufe derselben Quelle. Der Slot
-    steht damit unmittelbar über der Liste, in die sein Inhalt wandert: wird
-    ein Lauf terminal, rutscht er aus der Kopfzeile in die erste Zeile darunter.
+    **Oben die Kacheln: was ich tun kann. Unten die Liste: was geschehen ist**
+    (m.rau/bibi#131). Die frühere Fassung hatte je Quelle eine faltbare Gruppe,
+    den Slot in ihrer Kopfzeile und den laufenden Output daran hängend — zwei
+    Orte für dieselbe Sache, zwischen denen ein Lauf beim Terminalwerden hin-
+    und herrutschte. Jetzt führt **eine** Liste jeden Lauf, den im Slot
+    stehenden mit einer Marke, und der Output klappt überall an derselben
+    Stelle auf.
     """
     from bibi.schedule.models import job_uid as _uid
 
@@ -4342,8 +4554,12 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, gruppen: list | Non
         # die einzige Verbindung zwischen Strom und Liste (m.rau/bibi#108).
         # Nachgeladen wird die Liste, nicht die Seite: sonst ginge bei jedem
         # Lauf Scroll-Position und Faltzustand verloren.
+        # Die Kacheln stehen **ausserhalb** des nachladenden Bereichs: sie
+        # tragen die Knoepfe, und ein Nachladen mitten im Klick nimmt sie unter
+        # der Hand weg. Die Liste darunter darf sich jederzeit erneuern.
+        f'{job_tiles_fragment(getattr(liste, "tiles", []), now=now)}'
         f'<div id="runs" data-bus="archived" data-bus-refetch="/-/jobs/{_uid(slug)}/runs">'
-        f'{job_runs_fragment(gruppen or [], now=now)}'
+        f'{job_runs_fragment(liste, now=now, job_uid=_uid(slug), days=days, reach=reach, aktiv=aktiv, weiter=weiter) if liste is not None else ""}'
         "</div>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
