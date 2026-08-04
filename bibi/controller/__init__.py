@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 
@@ -72,6 +73,65 @@ async def _body_value(request: Request, name: str) -> str:
 #: Ordner-Aggregation nur noch rund 14 Zeilen für eine Frage, die „was ist
 #: passiert" heisst. Eine unbegrenzte Historie gibt es weiterhin nicht.
 _FEED_DEFAULT_DAYS = 7
+
+
+class _Backoff:
+    """Nach einem Fehlschlag eine Weile gar nicht erst probieren.
+
+    Ist der Scheduler weg, wartet **jeder** Seitenaufbau den Client-Timeout ab,
+    bevor er rendert (Befund m.rau: *„die Abfrage dauert lange … darf die UX
+    nicht stören"*). Der Zustand „nicht erreichbar" ändert sich aber nicht im
+    Sekundentakt — er einmal festgestellt und dann eine Weile geglaubt.
+
+    Damit ist der Screen bei offline **schneller** als bei online, was richtig
+    ist: es gibt nichts zu holen, und der letzte bekannte Stand steht gedimmt
+    ohnehin schon da.
+    """
+
+    def __init__(self, *, pause: float = 15.0) -> None:
+        self.pause = pause
+        self._bis: float | None = None
+
+    def darf(self, *, now: float) -> bool:
+        return self._bis is None or now >= self._bis
+
+    def fehlschlag(self, *, now: float) -> None:
+        self._bis = now + self.pause
+
+    def erfolg(self) -> None:
+        self._bis = None
+
+#: Suffix, den ``worker.run_pinned()`` je Lauf anhängt (``token_hex(4)``).
+_PIN_SUFFIX = re.compile(r"^(.*)-[0-9a-f]{8}$")
+
+
+def _local_run_status_aus(eintraege: list[dict]) -> dict:
+    """Journal-Zeilen → letzter lokaler Lauf je Slug.
+
+    Zwei Dinge, die beide einmal falsch waren:
+
+    * **Gepinnte Läufe gehören zu ihrem Job.** ``run_pinned()`` hängt je Lauf
+      acht Hex-Zeichen an; ohne Rückrechnung zerfällt ein Job in so viele
+      Einträge, wie er lokale Läufe hatte. Die feste Länge **acht** trennt das
+      sauber von den Vier-Hex-Suffixen der ``at``-Slugs
+      (``20260728.at-150738-81ec`` bleibt unangetastet).
+    * **Der neueste Lauf gewinnt, nicht der zuerst gefundene.** Die
+      Journal-Reihenfolge ist nicht die Zeitreihenfolge; ein ``setdefault()``
+      behielt deshalb irgendeinen. Live zeigte ``gmail-transfer`` dadurch
+      ``6d 1h`` — die Standzeit eines Laufs vom 14.07., der beim Aufräumen am
+      20.07. terminal gesetzt wurde (Befund m.rau).
+    """
+    def basis(slug: str) -> str:
+        m = _PIN_SUFFIX.match(slug)
+        return m.group(1) if m else slug
+
+    aus: dict = {}
+    for e in eintraege:
+        b = basis(e.get("slug") or "")
+        vorher = aus.get(b)
+        if vorher is None or (e.get("finished_at") or 0) > (vorher.get("finished_at") or 0):
+            aus[b] = e
+    return aus
 
 
 def _wants_html(request: Request) -> bool:
@@ -187,6 +247,7 @@ def add_controller_routes(
     #: bei Ausfall die letzten Werte gedimmt und datiert (FE-Spezifikation §2)
     #: — dafür muss jemand sie behalten, und der Ausgefallene kann es nicht.
     _sched_cache: dict = {"status": None, "at": None}
+    _sched_backoff = _Backoff()
 
     def _scheduler_status() -> tuple[dict | None, float | None]:
         """Status des Schedulers, plus „stale seit", wenn er nicht antwortet.
@@ -205,11 +266,20 @@ def add_controller_routes(
             if "scheduler" in (eigen.get("roles") or []):
                 return eigen, None
             return None, None
+        jetzt = time.time()
+        if not _sched_backoff.darf(now=jetzt):
+            # Kürzlich nicht erreichbar — der letzte Stand steht gedimmt da,
+            # und ein zweiter Timeout brächte dieselbe Auskunft langsamer.
+            return _sched_cache["status"], _sched_cache["at"]
         try:
-            s = ControllerClient(url, timeout=3.0).status()
-            _sched_cache["status"], _sched_cache["at"] = s, time.time()
+            # 1,5 s statt 3: im Tailnet antwortet ein lebender Host in
+            # Millisekunden; alles darüber ist bereits ein Ausfall.
+            s = ControllerClient(url, timeout=1.5).status()
+            _sched_cache["status"], _sched_cache["at"] = s, jetzt
+            _sched_backoff.erfolg()
             return s, None
         except Exception:  # noqa: BLE001 — defensiv (§2.7): der Host darf ausfallen
+            _sched_backoff.fehlschlag(now=jetzt)
             return _sched_cache["status"], _sched_cache["at"]
 
     def _schedules() -> list:
@@ -1303,6 +1373,49 @@ def add_controller_routes(
             scheduler_host=(_scheduler_url() or "").split("//")[-1].split(":")[0] or None,
             local_host=_status().get("host"))
 
+    #: Die drei Verben aus der Slot-Kachel. `client` wirkt auf den eigenen
+    #: Daemon, `scheduler` auf den Host — dieselbe Job-ID meint auf beiden
+    #: Seiten einen anderen Job, weil beide ihre eigene DB fuehren
+    #: (Zustandsmodell §1). Ohne diese Unterscheidung traefe ein Klick auf der
+    #: Scheduler-Kachel den lokalen Job.
+    _VERBEN = {"start", "reset", "kill"}
+
+    @app.post("/-/ui/jobs/verb/{ziel}/{job_id}/{verb}", include_in_schema=False)
+    def screen_job_verb(ziel: str, job_id: str, verb: str):
+        """START, RESET oder KILL auf einem Slot ausloesen.
+
+        Der Umweg ueber den Controller ist noetig, weil der Browser nicht
+        weiss, wo der Job liegt: der Scheduler-Slot lebt auf dem Host, der
+        Client-Slot hier. Beide Seiten haben dieselbe Route
+        (`POST /-/job/{id}/{verb}`), nur auf verschiedenen Maschinen.
+        """
+        if verb not in _VERBEN:
+            return JSONResponse(status_code=400,
+                                content={"error": "unknown verb", "verb": verb})
+        if ziel == "client":
+            # `client` zeigt auf den eigenen Daemon — derselbe Weg, den auch
+            # der Feed und die Jobs-Liste nehmen.
+            ziel_client = client
+        elif ziel == "scheduler":
+            url = _scheduler_url()
+            if not url:
+                return JSONResponse(status_code=503,
+                                    content={"error": "no scheduler configured"})
+            ziel_client = ControllerClient(url)
+        else:
+            return JSONResponse(status_code=400,
+                                content={"error": "unknown target", "ziel": ziel})
+        try:
+            antwort = ziel_client.job_action(job_id, verb)
+        except Exception as e:  # noqa: BLE001 — die Meldung gehoert an den Knopf
+            activity.emit(log, logging.WARNING, "controller.verb_failed",
+                          f"{verb.upper()} auf {ziel} fehlgeschlagen: {e}",
+                          role="controller")
+            return JSONResponse(status_code=502,
+                                content={"error": str(e), "verb": verb, "ziel": ziel})
+        return {"ok": True, "verb": verb, "ziel": ziel, "id": job_id,
+                "antwort": antwort}
+
     @app.get("/-/jobs/{job_uid}/runs/{jid}/output", include_in_schema=False)
     def screen_job_run_output(request: Request, job_uid: str, jid: int):  # noqa: ARG001
         """Die Ausgabe eines archivierten Laufs (FE-Spezifikation §5.4).
@@ -1419,17 +1532,7 @@ def add_controller_routes(
             eintraege = client.run_journal(limit=500)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             return {}
-        aus: dict = {}
-        for e in eintraege:
-            slug = (e.get("slug") or "").rsplit("-", 1)
-            basis = e.get("slug")
-            if len(slug) == 2 and len(slug[1]) == 8:
-                # Gepinnter Lauf: der Suffix macht die Zeile eindeutig, nicht
-                # den Job. Bis `job_uid` überall durchgereicht ist, bleibt das
-                # die Rückrechnung (Zustandsmodell §6).
-                basis = slug[0]
-            aus.setdefault(basis, e)
-        return aus
+        return _local_run_status_aus(eintraege)
 
     @app.get("/-/jobs/list", include_in_schema=False)
     def screen_jobs_list(request: Request, sort: str | None = None,

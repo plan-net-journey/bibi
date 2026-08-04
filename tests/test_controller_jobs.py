@@ -920,3 +920,71 @@ def test_human_duration_keeps_one_decimal_below_ten_seconds():
     assert render._human_duration(0.4) == "0.4s"
     assert render._human_duration(9.9) == "9.9s"
     assert render._human_duration(45) == "45s"
+
+
+def test_local_run_status_takes_the_newest_run_per_slug():
+    """Die Client-Spalte zeigt den **neuesten** lokalen Lauf, nicht irgendeinen.
+
+    Befund m.rau: *„wieso `6d 1h` bei gmail-transfer? Das muss ein Rechenfehler
+    sein."* In der echten DB nachgesehen: die Zahl stammte aus
+    `gmail-transfer-d03e0d2e` — einem gepinnten Lauf vom 14.07., der beim
+    Aufraeumen am 20.07. terminal gesetzt wurde. Die Rueckrechnung des Suffix
+    war da, aber `setdefault()` behielt den **zuerst gefundenen** Eintrag; die
+    Journal-Reihenfolge ist nicht die Zeitreihenfolge.
+
+    Rot war: `exec_runtime == 522318.5` statt `2.8`.
+    """
+    from bibi.controller import _local_run_status_aus  # reine Funktion
+    eintraege = [
+        {"slug": "gmail-transfer-d03e0d2e", "finished_at": 1_784_543_069.0,
+         "exec_runtime": 522_318.5, "status": "error"},
+        {"slug": "gmail-transfer", "finished_at": 1_785_833_522.0,
+         "exec_runtime": 2.8, "status": "complete"},
+    ]
+    aus = _local_run_status_aus(eintraege)
+    assert aus["gmail-transfer"]["exec_runtime"] == 2.8
+    assert aus["gmail-transfer"]["status"] == "complete"
+
+
+def test_local_run_status_folds_pinned_suffix_but_not_a_real_slug():
+    from bibi.controller import _local_run_status_aus
+    aus = _local_run_status_aus([
+        {"slug": "EngineCI-46ec57c7", "finished_at": 100.0, "exec_runtime": 1.0},
+        {"slug": "20260728.at-150738-81ec", "finished_at": 200.0, "exec_runtime": 2.0},
+    ])
+    assert "EngineCI" in aus
+    # Ein echter Slug darf auf acht Hex-Zeichen enden — hier wird nur
+    # zurueckgerechnet, wenn die Basis auch vorkommt.
+    assert "20260728.at-150738-81ec" in aus
+
+
+def test_scheduler_probe_backs_off_after_a_failure():
+    """Ein abwesender Scheduler darf den Seitenaufbau nicht blockieren.
+
+    Befund m.rau: *„Aber die Abfrage dauert lange. Der Disconnected Status
+    muss irgendwie geprueft werden, ja. Aber er darf die UX nicht stoeren."*
+    Der Client-Timeout steht auf 5 s, und die wartet **jeder** Seitenaufbau ab.
+
+    Nach dem ersten Fehlschlag wird deshalb eine Weile gar nicht erst
+    probiert — der Screen ist bei offline dann schneller als bei online, was
+    richtig ist: es gibt nichts zu holen.
+
+    Rot war: `versuche == 3` statt `1`.
+    """
+    from bibi.controller import _Backoff
+
+    b = _Backoff(pause=15.0)
+    assert b.darf(now=100.0), "der erste Versuch muss laufen"
+    b.fehlschlag(now=100.0)
+    assert not b.darf(now=101.0), "direkt danach wird nicht erneut probiert"
+    assert not b.darf(now=114.9)
+    assert b.darf(now=115.1), "nach der Pause wieder"
+
+
+def test_scheduler_probe_resets_after_success():
+    from bibi.controller import _Backoff
+
+    b = _Backoff(pause=15.0)
+    b.fehlschlag(now=100.0)
+    b.erfolg()
+    assert b.darf(now=101.0), "nach einer geglueckten Antwort keine Pause mehr"

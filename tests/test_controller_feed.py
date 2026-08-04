@@ -415,12 +415,18 @@ def test_status_cards_unchanged_after_refactor():
 
 
 def test_frow_children_allow_wrapping():
-    # Bibi4-Iteration, User-Fund: "der Umbruch im Feed funktioniert noch
-    # nicht fehlerfrei" — lange Slugs und die kommagetrennte Autorenliste
-    # liefen über den Rand, weil Flex-Items ohne min-width:0 nicht unter ihre
-    # Content-Breite schrumpfen, egal was overflow-wrap sagt.
+    """Flex-Items schrumpfen ohne `min-width: 0` nicht unter ihre Content-Breite
+    — beide Spalten brauchen es, sonst laeuft die Zeile ueber den Rand.
+
+    **Der Slug bricht dabei nie mitten im Wort** (Befund m.rau 2026-08-04:
+    `20260531.Continuou` / `sCollection-` / `a0bc0dcc`). `overflow-wrap:
+    anywhere` stammt aus bibi4 und war fuer die Autorenliste gedacht; auf
+    einem Namen ist es falsch. Die Urheber-Spalte behaelt es.
+    """
     css = render._CSS
-    assert ".frow .msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }" in css
+    msg = css.split(".frow .msg {")[1].split("}")[0]
+    assert "min-width: 0" in msg
+    assert "anywhere" not in msg, "der Slug darf nicht mitten im Wort brechen"
     assert "overflow-wrap: anywhere;" in css.split(".frow .who {")[1].split("}")[0]
 
 

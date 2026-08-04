@@ -326,8 +326,11 @@ def test_a_running_slot_offers_kill_but_not_start(client):
     finally:
         conn.close()
     text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
-    assert "[KILL]" in text          # verfuegbar
-    assert "&middot;START&middot;" in text or "·START·" in text  # ausgegraut
+    # Eckige Klammern sind weg (Befund m.rau) — sie waren das Wireframe-Zeichen
+    # fuer „hier ist eine Aktion"; im Browser traegt die Form das.
+    assert 'data-verb="kill"' in text            # verfuegbar und verdrahtet
+    assert 'class="slot-off">START<' in text     # sichtbar, aber ausgegraut
+    assert 'data-verb="start"' not in text
 
 
 def test_an_empty_run_list_says_what_to_do(client):
@@ -621,3 +624,53 @@ def test_long_runtime_is_shown_in_minutes():
     html = render.archive_page_v5(laeufe=[lang], now=1785833600.0)
     assert "274.1314046382904" not in html
     assert "4m 34s" in html
+
+
+# ── Die drei Verben sind verdrahtet (Befund m.rau 2026-08-04) ────────────────
+
+def test_slot_buttons_carry_target_and_id():
+    """START/RESET/KILL waren Attrappen.
+
+    Befund m.rau: *„START, RESET, KILL haben alle keinen Effekt."* Im Markup
+    stand `<button class="slot-do" data-verb="start">` — ohne `onclick`, ohne
+    `hx-post`, und ohne JavaScript, das `data-verb` liest. Gebaut war die
+    *Anzeige* der verfuegbaren Verben, nicht die Verben.
+
+    Ein Knopf braucht drei Dinge, um zu wirken: das Verb, die Job-ID und die
+    Seite, auf der er wirkt — der Scheduler-Slot liegt auf sarasate, ein POST
+    an den lokalen Daemon traefe den falschen Job.
+
+    Rot war: `data-id` und `data-ziel` fehlten im Markup.
+    """
+    from bibi.controller import render
+    gruppen = _grp(scheduler_slot={"status": "error", "id": "sched-77"},
+                   local_slot={"status": "pending", "id": "local-42"})
+    html = render.job_detail_page_v5(slug="EngineCI", spec={"slug": "EngineCI"},
+                                     now=1785833600.0, gruppen=gruppen)
+    assert 'data-verb="start"' in html
+    assert 'data-id="sched-77"' in html and 'data-ziel="scheduler"' in html
+    assert 'data-id="local-42"' in html and 'data-ziel="client"' in html
+
+
+def test_slot_buttons_have_a_handler():
+    """Ohne Handler ist `data-verb` nur Dekoration."""
+    from bibi.controller import render
+    gruppen = _grp(scheduler_slot={"status": "error", "id": "sched-77"})
+    html = render.job_detail_page_v5(slug="EngineCI", spec={"slug": "EngineCI"},
+                                     now=1785833600.0, gruppen=gruppen)
+    assert "slot-do" in html
+    assert "addEventListener" in html, "kein JavaScript, das die Knoepfe bedient"
+    assert "/-/ui/jobs/verb/" in html, "kein Ziel, an das gepostet wird"
+
+
+def test_unavailable_verbs_stay_disabled_not_clickable():
+    """Ausgegraute Verben bleiben sichtbar (FE §5.2) — aber sie duerfen nicht
+    posten. Sonst wirkt ein toter Knopf wie ein defekter."""
+    from bibi.controller import render
+    # `running`: nur KILL ist zulaessig
+    gruppen = _grp(scheduler_slot={"status": "running", "id": "sched-77"})
+    html = render.job_detail_page_v5(slug="EngineCI", spec={"slug": "EngineCI"},
+                                     now=1785833600.0, gruppen=gruppen)
+    assert 'data-verb="kill"' in html
+    assert 'data-verb="start"' not in html
+    assert "START" in html  # sichtbar, aber als .slot-off

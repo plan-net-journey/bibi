@@ -7,6 +7,7 @@ Kategorie SYSTEM und die Filter entfallen ersatzlos.
 from __future__ import annotations
 
 import datetime
+import re
 from pathlib import Path
 
 from bibi.controller import render
@@ -203,3 +204,28 @@ def test_the_default_window_is_a_week():
     """
     from bibi.controller import _FEED_DEFAULT_DAYS
     assert _FEED_DEFAULT_DAYS == 7
+
+
+def test_every_markup_class_has_a_css_rule():
+    """**Der Nachweis, dass kein Screen ohne Stylesheet ausgeliefert wird.**
+
+    Schritt 2 hat Job Detail, Attributes und Archive gebaut und dabei 27
+    Klassen eingefuehrt, von denen keine einzige eine CSS-Regel bekam. Ohne
+    Regel sind `<span>`s inline ohne Abstand — die Kopfzeile las sich als
+    `jobsgmail-billingjob · 0 */4 * * *[ATTRS]`, die Attributseite als
+    `attempts3`. Die Live-Abnahme fand es nicht, weil sie per `curl` die
+    *Daten* prueft; im Browser hat niemand gesehen.
+
+    Dieser Test ersetzt das Hinsehen nicht, aber er faengt genau den Fall ab,
+    der zweimal durchgerutscht ist: eine Klasse, die es nur im Markup gibt.
+    """
+    quelle = Path(render.__file__).read_text()
+    css = re.search(r'_CSS = """(.*?)"""', quelle, re.S).group(1)
+
+    benutzt = {k for m in re.finditer(r'class="([a-z0-9 _-]+)"', quelle)
+               for k in m.group(1).split()}
+    definiert = set(re.findall(r"\.([a-z][a-z0-9_-]*)", css))
+    ohne_regel = sorted(benutzt - definiert)
+
+    assert not ohne_regel, (
+        f"{len(ohne_regel)} Klassen ohne CSS-Regel: {', '.join(ohne_regel)}")

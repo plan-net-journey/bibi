@@ -626,6 +626,9 @@ def list_schedules(conn: sqlite3.Connection) -> list[dict]:
         if r["slug"] in known:
             continue
         out.append({
+            # Journal-Phantom: es gibt keine jobs-Zeile mehr, also auch keinen
+            # Slot und keine Verben.
+            "id": None,
             "slug": r["slug"], "kind": r["kind"], "trigger": "",
             "next_fire_at": None, "last_status": r["status"],
             "last_run_at": r["finished_at"], "last_run_id": r["id"],
@@ -731,6 +734,10 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
     # ein laufender Job noch keine eigene Journal-Zeile hat.
     last_run_id = last_run["id"] if last_run is not None else None
     return {
+        # Die Job-Zeilen-ID. Der Slot **ist** diese Zeile, und die drei Verben
+        # laufen ueber `POST /-/job/{id}/{verb}` — ohne sie sind START, RESET
+        # und KILL im Screen nicht verdrahtbar (Befund m.rau 2026-08-04).
+        "id": row["id"],
         "slug": row["slug"], "kind": row["kind"], "trigger": trigger or "",
         "next_fire_at": row["next_fire_at"], "last_status": last_status,
         "last_run_at": last_run_at, "last_run_id": last_run_id, "row_status": row_status,

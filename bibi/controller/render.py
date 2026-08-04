@@ -452,7 +452,10 @@ th.sorted { font-weight: 700; }
            flex: 0 0 3.4rem; }
 /* Ohne min-width:0 hat ein Flex-Item eine implizite Mindestbreite gleich seinem
    Inhalt — ein langer Slug und die Urheberliste liefen sonst über den Rand. */
-.frow .msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* Der Slug bricht **nie** mitten im Wort (Befund m.rau: `20260531.Continuou` /
+   `sCollection-` / `a0bc0dcc`). `overflow-wrap: anywhere` stammt aus bibi4 und
+   war dort fuer die Autorenliste gedacht — auf einem Namen ist es falsch. */
+.frow .msg { flex: 1; min-width: 0; overflow-wrap: normal; word-break: keep-all; }
 .frow .cnt { color: var(--dim); font-family: ui-monospace, monospace; font-size: .78rem;
              flex: 0 0 auto; white-space: nowrap; }
 .frow .who { color: var(--dim); font-size: .78rem; flex: 0 1 auto; min-width: 0;
@@ -469,6 +472,109 @@ th.sorted { font-weight: 700; }
    bringt ihr eigenes Padding mit. */
 .loadmore { display: flex; justify-content: flex-start; gap: .5rem;
             margin: .8rem 0 0; }
+/* ══ Job Detail, Attributes, Archive ═══════════════════════════════════════
+   Diese Screens entstanden in Schritt 2 und wurden **ohne eine einzige
+   CSS-Regel** ausgeliefert: 27 Klassen gab es nur im Markup. Ohne Regel sind
+   Spans inline ohne Abstand, weshalb die Kopfzeile als
+   `jobsgmail-billingjob` und die Attributseite als `attempts3` erschien.
+   `test_every_markup_class_has_a_css_rule` faengt diesen Fall jetzt ab.
+
+   Kein Cron-Ausdruck in diesem Kommentar: ein `*` gefolgt von `/` schliesst
+   ihn vorzeitig, und der Parser verwirft dann die erste Regel dahinter. Genau
+   das ist hier passiert — `.jd-head` blieb `display: block`, waehrend alles
+   andere wirkte.
+
+   Die Formen folgen dem, was Feed und Jobs schon benutzen — Beschriftungen in
+   `--hdr-key`, Trennlinien in `--line`, Monospace fuer alles Zaehlbare. Neu
+   ist nur die Slot-Kachel, und sie ist bewusst eine Kachel: sie traegt
+   Steuerung, waehrend die Liste darunter Historie traegt. */
+
+/* Seitenkopf: `◂ back`, Slug, Beziehung, Meta rechts. */
+.jd-head { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap;
+           padding: .5rem 0 .55rem; border-bottom: 1px solid var(--line); }
+.jd-slug { font-weight: 700; font-size: 1.05rem; }
+.jd-meta { color: var(--dim); font-size: .8rem; margin-left: auto;
+           font-family: ui-monospace, monospace; }
+.back { color: var(--dim); text-decoration: none; font-size: .85rem; }
+.back:hover { color: inherit; text-decoration: underline; }
+.rel { font-size: .72rem; color: var(--dim); }
+.subhead { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap;
+           margin: .9rem 0 .35rem; font-size: .8rem; color: var(--dim); }
+
+/* Slot-Kachel: Zustand und Verben. Steuerung, sonst nichts. */
+.slot { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap;
+        padding: .5rem .7rem; margin: .6rem 0 .2rem;
+        border: 1px solid var(--line-hard); border-radius: .4rem; }
+.grp-head { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap;
+            width: 100%; }
+.grp-title { font-weight: 700; font-size: .82rem; letter-spacing: .02em; }
+.grp-count { color: var(--faint); font-size: .78rem; margin-left: auto;
+             font-family: ui-monospace, monospace; }
+.slot-none { color: var(--faint); font-size: .8rem; font-style: italic; }
+/* Die Leiste haelt Abstand zum Zustand links — sonst klebt `[START]` am Wort. */
+.slot-bar { display: inline-flex; align-items: center; gap: .45rem; }
+/* Ein verfuegbares Verb muss sich vom ausgegrauten unterscheiden — sonst
+   sieht die ganze Leiste tot aus, auch wo sie es nicht ist (live gesehen:
+   zwei klickbare Knoepfe, die wie deaktiviert wirkten). Terracotta traegt in
+   dieser UI genau eine Bedeutung: Interaktion. Hier ist sie richtig. */
+.slot-do { font: inherit; font-size: .78rem; letter-spacing: .03em;
+           font-weight: 600; padding: .12rem .6rem; cursor: pointer;
+           color: var(--brand); background: var(--btnbg);
+           border: 1px solid var(--brand); border-radius: .3rem; }
+.slot-do:hover { background: var(--brand); color: var(--bg); }
+.slot-do:disabled { opacity: .4; cursor: default; border-color: var(--btnline);
+                    color: inherit; }
+/* Nicht verfuegbare Verben bleiben sichtbar und ausgegraut (FE §5.2) — sonst
+   springt das Layout und die Aussage „das geht hier nicht" geht verloren. */
+.slot-off { font-size: .78rem; letter-spacing: .03em; color: var(--faint);
+            padding: .12rem .35rem; }
+
+/* Lauf-Liste und Archiv. */
+.runs { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.runs th { text-align: left; font-weight: 600; font-size: .72rem;
+           letter-spacing: .03em; color: var(--faint); text-transform: uppercase;
+           padding: .3rem .5rem .3rem 0; border-bottom: 1px solid var(--line); }
+.runs td { padding: .28rem .5rem .28rem 0; border-bottom: 1px solid var(--line);
+           vertical-align: baseline; }
+.runs td:first-child, .runs th:first-child { padding-left: .2rem; }
+.runs tr:hover td { background: var(--hover); }
+/* Die Tagestrennzeile ist kein Datensatz — ohne eigene Form las sie sich als
+   leere Zeile mit einem Datum links (Befund m.rau: „warum die leeren Zeilen"). */
+.runs tr.day td { font-family: ui-monospace, monospace; font-size: .72rem;
+                  color: var(--faint); padding-top: .8rem;
+                  border-bottom: 1px solid var(--line-hard); }
+.runs .t { font-family: ui-monospace, monospace; white-space: nowrap; }
+.cta { color: var(--dim); text-decoration: none; font-size: .8rem;
+       white-space: nowrap; cursor: pointer; background: none; border: 0;
+       font-family: inherit; padding: 0; }
+.cta:hover { color: var(--brand); text-decoration: underline; }
+.run-show { text-align: right; }
+
+/* Ausgeklappter Output: feste Hoehe, eigener Scrollbereich. */
+.out { padding: 0 !important; }
+.out-body { max-height: 20lh; overflow: auto; margin: .3rem 0 .5rem;
+            padding: .5rem .7rem; border: 1px solid var(--line-hard);
+            border-radius: .35rem; background: var(--hover);
+            font-family: ui-monospace, monospace; font-size: .78rem;
+            line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.fold { cursor: pointer; user-select: none; }
+
+/* Attribute: Beschriftung links, Wert rechts, Defaults gedimmt und geklammert. */
+.attrs { margin: .6rem 0 1rem; }
+.attrtable { border-collapse: collapse; font-size: .85rem; }
+.attr-row { display: grid; grid-template-columns: 12rem 1fr; gap: .4rem;
+            padding: .18rem 0; }
+.attr-key { color: var(--hdr-key); font-family: ui-monospace, monospace;
+            font-size: .8rem; }
+/* Zwei Signale fuer „Default", nicht eins: die Dimmung geht in hellen Themes
+   und auf schlechten Monitoren verloren, die Klammer nicht. */
+.ts-dim { color: var(--faint); }
+
+/* Leerer Zustand und Nachladen. */
+.empty { color: var(--dim); font-size: .85rem; font-style: italic;
+         padding: .8rem .2rem; }
+.more { display: flex; justify-content: flex-start; gap: .5rem; margin: .8rem 0 0; }
+
 """
 
 
@@ -4309,7 +4415,8 @@ _JOB_DETAIL_JS = """
 """
 
 
-def _slot_leiste(aktionen) -> str:
+def _slot_leiste(aktionen, *, job_id: str | None = None,
+                 ziel: str | None = None) -> str:
     """Die Knopfleiste eines Slots (FE-Spezifikation §5.2).
 
     Nicht verfügbare Verben bleiben **sichtbar und ausgegraut**, nicht
@@ -4323,11 +4430,49 @@ def _slot_leiste(aktionen) -> str:
         return ""
     teile = []
     for verb, label in ((Verb.START, "START"), (Verb.RESET, "RESET"), (Verb.KILL, "KILL")):
-        if verb in aktionen:
-            teile.append(f'<button class="slot-do" data-verb="{verb.value}">[{label}]</button>')
+        if verb in aktionen and job_id:
+            # Drei Angaben, sonst wirkt der Knopf nicht: das Verb, die Job-ID
+            # und die Seite. Der Scheduler-Slot liegt auf dem Host — ein POST
+            # an den eigenen Daemon traefe den falschen Job.
+            teile.append(
+                f'<button class="slot-do" data-verb="{verb.value}" '
+                f'data-id="{_e(job_id)}" data-ziel="{_e(ziel or "client")}">{label}</button>')
         else:
-            teile.append(f'<span class="slot-off">&middot;{label}&middot;</span>')
+            teile.append(f'<span class="slot-off">{label}</span>')
     return f'<span class="slot-bar">{" ".join(teile)}</span>'
+
+
+#: Die drei Verben. Ein Klick postet an den Controller, der an die richtige
+#: Seite weiterleitet — der Scheduler-Slot liegt auf dem Host, der Client-Slot
+#: hier. Danach laedt die Seite neu; der Bus meldet die Aenderung ohnehin,
+#: aber der Klickende soll seine Wirkung sofort sehen und nicht auf den
+#: naechsten Tick warten.
+_SLOT_JS = """
+(function(){
+  document.querySelectorAll('button.slot-do').forEach(b => {
+    b.addEventListener('click', async () => {
+      const {verb, id, ziel} = b.dataset;
+      if (!verb || !id) return;
+      b.disabled = true;
+      try {
+        const r = await fetch(`/-/ui/jobs/verb/${ziel}/${encodeURIComponent(id)}/${verb}`,
+                              {method: 'POST'});
+        if (!r.ok) {
+          const t = await r.text();
+          b.disabled = false;
+          alert(`${verb.toUpperCase()} failed (${r.status}): ${t.slice(0, 200)}`);
+          return;
+        }
+      } catch (e) {
+        b.disabled = false;
+        alert(`${verb.toUpperCase()} failed: ${e}`);
+        return;
+      }
+      window.location.reload();
+    });
+  });
+})();
+"""
 
 
 def job_runs_fragment(gruppen: list, *, now: float, job_uid: str | None = None,
@@ -4362,7 +4507,7 @@ def job_runs_fragment(gruppen: list, *, now: float, job_uid: str | None = None,
             f'<span class="fold" data-fold="{_e(g.quelle)}">&#9662;</span> '
             f'<span class="grp-title">{titel}</span>'
             f'<span class="slot">slot: {zustand}</span>'
-            f'{_slot_leiste(g.aktionen)}'
+            f'{_slot_leiste(g.aktionen, job_id=g.slot.get("id"), ziel=("scheduler" if g.quelle == "SCHEDULER" else "client"))}'
             f'<span class="grp-count">{n} run{"" if n == 1 else "s"}</span>'
             "</div>")
         if not g.runs:
@@ -4380,7 +4525,8 @@ def job_runs_fragment(gruppen: list, *, now: float, job_uid: str | None = None,
                 aus.append(
                     "<tr>"
                     f'<td>{_e(tag)}</td>'
-                    f'<td class="t" data-ts="{r.get("finished_at") or ""}"></td>'
+                    f'<td class="t" data-ts="{r.get("finished_at") or ""}">'
+                    f'{_abs_time(r.get("finished_at"))}</td>'
                     f'<td>{_e(st)}{" &middot; " + _e(rs) if rs else ""}</td>'
                     f'<td>{_e(r.get("exit_code"))}</td>'
                     f'<td>{_human_duration(r.get("exec_runtime"))}</td>'
@@ -4450,6 +4596,7 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, gruppen: list | Non
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOB_DETAIL_JS}</script>"
+        f"<script>{_SLOT_JS}</script>"
         f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
@@ -4527,7 +4674,8 @@ def archive_page_v5(*, laeufe: list, now: float, monate: int = 1, pruned: int = 
                 teile.append(
                     "<tr>"
                     f'<td>{_e(tag)}</td>'
-                    f'<td class="t" data-ts="{r.get("finished_at") or ""}"></td>'
+                    f'<td class="t" data-ts="{r.get("finished_at") or ""}">'
+                    f'{_abs_time(r.get("finished_at"))}</td>'
                     f'<td><a href="/-/jobs/{_uid(slug)}">{_e(slug)}</a></td>'
                     f'<td>{_e(st)}{" &middot; " + _e(rs) if rs else ""}</td>'
                     f'<td>{_e(r.get("exit_code"))}</td>'

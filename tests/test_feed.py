@@ -481,3 +481,33 @@ def test_agent_slugs_does_not_swallow_a_foreign_trunk_line(repo: Path, tmp_path:
     assert slugs.get(eigen) == "Witz"
     assert slugs.get(fremd) is None, \
         f"der fremde trunk-Commit wurde {slugs.get(fremd)!r} zugeschlagen"
+
+
+def test_group_entries_folds_pinned_run_slugs_into_their_job(vault: Path):
+    """Ein gepinnter Lauf ist derselbe Job, kein eigener Urheber.
+
+    Befund m.rau am Feed-Screenshot: die Urheberliste lautete
+    `m.rau, news-aggregator, news-aggregator-15c7c078, news-aggregator-8791cd62,
+    sync` — das sind keine fuenf Urheber, sondern drei. `run_pinned()` haengt je
+    Lauf acht Hex-Zeichen an; im Archive ist der Fix seit `bucket_slug()` da,
+    im Feed fehlte er.
+
+    Rot war: `{'news-aggregator', 'news-aggregator-15c7c078'}` statt
+    `{'news-aggregator'}`.
+    """
+    cases = discover_cases(vault)
+    commits = [
+        _c("a", 100.0, "m.rau", "vault/memo/News/1.md"),
+        _c("b", 200.0, "m.rau", "vault/memo/News/2.md"),
+    ]
+    slugs = {"a": "news-aggregator", "b": "news-aggregator-15c7c078"}
+    rows = group_entries(commits, slugs, cases=cases)
+    assert rows[0].authors == frozenset({"news-aggregator"})
+
+
+def test_group_entries_leaves_a_real_slug_alone(vault: Path):
+    """Die Gegenprobe: ein echter Slug darf auf acht Hex-Zeichen enden."""
+    cases = discover_cases(vault)
+    commits = [_c("a", 100.0, "m.rau", "vault/memo/News/1.md")]
+    rows = group_entries(commits, {"a": "20260728.at-150738-81ec"}, cases=cases)
+    assert rows[0].authors == frozenset({"20260728.at-150738-81ec"})

@@ -22,6 +22,7 @@ Case-Erkennung kostet einen Verzeichnis-Scan.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -245,13 +246,32 @@ def unit_for_path(path: str, *, cases: set[str]) -> str | None:
     return "/".join(folders[:_MAX_FOLDER_DEPTH])
 
 
+#: Suffix, den ``worker.run_pinned()`` je Lauf anhängt (``token_hex(4)``).
+_PIN_SUFFIX = re.compile(r"^(.*)-[0-9a-f]{8}$")
+
+
+def _basis_slug(name: str) -> str:
+    """Ein gepinnter Lauf gehört zu seinem Job — ``news-aggregator-15c7c078``
+    ist kein eigener Urheber (Befund m.rau am Feed-Screenshot: fünf Urheber,
+    von denen drei derselbe Job waren).
+
+    Dieselbe Regel wie im Jobs-Screen und im Archive: die feste Länge **acht**
+    trennt gepinnte Läufe von den Vier-Hex-Suffixen der ``at``-Slugs. Eine
+    zweite, kontextabhängige Regel wäre genauer und hätte den Preis, dass
+    dieselbe Frage an zwei Orten verschieden beantwortet wird.
+    """
+    m = _PIN_SUFFIX.match(name)
+    return m.group(1) if m else name
+
+
 def group_entries(
     commits: list[CommitInfo], slugs_by_sha: dict[str, str], *, cases: set[str],
 ) -> list[FeedEntry]:
     """Reine Gruppierung schon gesammelter Commits, neueste Einheit zuerst."""
     buckets: dict[str, dict] = {}
     for c in commits:
-        who = (slugs_by_sha.get(c.sha) or c.author).removeprefix(_JOB_AUTHOR_PREFIX)
+        who = _basis_slug(
+            (slugs_by_sha.get(c.sha) or c.author).removeprefix(_JOB_AUTHOR_PREFIX))
         for path in c.paths:
             unit = unit_for_path(path, cases=cases)
             if unit is None:
