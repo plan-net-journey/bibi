@@ -221,7 +221,7 @@ def test_client_archive_table_renders_slug_type_status_when_runtime_next():
     assert 'href="/-/ui/run/7">mein-testjob<' in html
     assert '<td class="kind">claude</td>' in html
     assert 'class="st complete" href="/-/ui/run/7">complete<' in html
-    assert "3s" in html
+    assert "3.2s" in html
     assert "<td>—</td>" in html  # next: beim Client immer "—", nicht ausgeblendet
 
 
@@ -910,3 +910,13 @@ def test_jobs_detail_rebuild_route_survives_backend_error(team_repo: Path, app_w
     with TestClient(app) as c:
         r = c.post("/-/ui/jobs/detail/nichts-los/rebuild")
         assert r.status_code == 200  # kein 500, auch wenn client.run_rebuild() fehlschlägt
+
+
+def test_human_duration_keeps_one_decimal_below_ten_seconds():
+    """Die meisten Laeufe dauern zwei bis acht Sekunden — als ganze Zahl sehen
+    sie alle gleich aus. Ab zehn Sekunden traegt die Stelle nichts mehr, und
+    die Schwellen darueber bleiben unveraendert."""
+    assert render._human_duration(2.8007938861846924) == "2.8s"
+    assert render._human_duration(0.4) == "0.4s"
+    assert render._human_duration(9.9) == "9.9s"
+    assert render._human_duration(45) == "45s"

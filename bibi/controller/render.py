@@ -499,6 +499,11 @@ def _human_duration(seconds: float | None) -> str:
     if seconds is None:
         return "—"
     d = max(0, int(seconds))
+    if d < 10:
+        # Eine Nachkommastelle, solange sie etwas unterscheidet: die meisten
+        # Laeufe dauern zwei bis acht Sekunden, und als ganze Zahl sehen sie
+        # alle gleich aus. Ab zehn Sekunden traegt die Stelle nichts mehr.
+        return f"{max(0.0, float(seconds)):.1f}s"
     if d < 60:
         return f"{d}s"
     if d < 3600:
@@ -4378,7 +4383,7 @@ def job_runs_fragment(gruppen: list, *, now: float, job_uid: str | None = None,
                     f'<td class="t" data-ts="{r.get("finished_at") or ""}"></td>'
                     f'<td>{_e(st)}{" &middot; " + _e(rs) if rs else ""}</td>'
                     f'<td>{_e(r.get("exit_code"))}</td>'
-                    f'<td>{_e(r.get("exec_runtime"))}</td>'
+                    f'<td>{_human_duration(r.get("exec_runtime"))}</td>'
                     f'<td>{_e((r.get("commit_sha") or "")[:7])}</td>'
                     f'<td><button class="cta run-show" data-jid="{_e(r.get("id"))}" '
                     f'data-run="{_e(r.get("run_id"))}">[show]</button></td>'
@@ -4526,7 +4531,7 @@ def archive_page_v5(*, laeufe: list, now: float, monate: int = 1, pruned: int = 
                     f'<td><a href="/-/jobs/{_uid(slug)}">{_e(slug)}</a></td>'
                     f'<td>{_e(st)}{" &middot; " + _e(rs) if rs else ""}</td>'
                     f'<td>{_e(r.get("exit_code"))}</td>'
-                    f'<td>{_e(r.get("exec_runtime"))}</td>'
+                    f'<td>{_human_duration(r.get("exec_runtime"))}</td>'
                     f'<td>{_e((r.get("commit_sha") or "")[:7])}</td>'
                     "</tr>")
         teile.append("</tbody></table>")

@@ -584,3 +584,40 @@ def test_the_run_list_of_a_job_pages_too(client):
         _seed_run(root, "EngineCI")
     text = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs?limit=2").text
     assert "LOAD MORE" in text
+
+
+def test_runtime_is_human_readable_not_raw_seconds():
+    """Die RUNTIME-Spalte zeigt eine Dauer, keinen Float.
+
+    Live gefunden beim Bauen der Wireframes: im Archive stand
+    `2.8007938861846924`, waehrend der Jobs-Screen an derselben Stelle
+    `2m 53s` zeigt — `_human_duration()` fehlte an zwei Stellen, beide aus
+    Schritt 2 (Lauf-Liste in Job Detail und Archive).
+
+    Rot war `assert '2.8007938861846924' not in html`.
+    """
+    from bibi.controller import render
+    lauf = {"run_id": "x:1:2", "slug": "EngineCI", "status": "complete",
+            "exit_code": 0, "finished_at": 1785833522.9, "domain": "host",
+            "exec_runtime": 2.8007938861846924}
+
+    archiv = render.archive_page_v5(laeufe=[dict(lauf)], now=1785833600.0)
+    assert "2.8007938861846924" not in archiv, "rohe Sekunden im Archive"
+    assert "2.8s" in archiv
+
+    detail = render.job_detail_page_v5(
+        slug="EngineCI", spec={"slug": "EngineCI"}, now=1785833600.0,
+        gruppen=_grp(scheduler_slot={"status": "pending"},
+                     scheduler_runs=[dict(lauf)]))
+    assert "2.8007938861846924" not in detail, "rohe Sekunden in der Lauf-Liste"
+    assert "2.8s" in detail
+
+
+def test_long_runtime_is_shown_in_minutes():
+    from bibi.controller import render
+    lang = {"run_id": "x:1:3", "slug": "EngineCI", "status": "complete",
+            "exit_code": 0, "finished_at": 1785833522.9, "domain": "host",
+            "exec_runtime": 274.1314046382904}
+    html = render.archive_page_v5(laeufe=[lang], now=1785833600.0)
+    assert "274.1314046382904" not in html
+    assert "4m 34s" in html
