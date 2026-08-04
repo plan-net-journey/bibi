@@ -308,17 +308,20 @@ def test_log_page_has_rescan_and_maint_without_follow():
 # Grund für die rollenabhängige Tab-Menge: bisher zeigte ein Scheduler-Knoten
 # `/-/ui/schedules`, ein Client `/-/ui/jobs`, und beide hießen „Jobs" — dieselbe
 # Beschriftung für zwei Screens, weil zwei Frontends existierten. In bibi5 gibt
-# es einen Screen je Aufgabe, und jeder Knoten zeigt dieselben sechs.
+# es einen Screen je Aufgabe, und jeder Knoten zeigt dieselben fünf.
 
 
-def test_screen_nav_shows_the_same_six_tabs_on_every_node():
-    """Sechs Screens, feste Reihenfolge, unabhängig von der Rolle.
+def test_screen_nav_shows_the_same_five_tabs_on_every_node():
+    """Fünf Screens, feste Reihenfolge, unabhängig von der Rolle.
 
     Die Reihenfolge ist nicht beliebig: Feed und Jobs sind die täglichen, Nodes
     ist Betrieb, Live und Log sind Diagnose. Sie steht so in der
     FE-Spezifikation §1 und in jedem Wireframe.
+
+    `Archive` ist seit m.rau/bibi#130 nicht mehr dabei — die Frage „was lief"
+    beantwortet die `RELIABILITY`-Spalte im Jobs-Screen schneller.
     """
-    erwartet = [("Feed", "/-/"), ("Jobs", "/-/jobs"), ("Archive", "/-/archive"),
+    erwartet = [("Feed", "/-/"), ("Jobs", "/-/jobs"),
                 ("Nodes", "/-/nodes"), ("Live", "/-/live"), ("Log", "/-/log")]
     for rollen in ([], ["scheduler"], ["connect"], ["scheduler", "worker"]):
         html = render._screen_nav("Feed", roles=rollen)
@@ -362,13 +365,13 @@ def test_screen_nav_separates_live_from_log():
     assert 'href="/-/log">Log' in html
 
 
-# --- bibi5: die sechs Screens haben eigene Routen ----------------------------
+# --- bibi5: die fünf Screens haben eigene Routen -----------------------------
 
 
 def test_every_screen_in_the_app_bar_is_reachable(app_with):
     """Kein Tab zeigt ins Leere.
 
-    Die App-Bar steht auf jedem Screen und nennt sechs Ziele; existiert eines
+    Die App-Bar steht auf jedem Screen und nennt fünf Ziele; existiert eines
     davon nicht, ist die Leiste selbst der Fehler — man klickt und landet im
     404. Vorher konnte das nicht passieren, weil die Leiste nur zeigte, was die
     Rolle hergab; jetzt zeigt sie immer alles und muss es auch halten.

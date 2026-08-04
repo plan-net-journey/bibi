@@ -101,7 +101,7 @@ def test_the_row_shows_the_time_only_because_the_day_stands_above_it():
 
 def test_reach_states_window_units_and_changes():
     # Ein LOAD MORE, das nichts mehr laedt, muss sich von "da war nichts"
-    # unterscheiden lassen — dieselbe Unterscheidung wie im Archive-Screen.
+    # unterscheiden lassen.
     html = render.feed_fragment(
         _daten(_entry("a", _T, 3), _entry("b", _T, 2)), days=1)
     assert "showing 1 day" in html

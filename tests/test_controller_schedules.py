@@ -113,21 +113,24 @@ def test_filter_alle_passthrough():
 
 
 
-def test_sched_row_shows_app_type_with_port_link():
-    # Bibi4-Iteration, User-Fund: "Type (beim Host wird app noch nicht
-    # angezeigt, soll es aber, auch mit Port!)" — _sched_row() nutzte bisher
-    # _effective_sched_type() (kennt kein "app"), jetzt dieselbe Ableitung wie
-    # die Client-Jobs-Tabelle (_jobs_type_cell()). Reversiert nur die Anzeige,
-    # nicht die Filter-Semantik (PLAN-25 Befund 7 bleibt für typ=/filter_schedules()).
-    html = render._sched_row(_sched("a", app_port=9100), now=100.0,
-                             public_host="sarasate.tail9f9173.ts.net")
-    assert ('<td class="kind"><a href="http://sarasate.tail9f9173.ts.net:9100/" '
-           'target="_blank" rel="noopener">app :9100</a></td>') in html
+def test_the_type_cell_shows_app_with_a_port_link():
+    """Bibi4-Iteration, User-Fund: "Type (beim Host wird app noch nicht
+    angezeigt, soll es aber, auch mit Port!)".
+
+    Geprueft wird jetzt `_jobs_type_cell()` selbst statt `_sched_row()`, das
+    sie nur durchreichte: die Zeilenfunktion des bibi4-Schedules-Screens ist
+    mit m.rau/bibi#130 entfallen, die Zelle lebt weiter und hat zwei Aufrufer.
+    Ein Test, der eine lebende Funktion durch eine tote hindurch prueft,
+    verschwindet sonst mit der toten — samt seiner Aussage.
+    """
+    zelle = render._jobs_type_cell(_sched("a", app_port=9100),
+                                   "sarasate.tail9f9173.ts.net")
+    assert ('<a href="http://sarasate.tail9f9173.ts.net:9100/" '
+           'target="_blank" rel="noopener">app :9100</a>') == zelle
 
 
-def test_sched_row_plain_job_type_unaffected():
-    html = render._sched_row(_sched("a"), now=100.0)
-    assert '<td class="kind">job</td>' in html
+def test_the_type_cell_leaves_a_plain_job_alone():
+    assert render._jobs_type_cell(_sched("a"), "localhost") == "job"
 
 
 # ── Lauf-Historie-Chart (PLAN-21 Befund 11 v2, pure) ─────────────────────────

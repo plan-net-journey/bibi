@@ -3,7 +3,7 @@
 Jeder Knoten fuehrt sein eigenes, vollstaendiges Journal — Scheduler und
 Client sind darin gleichwertig und unabhaengig. Die Route war bis bibi5
 scheduler-gated und antwortete auf einem reinen Client mit 501; damit haette
-das Job-Detail keine LOCAL-Gruppe und der Archive-Screen nur eine Quelle.
+das Job-Detail keine LOCAL-Gruppe.
 
 Zwei Felder kommen mit: ``job_uid`` traegt den Join der kombinierten Lauf-
 Liste (bislang riet ``list_journal`` ueber ``slug LIKE 'x-________'``), und

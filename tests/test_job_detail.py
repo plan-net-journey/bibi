@@ -41,7 +41,8 @@ def test_returns_none_when_nothing_matches():
 def test_finds_a_homeless_run_from_the_journal():
     """Der Fall, der die Datenbank-Abfrage nicht koennte: die MD ist geloescht,
     es gibt keine Job-Zeile mehr — aber die Laeufe stehen im Journal, und ihr
-    Slug genuegt. Ohne das waere der Archive-Screen ein Weg ins Nichts."""
+    Slug genuegt. Seit m.rau/bibi#130 ist das der einzige Weg zu ihnen: das
+    JOURNAL-Segment fuehrt sie, der Archive-Screen ist gestrichen."""
     assert jobs_view.slug_for(job_uid("Runner-Container"),
                               ["EngineCI", "Runner-Container"]) == "Runner-Container"
 
@@ -462,123 +463,99 @@ def test_the_output_of_a_scheduler_run_comes_from_the_host(client):
     assert "scheduler run 23611" in r.text
 
 
-# ── Archive (FE-Spezifikation §6) ────────────────────────────────────────────
+# ── Der Archive-Screen ist gestrichen (m.rau/bibi#130) ───────────────────────
 
 
-def test_archive_lists_runs_not_jobs(client):
-    """Der Archive-Screen fuehrt **Laeufe**, nicht Jobs — eine Zeile je Lauf.
-    Das Journal-Segment des Jobs-Screens ist deshalb keine Dopplung, sondern
-    seine Aggregation."""
-    c, root = _md_job(client)
-    _seed_run(root, "EngineCI")
-    _seed_run(root, "daily-digest")
-    text = c.get("/-/archive").text
-    assert "EngineCI" in text and "daily-digest" in text
-    assert "SLUG" in text  # die zusaetzliche Spalte gegenueber §5.3
+def test_the_archive_screen_is_gone(client):
+    """**Entscheidung m.rau 2026-08-04:** *„Die Frage ‚was lief' kann wegfallen.
+    Weil wichtiger ist: laeuft alles."* Die beantwortet die `RELIABILITY`-Spalte
+    im Jobs-Screen in einer Zahl; ein Screen, der Laeufe nach Zeit auflistet,
+    beantwortet dieselbe Frage langsamer (FE-Spezifikation §1).
 
-
-def test_archive_links_each_run_back_to_its_job(client):
-    """`SLUG` verlinkt auf Job Detail — sonst waere das Archiv eine Sackgasse:
-    man saehe, dass etwas lief, aber nicht, was es ist."""
-    c, root = _md_job(client)
-    _seed_run(root, "EngineCI")
-    text = c.get("/-/archive").text
-    assert f'/-/jobs/{job_uid("EngineCI")}' in text
-
-
-def test_archive_reaches_runs_whose_job_is_gone(client):
-    """**Der eigentliche Zweck** (§6): ein Job, dessen MD geloescht wurde, hat
-    keine Zeile mehr im Jobs-Screen — seine Laeufe stehen aber weiter im
-    Journal. Ohne das Archiv waeren sie unerreichbar."""
-    c, root = _md_job(client)
-    _seed_run(root, "Runner-Container")  # keine MD, nur Historie
-    text = c.get("/-/archive").text
-    assert "Runner-Container" in text
-    assert f'/-/jobs/{job_uid("Runner-Container")}' in text
-
-
-def test_archive_states_its_reach(client):
-    """Die Reichweite steht im Bild, nicht nur im Knopf: ein `LOAD MORE`, das
-    nichts mehr laedt, muss sich von „geloescht" unterscheiden lassen. Was
-    nicht im Archiv steht, ist nicht verlorengegangen, sondern weggepruned."""
-    c, root = _md_job(client)
-    _seed_run(root)
-    text = c.get("/-/archive").text
-    assert "showing" in text and "pruned after" in text
-
-
-def test_an_empty_archive_says_what_it_means(client):
+    Fuenf Routen fallen: der bibi5-Screen und die vier bibi4-Altrouten, die noch
+    erreichbar waren, nur nicht mehr verlinkt.
+    """
     c, _ = _md_job(client)
-    assert "No runs" in c.get("/-/archive").text
+    for weg in ("/-/archive", "/-/ui/archive", "/-/ui/archive/list",
+                "/-/ui/jobs/archive", "/-/ui/jobs/archive/list"):
+        assert c.get(weg).status_code == 404, f"{weg} antwortet noch"
 
 
-def test_archive_shows_the_base_job_of_a_pinned_run(client):
-    """Live gefunden: die SLUG-Spalte fuehrte `calendar-transfer-0ea75cbc`
-    neben `calendar-transfer`. Ein gepinnter Lauf traegt einen Slug mit
-    Zufallssuffix (`run_pinned()`), gehoert aber zum Basis-Job — sonst zerfaellt
-    er in so viele Eintraege, wie er lokale Laeufe hatte (live: 252 Pseudo-Slugs
-    fuer 33 echte Jobs), und jeder Link fuehrt auf eine eigene Detailseite fuer
-    denselben Job.
-
-    Der Suffix wird nur abgeschnitten, wenn `pinned_host` gesetzt ist — genau
-    die Regel, die `bus.bucket_slug()` und `job_db.list_journal()` schon
-    anwenden. Ohne diesen Diskriminator waere es Raten am Namen."""
+def test_the_app_bar_carries_five_screens():
+    """Fuenf Screens statt sechs — und der Test prueft die Reihenfolge mit, weil
+    die App-Bar auf jedem Screen steht: ein verrutschter Tab faellt sonst nur
+    dem auf, der hinsieht."""
     from bibi.controller import render
-    html = render.archive_page_v5(laeufe=[
-        {"slug": "calendar-transfer-0ea75cbc", "pinned_host": "Mac",
-         "finished_at": 1_754_000_000.0, "status": "complete"},
-    ], now=1_754_000_100.0)
-    assert ">calendar-transfer<" in html
-    assert "0ea75cbc" not in html
+    assert [name for name, _ in render.SCREENS] == \
+        ["Feed", "Jobs", "Nodes", "Live", "Log"]
 
 
-def test_archive_leaves_a_real_slug_alone_even_if_it_looks_suffixed(client):
-    """Die Gegenprobe: ohne `pinned_host` wird nichts abgeschnitten. Ein echter
-    Slug darf auf acht Hex-Zeichen enden — `20260728.at-150738-81ec` tut es
-    fast, und ein Oneshot-Slug traegt seinen Suffix mit Bedeutung."""
+def test_no_archive_renderer_is_left_anywhere():
+    """**Der Nachweis, dass es wirklich weg ist** — ein Test, keine Liste von
+    Hand (dasselbe Muster wie `#120`/`#121`).
+
+    Er nennt die Namen einzeln statt ein Praefix zu verbieten, und das ist hier
+    entscheidend: `archived` heisst das Bus-Ereignis, `archived_at` eine
+    Journal-Spalte, `_archive_run()` die Archivierungsregel A1/A2 — drei Dinge,
+    die bleiben und deren Namen ein Praefix-Verbot mitreissen wuerde.
+    """
+    from pathlib import Path
+
+    from bibi import controller as controller_pkg
     from bibi.controller import render
-    html = render.archive_page_v5(laeufe=[
-        {"slug": "daily-digest-deadbeef", "pinned_host": None,
-         "finished_at": 1_754_000_000.0, "status": "complete"},
-    ], now=1_754_000_100.0)
-    assert ">daily-digest-deadbeef<" in html
+
+    tot = {
+        render: ("archive_page_v5", "archive_page", "archive_fragment",
+                 "jobs_archive_page", "jobs_archive_fragment",
+                 "_client_archive_table", "_client_archive_row",
+                 "_group_schedules", "_is_archived_oneshot", "schedule_list"),
+    }
+    for modul, namen in tot.items():
+        for name in namen:
+            assert not hasattr(modul, name), f"{modul.__name__}.{name} lebt noch"
+
+    for modul in (render, controller_pkg):
+        quelle = Path(modul.__file__).read_text()
+        for weg in ('"/-/archive"', '"/-/ui/archive"', '"/-/ui/jobs/archive"'):
+            assert weg not in quelle, f"die Route {weg} steht noch in {modul.__name__}"
+
+    # Die Gegenprobe: die Journal-Liste heisst nicht mehr nach dem Archiv, aber
+    # sie bleibt — sie speist den Pro-Job-Lookup des Jobs-Screens (`_jobs_data`),
+    # nicht den entfallenen Screen. Genau die `_effective_days`-Falle aus #121.
+    assert "_local_journal_runs" in Path(controller_pkg.__file__).read_text()
 
 
-# ── LOAD MORE (FE-Spezifikation §5.3/§6) ─────────────────────────────────────
+# ── Was vom Archive-Screen bleibt (m.rau/bibi#130) ───────────────────────────
+#
+# Der Screen ist gestrichen; drei seiner Aussagen gelten weiter und stehen
+# deshalb hier, an dem Ort, der sie jetzt einloest. Sie ersatzlos mitzuloeschen
+# waere der eigentliche Fehler: eine Aussage verschwindet dann nicht, weil sie
+# falsch wurde, sondern weil ihr Traeger ging.
 
 
-def test_the_archive_pages_instead_of_scrolling_endlessly(client):
-    """Infinite Scrolling ist bei diesen Mengen unbrauchbar: `gmail-transfer`
-    allein hat 1064 Laeufe im 5000er-Journalfenster. Tagesgruppen plus
-    `LOAD MORE` geben stattdessen einen Anker und ein Ende."""
+def test_a_job_that_only_ran_locally_is_still_reachable(client):
+    """**Die Aussage, die die Streichung ueberhaupt erst erlaubt.**
+
+    Gerettet aus `test_archive_reaches_runs_whose_job_is_gone`. Der Archive-
+    Screen war der einzige Weg zu einem heimatlosen Lauf — einem Job, dessen MD
+    geloescht wurde und dessen Laeufe nur noch im Journal stehen. FE §1 erklaert
+    diesen Einwand fuer erledigt: *„das JOURNAL-Segment im Jobs-Screen fuehrt
+    jeden Job, auch den ohne MD, und ueber ihn ist jeder Lauf erreichbar."*
+
+    **Das stimmte nicht.** `_journal_for_rows()` fragte ausschliesslich den
+    Scheduler; ein Job, der nur lokal lief (`bibi-ctrl run`), hatte dort keine
+    Zeile und fiel damit aus der Klassifikation heraus. Live gemessen:
+    **20 von 33** lokal gelaufenen Jobs standen nicht im Jobs-Screen. Ohne
+    diesen Test haette die Streichung genau das genommen, wofuer sie sich
+    ausdruecklich auf einen Ersatz berufen hat.
+
+    Rot war `assert 'Runner-Container' in <jobs-screen>` — der Slug fehlte.
+    """
     c, root = _md_job(client)
-    for i in range(3):
-        _seed_run(root, f"job{i}")
-    text = c.get("/-/archive?limit=2").text
-    assert "LOAD MORE" in text
-    assert "offset=2" in text
-
-
-def test_load_more_disappears_when_everything_is_shown(client):
-    """Ein Knopf, der nichts mehr laedt, ist schlimmer als keiner — er sieht
-    aus wie ein Weg. Genau die Unterscheidung, die §6 fuer die Reichweite
-    verlangt: was fehlt, ist weggepruned und nicht ungeladen."""
-    c, root = _md_job(client)
-    _seed_run(root)
-    assert "LOAD MORE" not in c.get("/-/archive?limit=50").text
-
-
-def test_the_next_page_continues_where_the_first_ended(client):
-    """Kein Ueberlappen und kein Loch: Seite zwei beginnt beim ersten Lauf, den
-    Seite eins nicht mehr trug."""
-    c, root = _md_job(client)
-    for i in range(4):
-        _seed_run(root, f"p{i}")
-    erste = c.get("/-/archive?limit=2").text
-    zweite = c.get("/-/archive?limit=2&offset=2").text
-    drin = lambda t: {s for s in ("p0", "p1", "p2", "p3") if f">{s}<" in t}
-    assert drin(erste) and drin(zweite)
-    assert not (drin(erste) & drin(zweite))
+    _seed_run(root, "Runner-Container")  # keine MD, nur lokale Historie
+    text = c.get("/-/jobs").text
+    assert "Runner-Container" in text, "der heimatlose Lauf ist unerreichbar"
+    assert f'/-/jobs/{job_uid("Runner-Container")}' in text
 
 
 def test_the_run_list_of_a_job_pages_too(client):
@@ -587,6 +564,34 @@ def test_the_run_list_of_a_job_pages_too(client):
         _seed_run(root, "EngineCI")
     text = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs?limit=2").text
     assert "LOAD MORE" in text
+
+
+def test_load_more_disappears_when_everything_is_shown(client):
+    """Gerettet aus dem Archive-Screen — und der Umzug war noetig, nicht bloss
+    ordentlich: der Test stand auf `/-/archive`, und ohne die Route waere er
+    gruen geblieben, weil in einem 404 kein `LOAD MORE` steht. Ein Test, der aus
+    dem falschen Grund gruen ist, ist schlimmer als keiner.
+
+    Ein Knopf, der nichts mehr laedt, ist schlimmer als keiner — er sieht aus
+    wie ein Weg."""
+    c, root = _md_job(client)
+    _seed_run(root, "EngineCI")
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs?limit=50").text
+    assert "LOAD MORE" not in text
+
+
+def test_the_next_page_continues_where_the_first_ended(client):
+    """Kein Ueberlappen und kein Loch: Seite zwei beginnt beim ersten Lauf, den
+    Seite eins nicht mehr trug. Ebenfalls gerettet — die Aussage gilt fuer jede
+    Liste mit `LOAD MORE`, und nach dem Wegfall des Archivs ist die Lauf-Liste
+    die einzige, die es noch gibt."""
+    c, root = _md_job(client)
+    ids = [_seed_run(root, "EngineCI") for _ in range(4)]
+    erste = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs?limit=2").text
+    zweite = c.get(f"/-/jobs/{job_uid('EngineCI')}/runs?limit=2&offset=2").text
+    drin = lambda t: {i for i in ids if f'data-jid="{i}"' in t}
+    assert drin(erste) and drin(zweite)
+    assert not (drin(erste) & drin(zweite)), "Seite eins und zwei ueberlappen"
 
 
 def test_runtime_is_human_readable_not_raw_seconds():
@@ -604,10 +609,6 @@ def test_runtime_is_human_readable_not_raw_seconds():
             "exit_code": 0, "finished_at": 1785833522.9, "domain": "host",
             "exec_runtime": 2.8007938861846924}
 
-    archiv = render.archive_page_v5(laeufe=[dict(lauf)], now=1785833600.0)
-    assert "2.8007938861846924" not in archiv, "rohe Sekunden im Archive"
-    assert "2.8s" in archiv
-
     detail = render.job_detail_page_v5(
         slug="EngineCI", spec={"slug": "EngineCI"}, now=1785833600.0,
         gruppen=_grp(scheduler_slot={"status": "pending"},
@@ -617,11 +618,17 @@ def test_runtime_is_human_readable_not_raw_seconds():
 
 
 def test_long_runtime_is_shown_in_minutes():
+    """Die zweite Haelfte derselben Aussage, umgezogen vom Archive-Screen auf
+    die Lauf-Liste — sie prueft die andere Seite von `_human_duration()`, den
+    Uebergang in Minuten."""
     from bibi.controller import render
     lang = {"run_id": "x:1:3", "slug": "EngineCI", "status": "complete",
             "exit_code": 0, "finished_at": 1785833522.9, "domain": "host",
             "exec_runtime": 274.1314046382904}
-    html = render.archive_page_v5(laeufe=[lang], now=1785833600.0)
+    html = render.job_detail_page_v5(
+        slug="EngineCI", spec={"slug": "EngineCI"}, now=1785833600.0,
+        gruppen=_grp(scheduler_slot={"status": "pending"},
+                     scheduler_runs=[lang]))
     assert "274.1314046382904" not in html
     assert "4m 34s" in html
 

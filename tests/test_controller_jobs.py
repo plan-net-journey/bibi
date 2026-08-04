@@ -210,61 +210,6 @@ def test_jobs_table_live_row_shows_awaiting_when_signaled():
 
 
 
-def test_client_archive_table_renders_slug_type_status_when_runtime_next():
-    runs = [{"id": 7, "slug": "mein-testjob", "status": "complete",
-            "payload": "claude: tu was", "exec_runtime": 3.2, "finished_at": 100.0}]
-    html = render._client_archive_table(runs, now=200.0)
-    # Seit m.rau/bibi#66 sind die Köpfe Sortier-Links; geprüft wird die
-    # Spaltenfolge über ihren Text, nicht über das Markup.
-    cols = ("Slug", "Type", "Status", "last/since", "runtime", "next")
-    assert [c for c in cols if f">{c}" in html] == list(cols)
-    assert 'href="/-/ui/run/7">mein-testjob<' in html
-    assert '<td class="kind">claude</td>' in html
-    assert 'class="st complete" href="/-/ui/run/7">complete<' in html
-    assert "3.2s" in html
-    assert "<td>—</td>" in html  # next: beim Client immer "—", nicht ausgeblendet
-
-
-def test_client_archive_table_shows_finished_at_datetime():
-    # Bibi4-Iteration, User-Fund: fehlendes Datum/Uhrzeit im Client-Archive —
-    # analog zum Host, der last/since via _time_toggle_cell()/_ago() zeigt.
-    runs = [{"id": 7, "slug": "mein-testjob", "status": "complete",
-            "payload": "echo x", "exec_runtime": 3.2, "finished_at": 100.0}]
-    html = render._client_archive_table(runs, now=200.0)
-    assert "ago" in html or "min" in html or "s" in html  # relative _ago()-Ausgabe
-
-
-def test_client_archive_table_empty_shows_placeholder():
-    assert "keine lokalen Läufe" in render._client_archive_table([], now=100.0)
-
-
-def test_jobs_archive_fragment_is_bus_driven():
-    frag = render.jobs_archive_fragment([{"id": 1, "slug": "a", "status": "complete"}], now=1.0)
-    assert 'id="archive"' in frag
-    assert 'data-bus="jobs"' in frag
-    assert 'data-bus-refetch="/-/ui/jobs/archive/list"' in frag
-    assert "window.bibiFollow" not in frag
-    assert "Archive (1)" in frag
-
-
-def test_jobs_archive_page_has_active_archive_tab():
-    html = render.jobs_archive_page([], now=1000.0, daemon_status={"roles": ["connect"]})
-    assert html.lower().startswith("<!doctype html>")
-    assert '<span class="tab-active">Archive</span>' in html
-    assert 'id="archive"' in html
-
-
-def test_jobs_archive_page_includes_status_cards():
-    # Analog zum Host-Archive-Screen (test_controller_schedules.py) — fehlten
-    # hier ebenfalls.
-    html = render.jobs_archive_page([], now=1000.0, daemon_status={"roles": ["connect"]})
-    assert 'id="feedstatus"' in html
-
-
-
-
-
-
 def test_screen_nav_includes_jobs_tab():
     # Jobs nur mit connect-Rolle sichtbar (PLAN-20 Befund 6).
     html = render._screen_nav("Schedules", roles=["connect"])
@@ -664,7 +609,8 @@ def test_jobs_detail_page_route_links_to_attrs_route(team_repo: Path, app_with):
 
 def test_jobs_route_no_longer_shows_local_run_history(team_repo: Path, app_with):
     # Bibi4-Iteration, User-Fund: "Lokale Läufe" wanderte auf den eigenen
-    # Archive-Screen (s. test_jobs_archive_route_shows_local_run_history unten).
+    # Archive-Screen — der mit m.rau/bibi#130 wieder entfaellt; die Laeufe
+    # stehen jetzt in der Lauf-Liste von Job Detail.
     client = _FakeClient(run_journal=[{"id": 5, "slug": "mein-testjob", "status": "complete",
                                        "exit_code": 0, "exec_runtime": 3.2,
                                        "finished_at": 100.0, "domain": "local"}])
@@ -672,28 +618,6 @@ def test_jobs_route_no_longer_shows_local_run_history(team_repo: Path, app_with)
     with TestClient(app) as c:
         r = c.get("/-/ui/jobs")
         assert "Lokale Läufe" not in r.text
-
-
-def test_jobs_archive_route_shows_local_run_history(team_repo: Path, app_with):
-    client = _FakeClient(run_journal=[{"id": 5, "slug": "mein-testjob", "status": "complete",
-                                       "exit_code": 0, "exec_runtime": 3.2,
-                                       "finished_at": 100.0, "domain": "local"}])
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs/archive")
-        assert "mein-testjob" in r.text
-        assert 'href="/-/ui/run/5"' in r.text
-
-
-def test_jobs_archive_list_fragment_route(team_repo: Path, app_with):
-    client = _FakeClient(run_journal=[{"id": 5, "slug": "mein-testjob", "status": "complete"}])
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs/archive/list")
-        assert r.status_code == 200
-        assert 'id="archive"' in r.text and "mein-testjob" in r.text
-
-
 
 
 def test_jobs_detail_route_shows_meta_and_only_this_slugs_runs(team_repo: Path, app_with):

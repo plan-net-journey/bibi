@@ -516,7 +516,7 @@ def _add_journal_route(app: FastAPI) -> None:
     vollständiges — Scheduler und Client sind darin gleichwertig und
     unabhängig, zusammengeführt wird erst in der Anzeige. Scheduler-gated
     antwortete die Route auf einem reinen Client mit 501, und damit hätte das
-    Job-Detail keine ``LOCAL``-Gruppe und der Archive-Screen nur eine Quelle.
+    Job-Detail keine ``LOCAL``-Gruppe.
 
     ``/-/run/journal`` bleibt vorerst daneben bestehen; es ist dieselbe Abfrage
     mit ``mine_only=True`` und damit auf ``?domain=local`` abbildbar.

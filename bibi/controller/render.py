@@ -696,165 +696,12 @@ def _e(v) -> str:
     return html.escape("" if v is None else str(v))
 
 
-# ── Volle Schedule-Liste + Archiv (Ebene 2, §4.4) ────────────────────────────
-
 #: Terminale Sicht-Zustände — ein One-shot in einem davon gilt als „abgelaufen".
+#:
+#: Der Abschnitt „Volle Schedule-Liste + Archiv", der hier stand, ist leer:
+#: seine Renderer sind mit m.rau/bibi#130 entfallen. Die Konstante bleibt, sie
+#: hat drei Aufrufer im Live- und Jobs-Teil.
 _TERMINAL_VIEW = {"complete", "error", "inactive", "zombie", "killed"}
-
-
-def _is_archived_oneshot(s: dict) -> bool:
-    """Ein abgeschlossener oneshot (`at:`-Einzellauf) gehört ins Archiv, auch
-    wenn seine MD noch da ist (PLAN-23 Befund 2) — nicht erneut startbar
-    (s. job_db.report_status()s PENDING-Sperre), macht als "aktiv" gelistet
-    keinen Sinn mehr. Wiederkehrende Schedules (oneshot=False) bleiben bei
-    complete Teil der aktiven Rotation (Lazy Rearm)."""
-    return bool(s.get("oneshot")) and s.get("last_status") == "complete"
-
-
-def _group_schedules(schedules: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
-    """Registrierungs-Drei-Gruppen (PLAN-14 Stufe 14.6, orthogonal zum Laufzeit-
-    Status): aktiv (MD entdeckt) / archive (MD entfernt ODER abgeschlossener
-    oneshot, PLAN-23 Befund 2) / journal (nur Journal-Historie, kein
-    jobs-Eintrag mehr). Fehlt der ``active``-Key (ältere Fixtures), gilt der
-    Schedule als aktiv."""
-    active = [s for s in schedules
-              if s.get("active", True) is True and not _is_archived_oneshot(s)]
-    archive = [s for s in schedules
-              if s.get("active", True) is False or _is_archived_oneshot(s)]
-    journaled = [s for s in schedules if s.get("active", True) is None]
-    return active, archive, journaled
-
-
-def _sched_row(s: dict, now: float, *, public_host: str = "localhost",) -> str:
-    raw_slug = s.get("slug")
-    slug = _e(raw_slug)
-    st = _e(s.get("last_status"))
-    # Bibi4-Iteration, User-Fund: "Type (beim Host wird app noch nicht
-    # angezeigt, soll es aber, auch mit Port!)" — dieselbe Zellen-Ableitung
-    # wie die Client-Jobs-Tabelle (_jobs_type_cell()), nicht mehr
-    # _effective_sched_type()/models.effective_kind(). Bewusst NUR die
-    # Anzeige betroffen: filter_schedules()/_effective_sched_type() bleiben
-    # unverändert (PLAN-25 Befund 7 galt fürs Filtern, User-Entscheidung
-    # "Jobs mit Port und Prefix sollen einfach als Jobs erscheinen" — dieser
-    # Fund hier reversiert nur die Anzeige, nicht die Filter-Semantik, die
-    # wurde nicht neu angefragt).
-    kind = _jobs_type_cell(s, public_host)
-    nxt = _time_toggle_cell(s.get("next_fire_at"), now, rel_fn=_until)
-    ago = _time_toggle_cell(s.get("last_run_at"), now, rel_fn=_ago)
-    run_id = s.get("last_run_id")
-    # Status/letzter-seit -> Lauf-Details (die konkrete Ausführung); Schedule/
-    # nächster -> Job-Details (der Schedule selbst) — User-Feedback 2026-07-01.
-    # Ohne abgeschlossenen Lauf (run_id None) gibt es keine Lauf-Details zum Verlinken.
-    #
-    # User-Fund 2026-07-27 ("running verlinkt auf den falschen Job"): bei
-    # nicht-terminalem Status (running/awaiting/deferred/pending) beschreibt
-    # die Zeile den AKTUELLEN Lauf — der hat noch gar keine Journal-Zeile
-    # (die entsteht erst terminal, Job-Lifecycle-Redesign light), last_run_id
-    # zeigt also auf einen ÄLTEREN Lauf. Status/letzter-seit führen dann auf
-    # die Schedule-Detailseite (dort lebt der Lauf samt Output) statt auf
-    # /-/ui/run/<alter-Lauf> — dieselbe Semantik, die die Client-Tabelle
-    # (_jobs_row(), live-Zweig) längst hat. "failed" zählt zur Journal-Seite:
-    # der letzte Journal-Eintrag IST der angezeigte fehlgeschlagene Lauf.
-    _run_linked = st in _TERMINAL_VIEW or st == "failed"
-    if st and not _run_linked:
-        status_cell = f'<a class="st {st}" href="/-/ui/schedule/{slug}">{st}</a>'
-        ago_cell = f'<a class="rowlink" href="/-/ui/schedule/{slug}">{ago}</a>'
-    elif run_id is not None:
-        status_cell = f'<a class="st {st}" href="/-/ui/run/{run_id}">{st}</a>'
-        ago_cell = f'<a class="rowlink" href="/-/ui/run/{run_id}">{ago}</a>'
-    else:
-        status_cell = f'<span class="st {st}">{st}</span>'
-        ago_cell = ago
-    return (
-        "<tr>"
-        f'<td><a class="slug" href="/-/ui/schedule/{slug}">{slug}</a></td>'
-        f'<td class="kind">{kind}</td>'
-        f"<td>{status_cell}</td>"
-        f"<td>{ago_cell}</td>"
-        f'<td><a class="rowlink" href="/-/ui/schedule/{slug}">{nxt}</a></td>'
-        f"<td></td>"
-        "</tr>"
-    )
-
-
-def _sched_table(items: list[dict], now: float, *, public_host: str = "localhost",
-                 sort: str | None = None, direction: str | None = None,
-                 sort_url: str = "/-/ui/schedules/list",
-                 sort_target: str = "#schedules") -> str:
-    # Bibi4-Iteration, Seitenabgleich (User-Fund): Spaltenkopf war "Schedule",
-    # der Client sagt für dieselbe Spalte schon "Slug" (_jobs_table()) — auch
-    # dein ursprünglicher Batch-1-Spaltenplan für den Host wollte "Slug" als
-    # erste Spalte, das war nie nachgezogen worden.
-    rows = "".join(_sched_row(s, now, public_host=public_host)
-                  for s in items)
-    head = _sortable_head(
-        [("Slug", "slug"), ("Type", "type"), ("Status", "status"),
-         ("last / since", "last"), ("next", "next"), ("Activity", None)],
-        sort=sort, direction=direction, url=sort_url, target=sort_target)
-    return f'<table class="sched">{head}<tbody>{rows}</tbody></table>'
-
-
-def schedule_list(schedules: list[dict], now: float | None = None,
-                  *, public_host: str = "localhost",) -> str:
-    """Die volle Liste, gruppiert nach Registrierungs-Zustand (PLAN-14 Stufe
-    14.6, erweitert PLAN-23 Befund 2): Aktiv (MD entdeckt) / Archive (MD
-    entfernt ODER abgeschlossener oneshot) / Journal (nur Journal-Historie).
-    Flach + immer sichtbar, kein Klapp mehr — überlebt so jeden Swap ohne
-    Expand-Verlust."""
-    now = time.time() if now is None else now
-    return (_schedule_active_block(schedules, now, public_host=public_host)
-           + _schedule_archive_block(schedules, now, public_host=public_host))
-
-
-def archive_fragment(schedules: list[dict], now: float | None = None,
-                     *, public_host: str = "localhost",) -> str:
-    """Bus-getriebener Archive-Screen-Kern (Host) — Bibi4-Iteration, User-Fund:
-    "Archive wird verschoben auf einen eigenen Screen". Zeigt dieselben
-    Archive-/Journal-Gruppen wie zuvor der untere Teil von ``/-/ui/schedules``
-    (``_schedule_archive_block()``), jetzt eigenständig unter ``/-/ui/archive``.
-    (``archive_list_fragment()``) übergibt ``None``."""
-    now = time.time() if now is None else now
-    body = _schedule_archive_block(schedules, now, public_host=public_host)
-    if not body:
-        body = '<p class="out-empty">— kein Archiv —</p>'
-    attrs = 'id="archive" data-bus="jobs" data-bus-refetch="/-/ui/archive/list"'
-    return f'<div {attrs}><div class="panel-card">{body}</div></div>'
-
-
-def archive_page(schedules: list[dict], now: float | None = None,
-                 *, daemon_status: dict | None = None, git_status: dict | None = None,
-                 host_url: str | None = None, public_host: str = "localhost",
-        scheduler: dict | None = None,
-        scheduler_stale_since: float | None = None,) -> str:
-    """Archive-Screen (Host, Bibi4-Iteration) — eigene Seite für Archive/
-    Journal, abgetrennt von der aktiven Schedule-Liste auf ``/-/ui/schedules``.
-    Dieselben Nav/Ops-Bausteine wie jede andere Seite (``_header()``).
-
-    Die Status-Kacheln (Host/Mode/Git/Job-Status, ``feed_status_fragment()``)
-    fehlten hier bisher komplett — die Archive-Extraktion (Bibi4-Iteration)
-    hat sie schlicht nicht mitgenommen, obwohl Feed/Jobs/Live-Log sie alle
-    haben (User-Fund: "Header ist in Feed, Jobs, Archive (!), Live-Log
-    sichtbar" — das "(!)" war berechtigt, echter Bug, kein Bildausschnitt)."""
-    now = time.time() if now is None else now
-    daemon_status = daemon_status or {}
-    return (
-        "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>bibi · Archive</title>"
-        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
-        f"<style>{_CSS}</style></head><body>"
-        f"{_header('Archive', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
-        f"{archive_fragment(schedules, now, public_host=public_host)}"
-        f"<script>{_EVENTS_JS}</script>"
-        f"<script>{_CLOCK_JS}</script>"
-        f"<script>{_OPS_HANDLES_JS}</script>"
-        f"<script>{_JOBS_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
-        f"<script>{_THEME_JS}</script>"
-        "</body></html>"
-    )
 
 
 # ── Connected-Clients-Screen (Host, Bibi4-Iteration) ─────────────────────────
@@ -1520,12 +1367,17 @@ def _filter_bar(typ: str | None, status: str | None, *,
     )
 
 
-#: Die sechs Screens, in der Reihenfolge der App-Bar. Feed und Jobs sind die
+#: Die fünf Screens, in der Reihenfolge der App-Bar. Feed und Jobs sind die
 #: täglichen, Nodes ist Betrieb, Live und Log sind Diagnose.
+#:
+#: **Archive ist gestrichen** (m.rau/bibi#130, FE-Spezifikation §1). Die Frage
+#: „was lief" beantwortet die `RELIABILITY`-Spalte im Jobs-Screen in einer Zahl;
+#: ein Screen, der Läufe nach Zeit auflistet, beantwortet dieselbe Frage
+#: langsamer. Der frühere Einwand — er sei der einzige Weg zu einem heimatlosen
+#: Lauf — trägt nicht mehr: das JOURNAL-Segment führt auch den Job ohne MD.
 SCREENS: tuple[tuple[str, str], ...] = (
     ("Feed", "/-/"),
     ("Jobs", "/-/jobs"),
-    ("Archive", "/-/archive"),
     ("Nodes", "/-/nodes"),
     ("Live", "/-/live"),
     ("Log", "/-/log"),
@@ -2550,109 +2402,6 @@ def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
     return f"<table>{head}<tbody>{body}</tbody></table>"
 
 
-def _client_archive_row(r: dict, now: float) -> str:
-    """Eine Archive-Zeile (Client) — Slug/Type/Status/last-since/Runtime/next,
-    dieselbe Spaltenstruktur wie ``_sched_row()`` (Host), aus einem Journal-
-    Run-Dict statt einem Schedule-Dict. "Type" nutzt ``models.effective_kind()``
-    statt ``display_kind()`` — die journal-Tabelle trägt kein ``app_port`` (nur
-    ``payload``, s. schema.sql), genau wie beim Host-Archiv/Journal
-    (``_sched_row()`` selbst nutzt ebenfalls nur ``_effective_sched_type()``).
-
-    "last/since" (Bibi4-Iteration, User-Fund: fehlendes Datum/Uhrzeit im
-    Client-Archive) nutzt ``finished_at`` über denselben ``_time_toggle_cell()``
-    wie der Host — für einen archivierten Lauf ist "wann fertig" das Analogon
-    zu "letzter Lauf".
-
-    "next" ist beim Client immer "—" (User-Fund: einmalige /run-Läufe kennen
-    keinen künftigen Termin) — bewusst sichtbar mit "—" statt ausgeblendet
-    (Bibi4-Iteration, User-Fund "eine App": nicht verfügbare Spalten disabled/
-    leer statt zu verschwinden, dieselbe Haltung wie beim MAINT-Toggle)."""
-    slug = _e(r.get("slug"))
-    kind = _e(models.effective_kind(r.get("payload")))
-    status = _e(r.get("status"))
-    when = _time_toggle_cell(r.get("finished_at"), now, rel_fn=_ago)
-    runtime = _duration_cell(r)
-    jid = r.get("id")
-    slug_cell = (f'<a class="slug" href="/-/ui/run/{jid}">{slug}</a>'
-                if jid is not None else slug)
-    status_cell = (f'<a class="st {status}" href="/-/ui/run/{jid}">{status}</a>'
-                  if jid is not None else f'<span class="st {status}">{status}</span>')
-    when_cell = (f'<a class="rowlink" href="/-/ui/run/{jid}">{when}</a>'
-                if jid is not None else when)
-    return (
-        "<tr>"
-        f"<td>{slug_cell}</td>"
-        f'<td class="kind">{kind}</td>'
-        f"<td>{status_cell}</td>"
-        f"<td>{when_cell}</td>"
-        f"<td>{runtime}</td>"
-        "<td>—</td>"
-        "</tr>"
-    )
-
-
-def _client_archive_table(runs: list[dict], now: float, *,
-                          sort: str | None = None, direction: str | None = None,
-                          sort_url: str = "/-/ui/jobs/archive/list",
-                          sort_target: str = "#jobsarchive") -> str:
-    if not runs:
-        return '<p class="out-empty">— keine lokalen Läufe —</p>'
-    rows = "".join(_client_archive_row(r, now) for r in runs)
-    head = _sortable_head(
-        [("Slug", "slug"), ("Type", "type"), ("Status", "status"),
-         ("last/since", "last"), ("runtime", "runtime"), ("next", "next")],
-        sort=sort, direction=direction, url=sort_url, target=sort_target)
-    return f'<table class="sched">{head}<tbody>{rows}</tbody></table>'
-
-
-def jobs_archive_fragment(runs: list[dict], now: float | None = None) -> str:
-    """Bus-getriebener Archive-Screen-Kern (Client) — Bibi4-Iteration, User-Fund:
-    "der untere Abschnitt lokale Läufe wandert in den eigenen Screen Archive".
-    ``runs`` ist dieselbe flache Journal-Liste wie zuvor für "Lokale Läufe"
-    (``client.run_journal()``), jetzt ohne die frühere 20er-Deckelung und in
-    Tabellenform (Slug/Type/Status/Runtime/next) statt der alten Zeilen-
-    Ansicht — dieselbe Spaltensprache wie das Host-Archiv. Ziel =
-    ``/-/ui/jobs/archive/list``."""
-    now = time.time() if now is None else now
-    body = f'<h2>Archive ({len(runs)})</h2>' + _client_archive_table(runs, now)
-    attrs = ('id="archive" data-bus="jobs" '
-             'data-bus-refetch="/-/ui/jobs/archive/list"')
-    return f'<div {attrs}><div class="panel-card">{body}</div></div>'
-
-
-def jobs_archive_page(runs: list[dict], now: float | None = None,
-                      *, daemon_status: dict | None = None, git_status: dict | None = None,
-                      host_url: str | None = None,
-                      client_rows: list[dict] | None = None,
-        scheduler: dict | None = None,
-        scheduler_stale_since: float | None = None,) -> str:
-    """Archive-Screen (Client, Bibi4-Iteration) — eigene Seite für die lokale
-    Lauf-Historie, abgetrennt von der Jobs-Liste auf ``/-/ui/jobs``. Dieselben
-    Nav/Ops-Bausteine wie jede andere Seite (``_header()``), analog zu
-    ``archive_page()`` (Host) — inklusive der Status-Kacheln, die hier
-    ebenfalls fehlten (s. ``archive_page()``-Docstring)."""
-    now = time.time() if now is None else now
-    daemon_status = daemon_status or {}
-    return (
-        "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>bibi · Archive</title>"
-        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
-        f"<style>{_CSS}</style></head><body>"
-        f"{_header('Archive', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
-        f"{jobs_archive_fragment(runs, now)}"
-        f"<script>{_EVENTS_JS}</script>"
-        f"<script>{_CLOCK_JS}</script>"
-        f"<script>{_OPS_HANDLES_JS}</script>"
-        f"<script>{_JOBS_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
-        f"<script>{_THEME_JS}</script>"
-        "</body></html>"
-    )
-
-
 # ── Lokale Job-Detailseite (PLAN-21 Befund 10-Nachtrag; PLAN-29 Befund 3+5) ──
 #
 # User-Fund 2026-07-09: der Jobs-Screen (Client) verlinkte bisher direkt von
@@ -2933,7 +2682,7 @@ def _feed_list(entries: list[dict], *, days: int | None = None,
 def _feed_reach(entries: list[dict], days: int | None) -> str:
     """Reichweite und Umfang im Bild, nicht nur im Knopf — sonst ist ein
     LOAD MORE, das nichts mehr lädt, von „da war nichts" nicht zu
-    unterscheiden (dieselbe Unterscheidung wie im Archive-Screen)."""
+    unterscheiden."""
     einheiten = len(entries)
     aenderungen = sum(int(e.get("changes") or 0) for e in entries)
     e_wort = "unit" if einheiten == 1 else "units"
@@ -4487,9 +4236,12 @@ def job_runs_fragment(gruppen: list, *, now: float, job_uid: str | None = None,
     from bibi.controller import jobs_view
 
     if not gruppen:
+        # Kein Verweis mehr auf den Archive-Screen (m.rau/bibi#130): der ist
+        # gestrichen, und ein Text, der auf einen Screen zeigt, den es nicht
+        # gibt, ist derselbe tote Weg wie ein toter Link — nur ohne href, also
+        # ohne dass ein Routen-Test ihn faende.
         return ('<div class="empty">This job is unknown on both sides — no slot, '
-                'no runs. It may have been renamed; the Archive screen still '
-                'holds its history.</div>')
+                'no runs. It may have been renamed.</div>')
     aus = []
     for g in gruppen:
         status = g.slot_status
@@ -4620,91 +4372,6 @@ def _load_more(ziel: str, offset: int, limit: int) -> str:
     trenn = "&" if "?" in ziel else "?"
     return (f'<div class="more"><a class="cta" '
             f'href="{ziel}{trenn}limit={limit}&offset={offset}">[ LOAD MORE ]</a></div>')
-
-
-def archive_page_v5(*, laeufe: list, now: float, monate: int = 1, pruned: int = 3,
-                    offset: int = 0, limit: int | None = None, mehr: bool = False,
-                    daemon_status: dict | None = None,
-                    git_status: dict | None = None, host_url: str | None = None,
-                    scheduler: dict | None = None,
-                    scheduler_stale_since: float | None = None) -> str:
-    """Archive (FE-Spezifikation §6) — die Gesamthistorie beider Quellen.
-
-    Führt **Läufe**, nicht Jobs: eine Zeile je Lauf. Das Journal-Segment des
-    Jobs-Screens ist deshalb keine Dopplung, sondern seine Aggregation.
-
-    **Er ist zugleich der einzige Navigationsweg zu heimatlosen Läufen.** Ein
-    Job, dessen MD gelöscht wurde, hat keine Zeile mehr im Jobs-Screen, aber
-    seine Läufe stehen weiter im Journal; ohne diesen Screen wären sie
-    unerreichbar. Deshalb verlinkt die ``SLUG``-Spalte auch dann auf Job
-    Detail, wenn es die MD nicht mehr gibt — die Seite lebt vom Slug, nicht
-    von der Datei.
-
-    Die Reichweite steht **im Bild**, nicht nur im Knopf: ein ``LOAD MORE``,
-    das nichts mehr lädt, muss sich von „gelöscht" unterscheiden lassen. Was
-    hier nicht steht, ist nicht verlorengegangen, sondern weggepruned.
-    """
-    from bibi.controller import jobs_view
-    from bibi.daemon.bus import bucket_slug as _bucket
-    from bibi.schedule.models import job_uid as _uid
-
-    reichweite = (f'showing {monate} month{"" if monate == 1 else "s"} '
-                  f'&middot; pruned after {pruned} months')
-    if not laeufe:
-        koerper = ('<div class="empty">No runs in this window &mdash; nothing has '
-                   'finished yet, or everything older was pruned.</div>')
-    else:
-        teile = ['<table class="runs"><thead><tr>'
-                 "<th>DATE</th><th>TIME</th><th>SLUG</th><th>STATUS</th><th>EXIT</th>"
-                 "<th>RUNTIME</th><th>COMMIT</th></tr></thead><tbody>"]
-        for tag, tages_laeufe in jobs_view.by_day(laeufe):
-            teile.append(f'<tr class="day"><td colspan="7">{_e(tag)}</td></tr>')
-            for r in tages_laeufe:
-                # Ein gepinnter Lauf gehoert zu seinem Basis-Job: `run_pinned()`
-                # haengt je Lauf einen Zufallssuffix an, und ohne das
-                # Zurueckrechnen zerfaellt ein Job in so viele Eintraege, wie er
-                # lokale Laeufe hatte (live 252 Pseudo-Slugs fuer 33 Jobs).
-                # `bucket_slug()` schneidet nur bei gesetztem `pinned_host` —
-                # sonst waere es Raten am Namen, und ein echter Slug darf auf
-                # acht Hex-Zeichen enden.
-                slug = (_bucket(r.get("slug") or "", r.get("pinned_host"))
-                        or r.get("slug") or "")
-                st = r.get("status") or ""
-                rs = r.get("reason")
-                teile.append(
-                    "<tr>"
-                    f'<td>{_e(tag)}</td>'
-                    f'<td class="t" data-ts="{r.get("finished_at") or ""}">'
-                    f'{_abs_time(r.get("finished_at"))}</td>'
-                    f'<td><a href="/-/jobs/{_uid(slug)}">{_e(slug)}</a></td>'
-                    f'<td>{_e(st)}{" &middot; " + _e(rs) if rs else ""}</td>'
-                    f'<td>{_e(r.get("exit_code"))}</td>'
-                    f'<td>{_human_duration(r.get("exec_runtime"))}</td>'
-                    f'<td>{_e((r.get("commit_sha") or "")[:7])}</td>'
-                    "</tr>")
-        teile.append("</tbody></table>")
-        if mehr:
-            teile.append(_load_more("/-/archive", offset + (limit or 0), limit or 0))
-        koerper = "".join(teile)
-    return (
-        "<!DOCTYPE html>\n"
-        '<html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>bibi &middot; Archive</title>"
-        f"<style>{_CSS}</style>"
-        f'<script src="/-/static/htmx-1.9.12.min.js"></script>'
-        "</head><body>"
-        f"{_header('Archive', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
-        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
-        f'<div class="jd-head"><span class="jd-slug">Archive</span>'
-        f'<span class="jd-meta">{reichweite}</span></div>'
-        f'<div id="runs" data-bus="archived" data-bus-refetch="/-/archive">{koerper}</div>'
-        f"<script>{_CLOCK_JS}</script>"
-        f"<script>{_OPS_HANDLES_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
-        f"<script>{_THEME_JS}</script>"
-        "</body></html>"
-    )
 
 
 def job_attrs_page_v5(*, slug: str, spec: dict, defaults: dict, now: float,

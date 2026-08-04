@@ -441,28 +441,6 @@ def add_controller_routes(
         resp.set_cookie("bibi_sched_res", str(res),
                         max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
 
-    @app.get("/-/ui/archive", include_in_schema=False)
-    def archive_screen():
-        _sched = _scheduler_status()
-        # Archive-Screen (Host, Bibi4-Iteration) — eigener Screen für Archive/
-        # Journal, seit dieser Iteration nicht mehr Teil von /-/ui/schedules
-        # (User-Fund: "Archive wird verschoben auf einen eigenen Screen").
-        # Status-Kacheln wie jeder andere Screen (User-Fund: "Header ist in
-        # Feed, Jobs, Archive (!), Live-Log sichtbar" — fehlten hier bisher).
-        from bibi import config
-        all_scheds = _schedules()
-        return HTMLResponse(render.archive_page(
-            all_scheds, daemon_status=_status(), git_status=_feed_git_status(),
-            host_url=_scheduler_url(),
-            public_host=config.public_host(), scheduler=_sched[0], scheduler_stale_since=_sched[1]))
-
-    @app.get("/-/ui/archive/list", include_in_schema=False)
-    def archive_list_fragment():
-        # Bus-Refetch-Ziel (Target "jobs"), kein Filter (die CR-Spec kennt hier
-        # keine Type/Status-Filterleiste, anders als /-/ui/schedules).
-        from bibi import config
-        return HTMLResponse(render.archive_fragment(_schedules(), public_host=config.public_host()))
-
     def _host_worker_entry() -> dict:
         """Synthetische Node-Zeile für den Host selbst (Batch 9 Punkt 3,
         User-Fund: "wir können aber doch den Host, auf dem der Client Screen
@@ -685,7 +663,7 @@ def add_controller_routes(
 
         Gibt seit der Bibi4-Iteration nur noch ``(rows, local_runs)`` zurück —
         die dritte Rückgabe (flache Journal-Liste für "Lokale Läufe") lebt
-        jetzt auf ``_jobs_archive_runs()`` (eigener Screen, s. dort)."""
+        jetzt auf ``_local_journal_runs()``."""
         from bibi import repo
         from bibi.git_status import local_files_status
         local = _local_schedules()
@@ -704,7 +682,7 @@ def add_controller_routes(
             for slug, s in sorted(local.items())
         ]
         # local_runs (Pro-Job-Status-Lookup in _jobs_row(), render.py) braucht
-        # weiterhin die volle Journal-Liste, unabhängig vom Archive-Screen.
+        # weiterhin die volle Journal-Liste.
         #
         # User-Fund 2026-07-13: run_pinned() vergibt pro Aufruf einen
         # eindeutigen jobs.slug (f"{bucket_slug}-{token}"), der unverändert
@@ -716,7 +694,7 @@ def add_controller_routes(
         # Dieselbe Rückrechnung nutzt bereits worker.local_runs_live() für
         # den *live*-Fall.
         local_runs: dict[str, dict] = {}
-        for run in _jobs_archive_runs():
+        for run in _local_journal_runs():
             bucket = run["slug"].rsplit("-", 1)[0] if run.get("pinned_host") else run["slug"]
             local_runs.setdefault(bucket, run)
         return rows, local_runs
@@ -734,32 +712,20 @@ def add_controller_routes(
 
     _SPARKLINE_SINCE_DAYS = 30
 
-    def _jobs_archive_runs() -> list:
-        # Flache Journal-Liste über alle lokalen Jobs (Bibi4-Iteration,
-        # Archive-Screen Client) — dieselbe Quelle, die vorher nur für
-        # "Lokale Läufe" (auf 20 gedeckelt) diente, jetzt ungedeckelt (bis zum
-        # 200er-Server-Limit) für den eigenen Screen.
+    def _local_journal_runs() -> list:
+        # Flache Journal-Liste über alle lokalen Jobs, ungedeckelt bis zum
+        # 200er-Server-Limit.
+        #
+        # Sie hiess `_jobs_archive_runs()` und war nach dem Archive-Screen
+        # benannt, der mit m.rau/bibi#130 entfaellt — ihr einziger Aufrufer ist
+        # aber `_jobs_data()`, also der Pro-Job-Lookup des Jobs-Screens. Eine
+        # Funktion nach ihrem frueheren Zuhoerer zu benennen verliert ihren
+        # Sinn, sobald der Zuhoerer geht (dieselbe Lehre wie beim Bus-Ereignis
+        # `chart` → `archived`, #108).
         try:
             return client.run_journal(limit=200)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             return []
-
-    @app.get("/-/ui/jobs/archive", include_in_schema=False)
-    def jobs_archive_screen():
-        _sched = _scheduler_status()
-        # Archive-Screen (Client, Bibi4-Iteration) — eigener Screen für die
-        # lokale Lauf-Historie, seit dieser Iteration nicht mehr Teil von
-        # /-/ui/jobs (User-Fund: "der untere Abschnitt lokale Läufe wandert
-        # in den eigenen Screen Archive"). Status-Kacheln analog zum Host-
-        # Archive-Screen (fehlten hier bisher ebenfalls).
-        return HTMLResponse(render.jobs_archive_page(
-            _jobs_archive_runs(), daemon_status=_status(), git_status=_feed_git_status(),
-            host_url=_scheduler_url(),
-            client_rows=_client_rows_for_status(), scheduler=_sched[0], scheduler_stale_since=_sched[1]))
-
-    @app.get("/-/ui/jobs/archive/list", include_in_schema=False)
-    def jobs_archive_list_fragment():
-        return HTMLResponse(render.jobs_archive_fragment(_jobs_archive_runs()))
 
     def _job_detail_data(slug: str):
         # Gegenstück zu _detail_data() (Host), aber lokal gespeist (PLAN-21
@@ -1271,11 +1237,48 @@ def add_controller_routes(
 
     def _journal_for_rows() -> list:
         """Nur so viel Journal, wie die Klassifikation braucht: welche Slugs
-        überhaupt Historie haben. Die Läufe selbst zeigt der Archive-Screen."""
+        überhaupt Historie haben. Die Läufe selbst zeigt Job Detail.
+
+        **Beide Journale, nicht nur das des Schedulers** (m.rau/bibi#130). Sie
+        fragte ausschließlich den Host — ein Job, der nur lokal lief
+        (``bibi-ctrl run``), hat dort keine Zeile und fiel damit aus der
+        Klassifikation heraus. Live gemessen: **20 von 33** lokal gelaufenen
+        Jobs standen nicht im Jobs-Screen.
+
+        Das war hinnehmbar, solange der Archive-Screen sie führte. Mit seiner
+        Streichung ist es das nicht mehr: FE §1 begründet sie ausdrücklich
+        damit, dass „das JOURNAL-Segment jeden Job führt, auch den ohne MD".
+        Ein heimatloser Lauf wäre sonst unerreichbar geworden.
+
+        Der lokale Slug wird dabei auf seinen Basis-Job zurückgerechnet:
+        ``run_pinned()`` hängt je Lauf einen Zufallssuffix an, und ohne das
+        zerfiele ein Job in so viele Zeilen, wie er lokale Läufe hatte (live:
+        252 Pseudo-Slugs für 33 Jobs). ``bucket_slug()`` schneidet nur bei
+        gesetztem ``pinned_host`` — sonst wäre es Raten am Namen.
+        """
+        from bibi.daemon import job_db
+        from bibi.daemon.bus import bucket_slug
+        aus: list = []
         try:
-            return _host_client().journal(limit=2000)
+            aus += _host_client().journal(limit=2000) or []
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            return []
+            pass
+        try:
+            # Direkt aus der lokalen DB, nicht über ``client.run_journal()``:
+            # das ginge per HTTP an den eigenen Daemon — derselbe Selbstaufruf,
+            # der in diesem Umbau schon dreimal stumm zugeschlagen hat — und
+            # sein Filter (``domain='local' OR pinned_host IS NOT NULL``) lässt
+            # den Altbestand bis 04.07.2026 ohnehin liegen.
+            conn = job_db.connect()
+            try:
+                for r in job_db.list_journal(conn, limit=2000):
+                    slug = bucket_slug(r.get("slug") or "", r.get("pinned_host"))
+                    aus.append({**r, "slug": slug or r.get("slug")})
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
+        return aus
 
     def _slug_kandidaten() -> list[str]:
         """Alle Slugs, hinter denen ein ``job_uid`` stecken kann.
@@ -1283,7 +1286,9 @@ def add_controller_routes(
         Drei Quellen, weil keine allein reicht: die lokalen MDs (auch für
         Jobs, die noch nie liefen), die Scheduler-Schedules (auch für solche
         ohne lokale MD) und das Journal (auch für heimatlose Läufe, deren MD
-        gelöscht wurde — sonst wäre der Archive-Screen ein Weg ins Nichts).
+        gelöscht wurde — der Weg zu ihnen führt seit m.rau/bibi#130 über das
+        JOURNAL-Segment des Jobs-Screens, und ohne diese Quelle liefe er ins
+        Nichts).
         """
         aus: list[str] = []
         for e in _local_job_mds():
@@ -1555,44 +1560,6 @@ def add_controller_routes(
         return HTMLResponse(render.jobs_screen(
             zeilen, jetzt, typ=q.getlist("typ"), status=q.getlist("status"),
             journal=q.getlist("journal"), sort=sort, direction=(dir or "asc")))
-
-    @app.get("/-/archive", include_in_schema=False)
-    def screen_archive(request: Request, limit: int = 100, offset: int = 0):  # noqa: ARG001
-        """Die Gesamthistorie beider Quellen (FE-Spezifikation §6).
-
-        Beide Journale gemischt und nach Lauf-Zeit sortiert — der Join, den das
-        Backend baut und nicht das FE. Ein Lauf, dessen Job es nicht mehr gibt,
-        steht hier trotzdem: das ist der Zweck des Screens.
-        """
-        import time as _t
-
-        laeufe: list = []
-        try:
-            laeufe += _host_client().journal(limit=500) or []
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            pass
-        try:
-            from bibi.daemon import job_db
-            conn = job_db.connect()
-            try:
-                laeufe += job_db.list_journal(conn, limit=500)
-            finally:
-                conn.close()
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            pass
-        # Erst mischen, dann schneiden: die beiden Journale sind je fuer sich
-        # sortiert, aber die gemeinsame Reihenfolge entsteht erst hier. Wer
-        # vorher schneidet, verliert genau die Laeufe der einen Seite, die
-        # zwischen die der anderen gehoert haetten.
-        laeufe.sort(key=lambda r: r.get("finished_at") or 0, reverse=True)
-        gesamt = len(laeufe)
-        laeufe = laeufe[offset:offset + limit]
-        _sched = _scheduler_status()
-        return HTMLResponse(render.archive_page_v5(
-            laeufe=laeufe, now=_t.time(), offset=offset, limit=limit,
-            mehr=offset + limit < gesamt, daemon_status=_status(),
-            git_status=_feed_git_status(), host_url=_scheduler_url(),
-            scheduler=_sched[0], scheduler_stale_since=_sched[1]))
 
     @app.get("/-/nodes", include_in_schema=False)
     def screen_nodes():
