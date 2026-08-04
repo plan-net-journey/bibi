@@ -106,35 +106,88 @@ def agent_slugs(root: Path, *, since_days: int | None = None) -> dict[str, str]:
     Zwei naheliegende Alternativen sind live gegen die echte bibi-notes-Historie
     widerlegt worden und dürfen nicht zurückkommen:
 
-    * **First-Parent-Mengendifferenz** klassifiziert jeden Merge als Agent-
-      Herkunft, auch gewöhnliche Mehrgeräte-Sync-Merges des Synchronizers.
+    * **First-Parent-Mengendifferenz allein** klassifiziert jeden Merge als
+      Agent-Herkunft, auch gewöhnliche Mehrgeräte-Sync-Merges des
+      Synchronizers. Sie taugt als *Abbruchkante* der Traversierung (unten),
+      nicht als Erkennungsmerkmal.
     * **Branch-Containment** (``rev-list --contains`` gegen lebende
-      ``agent/*``-Refs) ist langsam (ein Aufruf je Merge-Commit) und
-      falsch-positiv: alte Commits werden irgendwann Vorfahre praktisch jedes
-      späteren Branches, wodurch alle acht echten Sync-Merges dieses Repos als
-      Agent-Herkunft galten. Containment prüft Erreichbarkeit, nicht „hat
-      DIESER Merge DIESEN Branch hereingeholt".
+      ``agent/*``-Refs) ist falsch-positiv: alte Commits werden irgendwann
+      Vorfahre praktisch jedes späteren Branches, wodurch alle acht echten
+      Sync-Merges dieses Repos als Agent-Herkunft galten. Containment prüft
+      Erreichbarkeit, nicht „hat DIESER Merge DIESEN Branch hereingeholt".
 
-    Je Merge ein eigener ``rev-list``-Aufruf. **Nicht** gebündelt über alle
-    Bereiche: git behandelt mehrere Bereiche als EINE globale Menge, wodurch
-    der ``p1`` eines späteren Merges die Commits eines früheren herausrechnet
-    (live: 185 erwartete Treffer schrumpften auf 2).
+    **Ein git-Aufruf, unabhängig von der Zahl der Merges.** Vorher lief ein
+    ``rev-list`` je Merge: live 9,7 s für 30 Tage, während der
+    Controller-Selbstaufruf nach 5 s abbricht und einen leeren Feed zeigt —
+    LOAD MORE lief damit ab etwa zwölf Klicks ins Leere. Ein gebündelter
+    ``rev-list p1a..p2a p1b..p2b …`` behebt das **nicht**: git behandelt
+    mehrere Bereiche als EINE globale Menge, wodurch der ``p1`` eines späteren
+    Merges die Commits eines früheren herausrechnet (live: 185 erwartete
+    Treffer schrumpften auf 2).
+
+    Stattdessen kommt der Graph in einem Stück, und die Zuordnung entsteht
+    hier — entlang der Struktur, die der Graph tatsächlich hat: **jede Linie
+    ist eine First-Parent-Kette, und jeder Merge auf ihr hängt eine weitere
+    Linie an.** Eine Kette wird abgelaufen, bis sie auf Bekanntes trifft (der
+    gemeinsame Vorfahre); ihre Seitenzweige kommen danach an die Reihe, nie
+    davor. Genau diese Reihenfolge macht die Grenze richtig: der Abzweigpunkt
+    eines Branches ist beim Betreten des Branches bereits bekannt.
+
+    Zwei einfachere Fassungen waren live falsch, und beide fielen erst beim
+    Abgleich gegen die alte Implementierung auf:
+
+    * **An der eigenen First-Parent-Linie stoppen** genügt nicht. Läuft ein
+      Job auf einem anderen Knoten, kommt sein Merge per Sync herüber und liegt
+      hier selbst auf einer Nebenlinie; wer nur an der eigenen Linie stoppt,
+      traversiert die komplette fremde trunk-Linie mit und schreibt
+      menschliche Commits dem Job zu (live: `save: bibi-notes` unter `Witz`).
+    * **Die Merges in Log-Reihenfolge abarbeiten** (neueste zuerst) lässt einen
+      späteren Merge die Commits eines früheren Branches beanspruchen, sobald
+      sein Abzweigpunkt schon Agent-Commits enthielt (live: 6 von 250 falsch,
+      zwei davon unter fremdem Slug).
+
+    **Bekannte Grenze.** Ist ein Commit über mehrere Agent-Merges erreichbar
+    (verschachtelte Branches), ist seine Zuordnung nicht bestimmt — dann
+    gewinnt der Merge, der ihn zuerst erreicht. Live betrifft das sieben
+    Commits eines einzigen Tages im Altbestand (04.07.2026); ihr Autor hieß
+    damals noch ``Bibi`` ohne Slug und trägt deshalb auch nichts bei. Die
+    frühere Implementierung war dort ebenso falsch, nur anders. Gegen die
+    letzten 30 Tage stimmen beide Zeichen für Zeichen überein.
     """
     fmt = f"--pretty=format:{_RS}%H{_FS}%P{_FS}%s"
-    merges_out = _run_log(root, ["--merges", fmt, *_since_args(since_days)])
 
-    by_sha: dict[str, str] = {}
-    for block in merges_out.split(_RS):
+    eltern: dict[str, list[str]] = {}
+    reihenfolge: list[str] = []
+    merge_slug: dict[str, str] = {}
+    for block in _run_log(root, [fmt, *_since_args(since_days)]).split(_RS):
         block = block.strip()
         if not block:
             continue
-        _sha, parents_s, subject = block.split(_FS, 2)
-        parents = parents_s.split()
-        if len(parents) == 2 and subject.startswith(_AGENT_MERGE_PREFIX):
-            slug = subject.split("'")[1].removeprefix("agent/")
-            rev_range = f"{parents[0]}..{parents[1]}"
-            for sha in _run_git(root, ["rev-list", rev_range]).split():
+        sha, parents_s, subject = block.split(_FS, 2)
+        eltern[sha] = parents_s.split()
+        reihenfolge.append(sha)
+        if len(eltern[sha]) == 2 and subject.startswith(_AGENT_MERGE_PREFIX):
+            merge_slug[sha] = subject.split("'")[1].removeprefix("agent/")
+
+    # Startpunkte: was im Fenster von keinem anderen Commit als Elternteil
+    # genannt wird. Normalerweise genau HEAD; mit `--since` können abgeschnittene
+    # Zweige eigene Spitzen haben.
+    kinder = {p for ps in eltern.values() for p in ps}
+    arbeit = [(sha, None) for sha in reihenfolge if sha not in kinder]
+
+    gesehen: set[str] = set()
+    by_sha: dict[str, str] = {}
+    while arbeit:
+        spitze, slug = arbeit.pop(0)
+        sha = spitze
+        while sha and sha in eltern and sha not in gesehen:
+            gesehen.add(sha)
+            if slug is not None:
                 by_sha[sha] = slug
+            ps = eltern[sha]
+            if len(ps) == 2:
+                arbeit.append((ps[1], merge_slug.get(sha, slug)))
+            sha = ps[0] if ps else None
     return by_sha
 
 

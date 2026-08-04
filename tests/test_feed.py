@@ -408,3 +408,76 @@ def test_remote_commit_base_url_strips_dot_git(repo: Path):
 
 def test_remote_commit_base_url_none_without_origin(repo: Path):
     assert remote_commit_base_url(repo) is None
+
+
+def test_agent_slugs_needs_a_constant_number_of_git_calls(repo: Path, monkeypatch):
+    """Ein ``rev-list`` **je** Merge macht das Fenster unbenutzbar.
+
+    Live gemessen: 30 Tage brauchten 9,7 s allein hier, bei 703 Merges — der
+    Controller-Selbstaufruf bricht aber nach 5 s ab und zeigt dann einen leeren
+    Feed. LOAD MORE lief damit ab etwa zwoelf Klicks ins Leere.
+
+    Die Zahl der Aufrufe darf deshalb nicht mit der Zahl der Merges wachsen.
+    Rot war ``5 <= 4`` bei drei Agent-Merges.
+    """
+    for i in range(3):
+        _git(repo, "checkout", "-q", "-b", f"agent/job{i}")
+        (repo / "vault" / "memo").mkdir(parents=True, exist_ok=True)
+        (repo / "vault" / "memo" / f"o{i}.md").write_text("x", encoding="utf-8")
+        _commit_as(repo, "bot", "bot@x.io", f"job {i}")
+        _git(repo, "checkout", "-q", "trunk")
+        _git(repo, "merge", "--no-ff", "--no-edit", "-q", f"agent/job{i}")
+
+    from bibi import feed as feed_mod
+    aufrufe = []
+    echt = feed_mod._run_git
+    monkeypatch.setattr(feed_mod, "_run_git",
+                        lambda root, args: (aufrufe.append(args), echt(root, args))[1])
+    slugs = feed_mod.agent_slugs(repo)
+
+    assert len(aufrufe) <= 2, f"{len(aufrufe)} git-Aufrufe fuer 3 Merges: {aufrufe}"
+    assert set(slugs.values()) == {"job0", "job1", "job2"}
+
+
+def test_agent_slugs_does_not_swallow_a_foreign_trunk_line(repo: Path, tmp_path: Path):
+    """Ein Agent-Merge, der selbst auf einer Seitenlinie liegt, darf nicht die
+    ganze fremde trunk-Linie erben.
+
+    Das ist der Normalfall in diesem System: der Job laeuft auf sarasate, wird
+    dort gemergt, und der Merge kommt per Sync auf den Mac — dort liegt er
+    NICHT auf der lokalen First-Parent-Linie. Wer von seiner Branch-Spitze
+    rueckwaerts laeuft und nur an der lokalen First-Parent-Linie stoppt,
+    traversiert die komplette fremde Linie mit.
+
+    Live gefunden beim Abgleich gegen die alte Implementierung: menschliche
+    Commits (`save: bibi-notes`, `chore: bibi-Engine-Abhaengigkeit …`) standen
+    unter dem Slug `Witz`. Rot war ``'Witz' is not None`` fuer den fremden
+    Commit.
+    """
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", str(repo), "other")
+
+    # Auf dem anderen Knoten: ein menschlicher Commit, dann ein Job-Lauf mit
+    # Mergeback — beides auf DESSEN trunk.
+    (other / "human.md").write_text("auf einem anderen Geraet", encoding="utf-8")
+    _commit_as(other, "Carol", "carol@x.io", "save: bibi-notes")
+    fremd = _git(other, "rev-parse", "HEAD")
+
+    _git(other, "checkout", "-q", "-b", "agent/Witz")
+    (other / "vault" / "memo").mkdir(parents=True, exist_ok=True)
+    (other / "vault" / "memo" / "witz.md").write_text("w", encoding="utf-8")
+    _commit_as(other, "bot", "bot@x.io", "job output")
+    eigen = _git(other, "rev-parse", "HEAD")
+    _git(other, "checkout", "-q", "trunk")
+    _git(other, "merge", "--no-ff", "--no-edit", "-q", "agent/Witz")
+
+    # Hier passiert derweil auch etwas, damit der Sync ein echter Merge wird.
+    (repo / "hier.md").write_text("hier", encoding="utf-8")
+    _commit_as(repo, "Alice", "alice@x.io", "save: bibi-notes")
+    _git(repo, "fetch", "-q", str(other), "trunk")
+    _git(repo, "merge", "--no-edit", "-q", "FETCH_HEAD")
+
+    slugs = agent_slugs(repo)
+    assert slugs.get(eigen) == "Witz"
+    assert slugs.get(fremd) is None, \
+        f"der fremde trunk-Commit wurde {slugs.get(fremd)!r} zugeschlagen"
