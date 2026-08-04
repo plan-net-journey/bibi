@@ -524,6 +524,10 @@ class Tile:
     #: keinen Zustand" und wird nicht zu ``pending`` ergänzt.
     status: str | None
     aktionen: frozenset
+    #: Ende des jüngsten Laufs **dieser Seite**, ``None`` wenn dort noch keiner
+    #: lief. Der Client-Slot zeigt damit zurück, wo der Scheduler-Slot nach vorn
+    #: zeigt (``next_fire_at``) — siehe ``render._slot_kachel()``.
+    last_at: float | None = None
 
 
 @dataclass
@@ -584,8 +588,14 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
                 # Ein Zustand, den das Modell nicht kennt: keine Knöpfe, aber
                 # die Kachel bleibt — sie sagt dann wenigstens, was dort steht.
                 aktionen = frozenset()
+            # Der jüngste Lauf dieser Seite. Aus dem Journal, nicht aus der
+            # Slot-Zeile: die ist bei `pending` ausgeräumt (`report_status()`
+            # nullt `finished_at`), und genau dort wird die Angabe gebraucht.
+            enden = [r.get("finished_at") for r in journal
+                     if r.get("finished_at") is not None]
             tiles.append(Tile(quelle=quelle, host=host, slot=zeile,
-                              status=status, aktionen=aktionen))
+                              status=status, aktionen=aktionen,
+                              last_at=max(enden) if enden else None))
         eigene = [{**r, "src": src, "sort_at": r.get("finished_at")} for r in journal]
         im_slot = slot_run(zeile, src=src, now=now) if zeile is not None else None
         if im_slot is not None:

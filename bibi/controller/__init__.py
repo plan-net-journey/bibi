@@ -1407,20 +1407,49 @@ def add_controller_routes(
     #: Seiten einen anderen Job, weil beide ihre eigene DB fuehren
     #: (Zustandsmodell §1). Ohne diese Unterscheidung traefe ein Klick auf der
     #: Scheduler-Kachel den lokalen Job.
-    _VERBEN = {"start", "reset", "kill"}
+    _VERBEN = {"start", "reset", "kill", "rebuild"}
 
     @app.post("/-/ui/jobs/verb/{ziel}/{job_id}/{verb}", include_in_schema=False)
     def screen_job_verb(ziel: str, job_id: str, verb: str):
-        """START, RESET oder KILL auf einem Slot ausloesen.
+        """START, RESET, KILL oder REBUILD auf einem Slot ausloesen.
 
         Der Umweg ueber den Controller ist noetig, weil der Browser nicht
         weiss, wo der Job liegt: der Scheduler-Slot lebt auf dem Host, der
         Client-Slot hier. Beide Seiten haben dieselbe Route
         (`POST /-/job/{id}/{verb}`), nur auf verschiedenen Maschinen.
+
+        **REBUILD nimmt auf dem Client einen anderen Weg, und das ist gemessen,
+        nicht angenommen:** `POST /-/job/{id}/rebuild` gibt es dort gar nicht
+        (`{"detail":"Not Found"}` — die Route haengt an der `worker`-Rolle, die
+        ein reiner Client nicht traegt), waehrend `POST /-/run/live/{slug}/
+        rebuild` antwortet. Letztere schlaegt den Exec-Mode ueber die
+        Schedule-MD nach, nicht ueber die DB, und braucht deshalb den Slug —
+        den holen wir hier aus der Job-Zeile, statt ihn durch den Browser zu
+        schleifen: eine Angabe weniger im Markup, die falsch sein kann.
         """
         if verb not in _VERBEN:
             return JSONResponse(status_code=400,
                                 content={"error": "unknown verb", "verb": verb})
+        if verb == "rebuild" and ziel == "client":
+            from bibi.daemon import job_db
+            conn = job_db.connect()
+            try:
+                zeile = conn.execute(
+                    "SELECT slug FROM jobs WHERE id=?", (job_id,)).fetchone()
+            finally:
+                conn.close()
+            if zeile is None:
+                return JSONResponse(status_code=404,
+                                    content={"error": "job not found", "id": job_id})
+            try:
+                antwort = client.run_rebuild(zeile["slug"])
+            except Exception as e:  # noqa: BLE001 — die Meldung gehoert an den Knopf
+                activity.emit(log, logging.WARNING, "controller.verb_failed",
+                              f"REBUILD auf client fehlgeschlagen: {e}", role="controller")
+                return JSONResponse(status_code=502,
+                                    content={"error": str(e), "verb": verb, "ziel": ziel})
+            return {"ok": True, "verb": verb, "ziel": ziel, "id": job_id,
+                    "antwort": antwort}
         if ziel == "client":
             # `client` zeigt auf den eigenen Daemon — derselbe Weg, den auch
             # der Feed und die Jobs-Liste nehmen.

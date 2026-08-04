@@ -4211,7 +4211,7 @@ _JOB_DETAIL_JS = """
 
 
 def _slot_leiste(aktionen, *, job_id: str | None = None,
-                 ziel: str | None = None) -> str:
+                 ziel: str | None = None, rebuild: bool = False) -> str:
     """Die Knopfleiste eines Slots (FE-Spezifikation §5.2).
 
     Nicht verfügbare Verben bleiben **sichtbar und ausgegraut**, nicht
@@ -4219,9 +4219,16 @@ def _slot_leiste(aktionen, *, job_id: str | None = None,
     nicht" geht verloren. ``done`` ist die einzige Ausnahme — ein verbrauchter
     Slot hat keinen Ausgang, deshalb zeigt er auch keine toten Knöpfe, und das
     Fehlen der Leiste ist selbst die Aussage.
+
+    ``rebuild`` ist der **vierte** Knopf und folgt einer anderen Regel als die
+    drei (PLAN-24 Befund 5, unverändert übernommen): er ist entweder da oder
+    gar nicht da, nie ausgegraut. Die drei Verben hängen am *Zustand* — dort
+    heißt grau „jetzt gerade nicht". REBUILD hängt am *Job*: ein Host-Job hat
+    kein per-Job-Image, das zu verwerfen wäre, und ein grauer Knopf behauptete,
+    es gäbe eins.
     """
     from bibi.schedule.slot import Verb
-    if not aktionen:
+    if not aktionen and not rebuild:
         return ""
     teile = []
     for verb, label in ((Verb.START, "START"), (Verb.RESET, "RESET"), (Verb.KILL, "KILL")):
@@ -4234,6 +4241,11 @@ def _slot_leiste(aktionen, *, job_id: str | None = None,
                 f'data-id="{_e(job_id)}" data-ziel="{_e(ziel or "client")}">{label}</button>')
         else:
             teile.append(f'<span class="slot-off">{label}</span>')
+    if rebuild and job_id:
+        teile.append(
+            f'<button class="slot-do" data-verb="rebuild" data-id="{_e(job_id)}" '
+            f'data-ziel="{_e(ziel or "client")}" title="Verwirft das per-Job-Image, '
+            f'der naechste Lauf startet vom Default-Image">REBUILD</button>')
     return f'<span class="slot-bar">{" ".join(teile)}</span>'
 
 
@@ -4279,22 +4291,39 @@ def _slot_kachel(kachel, *, now: float) -> str:
     Terminalwerden rutschte er von einem zum anderen.
     """
     ziel = "scheduler" if kachel.quelle == "SCHEDULER" else "client"
+    client = ziel == "client"
     titel = kachel.quelle + (f" &middot; {_e(kachel.host)}" if kachel.host else "")
     if not kachel.status:
         # Kein Rateschritt: fehlt jeder Zustand, sagt die Kachel das, statt
         # `pending` zu behaupten (Befund bei der Abnahme, 2026-08-03).
         zustand = '<span class="slot-none">no state reported</span>'
     else:
-        teile = [_e(kachel.status)]
+        # `idle` statt `pending` auf der Client-Seite (Entscheidung m.rau,
+        # 2026-08-04): `pending` verspricht „reserviert, wartet" — dort wartet
+        # aber niemand. Der Client-Slot entsteht **nur** durch `/run`
+        # (Zustandsmodell §1), es gibt keinen Dispatcher, der ihn aufgreift.
+        # Live gefunden: `daily-digest` trug `pending · next 17:20`, und der
+        # Termin stammte aus der Zeit, als dieser Mac selbst Scheduler war.
+        teile = ["idle" if (client and kachel.status == "pending") else _e(kachel.status)]
         if kachel.slot.get("reason"):
             teile.append(_e(kachel.slot["reason"]))
         begonnen, beendet = kachel.slot.get("started_at"), kachel.slot.get("finished_at")
-        if kachel.status == "pending" and kachel.slot.get("next_fire_at"):
+        if client and kachel.status in jobs_view_ohne_lauf():
+            # **Der Client-Slot zeigt zurück, der Scheduler-Slot nach vorn.**
+            # Ein `next` wäre hier eine Behauptung über die Zukunft, die
+            # niemand einlöst; `last` ist eine über die Vergangenheit, die
+            # nachprüfbar ist. Genau an der Stelle, an der drüben `next` steht:
+            # wo der Slot keinen eigenen Lauf trägt. Trägt er einen, sagt
+            # dessen Dauer darunter schon alles. Ohne lokalen Lauf steht gar
+            # nichts — ein leeres `last —` sähe aus wie ein Fehler.
+            if kachel.last_at is not None:
+                teile.append(f"last {_abs_time(kachel.last_at)}")
+        elif kachel.status == "pending" and kachel.slot.get("next_fire_at"):
             # `pending · next 12:00` — ein reservierter Platz mit Termin. Ohne
             # `next` bleibt es beim blossen `pending`: das ist `adhoc`, ein
             # freier Platz ohne Verabredung.
             teile.append(f'next {_abs_time(kachel.slot["next_fire_at"])}')
-        elif begonnen is not None and kachel.status not in jobs_view_ohne_lauf():
+        if begonnen is not None and kachel.status not in jobs_view_ohne_lauf():
             # Eine Dauer, kein Zeitpunkt — FE §2 verlangt absolute *Zeitpunkte*
             # und lässt Dauern ausdrücklich zu (`no contact for 4m`). Gemessen
             # gegen das Ende, wo es eines gibt: ein blockierter Lauf steht unter
@@ -4304,9 +4333,22 @@ def _slot_kachel(kachel, *, now: float) -> str:
     return (
         f'<div class="tile"><div class="tile-head">{titel}</div>'
         f'<div class="tile-state">{zustand}</div>'
-        f'{_slot_leiste(kachel.aktionen, job_id=kachel.slot.get("id"), ziel=ziel)}'
+        f'{_slot_leiste(kachel.aktionen, job_id=kachel.slot.get("id"), ziel=ziel, rebuild=_ist_container(kachel.slot))}'
         "</div>"
     )
+
+
+def _ist_container(slot: dict) -> bool:
+    """Läuft dieser Job im Container? Entscheidet über den REBUILD-Knopf.
+
+    Der Job-eigene ``exec_mode`` schlägt den Knoten-Default — dieselbe
+    Reihenfolge wie ``worker._job_is_container()``, wo ihr Fehlen 2026-07-12
+    dazu führte, dass ein Container-Job auf einem Host-Default-Knoten beim KILL
+    nie sein ``docker stop`` bekam. Fehlt der Wert ganz (die Scheduler-Zeile
+    führt ihn mit, die lokale auch), ist ``host`` die richtige Annahme: dann
+    erscheint der Knopf nicht, statt einen anzubieten, der `409` antwortet.
+    """
+    return (slot.get("exec_mode") or "host").strip().lower() == "container"
 
 
 def jobs_view_ohne_lauf() -> frozenset:

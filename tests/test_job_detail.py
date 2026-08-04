@@ -82,6 +82,9 @@ def test_a_malformed_uid_is_simply_unknown(kaputt):
 class _FakeClient:
     """Genügend Scheduler für einen Screen — der Rest kommt lokal."""
 
+    def __init__(self):
+        self.rebuilt: list[str] = []
+
     def status(self) -> dict:
         return {"now": 1_000_000.0, "roles": ["scheduler"]}
 
@@ -101,6 +104,13 @@ class _FakeClient:
     def jobs(self, **_):
         return []
 
+    def run_rebuild(self, slug):
+        # Der Client-Weg fuer REBUILD (`POST /-/run/live/{slug}/rebuild`).
+        # Er nimmt den **Slug**, nicht die Job-ID — die Route dort schlaegt den
+        # Exec-Mode ueber die Schedule-MD nach, nicht ueber die DB.
+        self.rebuilt.append(slug)
+        return {"slug": slug, "rebuilt": True}
+
 
 @pytest.fixture
 def client(team_repo):
@@ -108,8 +118,10 @@ def client(team_repo):
 
     from bibi.daemon import roles
     from bibi.daemon.app import create_app
-    app = create_app(roles.resolve({"controller"}), controller_client=_FakeClient())
+    fake = _FakeClient()
+    app = create_app(roles.resolve({"controller"}), controller_client=fake)
     with TestClient(app) as c:
+        c.fake = fake
         yield c, team_repo
 
 
@@ -1126,3 +1138,116 @@ def test_unavailable_verbs_stay_disabled_not_clickable():
     assert 'data-verb="kill"' in html
     assert 'data-verb="start"' not in html
     assert "START" in html  # sichtbar, aber als .slot-off
+
+
+# ── Die CLIENT-Kachel zeigt zurueck, nicht nach vorn ─────────────────────────
+#
+# Live gefunden (2026-08-04, Browser): `daily-digest` trug in seiner
+# CLIENT-Kachel `pending · next 17:20` — einen Termin, den es dort nicht gibt.
+# Der Client hat keinen Dispatcher (Zustandsmodell §1: der Client-Slot entsteht
+# **nur** durch /run), `next_fire_at` stammt aus der Zeit, als dieser Mac selbst
+# Scheduler war, und wird lokal von niemandem mehr ausgewertet. Die Kachel
+# versprach damit einen Lauf, der nie kommt.
+
+
+def _kachel_html(**kw):
+    from bibi.controller import render
+    return render.job_tiles_fragment(_liste(**kw).tiles, now=1_754_100_000.0)
+
+
+def test_the_client_tile_says_idle_not_pending():
+    """`pending` verspricht „reserviert, wartet" — auf dem Client wartet
+    niemand. `idle` sagt, was dort wirklich ist: ein freier Platz."""
+    html = _kachel_html(client_slot={"status": "pending", "id": "c1"})
+    assert "idle" in html
+    assert "pending" not in html, "der geratene Termin-Zustand steht noch da"
+
+
+def test_the_scheduler_tile_keeps_pending():
+    """Die Gegenprobe, und der Grund fuer die Unterscheidung: beim Scheduler
+    ist `pending` wahr — dort steht der Platz reserviert und die Uhr laeuft."""
+    html = _kachel_html(scheduler_slot={"row_status": "pending", "id": "s1"})
+    assert "pending" in html and "idle" not in html
+
+
+def test_the_client_tile_shows_the_last_run_not_the_next():
+    """Der Scheduler-Slot zeigt nach vorn, der Client-Slot zurueck. `next` waere
+    hier eine Behauptung ueber die Zukunft, die niemand einloest."""
+    html = _kachel_html(client_slot={"status": "pending", "id": "c1",
+                                     "next_fire_at": 1_754_200_000.0},
+                        client_runs=[{"run_id": "r1", "status": "complete",
+                                      "finished_at": 1_754_099_000.0}])
+    assert "last " in html
+    assert "next " not in html
+
+
+def test_the_client_tile_stays_silent_without_a_last_run():
+    """Ohne lokalen Lauf steht nur der Zustand da. Ein leeres `last —` waere
+    ein Feld, das nach einem Fehler aussieht."""
+    html = _kachel_html(client_slot={"status": "pending", "id": "c1"})
+    assert "last " not in html
+
+
+def test_the_client_tile_offers_rebuild_for_container_jobs():
+    """REBUILD als vierter Knopf (Entscheidung m.rau, 2026-08-04) — bis hierher
+    gab es ihn in bibi5 nirgends, obwohl FE §5.1.1 ihn fuer Container-Jobs
+    vorsieht. Er verwirft das per-Job-Image, der naechste Lauf startet vom
+    Default-Image."""
+    html = _kachel_html(client_slot={"status": "pending", "id": "c1",
+                                     "exec_mode": "container"})
+    assert "REBUILD" in html
+
+
+def test_a_host_job_has_no_rebuild_button_at_all():
+    """Nicht ausgegraut, sondern abwesend (PLAN-24 Befund 5): ein Host-Job hat
+    kein per-Job-Image, das ein Reset braeuchte. Ausgegraut wird, was der
+    *Zustand* verbietet — nicht, was es fuer diesen Job nicht gibt."""
+    html = _kachel_html(client_slot={"status": "pending", "id": "c1",
+                                     "exec_mode": "host"})
+    assert "REBUILD" not in html
+
+
+def test_rebuild_posts_to_the_client_side():
+    """Das Image liegt auf dem Knoten, der es gebaut hat. Ein REBUILD, das an
+    den Host geht, wuerde das falsche verwerfen."""
+    html = _kachel_html(client_slot={"status": "pending", "id": "c1",
+                                     "exec_mode": "container"})
+    assert 'data-verb="rebuild"' in html and 'data-ziel="client"' in html
+
+
+def _lokale_zeile(slug: str, jid: str, **felder) -> None:
+    """Eine Job-Zeile in der lokalen DB — der Client-Slot dieses Slugs."""
+    import time as _t
+
+    from bibi.daemon import job_db
+    conn = job_db.connect()
+    try:
+        spalten = {"id": jid, "slug": slug, "schedule_ref": f"{slug}.md",
+                   "kind": "job", "payload": "echo", "status": "pending",
+                   "enqueued_at": _t.time(), **felder}
+        conn.execute(
+            f"INSERT INTO jobs ({','.join(spalten)}) "
+            f"VALUES ({','.join(':' + k for k in spalten)})", spalten)
+    finally:
+        conn.close()
+
+
+def test_rebuild_on_the_client_takes_the_run_live_route(client):
+    """**Gemessen, nicht angenommen** (2026-08-04, Testclient auf :65200):
+    `POST /-/job/{id}/rebuild` gibt es auf einem reinen Client nicht — die
+    Route haengt an der `worker`-Rolle und antwortet dort `{"detail":"Not
+    Found"}`. Der Weg, der antwortet, ist `POST /-/run/live/{slug}/rebuild`,
+    und der nimmt den **Slug**."""
+    c, _ = client
+    _lokale_zeile("EngineCI", "c1", exec_mode="container")
+    r = c.post("/-/ui/jobs/verb/client/c1/rebuild")
+    assert r.status_code == 200, r.text
+    assert c.fake.rebuilt == ["EngineCI"], "nicht der Slug, sondern die Job-ID gesendet"
+
+
+def test_rebuild_on_an_unknown_job_is_a_404(client):
+    """Ohne Zeile gibt es keinen Slug — und ein geratener waere schlimmer als
+    ein 404."""
+    c, _ = client
+    assert c.post("/-/ui/jobs/verb/client/gibt-es-nicht/rebuild").status_code == 404
+    assert c.fake.rebuilt == []
