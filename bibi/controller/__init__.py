@@ -64,6 +64,16 @@ async def _body_value(request: Request, name: str) -> str:
     return (request.query_params.get(name) or "").strip()
 
 
+#: Fenster des Feed beim ersten Seitenaufruf. **Sieben Tage, nicht einer.** Der
+#: frühere Ein-Tages-Default war reine Vorsicht: ein unbegrenzter Log brauchte
+#: live 5,7 s und lief in das 5-s-Timeout des Controller-Selbstaufrufs. Seit
+#: ``feed.agent_slugs()`` mit einem einzigen git-Aufruf auskommt, kosten 30 Tage
+#: 0,18 s — die Begründung ist entfallen, und ein Tag sind mit der
+#: Ordner-Aggregation nur noch rund 14 Zeilen für eine Frage, die „was ist
+#: passiert" heisst. Eine unbegrenzte Historie gibt es weiterhin nicht.
+_FEED_DEFAULT_DAYS = 7
+
+
 def _wants_html(request: Request) -> bool:
     """Browser senden ``text/html`` im Accept-Header; Tooling (curl, ``Accept:
     application/json`` oder ``*/*``) nicht. Genau das trennt App von Deskriptor."""
@@ -209,14 +219,7 @@ def add_controller_routes(
             return []
 
     def _effective_days(days: int | None) -> int | None:
-        """``days`` fehlt im Query (allererster Seitenaufruf) → Default 1 Tag
-        (PLAN-18 Design-Pass), nicht unbegrenzt — ein voller, unbegrenzter Log
-        über die echte bibi-notes-Historie brauchte live 5,7s, über dem
-        5s-Timeout des Controller-Selbstaufrufs (User-Fund 2026-07-06, „Feed
-        ist auf einmal leer"). Die „gesamte Historie"-Fähigkeit (vormals über
-        ein explizites ``days=0``-Sentinel) ist gestrichen (PLAN-19 Befund 7,
-        User-Entscheidung) — kein Weg mehr zu einem unbegrenzten Fenster."""
-        return 1 if days is None else days
+        return _FEED_DEFAULT_DAYS if days is None else days
 
     def _feed_data(days: int | None) -> dict:
         try:

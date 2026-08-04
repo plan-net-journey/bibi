@@ -190,3 +190,16 @@ def test_the_feed_no_longer_takes_a_weeks_parameter():
     import inspect
     assert "weeks" not in inspect.signature(render.feed_fragment).parameters
     assert "weeks" not in inspect.signature(render.feed_page).parameters
+
+
+def test_the_default_window_is_a_week():
+    """Sieben Tage, nicht einer.
+
+    Der Ein-Tages-Default war reine Vorsicht gegen das 5-s-Timeout des
+    Controller-Selbstaufrufs. Seit `agent_slugs()` mit einem git-Aufruf
+    auskommt, kosten 30 Tage 0,18 s — und ein Tag sind mit der
+    Ordner-Aggregation nur noch rund 14 Zeilen fuer eine Frage, die
+    „was ist passiert" heisst.
+    """
+    from bibi.controller import _FEED_DEFAULT_DAYS
+    assert _FEED_DEFAULT_DAYS == 7
