@@ -472,7 +472,7 @@ th.sorted { font-weight: 700; }
    bringt ihr eigenes Padding mit. */
 .loadmore { display: flex; justify-content: flex-start; gap: .5rem;
             margin: .8rem 0 0; }
-/* ══ Job Detail, Attributes, Archive ═══════════════════════════════════════
+/* ══ Job Detail und Attributes ═════════════════════════════════════════════
    Diese Screens entstanden in Schritt 2 und wurden **ohne eine einzige
    CSS-Regel** ausgeliefert: 27 Klassen gab es nur im Markup. Ohne Regel sind
    Spans inline ohne Abstand, weshalb die Kopfzeile als
@@ -565,7 +565,7 @@ th.sorted { font-weight: 700; }
 .slot-off { font-size: .78rem; letter-spacing: .03em; color: var(--faint);
             padding: .12rem .35rem; }
 
-/* Lauf-Liste und Archiv. */
+/* Die Lauf-Liste (FE-Spezifikation §5.3). */
 .runs { width: 100%; border-collapse: collapse; font-size: .85rem; }
 .runs th { text-align: left; font-weight: 600; font-size: .72rem;
            letter-spacing: .03em; color: var(--faint); text-transform: uppercase;
