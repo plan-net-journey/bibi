@@ -142,11 +142,6 @@ header { display: flex; align-items: baseline; justify-content: space-between;
 header .handles { margin: 0; }
 h1 { font-size: 1.4rem; margin: 0; }
 .muted { color: var(--dim); font-size: .85rem; }
-.banner { margin: 0; padding: .35rem .75rem; border-radius: .35rem;
-          border: 1px solid var(--btnline); font-size: .82rem; font-weight: 500;
-          display: inline-block; }
-.banner.ok  { background: var(--greensoft); }
-.banner.bad { background: var(--redsoft); }
 table { width: 100%; border-collapse: collapse; font-size: .9rem; }
 th { text-align: left; color: var(--faint); font-weight: 500; padding: .35rem .5rem;
      border-bottom: 1px solid var(--line); }
@@ -162,7 +157,6 @@ td { padding: .4rem .5rem; border-bottom: 1px solid var(--line); }
 .st.awaiting { color: var(--amber); }
 .st.pending, .st.deferred { color: var(--dim); }
 .st.failed, .st.error, .st.killed, .st.zombie { color: var(--red); }
-.st.overdue { color: var(--amber); }
 .kind { font-family: ui-monospace, monospace; font-size: .82rem; color: var(--faint); }
 .handles { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center;
            margin: 1rem 0 .25rem; }
@@ -202,8 +196,6 @@ td { padding: .4rem .5rem; border-bottom: 1px solid var(--line); }
    Zustandsstelle vergeben. */
 a.slug { font-weight: 600; text-decoration: none; color: var(--brand); }
 a.slug:hover { text-decoration: underline; }
-.sched a { text-decoration: none; }
-.sched a:hover { text-decoration: underline; }
 a.rowlink { color: inherit; text-decoration: none; }
 a.rowlink:hover { text-decoration: underline; }
 h2 { font-size: .95rem; color: var(--dim); margin: 1.5rem 0 .4rem; font-weight: 600; }
@@ -221,10 +213,6 @@ h2 { font-size: .95rem; color: var(--dim); margin: 1.5rem 0 .4rem; font-weight: 
 .term .err { color: var(--red); }
 .term .thinking { color: var(--dim); font-style: italic; }
 .term .phase { color: var(--blue); font-style: italic; }
-.md { font-size: .92rem; }
-.md pre { background: var(--term-bg); color: var(--term-text); border: 1px solid var(--line); border-radius: .4rem;
-          padding: .6rem .8rem; overflow-x: auto; }
-.md code { font-family: ui-monospace, monospace; font-size: .85em; }
 .out-empty { color: var(--dim); font-size: .85rem; font-style: italic; }
 button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnline);
          border-radius: .35rem; padding: .15rem .5rem; cursor: pointer; color: inherit; }
@@ -270,20 +258,7 @@ button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnlin
    Light Mode ist die Schriftfarbe lila schwer zu lesen"); den erledigt die
    eigene Linkfarbe aus #68 mit, der Kontrast-Grund bleibt. */
 .logbox a.slug { color: var(--term-link); }
-.feed { height: 45vh; overflow-y: auto; background: var(--term-bg); border: 1px solid var(--line);
-        border-radius: .4rem; padding: .6rem .8rem; font-family: ui-monospace, monospace;
-        font-size: .85rem; line-height: 1.7; }
-.feed-row { white-space: pre-wrap; }
-.feed-row .t  { color: var(--dim); }
-.feed-row .ex { color: var(--dim); }
-.feed-row a.run  { color: inherit; text-decoration: none; opacity: .75; }
-.feed-row a.run:hover { text-decoration: underline; opacity: 1; }
-.feed-row .st.complete { font-weight: 600; }
 #bands h3 { margin: .7rem 0 .3rem; font-size: .95rem; }
-.bandscroll { max-height: 30vh; overflow-y: auto; border: 1px solid var(--line);
-              border-radius: .4rem; padding: .35rem .6rem; margin-bottom: .4rem;
-              font-family: ui-monospace, monospace; font-size: .85rem; }
-.band-row { padding: .15rem 0; }
 .outscroll { max-height: 72vh; overflow-y: auto; }
 .hitl { margin: .5rem 0 0; padding: .5rem .75rem; border: 1px solid var(--amberline);
         border-radius: .35rem; background: var(--ambersoft); }
@@ -430,13 +405,6 @@ th.sorted { font-weight: 700; }
         border-radius: .35rem; padding: .2rem .55rem; cursor: pointer; color: inherit; font-weight: 600;
         white-space: nowrap; }
 .startbtn:disabled, .killbtn:disabled { opacity: .4; cursor: default; }
-.runhist { font-size: .86rem; }
-.runhist .row { display: flex; gap: .8rem; padding: .35rem 0; border-bottom: 1px solid var(--line);
-                align-items: baseline; }
-.runhist a.row:hover { background: var(--hover); }
-.runhist .t { color: var(--dim); font-family: ui-monospace, monospace; font-size: .78rem; flex: 0 0 4.4rem; }
-.gitsegment { font-family: ui-monospace, monospace; font-size: .95rem; }
-.gitsegment .sep { color: var(--faint); }
 .tree-clean, .sync-synced { color: var(--green); }
 .tree-modified, .sync-ahead { color: var(--amber); }
 .sync-behind, .sync-conflict { color: var(--red); }
@@ -593,7 +561,6 @@ th.sorted { font-weight: 700; }
             border-radius: .35rem; background: var(--hover);
             font-family: ui-monospace, monospace; font-size: .78rem;
             line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
-.fold { cursor: pointer; user-select: none; }
 
 /* Attribute: Beschriftung links, Wert rechts, Defaults gedimmt und geklammert. */
 .attrs { margin: .6rem 0 1rem; }

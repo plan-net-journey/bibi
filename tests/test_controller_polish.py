@@ -61,12 +61,21 @@ def test_term_and_logbox_stay_dark_regardless_of_theme():
     # denselben Wert trägt. Das ist schärfer als vorher — ein Literal konnte
     # nur an einer Stelle falsch sein, ein Token kann in einem Satz abweichen,
     # und genau das würde die Boxen theme-abhängig machen.
+    # Waren drei Boxen, sind zwei (Rueckbau 2026-08-04): `.md pre` gehoerte zu
+    # einem Markdown-Block, den es im FE nicht mehr gibt — kein `class="md"`
+    # steht mehr im Markup, und gerendert wird dort auch kein Markdown. Die
+    # Aussage wandert auf ihren verbliebenen Traeger, statt mit dem alten
+    # geloescht zu werden (Lehre aus m.rau/bibi#130); die Gegenprobe darunter
+    # haelt fest, dass die dritte Box WEG ist und nicht etwa unformatiert
+    # dasteht — genau der Unterschied, den ein blosses Streichen verschweigt.
     import re
 
-    for box in (".term {", ".logbox {", ".md pre {"):
+    for box in (".term {", ".logbox {"):
         decl = render._CSS[render._CSS.index(box):][:220]
         assert "var(--term-bg)" in decl, box
         assert "var(--term-text)" in decl, box
+    assert ".md pre" not in render._CSS, \
+        "der Markdown-Block ist zurueck — dann gehoert er wieder in die Schleife"
 
     vals: dict[str, set[str]] = {}
     for sel in (":root", ':root[data-theme="light"]', ':root[data-theme="dark"]'):

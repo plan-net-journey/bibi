@@ -229,3 +229,82 @@ def test_every_markup_class_has_a_css_rule():
 
     assert not ohne_regel, (
         f"{len(ohne_regel)} Klassen ohne CSS-Regel: {', '.join(ohne_regel)}")
+
+
+#: Klassennamen, die es im Stylesheet gibt und die trotzdem nirgends als
+#: ``class="…"``-Literal stehen — jede mit ihrem Grund. **Ohne diese Liste
+#: waere die Gegenrichtung nicht haltbar**, und ohne Gruende waere sie eine
+#: Muellhalde, in der eine tote Regel unbemerkt Unterschlupf faende.
+_CSS_OHNE_MARKUP = {
+    # Von htmx gesetzt, waehrend ein Request laeuft (s. _BTN_SPINNER).
+    "htmx-request",
+    # Kommen aus den Daten, nicht aus dem Quelltext: Slot-/Lauf-Zustaende, die
+    # per f-String in `class="st {status}"` landen (Zustandsmodell §2).
+    "awaiting", "complete", "deferred", "error", "failed", "killed", "new",
+    "pending", "running", "starting", "zombie",
+    # Git-/Sync-Zustaende, ueber _SYNC_LABEL_CLASS bzw. `tree-{…}` gesetzt.
+    "ahead", "behind", "diverged", "synced", "sync-",
+    "sync-ahead", "sync-behind", "sync-synced", "tree-clean", "tree-modified",
+    # Log-Level: `el.className = 'ln ' + (o.level||'').toLowerCase()` im
+    # Live-Log-JS — die Stufe steht im Ereignis, nicht im Markup.
+    "ln", "debug", "warning",
+    # Per f-String an einen Zustand gehaengt: `"chip chip-on" if …`,
+    # `" dimmed" if stale`, `"role-box on"`, `"fltr{an}"`, `"run run-in-slot"`.
+    "chip-on", "dimmed", "role-box", "fltr", "run-in-slot", "off", "on", "ok",
+    "warn", "conn-dot",
+    # Element-qualifizierte Regeln (`td.v`, `.card .value`, `.st` …): der
+    # Bezeichner steht im Selektor, das Markup traegt ihn an anderer Stelle
+    # oder setzt ihn zusammen.
+    "st", "v", "value", "kind",
+}
+
+
+def test_every_css_rule_has_markup():
+    """**Die Gegenrichtung, und sie fehlte** (Rueckbau-Fund vom 2026-08-04).
+
+    Ein toter *Renderer* faellt auf — Tests werden rot. Ein totes *Stylesheet*
+    nie: es wird ausgeliefert, kostet Bytes und behauptet, es gaebe das Element
+    noch. Nach dem Wegfall der Faltung (`#131`) und des Archive-Screens
+    (`#130`) standen so `fold`, `runhist`, `gitsegment`, `banner`, `feed-row`,
+    `bandscroll`, `band-row`, `md`, `sched` und `st.overdue` ohne jedes Markup
+    im Stylesheet — 33 Zeilen.
+
+    Die Ausnahmeliste ist der Preis dafuer, dass diese Richtung ueberhaupt
+    pruefbar ist: viele Klassen entstehen zur Laufzeit (aus einem Status, per
+    htmx, per JS) und koennen im Quelltext gar nicht als Literal stehen. Jeder
+    Eintrag traegt seinen Grund — wer eine Regel loescht, streicht auch ihn,
+    und wer einen ohne Grund hinzufuegt, faellt beim Lesen auf.
+    """
+    quelle = Path(render.__file__).read_text()
+    css = re.search(r'_CSS = """(.*?)"""', quelle, re.S).group(1)
+    # Kommentare raus: `m.rau/bibi#68` und `loest .kvgrid2 ab` sind Prosa, kein
+    # Selektor — sonst meldet der Test Klassen, die es nie gab.
+    css_regeln = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    ohne_css = quelle.replace(css, "")
+
+    statisch = {k for m in re.finditer(r'class="([a-z0-9 _{}-]+)"', ohne_css)
+                for k in m.group(1).split() if "{" not in k}
+    # Auch jedes String-Literal zaehlt: `"run run-in-slot" if im_slot else "run"`
+    # setzt eine Klasse genauso wie ein statisches `class="…"`.
+    literale = set(re.findall(r"""['"]([a-z][a-z0-9_-]*)['"]""", ohne_css))
+    definiert = set(re.findall(r"\.([a-z][a-z0-9_-]*)", css_regeln))
+
+    ohne_markup = sorted(definiert - statisch - literale - _CSS_OHNE_MARKUP)
+    assert not ohne_markup, (
+        f"{len(ohne_markup)} CSS-Regeln ohne Markup: {', '.join(ohne_markup)}. "
+        "Entweder die Regel ist tot (dann raus) oder die Klasse entsteht zur "
+        "Laufzeit (dann mit Begruendung in _CSS_OHNE_MARKUP).")
+
+
+def test_the_exception_list_has_no_dead_entries():
+    """Die Ausnahmeliste selbst darf nicht verwahrlosen: ein Eintrag, dessen
+    Regel es nicht mehr gibt, ist genau die Muellhalde, gegen die der Test
+    oben antritt. Ohne diese Gegenprobe waere die Liste ein Ort, an dem sich
+    Totes sammelt, statt einer, an dem Gruende stehen."""
+    quelle = Path(render.__file__).read_text()
+    css = re.search(r'_CSS = """(.*?)"""', quelle, re.S).group(1)
+    css_regeln = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    definiert = set(re.findall(r"\.([a-z][a-z0-9_-]*)", css_regeln))
+    verwaist = sorted(_CSS_OHNE_MARKUP - definiert)
+    assert not verwaist, (
+        f"{len(verwaist)} Ausnahmen ohne CSS-Regel: {', '.join(verwaist)}")
