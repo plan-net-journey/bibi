@@ -1718,40 +1718,27 @@ def create_app(
                 bus.unsubscribe(sub)
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    # ── /feed: Git-Historie zu Entitäten + Heatmap (PLAN-18) — rollenunabhängig ─
+    # ── /feed: Git-Historie zu Einheiten — rollenunabhängig ────────────────────
     # Reine Git-/Filesystem-Introspektion (bibi/feed.py), kein job_db-Zugriff —
     # funktioniert auf jedem Knoten, auch einem reinen Client ohne Scheduler/
-    # Worker. Eigenständig abfragbar (User-Wunsch "Heatmap auch query-fähig
-    # machen"), nicht nur ins Feed-HTML gebacken.
-    #
-    # ``weeks`` ist **entkoppelt** von ``days`` (PLAN-20 Befund 3, User-Fund:
-    # "Heatmap immer um eine Woche nachladen") — eigener ``collect_commits()``-
-    # Aufruf mit eigenem Zeitfenster, nicht dieselbe (an ``days`` gebundene)
-    # Commit-Liste wie die Änderungsliste. Sonst wäre die 5-Wochen-Heatmap beim
-    # Default-Seitenaufruf (``days=1``) fast leer, weil sie nur die Commits
-    # sähe, die die Liste ohnehin schon geladen hat.
+    # Worker. Eigenständig abfragbar, nicht nur ins Feed-HTML gebacken.
     @app.get("/-/feed", tags=["daemon"])
-    def feed(days: int | None = None, weeks: int | None = None):
+    def feed(days: int | None = None):
         from bibi import feed as feed_mod
         root = repo.root()
         commits = feed_mod.collect_commits(root, since_days=days)
-        agent_shas = feed_mod.agent_commit_shas(root, since_days=days)
-        entities = feed_mod.group_entities(commits, agent_shas,
-                                           case_dir_name=repo.case_dir_name())
-        eff_weeks = weeks if weeks is not None else feed_mod.HEATMAP_WEEKS
-        heatmap_commits = feed_mod.collect_commits(root, since_days=eff_weeks * 7)
-        grid = feed_mod.heatmap_buckets(heatmap_commits, weeks=eff_weeks)
+        slugs = feed_mod.agent_slugs(root, since_days=days)
+        cases = feed_mod.discover_cases(root, case_dir_name=repo.case_dir_name())
+        entries = feed_mod.group_entries(commits, slugs, cases=cases)
         return {
             "since_days": days,
-            "weeks": eff_weeks,
             "commit_base_url": feed_mod.remote_commit_base_url(root),
-            "entities": [
-                {"kind": e.kind, "name": e.name, "last_changed": e.last_changed,
+            "entries": [
+                {"unit": e.unit, "last_changed": e.last_changed,
                  "last_commit_sha": e.last_commit_sha,
-                 "authors": sorted(e.authors), "all_agent": e.all_agent}
-                for e in entities
+                 "authors": sorted(e.authors), "changes": e.changes}
+                for e in entries
             ],
-            "heatmap": grid,
         }
 
     @app.get("/-/log/stream", tags=["daemon"])

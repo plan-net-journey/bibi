@@ -35,7 +35,7 @@ def test_header_grid_has_three_breakpoints():
 # --- #63: „mehr laden" gehört in die Karte, links unten ----------------------
 
 def _feed_html() -> str:
-    return render.feed_fragment({"entities": [], "heatmap": [[[0] * 8 for _ in range(7)]]}, days=1, weeks=1)
+    return render.feed_fragment({"entries": []}, days=1)
 
 
 def test_load_more_sits_inside_its_card():

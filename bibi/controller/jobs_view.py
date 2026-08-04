@@ -522,8 +522,11 @@ def build_groups(*, scheduler_slot: dict | None, local_slot: dict | None,
     return aus
 
 
-def by_day(runs: list) -> list[tuple[str, list]]:
-    """Läufe nach Tag gruppieren, jüngster Tag zuerst (FE-Spezifikation §5.3).
+def by_day(runs: list, *, ts_key: str = "finished_at") -> list[tuple[str, list]]:
+    """Einträge nach Tag gruppieren, jüngster Tag zuerst (FE-Spezifikation §5.3).
+
+    ``ts_key`` benennt das Zeitfeld — die Lauf-Liste gruppiert nach
+    ``finished_at``, der Feed nach ``last_changed``. Dasselbe Idiom, ein Ort.
 
     **Sortiert wird nach ``finished_at``, nicht nach ``archived_at``.** Unter
     der Archivierungsregel A2 laufen beide beliebig weit auseinander: ein
@@ -538,11 +541,11 @@ def by_day(runs: list) -> list[tuple[str, list]]:
     import datetime as _dt
 
     nach_tag: dict[str, list] = {}
-    for r in sorted(runs, key=lambda x: x.get("finished_at") or 0, reverse=True):
-        ts = r.get("finished_at")
+    for r in sorted(runs, key=lambda x: x.get(ts_key) or 0, reverse=True):
+        ts = r.get(ts_key)
         if ts is None:
             continue
         tag = _dt.datetime.fromtimestamp(ts).strftime("%d/%m/%Y")
         nach_tag.setdefault(tag, []).append(r)
     return sorted(nach_tag.items(),
-                  key=lambda kv: kv[1][0].get("finished_at") or 0, reverse=True)
+                  key=lambda kv: kv[1][0].get(ts_key) or 0, reverse=True)

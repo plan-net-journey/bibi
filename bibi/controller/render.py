@@ -440,90 +440,30 @@ th.sorted { font-weight: 700; }
 .tree-clean, .sync-synced { color: var(--green); }
 .tree-modified, .sync-ahead { color: var(--amber); }
 .sync-behind, .sync-conflict { color: var(--red); }
-.filterbar { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap;
-             margin: .3rem 0 .8rem; font-size: .85rem; }
-.filterbar select { font: inherit; padding: .2rem .45rem; color: inherit;
-          background: var(--btnbg); border: 1px solid var(--btnline); border-radius: .3rem; }
-.filterbar label.chk { display: flex; align-items: center; gap: .35rem; cursor: pointer; }
-/* Volle Breite, dynamisch (PLAN-19 Befund 5, User-Fund: Heatmap zog vorher
-   nur eine feste Pixelbreite, viel Leerraum daneben) — Tag-Gruppen UND
-   Zellen wachsen jetzt per flex mit der verfügbaren Breite statt fester px. */
-.heatmap-wrap { padding-bottom: .3rem; }
-.heatmap2 { display: flex; flex-direction: column; gap: 3px; width: 100%; }
-.hm2-header, .hm2-subheader, .hm2-row { display: flex; align-items: center; gap: .5rem; }
-.hm2-subheader { margin-bottom: .1rem; }
-.hm2-wlabel { flex: 0 0 5.2rem; font-size: .72rem; color: var(--faint); text-align: right; }
-.hm2-daylabel { font-size: .68rem; color: var(--faint); text-align: center; width: 100%; font-weight: 600; }
-.hm2-day-group { display: flex; gap: 2px; padding: 0 .3rem; border-right: 1px solid var(--line);
-                 flex: 1; min-width: 0; box-sizing: border-box; justify-content: center; }
-.hm2-day-group:last-child { border-right: none; }
-.hm2-hourtick { flex: 1; font-size: .55rem; color: var(--faint); text-align: center;
-                font-family: ui-monospace, monospace; }
-.hm-cell { flex: 1; height: 14px; min-width: 4px; border-radius: 2px; background: var(--cell0); }
-.hm-cell[data-lvl="1"] { background: var(--cell1); }
-.hm-cell[data-lvl="2"] { background: var(--cell2); }
-.hm-cell[data-lvl="3"] { background: var(--cell3); }
-.hm-cell[data-lvl="4"] { background: var(--cell4); }
-/* PLAN-21 Befund 4, User-Fund: die Legende (5 kleine Farbblöcke "wenig →
-   viel") zog trotz fester width auf die volle Zeilenbreite — Root Cause: die
-   geerbte Basis-Regel .hm-cell{flex:1} gewinnt in einem Flex-Container gegen
-   die explizite width. `flex: none` hier überschreibt das gezielt, nur für
-   die Legende (die eigentliche Heatmap bleibt bei PLAN-19s voller Breite). */
-.heatmap-legend { display: flex; align-items: center; justify-content: flex-end;
-                  gap: .3rem; font-size: .75rem; color: var(--faint); margin-top: .35rem; }
-.heatmap-legend .hm-cell { flex: none; width: 9px; height: 9px; }
-/* Lauf-Historie-Chart (PLAN-21 Befund 11) — eine Karte über die volle Breite
-   (Kopf mit Titel, Zustands-Chips).
-   User-Fund 2026-07-08 (2. Runde, "gefällt mir an Variante C"): kein
-   separates Stat-Grid mehr, keine Chart-Legende mehr (die Chips tragen
-   dieselben Farben wie die Chart-Segmente und übernehmen die Legenden-
-   Funktion), Chart deutlich größer, Karte spannt dieselbe Breite wie die
-   Schedule-Tabelle darunter statt eines schmalen 640px-Kastens. */
-/* .panel-card: generischer Rahmen, wiederverwendet für Lauf-Historie UND die
-   Schedule-Liste (User-Fund 2026-07-08, 5. Runde: "den Rahmen auch um die
-   Schedules und die Inaktiven"). */
+/* .panel-card: generischer Rahmen um eine Liste. */
 .panel-card { border: 1px solid var(--line); border-radius: .4rem; padding: .7rem 1rem .6rem;
               margin: .5rem 0 1rem; }
-/* PLAN-27 Befund 1, User-Fund: "Margins zwischen Chart und Heatmap
-   unterschiedlich" — die generische h2-Regel (margin-top 1.5rem, für
-   Überschriften ZWISCHEN Sektionen gedacht) addierte sich zusätzlich zum
-   .panel-card-Padding oben, während der Chart-Kopf (.ts-head h3) schon bei
-   margin:0 saß. Normalisiert Aktivität/Änderungen/Schedules auf denselben
-   Stand wie der Chart. */
 .panel-card > h2:first-child { margin-top: 0; }
-.ts-head { display: flex; align-items: baseline; justify-content: space-between;
-           flex-wrap: wrap; gap: .4rem 1rem; }
-.ts-head h3 { margin: 0; font-size: .95rem; }
-.ts-chips { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: baseline;
-            font-family: ui-monospace, monospace; font-size: .8rem; font-weight: 700;
-            color: var(--faint); margin: .35rem 0 .7rem; }  /* Default = gedimmt (running=0) */
-.ts-chip.ts-dim { color: var(--dim); font-weight: 400; }
-.res-links { display: flex; gap: .9rem; }
-.res-link { font-size: .7rem; color: var(--dim); text-decoration: none; cursor: pointer; }
-.res-link:hover { color: inherit; }
-.res-link.active { color: inherit; text-decoration: underline; font-weight: 600; }
-.chart-wrap { height: 148px; }  /* User-Fund 2026-07-08 (4. Runde): 74px war zu klein, doppelt so hoch */
+/* Feed: eine Zeile je Einheit — Zeit · Einheit · Umfang · Wer · Commit. */
 .feedlist { display: flex; flex-direction: column; gap: 0; font-size: .88rem; }
 .frow { display: flex; gap: .6rem; align-items: baseline; padding: .38rem 0;
         border-bottom: 1px solid var(--line); }
-.frow.is-agent { opacity: .55; }
 .frow .t { color: var(--dim); font-family: ui-monospace, monospace; font-size: .78rem;
-           flex: 0 0 11rem; overflow-wrap: anywhere; }
-.lvl { font-family: ui-monospace, monospace; font-size: .68rem; font-weight: 700;
-       padding: .05rem .4rem; border-radius: .25rem; flex: 0 0 auto;
-       text-transform: uppercase; letter-spacing: .02em; }
-.lvl.case { background: var(--greensoft); color: var(--green); }
-.lvl.vault { background: var(--bluesoft); color: var(--blue); }
-.lvl.system { background: var(--ambersoft); color: var(--amber); }
-/* Bibi4-Iteration, User-Fund: langer Slug (Bindestrich-Umbruch mitten im Wort)
-   und die kommagetrennte Autorenliste liefen über den Rand — Flex-Items haben
-   ohne min-width:0 eine implizite Mindestbreite gleich ihrem Inhalt, egal wie
-   die Zeile eigentlich schrumpfen könnte. */
+           flex: 0 0 3.4rem; }
+/* Ohne min-width:0 hat ein Flex-Item eine implizite Mindestbreite gleich seinem
+   Inhalt — ein langer Slug und die Urheberliste liefen sonst über den Rand. */
 .frow .msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.frow .cnt { color: var(--dim); font-family: ui-monospace, monospace; font-size: .78rem;
+             flex: 0 0 auto; white-space: nowrap; }
 .frow .who { color: var(--dim); font-size: .78rem; flex: 0 1 auto; min-width: 0;
              overflow-wrap: anywhere; }
 .frow a.commit { text-decoration: none; }
 .frow a.commit:hover { text-decoration: underline; color: var(--blue); }
+/* Tagestrennlinie, dasselbe Idiom wie in der Lauf-Liste von Job Detail. */
+.fday { display: flex; align-items: center; gap: .6rem; margin: .9rem 0 .2rem;
+        font-family: ui-monospace, monospace; font-size: .72rem; color: var(--faint); }
+.fday::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.freach { font-size: .78rem; color: var(--faint); margin: 0 0 .3rem; }
 /* m.rau/bibi#63: in der Karte, an ihrem unteren linken Rand. Der obere
    Abstand trennt vom Inhalt darueber, der untere entfaellt — die Karte
    bringt ihr eigenes Padding mit. */
@@ -2813,87 +2753,6 @@ def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
 
 # ── Feed-Screen (PLAN-18 Stufe 18.3) — jetzt Home (``/-/``) ──────────────────
 
-_HM_DAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
-
-
-def _heatmap_level(count: int) -> int:
-    """Rohe Commit-Zahl → Farbstufe 0-4 (feste Schwellen, kein Vorgänger-
-    Precedent — reicht für die erste Umsetzung, ohne Bedarf gemessen)."""
-    if count <= 0:
-        return 0
-    if count <= 2:
-        return 1
-    if count <= 5:
-        return 2
-    if count <= 10:
-        return 3
-    return 4
-
-
-def _heatmap_col_labels(now: float) -> list[str]:
-    """Spalten-Beschriftung relativ zu heute (PLAN-19 Befund 5, User-
-    Entscheidung: rollierendes Fenster statt Mo-So-Kalenderwoche, aber
-    weiterhin Wochentagsnamen statt Datum) — Spalte 6 (letzte) ist immer der
-    heutige Wochentag, Spalte 0 der Wochentag sechs Tage davor."""
-    import datetime
-    today_weekday = datetime.datetime.fromtimestamp(now).weekday()
-    return [_HM_DAYS[(today_weekday + c - 6) % 7] for c in range(7)]
-
-
-def _heatmap_row_labels(now: float, weeks: int) -> list[str]:
-    """Datum des Wochenstarts je Zeile (PLAN-21 Befund 5, User-Fund: "Datum
-    des Wochenstarts anzeigen, also die erste in den Tagesspalten" statt
-    relativer "vor N Wochen"-Angabe) — Spalte 0 jeder Zeile ist der älteste
-    Tag ihrer rollierenden 7-Tage-Gruppe, exakt dieselbe Formel wie
-    ``heatmap_buckets()``/``_heatmap_col_labels()`` (kein neues Datum nötig,
-    nur anders formatiert)."""
-    import datetime
-    today = datetime.datetime.fromtimestamp(now).date()
-    return [(today - datetime.timedelta(days=week_idx * 7 + 6)).strftime("%d.%m.")
-            for week_idx in range(weeks)]
-
-
-def _heatmap_html(grid: list[list[list[int]]], now: float | None = None) -> str:
-    """5×7×8-Grid (``bibi.feed.heatmap_buckets()``) → dasselbe DOM-Layout wie
-    das im Browser verifizierte Wireframe (``wireframes/feed.html``), hier
-    serverseitig aus echten Zählungen statt Zufallswerten gerendert. Spalten
-    sind seit PLAN-19 Befund 5 rollierend (letzte Spalte = heute) — die
-    Wochentag-Labels wandern deshalb mit statt fix Mo-So zu sein."""
-    now = time.time() if now is None else now
-    col_labels = _heatmap_col_labels(now)
-    row_labels = _heatmap_row_labels(now, len(grid))
-    header = ('<div class="hm2-header"><span class="hm2-wlabel"></span>' + "".join(
-        f'<div class="hm2-day-group"><span class="hm2-daylabel">{d}</span></div>'
-        for d in col_labels) + "</div>")
-    ticks = "".join(
-        f'<span class="hm2-hourtick">{b * 3:02d}</span>' if b % 2 == 0
-        else '<span class="hm2-hourtick"></span>'
-        for b in range(8))
-    subheader = ('<div class="hm2-subheader"><span class="hm2-wlabel"></span>'
-                + f'<div class="hm2-day-group">{ticks}</div>' * len(col_labels) + "</div>")
-
-    rows = []
-    for week_idx, week in enumerate(grid):
-        label = row_labels[week_idx]
-        groups = []
-        for col_idx, day in enumerate(week):
-            cells = "".join(
-                f'<span class="hm-cell" data-lvl="{_heatmap_level(n)}" '
-                f'title="{_e(label)} · {col_labels[col_idx]} {b * 3:02d}–{b * 3 + 3:02d} Uhr '
-                f'— {n} Änderung(en)"></span>'
-                for b, n in enumerate(day))
-            groups.append(f'<div class="hm2-day-group">{cells}</div>')
-        rows.append(f'<div class="hm2-row"><span class="hm2-wlabel">{_e(label)}</span>'
-                    f'{"".join(groups)}</div>')
-
-    legend = ('<div class="heatmap-legend"><span>wenig</span>'
-             + "".join(f'<span class="hm-cell" data-lvl="{i}"></span>' for i in range(5))
-             + "<span>viel</span></div>")
-    return ('<h2>Aktivität</h2>'
-           f'<div class="heatmap-wrap"><div class="heatmap2">{header}{subheader}'
-           f'{"".join(rows)}</div></div>{legend}')
-
-
 def _feed_commit_cell(sha: str | None, commit_base_url: str | None) -> str:
     if not sha:
         return ""
@@ -2904,149 +2763,117 @@ def _feed_commit_cell(sha: str | None, commit_base_url: str | None) -> str:
     return f'<span class="commit">{short}</span>'
 
 
-def _feed_row(e: dict, now: float, *, commit_base_url: str | None = None) -> str:
-    kind, name = e["kind"], e["name"]
-    is_agent = bool(e.get("all_agent"))
-    cls = "frow is-agent" if is_agent else "frow"
-    # PLAN-19 Befund 6, User-Fund: absolute Zeit statt "vor 4 h" (schon
-    # verfügbar, dieselbe Funktion wie die Journal-Liste andernorts nutzt).
-    # Bibi4-Iteration, User-Fund: der Time-Toggle (abs/rel/beides) schaltete
-    # überall außer im Feed — hier bisher fest absolut, unabhängig vom Toggle.
-    t = _time_toggle_cell(e.get("last_changed"), now, rel_fn=_ago)
-    authors = ", ".join(e.get("authors") or []) or "—"
-    # Bibi4-Iteration, User-Fund: "warum erscheint hier mein Name" — all_agent
-    # (Merge-Herkunft, feed.py::group_entities()) wurde bisher nur fürs
-    # "Wer"-Filtern genutzt (_FEED_FILTER_JS), nicht in der Autor-Spalte selbst
-    # sichtbar gemacht. Der rohe Git-Autor bleibt "m.rau" auch für automatisierte
-    # Läufe (git_ops.stage_and_commit() committet /save & Co. immer unter der
-    # ambienten Identität) — ohne diesen Zusatz sah eine als "nur Agents"
-    # gefilterte Zeile trotzdem aus wie ein manueller m.rau-Commit.
-    who = f"{authors} · automatisiert" if is_agent and authors != "—" else authors
-    commit = _feed_commit_cell(e.get("last_commit_sha"), commit_base_url)
-    return (f'<div class="{cls}" data-kind="{_e(kind)}" data-agent="{"1" if is_agent else "0"}">'
-           f'<span class="t">{t}</span>'
-           f'<span class="lvl {_e(kind)}">{_e(kind)}</span>'
-           f'<span class="msg">{_e(name)}</span>'
+def _feed_row(entry: dict, *, commit_base_url: str | None = None) -> str:
+    """Eine Einheit: Uhrzeit, Name, Umfang, Urheber, Commit.
+
+    Nur die Uhrzeit — das Datum steht in der Tagestrennlinie darüber und
+    stünde sonst in jeder Zeile ein zweites Mal.
+    """
+    ts = entry.get("last_changed")
+    zeit = _abs_time(ts)
+    n = int(entry.get("changes") or 0)
+    umfang = f"{n} change" if n == 1 else f"{n} changes"
+    wer = ", ".join(entry.get("authors") or []) or "—"
+    commit = _feed_commit_cell(entry.get("last_commit_sha"), commit_base_url)
+    return ('<div class="frow">'
+           f'<span class="t">{_e(zeit)}</span>'
+           f'<span class="msg">{_e(entry.get("unit") or "—")}</span>'
+           f'<span class="cnt">{_e(umfang)}</span>'
+           f'<span class="who">{_e(wer)}</span>'
            f"{commit}"
-           f'<span class="who">{_e(who)}</span>'
            "</div>")
 
 
-_FEED_FILTER_JS = """
-function bibiApplyFeedFilters(){
-  const kind = document.getElementById('feedkind').value;
-  const agent = document.getElementById('feedagent').value;
-  document.querySelectorAll('#feedlist .frow').forEach(row => {
-    const matchKind = kind === 'alle' || row.dataset.kind === kind;
-    const matchAgent = agent === 'alle'
-      || (agent === 'agents' && row.dataset.agent === '1')
-      || (agent === 'team' && row.dataset.agent === '0');
-    row.style.display = (matchKind && matchAgent) ? '' : 'none';
-  });
-}
-"""
+def _feed_empty(days: int | None) -> str:
+    """Leerer Zustand als Einstiegsdokumentation (Umbauplan §4): was fehlt, und
+    was man tun kann. ``— keine Änderungen —`` sagt beides nicht.
+
+    Der Hinweis auf LOAD MORE steht nur, wo der Knopf auch steht. Ohne
+    ``days`` gibt es kein Fenster zum Erweitern, und ein Rat, der auf einen
+    fehlenden Knopf zeigt, ist schlimmer als keiner.
+    """
+    if not days or days < 1:
+        # Ohne Fenster gibt es nichts zu erweitern, und „the last 0 days" ist
+        # keine Auskunft. Beides derselbe Fall: kein Rat auf einen Knopf, der
+        # nicht da ist, und keine Zahl, die niemand gemeint hat.
+        return ('<p class="out-empty">No changes found. Every commit to a '
+               "Markdown file under <code>vault/</code> shows up here.</p>")
+    fenster = "the last day" if days == 1 else f"the last {days} days"
+    return ('<p class="out-empty">No changes in '
+           f"{_e(fenster)}. Every commit to a Markdown file under "
+           "<code>vault/</code> shows up here — widen the window with LOAD MORE.</p>")
 
 
-def _feed_filter_bar() -> str:
-    # 3-State statt Checkbox (User-Fund 2026-07-07: "Agents ausblenden" war
-    # nur binär — Alle/Nur Agents/Nur Team im selben Dropdown-Stil wie "Ebene").
-    return (
-        '<div class="filterbar">'
-        '<label>Ebene <select id="feedkind" onchange="bibiApplyFeedFilters()">'
-        '<option value="alle">alle</option><option value="case">case</option>'
-        '<option value="vault">vault</option><option value="system">system</option>'
-        "</select></label>"
-        '<label>Wer <select id="feedagent" onchange="bibiApplyFeedFilters()">'
-        '<option value="alle">alle</option><option value="agents">nur Agents</option>'
-        '<option value="team">nur Team</option>'
-        "</select></label>"
-        "</div>"
-    )
+def _feed_list(entries: list[dict], *, days: int | None = None,
+              commit_base_url: str | None = None) -> str:
+    """Tageweise gruppiert, jüngster Tag zuerst — dasselbe Idiom wie die
+    Lauf-Liste in Job Detail, damit beide Listen gleich gelesen werden."""
+    if not entries:
+        return _feed_empty(days)
+    from bibi.controller import jobs_view
+    teile = []
+    for tag, zeilen in jobs_view.by_day(entries, ts_key="last_changed"):
+        teile.append(f'<div class="fday">{_e(tag)}</div>')
+        teile.append('<div class="feedlist">' + "".join(
+            _feed_row(e, commit_base_url=commit_base_url) for e in zeilen) + "</div>")
+    return "".join(teile)
 
 
-def _feed_list(entities: list[dict], now: float, *, commit_base_url: str | None = None) -> str:
-    if not entities:
-        return '<p class="out-empty">— keine Änderungen in diesem Zeitraum —</p>'
-    return '<div class="feedlist" id="feedlist">' + "".join(
-        _feed_row(e, now, commit_base_url=commit_base_url) for e in entities) + "</div>"
+def _feed_reach(entries: list[dict], days: int | None) -> str:
+    """Reichweite und Umfang im Bild, nicht nur im Knopf — sonst ist ein
+    LOAD MORE, das nichts mehr lädt, von „da war nichts" nicht zu
+    unterscheiden (dieselbe Unterscheidung wie im Archive-Screen)."""
+    einheiten = len(entries)
+    aenderungen = sum(int(e.get("changes") or 0) for e in entries)
+    e_wort = "unit" if einheiten == 1 else "units"
+    a_wort = "change" if aenderungen == 1 else "changes"
+    umfang = f"{einheiten} {e_wort}, {aenderungen} {a_wort}"
+    if not days or days < 1:
+        # Ohne Fenster keine Fensterangabe — „showing None days" stand hier
+        # vorher wortwoertlich.
+        return f'<p class="freach">{umfang}</p>'
+    fenster = "1 day" if days == 1 else f"{days} days"
+    return f'<p class="freach">showing {_e(fenster)} · {umfang}</p>'
 
 
-def _feed_board_url(days: int | None, weeks: int | None) -> str:
-    parts = []
-    if days is not None:
-        parts.append(f"days={days}")
-    if weeks is not None:
-        parts.append(f"weeks={weeks}")
-    return "/-/ui/feed/board" + ("?" + "&".join(parts) if parts else "")
+def _feed_board_url(days: int | None) -> str:
+    return "/-/ui/feed/board" + (f"?days={days}" if days is not None else "")
 
 
-def feed_fragment(feed_data: dict, *, days: int | None = None, weeks: int | None = None,
+def feed_fragment(feed_data: dict, *, days: int | None = None,
                   now: float | None = None) -> str:
-    """Der austauschbare Feed-Kern (``#feedboard``): Filterleiste + Heatmap +
-    aggregierte Änderungsliste + je ein „mehr laden" für Liste (Tage) und
-    Heatmap (Wochen) — **entkoppelt** (PLAN-20 Befund 3, User-Fund: „Heatmap
-    immer um eine Woche nachladen"; PLAN-18 Design-Pass: einfacher wachsender
-    Zähler statt fester Tier-Liste). Jeder Button hält das jeweils andere
-    Fenster über ``_feed_board_url()`` konstant, damit ein Klick nicht das
-    zuvor schon nachgeladene Fenster der anderen Komponente zurücksetzt."""
-    now = time.time() if now is None else now
-    entities = feed_data.get("entities") or []
-    grid = feed_data.get("heatmap") or []
+    """Der austauschbare Feed-Kern (``#feedboard``): Reichweite, Liste,
+    LOAD MORE. Ein Klick erweitert das Fenster um einen Tag."""
+    entries = feed_data.get("entries") or []
     commit_base_url = feed_data.get("commit_base_url")
-    # Aktuelles Wochen-Fenster (für beide Buttons konstant zu halten): explizit
-    # übergeben, sonst aus der schon abgerufenen Grid-Länge abgeleitet.
-    cur_weeks = weeks if weeks is not None else (len(grid) if grid else None)
-    if days is None:
-        # Schon "gesamte Historie" — nichts mehr zu laden. days=0 ist das
-        # explizite Sentinel dafür (siehe __init__.py::_effective_days);
-        # ohne dieses Signal wäre "kein days-Query-Param" nicht von einem
-        # frischen Seitenaufruf (Default 1 Tag) unterscheidbar.
-        load_more = ""
-    else:
-        next_days = days + 1
-        url = _feed_board_url(next_days, cur_weeks)
+    load_more = ""
+    if days and days >= 1:
+        url = _feed_board_url(days + 1)
         load_more = (
-            f'<div class="loadmore">'
+            '<div class="loadmore">'
             f'<button hx-get="{url}" hx-target="#feedboard" '
-            f'hx-swap="outerHTML">mehr laden ({next_days} Tage)</button>'
-            f"</div>"
-        )
-    heatmap_load_more = ""
-    if grid:
-        next_weeks = cur_weeks + 1
-        hm_url = _feed_board_url(days, next_weeks)
-        heatmap_load_more = (
-            f'<div class="loadmore">'
-            f'<button hx-get="{hm_url}" hx-target="#feedboard" '
-            f'hx-swap="outerHTML">mehr laden ({next_weeks} Wochen)</button>'
-            f"</div>"
+            f'hx-swap="outerHTML">LOAD MORE ({days + 1} days)</button>'
+            "</div>"
         )
     return (
-        '<div id="feedboard">'
-        # m.rau/bibi#63: beide "mehr laden" stehen jetzt IN ihrer Karte, unten
-        # links — vorher hinter dem schliessenden </div>, also unter der Karte.
-        f'<div class="panel-card">{_heatmap_html(grid, now)}{heatmap_load_more}</div>'
-        '<div class="panel-card">'
-        '<h2>Änderungen</h2>'
-        f"{_feed_filter_bar()}"
-        f"{_feed_list(entities, now, commit_base_url=commit_base_url)}"
+        '<div id="feedboard"><div class="panel-card">'
+        f"{_feed_reach(entries, days)}"
+        f"{_feed_list(entries, days=days, commit_base_url=commit_base_url)}"
         f"{load_more}"
-        '</div>'
-        f"<script>{_FEED_FILTER_JS}</script>"
-        "</div>"
+        "</div></div>"
     )
 
 
 def feed_page(
     feed_data: dict, *, git_status: dict | None = None, host_url: str | None = None,
-    days: int | None = None, weeks: int | None = None,
+    days: int | None = None,
     daemon_status: dict | None = None, now: float | None = None,
     client_rows: list[dict] | None = None,
         scheduler: dict | None = None,
         scheduler_stale_since: float | None = None,) -> str:
-    """Feed-Screen — jetzt Home (``/-/``): fixierte Status-Kacheln (Host/Mode/
-    Git, PLAN-19 Befund 4) + Heatmap + aggregierte Änderungsliste. Kein
-    Daemon-Log hier (User-Entscheidung, PLAN-18 Rückmeldung 11)."""
+    """Feed-Screen (Home, ``/-/``): Hülle, Header, eine Zeile je geänderter
+    Einheit. Zeigt die Wirkung der Arbeit, wo die anderen Screens ihre
+    Ausführung zeigen."""
     now = time.time() if now is None else now
     status = daemon_status or {}
     return (
@@ -3059,7 +2886,7 @@ def feed_page(
         f"{_header('Feed', status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"<script>{_CLOCK_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
-        f"{feed_fragment(feed_data, days=days, weeks=weeks, now=now)}"
+        f"{feed_fragment(feed_data, days=days, now=now)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_TIME_JS}</script>"
