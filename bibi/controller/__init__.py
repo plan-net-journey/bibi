@@ -17,6 +17,7 @@ nicht mehr die Root selbst. Fragment-Routen liegen unter ``/-/ui/``
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -1414,6 +1415,11 @@ def add_controller_routes(
             if e.get("slug") == slug:
                 sched_slot = e
                 break
+        # Ein Oneshot laeuft nie lokal (FE §5.1.1) — dann gibt es dort auch
+        # keinen Platz zu bedienen. Die Quelle ist der Scheduler-Eintrag; die
+        # MD sagt dasselbe ueber `at`, aber sie fehlt bei einem geloeschten Job.
+        einmalig = bool((sched_slot or {}).get("oneshot")) or any(
+            md.get("slug") == slug and md.get("at") for md in _local_job_mds())
         lokal_slot = None
         sched_runs: list = []
         lokal_runs: list = []
@@ -1463,7 +1469,7 @@ def add_controller_routes(
             scheduler_runs=sched_runs, client_runs=lokal_runs, now=now,
             scheduler_total=len(sched_runs), client_total=len(lokal_runs),
             scheduler_host=(_scheduler_url() or "").split("//")[-1].split(":")[0] or None,
-            client_host=_status().get("host"))
+            client_host=_status().get("host"), oneshot=einmalig)
         gesamt = len(liste.runs)
         # Erst das Fenster, dann die Filter: `LOAD MORE` verbreitert die
         # Reichweite und darf nicht davon abhängen, was gerade ausgeblendet ist.
@@ -1479,6 +1485,39 @@ def add_controller_routes(
     #: (Zustandsmodell §1). Ohne diese Unterscheidung traefe ein Klick auf der
     #: Scheduler-Kachel den lokalen Job.
     _VERBEN = {"start", "reset", "kill", "rebuild"}
+
+    def _verb_fehler(e: Exception, verb: str, ziel: str) -> JSONResponse:
+        """Den Fehler weitergeben, wie er kam.
+
+        Ein `409` des Hosts erreichte den Klickenden bisher als
+        `502 HTTP Error 409: Conflict` — die Route verpackte jeden Fehler
+        gleich (Befund m.rau, 2026-08-04). „Bad Gateway" fuer einen Konflikt
+        ist eine Falschaussage, und der Knopf zeigt sie im `alert()`.
+
+        Der Unterschied ist der zwischen **fremder Absage** und **eigenem
+        Scheitern**: hat der Host geantwortet, ist sein Status die Aussage und
+        der Controller nur Bote. Kam gar keine Antwort, ist `502` richtig —
+        dann haengt es tatsaechlich hier.
+
+        Der Text kommt ebenfalls vom Host, wenn er einen mitschickt: „job is
+        running" sagt, was zu tun ist; „HTTP Error 409: Conflict" nennt nur die
+        Nummer noch einmal.
+        """
+        import urllib.error
+        text, code = str(e), 502
+        if isinstance(e, urllib.error.HTTPError):
+            code = e.code
+            try:
+                rumpf = json.loads(e.read() or b"null")
+                if isinstance(rumpf, dict):
+                    text = str(rumpf.get("error") or rumpf.get("detail") or text)
+            except Exception:  # noqa: BLE001 — defensiv (§2.7): kein JSON, kein Rumpf
+                pass
+        activity.emit(log, logging.WARNING, "controller.verb_failed",
+                      f"{verb.upper()} auf {ziel} fehlgeschlagen: {text}",
+                      role="controller")
+        return JSONResponse(status_code=code,
+                            content={"error": text, "verb": verb, "ziel": ziel})
 
     @app.post("/-/ui/jobs/verb/{ziel}/{job_id}/{verb}", include_in_schema=False)
     def screen_job_verb(ziel: str, job_id: str, verb: str):
@@ -1509,11 +1548,7 @@ def add_controller_routes(
             try:
                 antwort = _client_verb(verb, slug)
             except Exception as e:  # noqa: BLE001 — die Meldung gehoert an den Knopf
-                activity.emit(log, logging.WARNING, "controller.verb_failed",
-                              f"{verb.upper()} auf client fehlgeschlagen: {e}",
-                              role="controller")
-                return JSONResponse(status_code=502,
-                                    content={"error": str(e), "verb": verb, "ziel": ziel})
+                return _verb_fehler(e, verb, ziel)
             return {"ok": True, "verb": verb, "ziel": ziel, "id": job_id,
                     "antwort": antwort}
         if ziel == "scheduler":
@@ -1528,11 +1563,7 @@ def add_controller_routes(
         try:
             antwort = ziel_client.job_action(job_id, verb)
         except Exception as e:  # noqa: BLE001 — die Meldung gehoert an den Knopf
-            activity.emit(log, logging.WARNING, "controller.verb_failed",
-                          f"{verb.upper()} auf {ziel} fehlgeschlagen: {e}",
-                          role="controller")
-            return JSONResponse(status_code=502,
-                                content={"error": str(e), "verb": verb, "ziel": ziel})
+            return _verb_fehler(e, verb, ziel)
         return {"ok": True, "verb": verb, "ziel": ziel, "id": job_id,
                 "antwort": antwort}
 

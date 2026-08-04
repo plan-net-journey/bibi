@@ -1405,3 +1405,107 @@ def test_the_output_of_a_running_local_run_is_reachable(client):
     r = c.get(f"/-/jobs/{job_uid('EngineCI')}/slot/client/aa11bb22/output")
     assert r.status_code == 200
     assert "laeuft noch" in r.text, r.text
+
+
+# ── Die Fehlerdurchreichung der Verb-Route ─────────────────────────────────
+#
+# Befund vom 2026-08-04: ein `409` des Hosts erreichte den Klickenden als
+# `502 HTTP Error 409: Conflict` — die Route verpackte jeden Fehler gleich.
+# „Bad Gateway" fuer einen Konflikt ist eine Falschaussage, und der Knopf
+# zeigt sie im `alert()`.
+
+
+class _HostMitFehler:
+    """Ein Scheduler, der auf `job_action` mit einem HTTP-Status antwortet."""
+
+    def __init__(self, code: int, body: bytes = b'{"error":"job is running"}') -> None:
+        self.code, self.body = code, body
+
+    def __call__(self, url, *, timeout=5.0):
+        return self
+
+    def status(self) -> dict:
+        return {}
+
+    def schedules(self) -> list:
+        return []
+
+    def journal(self, **_):
+        return []
+
+    def job_action(self, job_id: str, verb: str):
+        import io
+        import urllib.error
+        raise urllib.error.HTTPError(
+            "http://host/-/job", self.code, "Conflict", {},
+            io.BytesIO(self.body))
+
+
+def test_a_conflict_from_the_host_stays_a_conflict(client, monkeypatch):
+    """Der Status des Hosts ist die Aussage — der Controller ist hier Bote,
+    nicht Urheber."""
+    from bibi import controller as controller_pkg
+    c, _ = client
+    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://host.invalid:8780")
+    monkeypatch.setattr(controller_pkg, "ControllerClient", _HostMitFehler(409))
+    r = c.post("/-/ui/jobs/verb/scheduler/j1/kill")
+    assert r.status_code == 409
+    assert "job is running" in r.json()["error"], r.json()
+
+
+def test_a_dead_host_is_still_a_bad_gateway(client, monkeypatch):
+    """Die Gegenprobe: kommt gar keine Antwort, ist `502` richtig — dann ist
+    der Controller tatsaechlich der, bei dem es haengt."""
+    from bibi import controller as controller_pkg
+
+    class _Tot:
+        def __call__(self, url, *, timeout=5.0):
+            return self
+
+        def __getattr__(self, name):
+            def _ruf(*_a, **_kw):
+                raise OSError("connection refused")
+            return _ruf
+
+    c, _ = client
+    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://host.invalid:8780")
+    monkeypatch.setattr(controller_pkg, "ControllerClient", _Tot())
+    assert c.post("/-/ui/jobs/verb/scheduler/j1/kill").status_code == 502
+
+
+# ── Ein Oneshot hat keinen lokalen Platz (FE §5.1.1) ──────────────────────
+
+
+def test_a_oneshot_has_no_client_tile():
+    """*„`at`-Job auf einem Client → die `CLIENT`-Kachel fehlt — ein Oneshot
+    laeuft nie lokal"* (FE §5.1.1, Zustandsmodell §5).
+
+    Der Fall war bisher ungeprueft, weil kein Oneshot lokal eine Zeile hat —
+    aber verhindert wird das nirgends: `run_pinned()` kennt keinen
+    Oneshot-Ausschluss (Zustandsmodell §8 Nr. 12 ist offen). Die Kachel waere
+    also entstanden, sobald jemand `bibi-ctrl run` auf einem `at`-Slug
+    aufruft, und haette einen Platz angeboten, den es nicht gibt.
+    """
+    liste = _liste(scheduler_slot={"id": "s1", "row_status": "pending"},
+                   client_slot={"id": "c1", "status": "complete"},
+                   oneshot=True)
+    assert [k.quelle for k in liste.tiles] == ["SCHEDULER"]
+
+
+def test_a_recurring_job_keeps_its_client_tile():
+    """Die Gegenprobe: die Regel gilt fuer Oneshots, nicht fuer jeden Job mit
+    lokalem Slot — sonst verschwaende sie die halbe Seite."""
+    liste = _liste(scheduler_slot={"id": "s1", "row_status": "pending"},
+                   client_slot={"id": "c1", "status": "complete"})
+    assert [k.quelle for k in liste.tiles] == ["SCHEDULER", "CLIENT"]
+
+
+def test_the_oneshots_local_runs_are_still_listed():
+    """Was gelaufen ist, bleibt sichtbar — es fehlt nur der Platz zum Bedienen.
+    Ein Lauf, den niemand mehr findet, waere schlimmer als eine Kachel zuviel."""
+    liste = _liste(client_slot={"id": "c1", "status": "complete"},
+                   client_runs=[{"run_id": "x:1", "status": "complete",
+                                 "finished_at": 1_754_000_000.0}],
+                   oneshot=True)
+    assert liste.tiles == []
+    assert [r["run_id"] for r in liste.runs] == ["x:1"]

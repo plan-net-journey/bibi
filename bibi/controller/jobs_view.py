@@ -567,7 +567,8 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
                    scheduler_runs: list, client_runs: list, now: float,
                    scheduler_host: str | None = None, client_host: str | None = None,
                    scheduler_total: int | None = None,
-                   client_total: int | None = None) -> RunList:
+                   client_total: int | None = None,
+                   oneshot: bool = False) -> RunList:
     """Kacheln und die eine Lauf-Liste (FE §5.1–§5.3, m.rau/bibi#131).
 
     **Oben, die Kacheln: was ich tun kann. Unten, die Liste: was geschehen
@@ -582,6 +583,15 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
     Zeile), bekommt deshalb keine Kachel: es gibt keinen Platz zu bedienen.
     Ihre Läufe gehen trotzdem nicht verloren — sie stehen in derselben Liste,
     und die Zählung nennt sie.
+
+    **Ein Oneshot bekommt nie eine ``CLIENT``-Kachel** (FE §5.1.1,
+    Zustandsmodell §5): er läuft nicht lokal, sein Termin gehört dem Scheduler.
+    Der Fall war lange ungeprüft, weil kein Oneshot lokal eine Zeile hat —
+    verhindert wird das aber nirgends (``run_pinned()`` kennt keinen
+    Oneshot-Ausschluss, Zustandsmodell §8 Nr. 12 ist offen). Die Kachel wäre
+    also entstanden, sobald jemand ``bibi-ctrl run`` auf einem ``at``-Slug
+    aufruft, und hätte einen Platz angeboten, den es nicht gibt. Die **Läufe**
+    bleiben in der Liste — es fehlt der Platz zum Bedienen, nicht die Historie.
     """
     from bibi.schedule import slot as slot_mod
 
@@ -592,6 +602,9 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
         ("SCHEDULER", "S", scheduler_slot, scheduler_runs, scheduler_host, scheduler_total),
         ("CLIENT", "C", client_slot, client_runs, client_host, client_total),
     ):
+        if oneshot and quelle == "CLIENT":
+            # Kein lokaler Platz — die Läufe unten kommen trotzdem mit.
+            zeile = None
         status = None
         if zeile is not None:
             # `row_status` zuerst: so heißt das Feld in den Scheduler-Zeilen aus
