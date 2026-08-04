@@ -25,7 +25,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from bibi import config, repo, state
-from bibi.daemon import activity, boot_signal, job_db, mergeback, openapi, output_format
+from bibi.daemon import (activity, boot_signal, job_db, mergeback, node_info, openapi,
+                         output_format)
 from bibi.daemon import worker as worker_mod  # Modul-Alias (bibi.daemon.app.worker ist eine Worker-Instanz)
 from bibi.schedule import models
 from bibi.daemon.openapi import (
@@ -1239,6 +1240,14 @@ def create_app(
             # Knoten ohne connect-Rolle statt des früheren "lokal"-Platzhalters.
             "hostname": socket.gethostname(),
         }
+        # Wer antwortet hier. Der Scheduler meldet sich nie bei sich selbst,
+        # steht also in keiner Registry — ohne diese Selbstauskunft kann ein
+        # Client seine Zeile im Nodes-Screen nicht bauen und ließe ausgerechnet
+        # den Knoten aus, dem die Flotte gehört (s. ``node_info``).
+        try:
+            out["node"] = node_info.self_entry(roles)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
         # Soll/Ist der Engine (m.rau/bibi#43) — rein lokal abgeleitet, kein
         # Heartbeat-Feld und keine Host-Abhängigkeit; funktioniert also gerade
         # dann, wenn der Host nicht erreichbar ist. Defensiv: ein Knoten, der

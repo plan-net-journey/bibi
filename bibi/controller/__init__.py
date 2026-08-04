@@ -490,90 +490,97 @@ def add_controller_routes(
                         max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
 
     def _host_worker_entry() -> dict:
-        """Synthetische Node-Zeile für den Host selbst (Batch 9 Punkt 3,
-        User-Fund: "wir können aber doch den Host, auf dem der Client Screen
-        dargestellt wird, mit in die Liste aufnehmen"). ``WorkerRegistry``
-        kennt nur Knoten, die sich per Heartbeat *gemeldet* haben — der Host
-        meldet sich nie bei sich selbst (dieselbe ``scheduler``+``connect``-
-        Ausschluss-Invariante wie beim "warum sehe ich den Worker nicht"-Fund,
-        ``daemon/roles.py``). ``git_status`` folgt demselben Format wie
-        ``Heartbeat._git_status()`` (``daemon/heartbeat.py``), damit die Zelle
-        neben echten (Heartbeat-gemeldeten) Zeilen nicht anders aussieht."""
-        import os
-        import socket
-        from bibi import config, git_ops, repo as repo_mod
-        from bibi.engine_info import engine_info
-        from bibi.git_status import working_tree_status
-        git_user = git_status = "—"
-        git_commit: str | None = None
-        try:
-            root = repo_mod.root()
-            git_user = git_ops.git_user_name(root) or "—"
-            s = working_tree_status(root)
-            if s is not None:
-                git_status = f"{s.branch or '(detached)'} · {s.tree} · {s.sync}"
-                git_commit = s.oid[:7] if s.oid else None
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            pass
-        # m.rau/bibi#19: der Host heartbeatet sich nie selbst, sein Eintrag
-        # entsteht hier — die Engine-Angabe muss deshalb an dieser Stelle
-        # ebenfalls ermittelt werden, sonst bliebe genau der Knoten leer, der
-        # die Tabelle ausliefert.
-        try:
-            engine = engine_info().label()
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            engine = None
-        raw_port = os.environ.get("BIBI_DAEMON_PORT")
-        _env = config.read_env()
-        # m.rau/bibi#44: derselbe Wert, den andere Knoten per Heartbeat melden —
-        # für den Host selbst steht er in seiner eigenen Portdatei. Ohne ihn
-        # bliebe ausgerechnet die Zeile ohne Warnung, die man am ehesten
-        # anklickt: die eigene. ``None`` bei einem Daemon, der vor #59 startete;
-        # dann verhält sich der Knopf wie bisher (s. ``portfile.read()``).
-        try:
-            from bibi.daemon import portfile
-            session = (portfile.read() or {}).get("session")
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            session = None
-        return {
-            "session": session,
-            "worker": _env.get("BIBI_NODE_NAME") or _env.get("BIBI_WORKER_NAME") or socket.gethostname(),
-            "host": socket.gethostname(),
-            "role": ",".join(roles.active_names()),
-            "node_id": config.node_id(),
-            "port": int(raw_port) if raw_port and raw_port.isdigit() else None,
-            "git_user": git_user,
-            "git_status": git_status,
-            "git_commit": git_commit,
-            "engine": engine,
-            "stale": False,
-            "connected_at": None,
-            "last_heartbeat": None,
-            # PLAN-32 Stufe 32.1: der Host schaltet sich nicht selbst frei
-            # (kein eigener approved_nodes-Eintrag, er heartbeatet sich nie
-            # selbst) — für die Anzeige immer "approved", analog zu "stale":
-            # False oben.
-            "approval_status": "approved",
-        }
+        """Die eigene Zeile im Nodes-Screen (Batch 9 Punkt 3, User-Fund: "wir
+        können aber doch den Host, auf dem der Client Screen dargestellt wird,
+        mit in die Liste aufnehmen"). ``WorkerRegistry`` kennt nur Knoten, die
+        sich per Heartbeat *gemeldet* haben — bei sich selbst meldet sich
+        keiner (dieselbe ``scheduler``+``connect``-Ausschluss-Invariante wie
+        beim "warum sehe ich den Worker nicht"-Fund, ``daemon/roles.py``).
+
+        Erhoben wird sie in ``daemon/node_info``, wo sie auch ``/-/status``
+        ausliefert: dieselbe Auskunft für den, der hier sitzt, und für den, der
+        von woanders fragt. Zwei Fassungen davon wären zwei Wahrheiten."""
+        from bibi.daemon import node_info
+        return node_info.self_entry(roles)
+
+    def _worker_rows(sched: dict | None = None) -> list[dict]:
+        """Die Knoten der Föderation — die des **Schedulers**, nicht die eigenen.
+
+        **Der vierte Fall der Selbstaufruf-Falle** (gefunden am 2026-08-04 bei
+        der Deploy-Abnahme): der Screen baute seine Tabelle aus ``_status()``,
+        also aus dem eigenen Daemon. Auf dem Host stimmte das, denn dort *liegt*
+        die Registry. Auf einem Client ist sie leer, und übrig blieb allein die
+        synthetische Eigenzeile — während der Header derselben Seite zwei Zeilen
+        weiter oben ``clients 2`` schrieb. Seit dem Wegfall der ``controller``-
+        Rolle auf sarasate gab es keinen Knoten mehr, auf dem der Screen richtig
+        funktionierte.
+
+        Drei Quellen, in dieser Reihenfolge:
+
+        1. die **Registry des Schedulers** — jeder Knoten, der sich gemeldet hat;
+        2. seine **Selbstauskunft** (``status["node"]``) — er meldet sich
+           nirgends, steht also in keiner Registry, auch nicht in seiner eigenen;
+        3. die **eigene Zeile**, falls der Scheduler uns nicht kennt: kein
+           ``connect``, erster Heartbeat noch aus, oder Scheduler nicht
+           erreichbar. Dann steht wenigstens der Knoten da, auf dem man sitzt.
+
+        Doppelt taucht niemand auf — verglichen wird die ``node_id``. Eine
+        gemeldete Zeile schlägt dabei eine gebaute: sie trägt ``Connected seit``
+        und ``Letzter Heartbeat``, die lokal nicht zu erheben sind.
+        """
+        status = sched if sched is not None else _scheduler_status()[0]
+        if not status:
+            status = _status()
+        rows = [w for w in (status.get("workers") or []) if isinstance(w, dict)]
+        bekannt = {w.get("node_id") for w in rows}
+        selbst = status.get("node")
+        if isinstance(selbst, dict) and selbst.get("node_id") not in bekannt:
+            rows.insert(0, selbst)
+            bekannt.add(selbst.get("node_id"))
+        eigen = _host_worker_entry()
+        if eigen.get("node_id") not in bekannt:
+            rows.insert(0, eigen)
+        return rows
+
+    def _restart_order(workers: list[dict]) -> list[dict]:
+        """Rollierend, und die Reihenfolge ist nicht beliebig: erst die übrigen
+        Knoten, dann der Scheduler, zuletzt der eigene.
+
+        **Der Scheduler trägt die Föderation** — startet er zusammen mit den
+        Clients neu, laufen deren Heartbeats für die Dauer beider Neustarts ins
+        Leere; dann ist die Registry beim Wiederkommen jedes Clients bereits
+        wieder da. **Der eigene Knoten führt die Schleife aus** — wer sich
+        selbst in der Mitte neu startet, stellt den Rest nie zu.
+
+        Auf dem Host fielen beide Rollen zusammen, „Host zuletzt" genügte. Von
+        einem Client aus sind es zwei verschiedene Knoten. Innerhalb einer Stufe
+        bleibt die Reihenfolge, wie sie kam (``sorted`` ist stabil).
+        """
+        eigen = _host_worker_entry().get("node_id")
+
+        def rang(w: dict) -> int:
+            if w.get("node_id") == eigen:
+                return 2
+            return 1 if "scheduler" in (w.get("role") or "") else 0
+
+        return sorted(workers, key=rang)
 
     @app.get("/-/ui/clients", include_in_schema=False)
     def clients_screen():
         _sched = _scheduler_status()
-        # Nodes-Screen (Host, Bibi4-Iteration, Batch 9 Punkt 3 umbenannt von
-        # "Clients") — Backend (WorkerRegistry, /-/worker) existierte schon
-        # lange, hier nur die Darstellung. status["workers"] kommt schon über
-        # _status() (/-/status); der Host selbst wird separat als
-        # synthetische Zeile vorangestellt (_host_worker_entry()).
-        status = _status()
-        workers = [_host_worker_entry(), *(status.get("workers") or [])]
+        # Nodes-Screen (Batch 9 Punkt 3 umbenannt von "Clients") — Backend
+        # (WorkerRegistry, /-/worker) existierte schon lange, hier nur die
+        # Darstellung. Die Tabelle zeigt die Föderation (_worker_rows()), die
+        # CLIENT-Kachel des Headers den eigenen Daemon: zwei Fragen, zwei
+        # Quellen, und genau ihre Vermischung war der Fehler.
         return HTMLResponse(render.clients_page(
-            workers, daemon_status=status, git_status=_feed_git_status(),
+            _worker_rows(_sched[0]), daemon_status=_status(),
+            git_status=_feed_git_status(),
             host_url=_scheduler_url(), scheduler=_sched[0], scheduler_stale_since=_sched[1]))
 
     @app.get("/-/ui/clients/board", include_in_schema=False)
     def clients_board_fragment():
-        workers = [_host_worker_entry(), *(_status().get("workers") or [])]
-        return HTMLResponse(render.clients_fragment(workers))
+        return HTMLResponse(render.clients_fragment(_worker_rows()))
 
     @app.post("/-/ui/clients/{node_id}/{verb}", include_in_schema=False)
     def clients_node_action(node_id: str, verb: str):
@@ -582,7 +589,7 @@ def add_controller_routes(
         # Sofort-Swap statt auf das nächste nodes-Bus-Event zu warten).
         if verb not in ("approve", "block", "restart", "deploy"):
             return JSONResponse(status_code=404, content={"error": "unknown verb"})
-        workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+        workers = _worker_rows()
         if verb in ("restart", "deploy"):
             # m.rau/bibi#39: direkt beim Zielknoten, nicht über den Scheduler.
             # Host und Port stehen in der Registry — aus dem Heartbeat des
@@ -597,13 +604,13 @@ def add_controller_routes(
             # der Knopf folgenlos.
             import time as _t
             _t.sleep(1.0)
-            workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+            workers = _worker_rows()
             return HTMLResponse(render.clients_fragment(workers))
         try:
             client.node_action(node_id, verb)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
-        workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+        workers = _worker_rows()
         return HTMLResponse(render.clients_fragment(workers))
 
     @app.post("/-/ui/clients/expected-version", include_in_schema=False)
@@ -649,48 +656,38 @@ def add_controller_routes(
                      "error": "Seite veraltet — nichts geschrieben",
                      "detail": f"diese Seite zeigte {seen}, tatsächlich steht "
                                f"{actual}. Neu laden und erneut versuchen."}
-            workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+            workers = _worker_rows()
             return HTMLResponse(render.clients_fragment(workers,
                                                         deploy_result=stale))
         res = deploy_mod.set_expected_version(version)
         if res.get("ok") and res.get("changed") and deploy:
             import time as _t
-            workers = [_host_worker_entry(), *(_status().get("workers") or [])]
-            own = _host_worker_entry().get("node_id")
-            ordered = ([w for w in workers if w.get("node_id") != own]
-                       + [w for w in workers if w.get("node_id") == own])
-            for w in ordered:
+            for w in _restart_order(_worker_rows()):
                 if w.get("port"):
                     client.restart_node(w.get("host") or "127.0.0.1",
                                         int(w["port"]), deployment=True)
                     _t.sleep(0.3)
             _t.sleep(1.0)
-        workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+        workers = _worker_rows()
         return HTMLResponse(render.clients_fragment(workers, deploy_result=res))
 
     @app.post("/-/ui/clients/restart-all", include_in_schema=False)
     def clients_restart_all(deploy: bool = False):
         """„Restart all" (m.rau/bibi#39) — rollierend, nicht gleichzeitig.
 
-        Der Host trägt die Föderation: startet er zusammen mit den Clients neu,
-        laufen deren Heartbeats für die Dauer beider Neustarts ins Leere. Erst
-        die Clients, dann der Host — dann ist die Registry beim Wiederkommen
-        jedes Clients bereits wieder da. Bei drei Knoten und je drei Sekunden
-        ist der Unterschied klein, aber er kostet nichts.
+        Die Reihenfolge steht in ``_restart_order()``: erst die übrigen Knoten,
+        dann der Scheduler, zuletzt der eigene. Bei drei Knoten und je drei
+        Sekunden ist der Unterschied klein, aber er kostet nichts.
         """
         import time as _t
-        workers = [_host_worker_entry(), *(_status().get("workers") or [])]
-        own = _host_worker_entry().get("node_id")
-        ordered = ([w for w in workers if w.get("node_id") != own]
-                   + [w for w in workers if w.get("node_id") == own])
-        for w in ordered:
+        for w in _restart_order(_worker_rows()):
             if not w.get("port"):
                 continue
             client.restart_node(w.get("host") or "127.0.0.1", int(w["port"]),
                                 deployment=deploy)
             _t.sleep(0.3)
         _t.sleep(1.0)
-        workers = [_host_worker_entry(), *(_status().get("workers") or [])]
+        workers = _worker_rows()
         return HTMLResponse(render.clients_fragment(workers))
 
     @app.get("/-/ui/logs", include_in_schema=False)
