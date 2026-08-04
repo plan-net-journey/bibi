@@ -84,6 +84,9 @@ class _FakeClient:
 
     def __init__(self):
         self.rebuilt: list[str] = []
+        self.gestartet: list[str] = []
+        self.gekillt: list[str] = []
+        self.zurueckgesetzt: list[str] = []
 
     def status(self) -> dict:
         return {"now": 1_000_000.0, "roles": ["scheduler"]}
@@ -103,6 +106,21 @@ class _FakeClient:
 
     def jobs(self, **_):
         return []
+
+    def run(self, *, slug=None, cmd=None):  # noqa: ARG002
+        # START auf dem Client: `POST /-/run` legt eine echte, gepinnte
+        # jobs-Zeile an und dispatcht sofort — der 501-Stub `/-/job/{id}/start`
+        # ist auf einem reinen Client nicht der Weg (m.rau/bibi#135).
+        self.gestartet.append(slug)
+        return {"id": "neu", "slug": slug, "status": "running"}
+
+    def run_live_kill(self, slug):
+        self.gekillt.append(slug)
+        return {"slug": slug, "killed": True}
+
+    def run_live_reset(self, slug):
+        self.zurueckgesetzt.append(slug)
+        return {"slug": slug, "reset": True}
 
     def run_rebuild(self, slug):
         # Der Client-Weg fuer REBUILD (`POST /-/run/live/{slug}/rebuild`).
@@ -1251,3 +1269,139 @@ def test_rebuild_on_an_unknown_job_is_a_404(client):
     c, _ = client
     assert c.post("/-/ui/jobs/verb/client/gibt-es-nicht/rebuild").status_code == 404
     assert c.fake.rebuilt == []
+
+
+# ── Der Client-Slot ist der gepinnte Lauf, nicht die Schedule-Zeile (#135) ───
+#
+# Live gefunden (2026-08-04, Browser): `burndown-app` lief seit dem Vortag
+# lokal — und die Seite zeigte **keine** CLIENT-Kachel, `client 0` und „No runs
+# yet". Der laufende Lauf war auf dem ganzen Screen unsichtbar.
+#
+# Der Grund: `bibi-ctrl run` legt seine Zeile unter `<slug>-<token>` an
+# (`run_pinned()`), der Screen suchte aber nach dem Basis-Slug. Was er dort
+# fand, war eine rescan-erzeugte Zeile — auf diesem Mac alle am 2026-07-31
+# 15:39 zuletzt angefasst, seither eingefroren, aus der Zeit, als er selbst
+# Scheduler war. Die Kachel zeigte also eine Karteileiche und der echte Slot
+# gar nicht. Entscheidung m.rau: „ein reiner Client laesst den Job laufen wie
+# /run. Insofern besetzt dieser laufende Job doch den Slot."
+
+
+def _gepinnter_lauf(slug: str, jid: str, status: str, **felder) -> None:
+    """Ein `/run`-Lauf, wie `run_pinned()` ihn anlegt: eigener Slug mit
+    8-stelligem Token, `pinned_host` gesetzt."""
+    import socket
+    import time as _t
+
+    from bibi.daemon import job_db
+    conn = job_db.connect()
+    try:
+        spalten = {"id": jid, "slug": f"{slug}-{jid[:8]}", "schedule_ref": f"{slug}.md",
+                   "kind": "job", "payload": "echo", "status": status,
+                   "pinned_host": socket.gethostname(), "host": socket.gethostname(),
+                   "enqueued_at": _t.time(), "started_at": _t.time() - 30, **felder}
+        conn.execute(
+            f"INSERT INTO jobs ({','.join(spalten)}) "
+            f"VALUES ({','.join(':' + k for k in spalten)})", spalten)
+    finally:
+        conn.close()
+
+
+def test_a_running_local_run_owns_the_client_tile(client):
+    """Der Live-Befund: ein laufender `/run` war auf dem Screen nirgends. Er
+    besetzt den Slot — genau das ist der Sinn des Client-Slots."""
+    c, _ = _md_job(client)
+    _gepinnter_lauf("EngineCI", "aa11bb22", "running")
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    kacheln = text[text.index('class="tiles"'):text.index('RUNS')]
+    assert "CLIENT" in kacheln, "keine CLIENT-Kachel, obwohl lokal etwas laeuft"
+    assert "running" in kacheln
+
+
+def test_the_running_local_run_also_gets_its_row(client):
+    """Und er steht in der Liste, mit der Marke — sonst zeigte die Kachel auf
+    eine Zeile, die es nicht gibt (derselbe Fehler wie bei `Runner`, #131)."""
+    c, _ = _md_job(client)
+    _gepinnter_lauf("EngineCI", "aa11bb22", "running")
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    liste = text[text.index('<table class="runs"'):]
+    assert "run-in-slot" in liste, "der laufende Lauf traegt keine Marke"
+    assert ">C<" in liste, "er steht nicht als Client-Lauf in der Liste"
+
+
+def test_a_terminal_local_run_stays_in_the_slot(client):
+    """„Wenn er einen terminalen Status erreicht, ist das immer noch der Slot"
+    (m.rau). Unter A2 wartet er dort auf einen Menschen — mit START und RESET."""
+    c, _ = _md_job(client)
+    _gepinnter_lauf("EngineCI", "cc33dd44", "error", reason="nonzero_exit",
+                    finished_at=1_785_000_000.0, exit_code=1)
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    kacheln = text[text.index('class="tiles"'):text.index('RUNS')]
+    assert "error" in kacheln and "nonzero_exit" in kacheln
+    assert "idle" not in kacheln, "der belegte Slot zeigt sich als frei"
+
+
+def test_without_a_local_run_the_tile_is_idle(client):
+    """Die Gegenprobe: ohne `/run` ist der Platz frei, aber er ist da — sonst
+    gaebe es auf einem Client keinen Weg, einen Job lokal zu starten."""
+    c, _ = _md_job(client)
+    text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
+    kacheln = text[text.index('class="tiles"'):text.index('RUNS')]
+    assert "CLIENT" in kacheln and "idle" in kacheln
+
+
+def test_start_on_the_client_goes_through_run_not_the_stub(client):
+    """**Gemessen am Testclient auf :65200:** `POST /-/job/{id}/start` gibt dort
+    `501 not implemented` zurueck — die Job-Verb-Routen sind ohne
+    `scheduler`-Rolle Stubs. Der Weg, der wirkt, ist `POST /-/run`
+    (m.rau/bibi#135): eine echte gepinnte Zeile, durch dieselbe Retry-/Error-/
+    Deferred-/Zombie-Maschine, nur ohne Dispatcher davor — ausgeloest vom
+    Menschen, nicht von der Uhr."""
+    c, _ = client
+    _lokale_zeile("EngineCI", "c1")
+    r = c.post("/-/ui/jobs/verb/client/c1/start")
+    assert r.status_code == 200, r.text
+    assert c.fake.gestartet == ["EngineCI"]
+
+
+def test_the_verbs_use_the_bucket_slug_not_the_pinned_one(client):
+    """Der gepinnte Lauf heisst `<slug>-<token>`; `/-/run` und die
+    `/-/run/live/*`-Routen erwarten den **Bucket**-Slug. Ohne die Rueckfuehrung
+    triebe jeder Klick einen Lauf auf einem Slug an, den keine MD kennt."""
+    c, _ = client
+    _lokale_zeile("EngineCI-aa11bb22", "c9", pinned_host="Mac.fritz.box",
+                  status="error")
+    assert c.post("/-/ui/jobs/verb/client/c9/start").status_code == 200
+    assert c.post("/-/ui/jobs/verb/client/c9/reset").status_code == 200
+    assert c.fake.gestartet == ["EngineCI"] and c.fake.zurueckgesetzt == ["EngineCI"]
+
+
+def test_kill_on_the_client_hits_the_run_live_route(client):
+    """KILL wirkt auf den laufenden `/run`, nicht auf eine Scheduler-Zeile —
+    dort gibt es keine."""
+    c, _ = client
+    _lokale_zeile("EngineCI-aa11bb22", "c9", pinned_host="Mac.fritz.box",
+                  status="running")
+    assert c.post("/-/ui/jobs/verb/client/c9/kill").status_code == 200
+    assert c.fake.gekillt == ["EngineCI"]
+
+
+def test_the_output_of_a_running_local_run_is_reachable(client):
+    """**Der Fall, aus dem `#131` entstand — und er war noch offen.** Live
+    gefunden (2026-08-04): `burndown-app` lief seit einem Tag, seine
+    `output.jsonl` trug 239 Zeilen, zuletzt zwei Minuten alt, und die
+    aufgeklappte Zeile sagte `(no output yet)`.
+
+    Ursache ist dieselbe Regel wie beim Output-Fix vom selben Tag, nur
+    andersherum: diese Route las **ausschliesslich** `output_ref`, und die ist
+    waehrend `running` immer `NULL` — der Wrapper fuellt sie erst beim
+    Terminal-Report. Richtig ist beides in der richtigen Reihenfolge: erst der
+    Verweis, dann die Neuberechnung aus der `run_id`."""
+    from bibi.wrapper import output as output_mod
+    c, root = _md_job(client)
+    _gepinnter_lauf("EngineCI", "aa11bb22", "running")  # output_ref bleibt NULL
+    from bibi.daemon import job_db
+    run_id = job_db.run_id_for("EngineCI-aa11bb22", "aa11bb22", 0)
+    output_mod.append(root / "data" / "job" / run_id / "output.jsonl", "out", "laeuft noch")
+    r = c.get(f"/-/jobs/{job_uid('EngineCI')}/slot/client/aa11bb22/output")
+    assert r.status_code == 200
+    assert "laeuft noch" in r.text, r.text

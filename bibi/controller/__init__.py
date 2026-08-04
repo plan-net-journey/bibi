@@ -1376,11 +1376,31 @@ def add_controller_routes(
             pass
         try:
             from bibi.daemon import job_db
+            from bibi.daemon import worker as worker_mod
+            # **Der Client-Slot ist der `/run`-Lauf, nicht die Schedule-Zeile.**
+            # Live gefunden (2026-08-04): `burndown-app` lief seit dem Vortag
+            # lokal, und der Screen zeigte weder Kachel noch Zeile noch Zaehlung
+            # — `bibi-ctrl run` legt seine Zeile unter `<slug>-<token>` an
+            # (`run_pinned()`), gesucht wurde aber der Basis-Slug. Was dort lag,
+            # war eine rescan-erzeugte Zeile: auf diesem Mac alle am 2026-07-31
+            # zuletzt angefasst, seither eingefroren, ein Rest aus der Zeit, als
+            # er selbst Scheduler war. Die Kachel zeigte damit eine
+            # Karteileiche samt `next`-Termin, den niemand einloest.
+            #
+            # Die Basis-Slug-Zeile bleibt der Rueckfall, und zwar als *freier
+            # Platz* (`idle`), nicht als Zustand: ohne sie haette ein Client, auf
+            # dem noch nie etwas lief, gar keine Kachel — und damit keinen Weg,
+            # den Job hier zu starten (FE §5.1.1: eine Kachel fehlt nur, wenn es
+            # *keinen Platz* gibt, nicht wenn er leer ist).
+            gepinnt = worker_mod._pinned_last_row(slug)
             conn = job_db.connect()
             try:
-                zeile = conn.execute(
-                    "SELECT * FROM jobs WHERE slug=?", (slug,)).fetchone()
-                lokal_slot = dict(zeile) if zeile else None
+                if gepinnt is not None:
+                    lokal_slot = dict(gepinnt)
+                else:
+                    zeile = conn.execute(
+                        "SELECT * FROM jobs WHERE slug=?", (slug,)).fetchone()
+                    lokal_slot = dict(zeile) if zeile else None
                 lokal_runs = job_db.list_journal(conn, slug=slug, limit=grenze)
             finally:
                 conn.close()
@@ -1430,31 +1450,22 @@ def add_controller_routes(
         if verb not in _VERBEN:
             return JSONResponse(status_code=400,
                                 content={"error": "unknown verb", "verb": verb})
-        if verb == "rebuild" and ziel == "client":
-            from bibi.daemon import job_db
-            conn = job_db.connect()
-            try:
-                zeile = conn.execute(
-                    "SELECT slug FROM jobs WHERE id=?", (job_id,)).fetchone()
-            finally:
-                conn.close()
-            if zeile is None:
+        if ziel == "client":
+            slug = _bucket_slug_of(job_id)
+            if slug is None:
                 return JSONResponse(status_code=404,
                                     content={"error": "job not found", "id": job_id})
             try:
-                antwort = client.run_rebuild(zeile["slug"])
+                antwort = _client_verb(verb, slug)
             except Exception as e:  # noqa: BLE001 — die Meldung gehoert an den Knopf
                 activity.emit(log, logging.WARNING, "controller.verb_failed",
-                              f"REBUILD auf client fehlgeschlagen: {e}", role="controller")
+                              f"{verb.upper()} auf client fehlgeschlagen: {e}",
+                              role="controller")
                 return JSONResponse(status_code=502,
                                     content={"error": str(e), "verb": verb, "ziel": ziel})
             return {"ok": True, "verb": verb, "ziel": ziel, "id": job_id,
                     "antwort": antwort}
-        if ziel == "client":
-            # `client` zeigt auf den eigenen Daemon — derselbe Weg, den auch
-            # der Feed und die Jobs-Liste nehmen.
-            ziel_client = client
-        elif ziel == "scheduler":
+        if ziel == "scheduler":
             url = _scheduler_url()
             if not url:
                 return JSONResponse(status_code=503,
@@ -1473,6 +1484,56 @@ def add_controller_routes(
                                 content={"error": str(e), "verb": verb, "ziel": ziel})
         return {"ok": True, "verb": verb, "ziel": ziel, "id": job_id,
                 "antwort": antwort}
+
+    def _bucket_slug_of(job_id: str) -> str | None:
+        """Der Slug, unter dem die Schedule-MD diesen Job kennt.
+
+        Ein `/run`-Lauf traegt einen eigenen, pro Aufruf eindeutigen Slug
+        (`<bucket>-<token>`, `run_pinned()`); die Routen, die ihn bedienen,
+        erwarten aber den **Bucket**-Slug — sie schlagen ueber die MD nach.
+        Ohne die Rueckfuehrung triebe jeder Klick einen Lauf auf einem Slug an,
+        den keine MD kennt. Aus der Zeile gelesen, nicht durchs Markup
+        geschleift: eine Angabe weniger, die falsch sein kann.
+        """
+        from bibi.daemon import job_db
+        from bibi.daemon.bus import bucket_slug
+        conn = job_db.connect()
+        try:
+            zeile = conn.execute(
+                "SELECT slug, pinned_host FROM jobs WHERE id=?", (job_id,)).fetchone()
+        finally:
+            conn.close()
+        if zeile is None:
+            return None
+        return bucket_slug(zeile["slug"], zeile["pinned_host"]) or zeile["slug"]
+
+    def _client_verb(verb: str, slug: str) -> dict:
+        """Die vier Verben auf **diesem** Knoten (m.rau/bibi#135).
+
+        **Alle vier nehmen einen anderen Weg als beim Scheduler, und das ist
+        gemessen, nicht angenommen** (Testclient auf :65200, 2026-08-04):
+        `POST /-/job/{id}/start|reset|kill` antwortet dort `501 not
+        implemented` — die Job-Verb-Routen sind ohne `scheduler`-Rolle Stubs;
+        `POST /-/job/{id}/rebuild` gibt es gar nicht (`{"detail":"Not
+        Found"}`, die Route haengt an der `worker`-Rolle). Was antwortet, sind
+        die slug-basierten `/-/run`- und `/-/run/live/*`-Routen.
+
+        Der Client-Slot ist damit ein **echter Slot mit vollem Lebenszyklus**,
+        dem nur der Trigger fehlt (Entscheidung m.rau): `failed`/`deferred`
+        verdienen auch hier einen Retry — aber ausgeloest von einem Menschen
+        per START, nicht von einem Dispatcher.
+        """
+        if verb == "start":
+            # `/-/run` legt eine echte gepinnte Zeile an und dispatcht sofort;
+            # laeuft schon einer, antwortet die Route `409 already running` —
+            # dieselbe Aussage, die das Zustandsmodell fuer START auf `running`
+            # trifft (der Knopf ist dort ohnehin tot).
+            return client.run(slug=slug)
+        if verb == "kill":
+            return client.run_live_kill(slug)
+        if verb == "reset":
+            return client.run_live_reset(slug)
+        return client.run_rebuild(slug)
 
     @app.get("/-/jobs/{job_uid}/slot/{ziel}/{job_id}/output", include_in_schema=False)
     def screen_job_slot_output(request: Request, job_uid: str,  # noqa: ARG001
@@ -1505,13 +1566,20 @@ def add_controller_routes(
         conn = job_db.connect()
         try:
             zeile = conn.execute(
-                "SELECT output_ref FROM jobs WHERE id=?", (job_id,)).fetchone()
+                "SELECT id, slug, fire, output_ref FROM jobs WHERE id=?",
+                (job_id,)).fetchone()
         finally:
             conn.close()
         if zeile is None:
             return PlainTextResponse("", status_code=404)
         from bibi import repo as repo_mod
-        pfad = repo_mod.root() / (zeile["output_ref"] or "")
+        from bibi.daemon.worker import output_path_of
+        # **Erst der Verweis, dann die Neuberechnung** — hier stand nur der
+        # Verweis, und der ist waehrend `running` immer NULL (der Wrapper fuellt
+        # ihn beim Terminal-Report). Live gefunden 2026-08-04: `burndown-app`
+        # lief seit einem Tag, 239 Zeilen Ausgabe lagen da, und genau die Zeile,
+        # fuer die diese Route existiert, sagte `(no output yet)`.
+        pfad = output_path_of(zeile, repo_mod.root())
         try:
             from bibi.wrapper import output as output_mod
             zeilen = output_mod.read_events(pfad)

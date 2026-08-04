@@ -49,6 +49,34 @@ def _output_path(repo_root: Path, job_id: str) -> Path:
     return repo_root / "data" / "job" / job_id / "output.jsonl"
 
 
+def output_path_of(row, repo_root: Path) -> Path:
+    """``output.jsonl`` einer Job-Zeile: **erst ``output_ref``, dann die
+    Neuberechnung** aus ``slug``/``fire``/``id``.
+
+    Die eine Stelle für diese Reihenfolge — beide Richtungen sind je einmal
+    falsch gebaut worden, und zwar am selben Tag (2026-08-04):
+
+    * Nur neu rechnen (``Worker.output_path()``) verfehlt jeden Lauf von vor
+      ``run_id_for()`` (2026-07-01), dessen Datei unter der blossen ``job_id``
+      liegt — die Kachel meldete ``output unavailable``, obwohl die Datei lag.
+    * Nur den Verweis lesen (``controller``s Slot-Output) verfehlt jeden
+      **laufenden** Lauf, denn dort ist die Spalte immer ``NULL``: der Wrapper
+      füllt sie erst beim Terminal-Report. `burndown-app` lief seit einem Tag,
+      239 Zeilen Ausgabe lagen da, der Screen sagte ``(no output yet)``.
+
+    ``row`` ist alles, was ``["output_ref"]``/``["slug"]``/``["fire"]``/``["id"]``
+    beantwortet — eine ``sqlite3.Row`` ebenso wie ein ``dict``.
+    """
+    try:
+        ref = row["output_ref"]
+    except (KeyError, IndexError):  # sqlite3.Row wirft IndexError, dict KeyError
+        ref = None
+    if ref:
+        return repo_root / ref
+    run_id = job_db.run_id_for(row["slug"] or "", row["id"], row["fire"] or 0)
+    return _output_path(repo_root, run_id)
+
+
 def _write_inplace_seed(run_dir: Path) -> Path | None:
     """PLAN-38 Stufe 2: Arbeitsstand-Schnappschuss vor einem In-place-Lauf ablegen.
 
@@ -1237,13 +1265,12 @@ class Worker:
         conn = job_db.connect(self.db_path)
         try:
             row = conn.execute(
-                "SELECT slug, fire, output_ref FROM jobs WHERE id=?", (job_id,)).fetchone()
+                "SELECT id, slug, fire, output_ref FROM jobs WHERE id=?", (job_id,)).fetchone()
         finally:
             conn.close()
-        if row is not None and row["output_ref"]:
-            return root / row["output_ref"]
-        run_id = job_db.run_id_for(row["slug"], job_id, row["fire"]) if row else job_id
-        return _output_path(root, run_id)
+        if row is None:
+            return _output_path(root, job_id)
+        return output_path_of(row, root)
 
     def _register(self, job_id: str, proc: subprocess.Popen | None) -> None:
         if proc is None:
