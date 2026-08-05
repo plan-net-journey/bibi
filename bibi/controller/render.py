@@ -4253,6 +4253,10 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         # jemand gefeuert (einzige Fundstelle im Repo war der Trigger selbst),
         # und mit `hx-swap="innerHTML"` widersprach es dem `outerHTML` des Bus.
         f'{jobs_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group)}'
+        # Der Empfaenger zur Anmeldung darueber (m.rau/bibi#153): `data-bus`
+        # allein bewirkt nichts, den Strom baut ausschliesslich `_EVENTS_JS`
+        # auf. Beim Neubau der v5-Seiten blieb es aus — als einzige Screens.
+        f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"
@@ -4708,6 +4712,9 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
         f'<div id="runs" data-bus="archived" data-bus-refetch="/-/jobs/{_uid(slug)}/runs">'
         f'{job_runs_fragment(liste, now=now, job_uid=_uid(slug), days=days, reach=reach, aktiv=aktiv, weiter=weiter) if liste is not None else ""}'
         "</div>"
+        # Wie auf der Jobs-Seite (m.rau/bibi#153): ohne `_EVENTS_JS` gibt es
+        # keinen Strom, an dem sich `data-bus="archived"` anmelden koennte.
+        f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOB_DETAIL_JS}</script>"

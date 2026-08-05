@@ -604,6 +604,44 @@ def test_the_page_does_not_nest_the_wrapper_twice(app_with, team_repo: Path):
     assert seite.count('data-bus="jobs"') == 1
 
 
+def test_the_page_carries_the_bus_client(app_with, team_repo: Path):
+    """**Befund m.rau, 2026-08-05, nach dem Fix darüber:** die Zeile bewegt
+    sich weiterhin nicht.
+
+    Die Tests darüber prüfen die Anmeldung (`data-bus`) und ihre Route
+    (`/-/jobs/list`) — beide stimmten danach. Nur: **eine Anmeldung ohne
+    Empfänger bleibt folgenlos.** `_EVENTS_JS` ist der einzige Ort, der die
+    `EventSource` gegen `/-/events` aufbaut und ein `state`-Ereignis in einen
+    htmx-Refetch übersetzt; `jobs_page_v5` band es nie ein. Am laufenden FE war
+    `window._bibiEvents` deshalb schlicht `undefined` — kein Strom, kein
+    Refetch, und die Seite zeigte den Stand ihres Aufbaus.
+
+    Dass es allen anderen Screens (Feed, Nodes, Live, Log) beiliegt und nur den
+    beiden v5-Seiten fehlt, macht es zum Versehen des Neubaus, nicht zur
+    Entscheidung — der Kommentar in `jobs_page_v5` rechnet ausdrücklich mit dem
+    Bus (»widersprach es dem `outerHTML` des Bus«).
+
+    **Drei Glieder, drei Ausfälle, ein Symptom.** Jedes für sich war
+    hinreichend, die Zeile stehenzulassen, und jedes verdeckte das nächste.
+    """
+    _mit_job_md(team_repo, "laeuft")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        seite = c.get("/-/jobs", headers={"accept": "text/html"}).text
+    assert "new EventSource('/-/events')" in seite
+
+
+def test_the_detail_page_carries_the_bus_client():
+    """Dieselbe Lücke in derselben Generation: `job_detail_page_v5` liefert
+    `_JOB_DETAIL_JS` und `_SLOT_JS` aus, aber keinen Bus-Client.
+
+    Das ist die Voraussetzung von m.rau/bibi#152 — welche Regionen des Details
+    sich am Bus anmelden, ist erst dann eine sinnvolle Frage, wenn überhaupt
+    ein Strom existiert."""
+    html = render.job_detail_page_v5(slug="laeuft", spec=_md("laeuft"), now=NOW)
+    assert "new EventSource('/-/events')" in html
+
+
 # ── RUNTIME ist eine Scheduler-Eigenschaft und ein Perzentil (#132) ────────
 
 
