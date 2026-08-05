@@ -4363,29 +4363,37 @@ def _slot_leiste(aktionen, *, job_id: str | None = None,
 #: hier. Danach laedt die Seite neu; der Bus meldet die Aenderung ohnehin,
 #: aber der Klickende soll seine Wirkung sofort sehen und nicht auf den
 #: naechsten Tick warten.
+#:
+#: **Delegiert am `document`, nicht je Knopf** (m.rau/bibi#152). Die fruehere
+#: Fassung band beim Seitenaufbau einen Listener an jeden `button.slot-do` —
+#: damit ueberlebte kein Knopf einen `outerHTML`-Swap, und genau deshalb
+#: standen die Kacheln ausserhalb der Bus-Region: ein Nachladen haette sie in
+#: Attrappen verwandelt, die aussehen wie Knoepfe und nichts tun. Der Listener
+#: gehoert jetzt der Seite, nicht dem Element; ein ausgetauschter Knopf wirkt
+#: sofort. `_JOB_DETAIL_JS` macht es fuer die Output-Faltung laengst so.
 _SLOT_JS = """
 (function(){
-  document.querySelectorAll('button.slot-do').forEach(b => {
-    b.addEventListener('click', async () => {
-      const {verb, id, ziel} = b.dataset;
-      if (!verb || !id) return;
-      b.disabled = true;
-      try {
-        const r = await fetch(`/-/ui/jobs/verb/${ziel}/${encodeURIComponent(id)}/${verb}`,
-                              {method: 'POST'});
-        if (!r.ok) {
-          const t = await r.text();
-          b.disabled = false;
-          alert(`${verb.toUpperCase()} failed (${r.status}): ${t.slice(0, 200)}`);
-          return;
-        }
-      } catch (e) {
+  document.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('button.slot-do');
+    if (!b || b.disabled) return;
+    const {verb, id, ziel} = b.dataset;
+    if (!verb || !id) return;
+    b.disabled = true;
+    try {
+      const r = await fetch(`/-/ui/jobs/verb/${ziel}/${encodeURIComponent(id)}/${verb}`,
+                            {method: 'POST'});
+      if (!r.ok) {
+        const t = await r.text();
         b.disabled = false;
-        alert(`${verb.toUpperCase()} failed: ${e}`);
+        alert(`${verb.toUpperCase()} failed (${r.status}): ${t.slice(0, 200)}`);
         return;
       }
-      window.location.reload();
-    });
+    } catch (e) {
+      b.disabled = false;
+      alert(`${verb.toUpperCase()} failed: ${e}`);
+      return;
+    }
+    window.location.reload();
   });
 })();
 """
@@ -4466,18 +4474,31 @@ def jobs_view_ohne_lauf() -> frozenset:
     return jobs_view.OHNE_EIGENEN_LAUF
 
 
-def job_tiles_fragment(tiles: list, *, now: float) -> str:
-    """Die Kacheln nebeneinander (FE §5.1).
+def job_tiles_fragment(tiles: list, *, now: float, slug: str,
+                       job_uid: str) -> str:
+    """Die Kacheln nebeneinander (FE §5.1), als eigene Bus-Region.
 
     **Nebeneinander, weil sie gleichrangig sind** und man sie ständig
     vergleicht („läuft es beim Scheduler, aber lokal nicht?"). Eine Kachel
     fehlt genau dann, wenn es dort keinen Slot gibt — nicht, wenn er leer ist.
+
+    **Am Bus unter `live:<slug>`** (m.rau/bibi#152): der Kachel-Zustand ist
+    genau das, was sich nach einem START ändert, und er blieb bisher stehen.
+    Dass die Kacheln dabei ihre Knopfleiste mittauschen, ist seit der
+    Umstellung von `_SLOT_JS` auf Delegation folgenlos — vorher hätte es die
+    Listener gekostet, und genau deshalb standen sie außerhalb.
+
+    **Der Wrapper gehört ins Fragment, nicht nur in die Seite** (die Lehre aus
+    #151): `_EVENTS_JS` swappt mit `outerHTML`, eine Antwort ohne eigenes
+    `data-bus` meldete die Region beim ersten Update ab. Und er steht auch
+    dann, wenn es gerade keine Kachel gibt — sonst könnte die Region den
+    Übergang „Slot entsteht" nie empfangen.
     """
-    if not tiles:
-        return ""
-    return ('<div class="tiles">'
-            + "".join(_slot_kachel(k, now=now) for k in tiles)
-            + "</div>")
+    innen = ('<div class="tiles">'
+             + "".join(_slot_kachel(k, now=now) for k in tiles)
+             + "</div>") if tiles else ""
+    return (f'<div id="tiles" data-bus="live:{_e(slug)}" '
+            f'data-bus-refetch="/-/jobs/{_e(job_uid)}/tiles">{innen}</div>')
 
 
 def job_runs_fragment(liste, *, now: float, job_uid: str | None = None,
@@ -4497,18 +4518,30 @@ def job_runs_fragment(liste, *, now: float, job_uid: str | None = None,
     """
     from bibi.controller import jobs_view
 
+    basis = f"/-/jobs/{job_uid}" if job_uid else ""
+
+    def _region(inneres: str) -> str:
+        """Der `archived`-Wrapper — im Fragment, nicht nur in der Seite.
+
+        Dieselbe Lücke wie bei der Jobs-Liste in #151, hier nur nie
+        aufgefallen: solange die Detail-Seite überhaupt keinen Bus-Client
+        auslieferte (#153), fand nie ein Swap statt, der die Region hätte
+        abmelden können. **Ein Fehler hat wieder den anderen verdeckt.**
+        """
+        nachlader = f' data-bus-refetch="{basis}/runs"' if basis else ""
+        return f'<div id="runs" data-bus="archived"{nachlader}>{inneres}</div>'
+
     if not liste.tiles and not liste.runs:
         # Kein Verweis mehr auf den Archive-Screen (m.rau/bibi#130): der ist
         # gestrichen, und ein Text, der auf einen Screen zeigt, den es nicht
         # gibt, ist derselbe tote Weg wie ein toter Link — nur ohne href, also
         # ohne dass ein Routen-Test ihn faende.
-        return ('<div class="empty">This job is unknown on both sides — no slot, '
-                'no runs. It may have been renamed.</div>')
-    basis = f"/-/jobs/{job_uid}" if job_uid else ""
+        return _region('<div class="empty">This job is unknown on both sides — '
+                       'no slot, no runs. It may have been renamed.</div>')
     aus = [_runs_filterzeile(liste, basis=basis, aktiv=aktiv, reach=reach)]
     if not liste.runs:
-        return "".join([*aus, '<div class="empty">No runs yet — trigger one with '
-                        "START, or wait for the schedule.</div>"])
+        return _region("".join([*aus, '<div class="empty">No runs yet — trigger '
+                                "one with START, or wait for the schedule.</div>"]))
     aus.append('<table class="runs"><thead><tr>'
                '<th class="mark"></th><th>TIME</th><th>SRC</th><th>STATUS</th>'
                "<th>EXIT</th><th>RUNTIME</th><th>COMMIT</th><th></th>"
@@ -4523,7 +4556,7 @@ def job_runs_fragment(liste, *, now: float, job_uid: str | None = None,
     # nächsten zehn Einträge trägt (§5.3, `jobs_view.naechstes_fenster()`).
     if job_uid and weiter and weiter != days:
         aus.append(_mehr_tage(basis, aktiv or {}, weiter))
-    return "".join(aus)
+    return _region("".join(aus))
 
 
 def _mehr_tage(basis: str, aktiv: dict, tage: int) -> str:
@@ -4701,17 +4734,23 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
         f"{_header('Jobs', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{kopf}"
-        # Am Bus: `archived` meldet, dass ein Lauf ins Journal gewandert ist —
-        # die einzige Verbindung zwischen Strom und Liste (m.rau/bibi#108).
-        # Nachgeladen wird die Liste, nicht die Seite: sonst ginge bei jedem
-        # Lauf Scroll-Position und Faltzustand verloren.
-        # Die Kacheln stehen **ausserhalb** des nachladenden Bereichs: sie
-        # tragen die Knoepfe, und ein Nachladen mitten im Klick nimmt sie unter
-        # der Hand weg. Die Liste darunter darf sich jederzeit erneuern.
-        f'{job_tiles_fragment(getattr(liste, "tiles", []), now=now)}'
-        f'<div id="runs" data-bus="archived" data-bus-refetch="/-/jobs/{_uid(slug)}/runs">'
+        # **Zwei angemeldete Regionen, beide mit ihrem Wrapper aus einer
+        # Quelle** — derselben Funktion, die auch die Refetch-Route bedient
+        # (der Schnitt aus m.rau/bibi#151).
+        #
+        # `live:<slug>` traegt die Kacheln: den Slot-Zustand und die Verben,
+        # die an ihm haengen. Sie standen frueher ausserhalb, weil ein Swap die
+        # Knopf-Listener gekostet haette — seit `_SLOT_JS` delegiert hoert, ist
+        # das gegenstandslos (m.rau/bibi#152). Nur den Statustext nachzuladen
+        # waere zu wenig gewesen: welche Verben moeglich sind, haengt am
+        # Zustand, eine Leiste im alten Stand boete START zu einem laufenden
+        # Job an.
+        #
+        # `archived` traegt die Lauf-Liste — ein Lauf ist ins Journal gewandert
+        # (m.rau/bibi#108). Nachgeladen wird die Liste, nicht die Seite: sonst
+        # ginge bei jedem Lauf Scroll-Position und Faltzustand verloren.
+        f'{job_tiles_fragment(getattr(liste, "tiles", []), now=now, slug=slug, job_uid=_uid(slug))}'
         f'{job_runs_fragment(liste, now=now, job_uid=_uid(slug), days=days, reach=reach, aktiv=aktiv, weiter=weiter) if liste is not None else ""}'
-        "</div>"
         # Wie auf der Jobs-Seite (m.rau/bibi#153): ohne `_EVENTS_JS` gibt es
         # keinen Strom, an dem sich `data-bus="archived"` anmelden koennte.
         f"<script>{_EVENTS_JS}</script>"

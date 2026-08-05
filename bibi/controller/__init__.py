@@ -1851,6 +1851,28 @@ def add_controller_routes(
             liste, now=jetzt, job_uid=job_uid, days=days, reach=reach, weiter=weiter,
             aktiv={"status": _mehrfach(status), "src": _mehrfach(src), "days": days}))
 
+    @app.get("/-/jobs/{job_uid}/tiles", include_in_schema=False)
+    def screen_job_tiles(request: Request, job_uid: str):  # noqa: ARG001
+        """Nur die Kacheln — das Nachlade-Ziel des ``live:<slug>``-Ereignisses.
+
+        **Mit den Knöpfen**, anders als es hier zwei Tage lang stand: der
+        frühere Einwand („ein Nachladen nähme sie unter der Hand weg") galt der
+        direkten Listener-Bindung in ``_SLOT_JS``. Seit die delegiert hört,
+        kostet ein Swap sie nichts — und nur den Statustext zu tauschen wäre
+        falsch, weil die möglichen Verben am Zustand hängen: eine Leiste im
+        alten Stand böte START zu einem laufenden Job an (m.rau/bibi#152).
+        """
+        import time as _t
+
+        treffer = _job_by_uid(job_uid)
+        if treffer is None:
+            return HTMLResponse("", status_code=404)
+        slug, _ = treffer
+        jetzt = _t.time()
+        liste, _reach, _weiter = _job_lauf_liste(slug, now=jetzt)
+        return HTMLResponse(render.job_tiles_fragment(
+            getattr(liste, "tiles", []), now=jetzt, slug=slug, job_uid=job_uid))
+
     def _job_by_uid(job_uid: str):
         """``job_uid`` → (Slug, lokale Spec) oder ``None``.
 

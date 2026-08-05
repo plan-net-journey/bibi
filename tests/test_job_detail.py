@@ -1170,7 +1170,11 @@ def test_unavailable_verbs_stay_disabled_not_clickable():
 
 def _kachel_html(**kw):
     from bibi.controller import render
-    return render.job_tiles_fragment(_liste(**kw).tiles, now=1_754_100_000.0)
+    from bibi.schedule.models import job_uid
+    # `slug`/`job_uid` tragen seit m.rau/bibi#152 den Bus-Wrapper der Region;
+    # fuer die Kachel-Aussagen hier ist nur wichtig, dass sie gesetzt sind.
+    return render.job_tiles_fragment(_liste(**kw).tiles, now=1_754_100_000.0,
+                                     slug="probe", job_uid=job_uid("probe"))
 
 
 def test_the_client_tile_says_idle_not_pending():

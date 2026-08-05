@@ -22,6 +22,7 @@ from bibi.controller import render
 from bibi.controller.jobs_view import Segment, build_rows
 from bibi.daemon import roles
 from bibi.daemon.app import create_app
+from bibi.schedule.models import job_uid
 
 
 class _FakeClient:
@@ -640,6 +641,101 @@ def test_the_detail_page_carries_the_bus_client():
     ein Strom existiert."""
     html = render.job_detail_page_v5(slug="laeuft", spec=_md("laeuft"), now=NOW)
     assert "new EventSource('/-/events')" in html
+
+
+# ── Die Slot-Kacheln am Bus (m.rau/bibi#152) ───────────────────────────────
+
+
+def test_the_tiles_subscribe_to_the_bus():
+    """**Befund m.rau:** nach START bleibt der Kachel-Status stehen.
+
+    `_SLOT_JS` lädt nach einem Verb-Klick die Seite neu, die Kachel zeigt also
+    `starting` — und bleibt dort. Angemeldet war bisher **nur** die Lauf-Liste
+    (`data-bus="archived"`); die Kacheln standen absichtlich außerhalb, weil
+    ein Swap die Knöpfe unter dem Klick wegnähme.
+
+    Der Einwand war berechtigt, der Preis war der gemeldete Fehler. Aufgelöst
+    wird er nicht durch Timing, sondern strukturell: die Knöpfe hören seit
+    diesem Fix delegiert (s. `test_the_slot_buttons_survive_a_swap`), damit
+    kostet ein Swap sie nichts mehr.
+
+    `live:<slug>` ist das ereignisgenaue Target dieses einen Jobs — dasselbe,
+    an dem schon die ältere Detail-Fassung hing.
+    """
+    html = render.job_detail_page_v5(slug="laeuft", spec=_md("laeuft"), now=NOW)
+    assert 'data-bus="live:laeuft"' in html
+
+
+def test_the_tiles_refetch_target_actually_answers(app_with, team_repo: Path):
+    """**Die Lehre aus #151, hier von vornherein angewandt:** eine Anmeldung zu
+    prüfen ist billiger als ihre Wirkung — und deshalb blieb dort eine Route
+    zwei Tage lang tot, die jeder Test für vorhanden hielt. Also wird hier die
+    URL wirklich abgerufen, nicht bloß ihr Vorkommen im HTML behauptet."""
+    _mit_job_md(team_repo, "laeuft")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        r = c.get(f"/-/jobs/{job_uid('laeuft')}/tiles", headers={"accept": "text/html"})
+    assert r.status_code == 200, f"{r.status_code}: {r.text[:200]}"
+
+
+def test_the_refetched_tiles_stay_subscribed(app_with, team_repo: Path):
+    """Zweite Lehre aus #151: `_EVENTS_JS` swappt mit `outerHTML`. Trägt die
+    Antwort ihren `data-bus`-Wrapper nicht selbst, ist die Region nach dem
+    ersten Update abgemeldet — sie aktualisiert genau einmal und nie wieder."""
+    _mit_job_md(team_repo, "laeuft")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        frag = c.get(f"/-/jobs/{job_uid('laeuft')}/tiles",
+                     headers={"accept": "text/html"}).text
+    assert 'data-bus="live:laeuft"' in frag
+    assert f'data-bus-refetch="/-/jobs/{job_uid("laeuft")}/tiles"' in frag
+
+
+def test_the_detail_page_does_not_nest_the_tiles_wrapper_twice(app_with, team_repo: Path):
+    """Gegenprobe: Seite und Fragment teilen **eine** Quelle für den Wrapper.
+    Baute die Seite ihn zusätzlich selbst, träfe `querySelectorAll` beide und
+    jeder Refetch liefe doppelt."""
+    _mit_job_md(team_repo, "laeuft")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        seite = c.get(f"/-/jobs/{job_uid('laeuft')}", headers={"accept": "text/html"}).text
+    assert seite.count('data-bus="live:laeuft"') == 1
+
+
+def test_the_runs_fragment_stays_subscribed(app_with, team_repo: Path):
+    """Derselbe Fehler wie in #151, nur auf der Detail-Seite und bisher
+    unbemerkt: `/-/jobs/{uid}/runs` lieferte die Liste **ohne** den Wrapper
+    `<div id="runs" data-bus="archived">`, der nur in der Seite stand. Der
+    erste Bus-Swap hätte die Region also abgemeldet.
+
+    Aufgefallen ist es erst beim Nachziehen der Kacheln — und auch hier hat
+    ein Fehler den anderen verdeckt: solange die Seite gar keinen Bus-Client
+    auslieferte (#153), fand nie ein Swap statt.
+    """
+    _mit_job_md(team_repo, "laeuft")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        frag = c.get(f"/-/jobs/{job_uid('laeuft')}/runs",
+                     headers={"accept": "text/html"}).text
+    assert 'data-bus="archived"' in frag
+
+
+def test_the_slot_buttons_survive_a_swap():
+    """Der Grund, warum die Kacheln bisher außerhalb standen: `_SLOT_JS` band
+    seine Listener **direkt** an jeden `button.slot-do` beim Seitenaufbau. Nach
+    einem `outerHTML`-Swap wären die neuen Knöpfe stumm — sie sähen aus wie
+    Knöpfe und täten nichts.
+
+    Delegiert am `document` gehört der Listener nicht mehr dem Element, sondern
+    der Seite; ausgetauschte Knöpfe wirken sofort. `_JOB_DETAIL_JS` macht es
+    für die Output-Faltung längst so — hier war es die letzte direkte Bindung.
+
+    Der Test liest Quelltext statt Verhalten, weil das Verhalten im Browser
+    liegt; er sichert damit die *Struktur*, die den Swap überlebt, nicht ihre
+    Wirkung. Die Wirkung ist am laufenden FE geprüft.
+    """
+    assert "document.addEventListener('click'" in render._SLOT_JS
+    assert "querySelectorAll('button.slot-do')" not in render._SLOT_JS
 
 
 # ── RUNTIME ist eine Scheduler-Eigenschaft und ein Perzentil (#132) ────────
