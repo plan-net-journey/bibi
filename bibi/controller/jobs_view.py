@@ -543,6 +543,12 @@ class Tile:
     #: lief. Der Client-Slot zeigt damit zurück, wo der Scheduler-Slot nach vorn
     #: zeigt (``next_fire_at``) — siehe ``render._slot_kachel()``.
     last_at: float | None = None
+    #: Warum diese Seite gerade nichts anbietet, oder ``None`` (m.rau/bibi#146).
+    #: Gesetzt heißt: **Kachel zeigen, aber gesperrt** — ein Element, das fehlt,
+    #: ist von einem, das es nie gab, nicht zu unterscheiden. Der Text wird
+    #: angezeigt und nicht nur als ``title`` gehängt: auf einem Touch-Gerät gibt
+    #: es kein Hover.
+    disabled: str | None = None
 
 
 @dataclass
@@ -568,7 +574,8 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
                    scheduler_host: str | None = None, client_host: str | None = None,
                    scheduler_total: int | None = None,
                    client_total: int | None = None,
-                   oneshot: bool = False) -> RunList:
+                   oneshot: bool = False,
+                   scheduler_offline: bool = False) -> RunList:
     """Kacheln und die eine Lauf-Liste (FE §5.1–§5.3, m.rau/bibi#131).
 
     **Oben, die Kacheln: was ich tun kann. Unten, die Liste: was geschehen
@@ -584,27 +591,47 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
     Ihre Läufe gehen trotzdem nicht verloren — sie stehen in derselben Liste,
     und die Zählung nennt sie.
 
-    **Ein Oneshot bekommt nie eine ``CLIENT``-Kachel** (FE §5.1.1,
-    Zustandsmodell §5): er läuft nicht lokal, sein Termin gehört dem Scheduler.
-    Der Fall war lange ungeprüft, weil kein Oneshot lokal eine Zeile hat —
-    verhindert wird das aber nirgends (``run_pinned()`` kennt keinen
-    Oneshot-Ausschluss, Zustandsmodell §8 Nr. 12 ist offen). Die Kachel wäre
-    also entstanden, sobald jemand ``bibi-ctrl run`` auf einem ``at``-Slug
-    aufruft, und hätte einen Platz angeboten, den es nicht gibt. Die **Läufe**
-    bleiben in der Liste — es fehlt der Platz zum Bedienen, nicht die Historie.
+    **Ein Oneshot hat keinen lokalen Platz** (FE §5.1.1, Zustandsmodell §5): er
+    läuft nicht lokal, sein Termin gehört dem Scheduler. Verhindert wird das
+    nirgends (``run_pinned()`` kennt keinen Oneshot-Ausschluss, Zustandsmodell
+    §8 Nr. 12 ist offen), die Kachel entstünde also, sobald jemand ``bibi-ctrl
+    run`` auf einem ``at``-Slug aufruft — und böte einen Platz an, den es nicht
+    gibt.
+
+    **Sie fehlt deshalb nicht, sie ist gesperrt** (m.rau/bibi#146, dreht die
+    Entscheidung vom 2026-08-05 um): ein Element, das fehlt, ist von einem, das
+    es nie gab, nicht zu unterscheiden — wer es sucht, prüft zuerst, ob er im
+    falschen Screen ist. Dasselbe gilt für ``scheduler_offline``: der Zustand
+    des Hosts ist dann *unbekannt*, nicht *leer*. Die **Läufe** bleiben in
+    beiden Fällen in der Liste; es fehlt der Platz zum Bedienen, nicht die
+    Historie.
     """
     from bibi.schedule import slot as slot_mod
 
     tiles: list[Tile] = []
     runs: list[dict] = []
     counts: dict[str, int] = {}
+    # **Client zuerst** (m.rau/bibi#147): links steht, was dieser Knoten selbst
+    # weiß, rechts, was der Scheduler sagt. FE §2 führte die Regel bisher nur
+    # für den Header; sie gilt ab jetzt überall, und die Kacheln erben ihre
+    # Reihenfolge aus dieser Schleife.
     for quelle, src, zeile, journal, host, gesamt in (
-        ("SCHEDULER", "S", scheduler_slot, scheduler_runs, scheduler_host, scheduler_total),
         ("CLIENT", "C", client_slot, client_runs, client_host, client_total),
+        ("SCHEDULER", "S", scheduler_slot, scheduler_runs, scheduler_host, scheduler_total),
     ):
+        gesperrt: str | None = None
         if oneshot and quelle == "CLIENT":
-            # Kein lokaler Platz — die Läufe unten kommen trotzdem mit.
-            zeile = None
+            # Kein lokaler Platz — aber die Kachel bleibt und sagt es
+            # (m.rau/bibi#146). Die Läufe unten kommen ohnehin mit.
+            zeile, gesperrt = None, "oneshots never run locally"
+        elif scheduler_offline and quelle == "SCHEDULER":
+            # Der Host ist weg: sein Zustand ist unbekannt, nicht leer, und
+            # keins seiner Verben käme an. Die Kachel bleibt trotzdem stehen —
+            # dieselbe Entscheidung wie beim gedimmten Header (FE §2).
+            zeile, gesperrt = None, "scheduler offline"
+        if gesperrt is not None:
+            tiles.append(Tile(quelle=quelle, host=host, slot={}, status=None,
+                              aktionen=frozenset(), disabled=gesperrt))
         status = None
         if zeile is not None:
             # `row_status` zuerst: so heißt das Feld in den Scheduler-Zeilen aus

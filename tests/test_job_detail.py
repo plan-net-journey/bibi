@@ -537,7 +537,7 @@ def test_both_tiles_appear_side_by_side_when_both_sides_know_the_job():
     staendig vergleicht („laeuft es beim Scheduler, aber lokal nicht?")."""
     kacheln = _liste(scheduler_slot={"row_status": "pending"},
                      client_slot={"status": "error"}).tiles
-    assert [k.quelle for k in kacheln] == ["SCHEDULER", "CLIENT"]
+    assert [k.quelle for k in kacheln] == ["CLIENT", "SCHEDULER"]  # #147
 
 
 def test_an_empty_slot_still_gets_its_tile():
@@ -1480,20 +1480,52 @@ def test_a_dead_host_is_still_a_bad_gateway(client, monkeypatch):
 # ── Ein Oneshot hat keinen lokalen Platz (FE §5.1.1) ──────────────────────
 
 
-def test_a_oneshot_has_no_client_tile():
-    """*„`at`-Job auf einem Client → die `CLIENT`-Kachel fehlt — ein Oneshot
-    laeuft nie lokal"* (FE §5.1.1, Zustandsmodell §5).
+def test_a_oneshot_greys_out_its_client_tile(): 
+    """**Diese Entscheidung ist gedreht** (m.rau, 2026-08-05, m.rau/bibi#146):
+    *„wenn local nicht geht, wie z.B. `/at` … dann bitte ausgrauen, nicht
+    verbergen."*
 
-    Der Fall war bisher ungeprueft, weil kein Oneshot lokal eine Zeile hat —
-    aber verhindert wird das nirgends: `run_pinned()` kennt keinen
-    Oneshot-Ausschluss (Zustandsmodell §8 Nr. 12 ist offen). Die Kachel waere
-    also entstanden, sobald jemand `bibi-ctrl run` auf einem `at`-Slug
-    aufruft, und haette einen Platz angeboten, den es nicht gibt.
+    Die Regel selbst gilt weiter — ein Oneshot laeuft nie lokal (FE §5.1.1,
+    Zustandsmodell §5), es gibt dort keinen Platz zu bedienen. Nur ihre
+    Darstellung war falsch: **ein Element, das fehlt, ist von einem, das es nie
+    gab, nicht zu unterscheiden.** Wer die Kachel sucht und nicht findet, prueft
+    zuerst, ob er im falschen Screen ist — nicht, ob die Aktion hier unmoeglich
+    ist. Die ausgegraute Kachel beantwortet beides auf einen Blick.
+
+    Dasselbe Muster hat der Umbau an anderer Stelle schon durchgesetzt: der
+    offline-Header wird gedimmt und behaelt seine Werte, statt zu verschwinden
+    (FE §2).
     """
     liste = _liste(scheduler_slot={"id": "s1", "row_status": "pending"},
                    client_slot={"id": "c1", "status": "complete"},
                    oneshot=True)
-    assert [k.quelle for k in liste.tiles] == ["SCHEDULER"]
+    assert [k.quelle for k in liste.tiles] == ["CLIENT", "SCHEDULER"]
+    client = liste.tiles[0]
+    assert client.disabled, "die CLIENT-Kachel ist nicht als gesperrt markiert"
+    assert client.aktionen == frozenset(), "eine gesperrte Kachel bietet keine Verben"
+
+
+def test_the_greyed_out_tile_says_why():
+    """**Der Grund gehoert sichtbar dazu**, nicht nur als `title` auf Hover —
+    auf einem Touch-Geraet gibt es kein Hover. Eine graue Kachel ohne Begruendung
+    ist nur eine andere Art, nichts zu sagen."""
+    from bibi.controller import render
+    liste = _liste(client_slot={"id": "c1", "status": "complete"}, oneshot=True)
+    html = render.job_tiles_fragment(liste.tiles, now=1_754_100_000.0,
+                                     slug="x", job_uid="abc")
+    assert "oneshots never run locally" in html
+
+
+def test_a_disabled_tile_carries_no_buttons_in_the_html():
+    """Die Gegenprobe zur Optik: ausgegraut heisst **nicht bedienbar**. Ein
+    Knopf, der nur grau aussieht und trotzdem postet, waere schlimmer als der
+    frueher fehlende — er verspricht eine Wirkung, die es nicht gibt."""
+    from bibi.controller import render
+    liste = _liste(client_slot={"id": "c1", "status": "complete"}, oneshot=True)
+    html = render.job_tiles_fragment(liste.tiles, now=1_754_100_000.0,
+                                     slug="x", job_uid="abc")
+    kachel = html.split('class="tile', 1)[1].split("</div></div>", 1)[0]
+    assert "hx-post" not in kachel
 
 
 def test_a_recurring_job_keeps_its_client_tile():
@@ -1501,15 +1533,69 @@ def test_a_recurring_job_keeps_its_client_tile():
     lokalem Slot — sonst verschwaende sie die halbe Seite."""
     liste = _liste(scheduler_slot={"id": "s1", "row_status": "pending"},
                    client_slot={"id": "c1", "status": "complete"})
-    assert [k.quelle for k in liste.tiles] == ["SCHEDULER", "CLIENT"]
+    assert [k.quelle for k in liste.tiles] == ["CLIENT", "SCHEDULER"]  # #147
 
 
 def test_the_oneshots_local_runs_are_still_listed():
     """Was gelaufen ist, bleibt sichtbar — es fehlt nur der Platz zum Bedienen.
-    Ein Lauf, den niemand mehr findet, waere schlimmer als eine Kachel zuviel."""
+    Ein Lauf, den niemand mehr findet, waere schlimmer als eine Kachel zuviel.
+
+    Seit m.rau/bibi#146 ist die Kachel gesperrt statt weg; die Aussage dieses
+    Tests ist davon unberuehrt — sie gilt der **Liste**.
+    """
     liste = _liste(client_slot={"id": "c1", "status": "complete"},
                    client_runs=[{"run_id": "x:1", "status": "complete",
                                  "finished_at": 1_754_000_000.0}],
                    oneshot=True)
-    assert liste.tiles == []
+    assert [k.disabled for k in liste.tiles] == ["oneshots never run locally"]
     assert [r["run_id"] for r in liste.runs] == ["x:1"]
+
+
+# ── Der App-Link im Job Detail (m.rau/bibi#145) ────────────────────────────
+
+
+def test_an_app_job_offers_the_link_to_its_app():
+    """**Befund m.rau, 2026-08-05:** bei einem Job vom Typ `app` wird die URL
+    des Dienstes nicht angezeigt.
+
+    Und zwar nie — nicht erst, seit der Scheduler den Job kennt. Das Ticket
+    vermutete die Ursache in `_local_job_meta_line(include_app_link=job is
+    None)`, aber diese Bedingung sitzt in `jobs_detail_live_fragment()`, dem
+    **alten** Detail unter `/-/ui/jobs/detail/…`. Der bibi5-Screen ruft sie gar
+    nicht auf: er rendert Kopf, Kacheln und Lauf-Liste — und keine davon führte
+    je einen App-Link.
+
+    Der Link gehört in den **Kopf**, nicht in eine Kachel: `app_port` steht im
+    MD-Frontmatter und gilt für den Job, nicht für einen Lauf. Eine Kachel
+    beschreibt einen Slot und wäre der falsche Ort für etwas, das auch ohne
+    jeden Lauf gilt.
+    """
+    from bibi.controller import render
+    html = render.job_detail_page_v5(
+        slug="burndown-app", now=1_754_100_000.0,
+        spec={"slug": "burndown-app", "kind": "app", "schedule": "adhoc",
+              "app_port": 8899})
+    assert 'href="http://localhost:8899/"' in html, "kein App-Link im Kopf"
+
+
+def test_a_plain_job_offers_no_app_link():
+    """Die Gegenprobe: der Link haengt an `app_port`, nicht am Screen. Ohne
+    Port darf dort nichts stehen — ein Link ins Leere ist schlechter als
+    keiner."""
+    from bibi.controller import render
+    html = render.job_detail_page_v5(
+        slug="normal", now=1_754_100_000.0,
+        spec={"slug": "normal", "kind": "job", "schedule": "adhoc"})
+    assert "APP" not in html.replace("APPLICATION", "")
+
+
+def test_the_app_link_uses_the_public_host_not_localhost():
+    """Auf einem Client zeigt `localhost` auf den falschen Rechner, sobald
+    jemand das FE aus dem Tailnet aufruft. `config.public_host()` ist die
+    Quelle, die auch jedes andere Fragment benutzt."""
+    from bibi.controller import render
+    html = render.job_detail_page_v5(
+        slug="burndown-app", now=1_754_100_000.0,
+        spec={"slug": "burndown-app", "kind": "app", "app_port": 8899},
+        public_host="Mac.fritz.box")
+    assert 'href="http://Mac.fritz.box:8899/"' in html

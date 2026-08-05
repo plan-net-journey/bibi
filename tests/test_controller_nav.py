@@ -355,6 +355,40 @@ def test_screen_nav_drops_api_docs_and_the_old_split_routes():
     assert "/-/ui/clients" not in html
 
 
+def test_screen_nav_active_tab_stays_clickable_on_a_subpage():
+    """Der aktive Tab ist auf einer **Unterseite** ein Link (m.rau/bibi#148).
+
+    „Der aktive Tab ist kein Link" stimmt auf dem Screen selbst — dorthin zu
+    verlinken, wo man steht, ist eine Sackgasse. Auf seinen Unterseiten stimmt
+    es nicht: dort ist der Tab die natürliche Zurück-Geste, und genau so wird er
+    benutzt. Der Unterschied ist nicht *aktiv gegen inaktiv*, sondern **auf dem
+    Screen gegen unterhalb davon**.
+
+    Die Hervorhebung bleibt in beiden Fällen — man ist ja weiterhin in Jobs.
+    """
+    auf_dem_screen = render._screen_nav("Jobs")
+    assert '<span class="tab-active">Jobs</span>' in auf_dem_screen
+
+    darunter = render._screen_nav("Jobs", sub=True)
+    assert '<a class="tab-active" href="/-/jobs">Jobs</a>' in darunter
+    assert '<span class="tab-active">' not in darunter
+
+
+def test_job_subpages_link_their_own_tab_back_to_the_screen(monkeypatch):
+    """Beide Jobs-Unterseiten führen den Tab als Rückweg (m.rau/bibi#148).
+
+    Am Renderer geprüft und nicht nur an ``_screen_nav()``: der Fehler saß
+    nicht in der Nav-Funktion allein, sondern darin, dass ihr niemand sagte,
+    wo sie steht. Ein Test auf die Funktion allein wäre grün gewesen, während
+    die Seiten weiter tote Tabs zeigen.
+    """
+    spec = {"slug": "a", "kind": "job"}
+    detail = render.job_detail_page_v5(slug="a", spec=spec, now=0.0)
+    attrs = render.job_attrs_page_v5(slug="a", spec=spec, defaults={}, now=0.0)
+    for name, html in (("detail", detail), ("attrs", attrs)):
+        assert '<a class="tab-active" href="/-/jobs">Jobs</a>' in html, name
+
+
 def test_screen_nav_separates_live_from_log():
     """`Live Log` war ein Screen für zwei Dinge. Der Unterschied ist das
     Gedächtnis (FE-Spezifikation §7): Live hat keines und erzählt, was gerade

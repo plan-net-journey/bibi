@@ -116,9 +116,16 @@ def test_one_row_carries_both_sides():
 
 def test_the_two_blocks_are_labelled():
     """Ohne Beschriftung wüsste niemand, welche Spalte welche Seite meint —
-    und die beiden zeigen regelmäßig Verschiedenes."""
+    und die beiden zeigen regelmäßig Verschiedenes.
+
+    Beide heißen seit m.rau/bibi#147 überall gleich: `CLIENT` und `SCHEDULER`.
+    Vorher sagte der Header `CLIENT`, die Tabelle `LOCAL` — zwei Wörter für
+    dieselbe Sache, und `LOCAL` ist obendrein nur aus Sicht des Betrachters
+    lokal, während `CLIENT` die Herkunft benennt.
+    """
     html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
-    assert "SCHEDULER" in html and "LOCAL" in html
+    assert "SCHEDULER" in html and "CLIENT" in html
+    assert "LOCAL" not in html
 
 
 # ── Die LOCAL-Spalte liest beide Speicher ──────────────────────────────────
@@ -532,7 +539,9 @@ def test_the_screen_reloads_itself_on_job_changes():
     """
     html = render.jobs_page_v5([], now=NOW)
     assert 'data-bus="jobs"' in html
-    assert 'data-bus-refetch="/-/jobs/list"' in html
+    # Seit #156 trägt die URL die aktuelle Ansicht als Query — geprüft wird
+    # weiterhin nur, dass es *die Liste* ist und nicht die Seite.
+    assert 'data-bus-refetch="/-/jobs/list?' in html
 
 
 def test_the_list_fragment_is_the_refetch_target():
@@ -589,7 +598,7 @@ def test_the_refetched_fragment_stays_subscribed(app_with, team_repo: Path):
         frag = c.get("/-/jobs/list", headers={"accept": "text/html"}).text
     assert 'id="jobs"' in frag
     assert 'data-bus="jobs"' in frag
-    assert 'data-bus-refetch="/-/jobs/list"' in frag
+    assert 'data-bus-refetch="/-/jobs/list?' in frag  # Query seit #156
 
 
 def test_the_page_does_not_nest_the_wrapper_twice(app_with, team_repo: Path):
@@ -785,7 +794,7 @@ def test_runtime_sits_on_the_scheduler_side_of_the_row():
     """
     html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
     assert '<th colspan="4" class="grp">SCHEDULER</th>' in html
-    assert '<th colspan="1" class="grp">LOCAL</th>' in html
+    assert '<th colspan="1" class="grp">CLIENT</th>' in html
 
 
 # ── Die Baenderung ist abschaltbar, das `@` macht die Zeile selbsttragend ──
@@ -855,3 +864,152 @@ def test_the_route_takes_the_handle(app_with, team_repo: Path):
         html = c.get("/-/jobs?group=off", headers={"accept": "text/html"}).text
     assert 'class="band"' not in html
     assert _zeile_von(html, "flach")
+
+
+# ── Filter und Sortierung überleben (m.rau/bibi#156) ───────────────────────
+#
+# Der Befund m.rau: „Der Anwender ist genervt, wenn die Einstellungen immer
+# wieder zurück gesetzt werden." Zwei getrennte Wege gehen sie heute verloren,
+# und jeder braucht seine eigene Antwort:
+#
+#   1. Der **Bus-Refetch** holt `/-/jobs/list` ohne Query — bei jedem
+#      Statuswechsel kommt die ungefilterte Liste zurück. Antwort: die
+#      Refetch-URL trägt die Query mit.
+#   2. Die **Wiederkehr** (Tab-Link, Bookmark, neuer Browser-Start) landet auf
+#      `/-/jobs` ohne Query. Antwort: ein Cookie erinnert die letzte Wahl.
+#
+# `#66` hat das für den alten Screen schon einmal gelöst und den Grund
+# aufgeschrieben: „Ein Sortierzustand, der bei jedem Bus-Refetch zurückspränge,
+# wäre ärgerlicher als keiner." Der bibi5-Umbau hat die Mechanik nicht
+# mitgenommen — ihre sechs Symbole standen bis zu diesem Ticket ohne Aufrufer
+# in `controller/__init__.py`.
+
+
+def test_the_refetch_url_carries_the_current_filter():
+    """Weg 1: die nachgeladene Liste kommt gefiltert zurück, nicht roh.
+
+    Ohne dies ist jede Filterwahl nur so lange gültig, bis irgendein Job seinen
+    Status wechselt — und das ist der Normalbetrieb, nicht der Randfall.
+    """
+    html = render.jobs_page_v5(_zeilen(local=[_md("a")]), now=NOW,
+                               typ=["job"], sort="next", direction="desc")
+    # Gezielt der Wrapper der Jobs-Liste: die Seite trägt mehrere Bus-Regionen
+    # (u. a. den Feed-Status), und die erste ist nicht diese.
+    treffer = re.search(r'<div id="jobs"[^>]*data-bus-refetch="([^"]+)"', html)
+    assert treffer, "keine Refetch-URL am Jobs-Wrapper"
+    url = treffer.group(1)
+    assert "typ=job" in url, url
+    assert "sort=next" in url, url
+    assert "dir=desc" in url, url
+
+
+def test_a_bare_visit_gets_the_last_choice_back(app_with, team_repo: Path):
+    """Weg 2: wer gefiltert hat und später ohne Query wiederkommt, sieht seine
+    Wahl — nicht den Grundzustand."""
+    _mit_job_md(team_repo, "flach")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        c.get("/-/jobs?f=1&group=off", headers={"accept": "text/html"})
+        html = c.get("/-/jobs", headers={"accept": "text/html"}).text
+    assert 'class="band"' not in html, "die Bänderung kam trotz Cookie zurück"
+
+
+def test_an_explicit_url_beats_the_remembered_one(app_with, team_repo: Path):
+    """Der Query-Parameter gewinnt immer — sonst wäre eine geteilte URL nicht
+    teilbar, weil der Empfänger seine eigene Erinnerung darübergelegt bekäme.
+    Das war schon bei #66 die Regel und ist der Grund, warum es ein Rückfall
+    ist und keine Vorbelegung."""
+    _mit_job_md(team_repo, "flach")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        c.get("/-/jobs?f=1&group=off", headers={"accept": "text/html"})
+        html = c.get("/-/jobs?f=1", headers={"accept": "text/html"}).text
+    assert 'class="band"' in html, "die gemerkte Wahl hat die URL überstimmt"
+
+
+def test_clearing_a_filter_is_not_undone_by_the_cookie(app_with, team_repo: Path):
+    """Den letzten Filter abzuwählen muss möglich bleiben.
+
+    Der Randfall, an dem eine naive Cookie-Lösung scheitert: das Skript
+    entfernt den Parameter beim Abwählen aus der URL, und eine URL ohne `typ`
+    ist von einer nie gesetzten nicht zu unterscheiden. Der Cookie brächte den
+    eben gelöschten Filter sofort zurück — der Knopf wäre tot. Deshalb trägt
+    jede vom Skript gebaute URL das Zeichen `f=1`: *diese Query ist die
+    Antwort, auch wo sie schweigt.*
+    """
+    _mit_job_md(team_repo, "flach")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        gefiltert = c.get("/-/jobs?f=1&typ=app", headers={"accept": "text/html"}).text
+        # `_zeile_von` wirft, wenn nichts da ist — für die Abwesenheit taugt
+        # nur die rohe Suche.
+        assert 'title="flach"' not in gefiltert, "Filter griff gar nicht"
+        html = c.get("/-/jobs?f=1", headers={"accept": "text/html"}).text
+    assert _zeile_von(html, "flach"), "der abgewählte Filter kam zurück"
+
+
+def test_the_filter_script_marks_every_url_it_builds():
+    """Das Gegenstück im Browser: ohne `f=1` an *jeder* gebauten URL ist die
+    Regel oben nur die halbe Miete."""
+    assert "'f', '1'" in render._JOBS_JS or '"f", "1"' in render._JOBS_JS
+
+
+def test_the_dead_cookie_helpers_from_the_old_screen_are_gone():
+    """Die Mechanik aus #66 lag seit dem bibi5-Umbau ohne einen einzigen
+    Aufrufer im Modul — eine tote Kette, deren Spitze fehlte (Umbauplan §1).
+    Sie wird durch diesen Fix ersetzt, nicht wiederbelebt: ihre Namen und
+    Cookie-Schlüssel gehören dem alten Schedules-Screen und tragen die
+    Mehrfachauswahl-Achsen des neuen nicht."""
+    from bibi import controller
+    quelle = Path(controller.__file__).read_text(encoding="utf-8")
+    for name in ("_effective_filter", "_effective_sort", "_set_sort_cookies",
+                 "_set_filter_cookies", "_set_resolution_cookie",
+                 "_FILTER_COOKIE_MAX_AGE"):
+        assert name not in quelle, name
+
+
+# ── Client links, Scheduler rechts — überall (m.rau/bibi#147) ──────────────
+#
+# **Befund m.rau, 2026-08-05:** *„Header: client links, scheduler rechts,
+# Jobs: Scheduler links, Client rechts. Einheitlich den Client links."*
+#
+# Die Anordnung ist keine Formsache, sondern die Lesekonvention dieses UI: FE §2
+# begründet die Header-Aufteilung damit, dass links steht, *was dieser Knoten
+# selbst weiß*, und rechts, *was der Scheduler sagt* — mit dem Ausfall als
+# Argument: fällt der Host weg, verlieren genau die rechten Werte ihre
+# Gültigkeit. Eine Tabelle, die es umdreht, macht aus der Regel eine Ausnahme,
+# und der Leser muss in jedem Screen neu nachsehen.
+
+
+def test_the_client_block_comes_before_the_scheduler_block():
+    """Die Gruppenkopfzeile in Dokumentreihenfolge — vorher `SCHEDULER` zuerst."""
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    kopf = html.split("</thead>", 1)[0]
+    assert kopf.index('class="grp">CLIENT') < kopf.index('class="grp">SCHEDULER')
+
+
+def test_the_client_status_cell_comes_before_the_scheduler_one():
+    """Nicht nur die Beschriftung dreht sich, sondern die Spalte selbst.
+
+    Ohne diesen Test wäre eine Kopfzeile denkbar, die `CLIENT` links behauptet,
+    während die Zellen darunter unverändert in der alten Ordnung stehen — die
+    Beschriftung stünde dann über der falschen Spalte, und das ist schlimmer
+    als die alte Reihenfolge.
+    """
+    zeile = _zeile_von(render.jobs_screen(
+        _zeilen(local=[_md("EngineCI")],
+                scheduler=[{"slug": "EngineCI", "status": "complete",
+                            "schedule": "0 * * * *"}],
+                local_runs={"EngineCI": {"status": "error"}}),
+        now=NOW), "EngineCI")
+    assert zeile.index("error") < zeile.index("complete")
+
+
+def test_the_scheduler_block_still_spans_its_four_columns():
+    """Die Gegenprobe zum Dreh: `RUNTIME`, `LAST` und `NEXT` bleiben beim
+    Scheduler (FE §4.3, m.rau/bibi#132). Wer die Spalten umordnet, könnte
+    versehentlich auch die Zuordnung verschieben — dann stünde `NEXT` über dem
+    Client, der gar nicht weiß, wann es wieder läuft."""
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    assert '<th colspan="4" class="grp">SCHEDULER</th>' in html
+    assert '<th colspan="1" class="grp">CLIENT</th>' in html

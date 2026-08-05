@@ -444,51 +444,72 @@ def add_controller_routes(
         return HTMLResponse(render.job_status_fragment(
             _status().get("job_stats"), time.time()))
 
-    _FILTER_COOKIE_MAX_AGE = 60 * 60 * 24 * 180  # 180 Tage — UI-Präferenz, kein Session-Cookie
+    #: 180 Tage — eine Ansichtswahl ist eine UI-Präferenz und kein Sitzungswert.
+    _VIEW_COOKIE_MAX_AGE = 60 * 60 * 24 * 180
 
-    def _effective_filter(
-        request: Request, typ: str | None, status: str | None,
-    ) -> tuple[str | None, str | None]:
-        # Query-Param gewinnt immer (explizite Wahl); fehlt er (kein ?typ=/
-        # ?status= in der URL), auf das zuletzt per Cookie gemerkte Filter
-        # zurückfallen (User-Fund: "die ausgewählte Auswahl in
-        # /-/ui/schedules sollte erhalten bleiben. Entweder Cookies oder
-        # Local Store") — ungültige/veraltete Cookie-Werte werden verworfen.
-        eff_typ = typ if typ is not None else render._cookie_filter_value(
-            request.cookies.get("bibi_sched_typ"), render._SCHED_TYPES)
-        eff_status = status if status is not None else render._cookie_filter_value(
-            request.cookies.get("bibi_sched_status"), render._SCHED_STATUSES)
-        return eff_typ, eff_status
+    #: Die sechs Achsen des Jobs-Screens, je mit ihrem Cookie-Namen. Die ersten
+    #: drei sind Mehrfachauswahl (kommagetrennt abgelegt), die letzten drei
+    #: Einzelwerte.
+    _VIEW_LISTEN = (("typ", "bibi_jobs_typ"), ("status", "bibi_jobs_status"),
+                    ("journal", "bibi_jobs_journal"))
 
-    def _effective_sort(request: Request, sort: str | None, direction: str | None):
-        """Sortierung wie der Filter: Query-Param gewinnt, sonst Cookie
-        (m.rau/bibi#66). Ein Sortierzustand, der bei jedem Bus-Refetch
-        zurueckspraenge, waere aergerlicher als keiner — so das Issue."""
-        eff_sort = sort if sort is not None else (
-            request.cookies.get("bibi_sort") or None)
-        eff_dir = direction if direction is not None else (
-            request.cookies.get("bibi_dir") or None)
-        if eff_sort not in render._SORT_KEYS:
-            eff_sort = None          # alter Cookie / manipulierte URL
-        if eff_dir not in ("asc", "desc"):
-            eff_dir = None
-        return eff_sort, eff_dir
+    def _jobs_view(request: Request, sort: str | None, direction: str | None):
+        """Die effektive Ansicht: Query gewinnt, sonst die gemerkte Wahl (#156).
 
-    def _set_sort_cookies(resp: HTMLResponse, sort: str | None, direction: str | None) -> None:
-        resp.set_cookie("bibi_sort", sort or "", max_age=60 * 60 * 24 * 365,
-                        samesite="lax")
-        resp.set_cookie("bibi_dir", direction or "", max_age=60 * 60 * 24 * 365,
-                        samesite="lax")
+        **Query gewinnt immer** — sonst wäre eine geteilte URL nicht teilbar,
+        weil der Empfänger seine eigene Erinnerung darübergelegt bekäme. Das
+        war schon bei #66 die Regel; sie ist der Grund, warum dies ein Rückfall
+        ist und keine Vorbelegung.
 
-    def _set_filter_cookies(resp: HTMLResponse, typ: str | None, status: str | None) -> None:
-        resp.set_cookie("bibi_sched_typ", typ or "alle",
-                        max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
-        resp.set_cookie("bibi_sched_status", status or "alle",
-                        max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
+        Was „Query\" heißt, entscheidet ``render.VIEW_MARKER``: eine URL mit
+        ``f=1`` ist vollständig, auch wo sie schweigt — dort wurde alles
+        abgewählt. Ohne den Marker ist eine leere Query nur *nichts gesagt*,
+        und dann darf der Cookie antworten. Ohne diese Unterscheidung brächte
+        er den eben gelöschten Filter zurück, und der Filter-Knopf wäre tot.
+        """
+        q = request.query_params
+        explizit = render.VIEW_MARKER in q
+        werte: dict = {}
+        for name, cookie in _VIEW_LISTEN:
+            aus_url = q.getlist(name)
+            if aus_url or explizit:
+                werte[name] = aus_url
+            else:
+                gemerkt = (request.cookies.get(cookie) or "").strip()
+                werte[name] = [t for t in gemerkt.split(",") if t]
+        if sort is None and not explizit:
+            sort = request.cookies.get("bibi_jobs_sort") or None
+            direction = direction or request.cookies.get("bibi_jobs_dir") or None
+        if sort not in render._SORT_KEYS:
+            sort = None              # alter Cookie / manipulierte URL
+        if direction not in ("asc", "desc"):
+            direction = "asc"
+        if "group" in q:
+            group = q.get("group") != "off"
+        elif explizit:
+            group = True
+        else:
+            group = (request.cookies.get("bibi_jobs_group") or "on") != "off"
+        werte.update(sort=sort, direction=direction, group=group)
+        return werte
 
-    def _set_resolution_cookie(resp: HTMLResponse, res: int) -> None:
-        resp.set_cookie("bibi_sched_res", str(res),
-                        max_age=_FILTER_COOKIE_MAX_AGE, httponly=True, samesite="lax")
+    def _merke_jobs_view(resp: HTMLResponse, view: dict) -> None:
+        """Die eben gezeigte Ansicht als Cookie ablegen — für die Wiederkehr.
+
+        Nicht für den Bus-Refetch: der trägt seine Query selbst (``render.
+        _jobs_view_query()``), weil zwei Browser-Tabs sich einen Cookie teilen
+        und der zweite dem ersten sonst die Sicht überschriebe.
+        """
+        for name, cookie in _VIEW_LISTEN:
+            resp.set_cookie(cookie, ",".join(view[name]),
+                            max_age=_VIEW_COOKIE_MAX_AGE, httponly=True,
+                            samesite="lax")
+        resp.set_cookie("bibi_jobs_sort", view["sort"] or "",
+                        max_age=_VIEW_COOKIE_MAX_AGE, httponly=True, samesite="lax")
+        resp.set_cookie("bibi_jobs_dir", view["direction"],
+                        max_age=_VIEW_COOKIE_MAX_AGE, httponly=True, samesite="lax")
+        resp.set_cookie("bibi_jobs_group", "on" if view["group"] else "off",
+                        max_age=_VIEW_COOKIE_MAX_AGE, httponly=True, samesite="lax")
 
     def _host_worker_entry() -> dict:
         """Die eigene Zeile im Nodes-Screen (Batch 9 Punkt 3, User-Fund: "wir
@@ -1158,14 +1179,16 @@ def add_controller_routes(
         _quoten(zeilen, historie, jetzt)
         # Mehrfachauswahl kommt als wiederholter Query-Parameter (`?typ=job&
         # typ=app`) — die Toggles sind on/off und nicht exklusiv, und eine
-        # Ansicht soll teilbar sein.
-        q = request.query_params
-        return HTMLResponse(render.jobs_page_v5(
+        # Ansicht soll teilbar sein. Fehlt die Query ganz, antwortet die
+        # gemerkte Wahl (#156).
+        v = _jobs_view(request, sort, dir)
+        resp = HTMLResponse(render.jobs_page_v5(
             zeilen, now=jetzt, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), scheduler=_sched[0], scheduler_stale_since=_sched[1],
-            typ=q.getlist("typ"), status=q.getlist("status"),
-            journal=q.getlist("journal"), sort=sort, direction=(dir or "asc"),
-            group=q.get("group") != "off"))
+            typ=v["typ"], status=v["status"], journal=v["journal"],
+            sort=v["sort"], direction=v["direction"], group=v["group"]))
+        _merke_jobs_view(resp, v)
+        return resp
 
     def _quoten(zeilen: list, historie: list, jetzt: float) -> None:
         """Die 24H-Kennzahl an jede Zeile haengen.
@@ -1383,14 +1406,18 @@ def add_controller_routes(
             local=_local_job_mds(), scheduler=_host_schedules(), journal=historie,
             now=jetzt, local_runs=_local_run_status())
         _quoten(zeilen, historie, jetzt)
-        q = request.query_params
+        # Dieselbe Auflösung wie der Screen: der Bus trägt die Ansicht zwar in
+        # seiner Refetch-URL mit (#156), aber ein Aufruf ohne Query — von Hand,
+        # aus einem alten Lesezeichen — soll nicht anders antworten als die
+        # Seite, in der das Fragment steckt.
+        v = _jobs_view(request, sort, dir)
         # `jobs_list_fragment`, nicht `jobs_screen`: die Antwort muss ihren
         # Bus-Wrapper mitbringen, weil `_EVENTS_JS` mit `outerHTML` swappt —
         # sonst ist die Region nach genau einem Update abgemeldet.
         return HTMLResponse(render.jobs_list_fragment(
-            zeilen, jetzt, typ=q.getlist("typ"), status=q.getlist("status"),
-            journal=q.getlist("journal"), sort=sort, direction=(dir or "asc"),
-            group=q.get("group") != "off"))
+            zeilen, jetzt, typ=v["typ"], status=v["status"],
+            journal=v["journal"], sort=v["sort"], direction=v["direction"],
+            group=v["group"]))
 
     @app.get("/-/jobs/{job_uid}", include_in_schema=False)
     def screen_job_detail(request: Request, job_uid: str,  # noqa: ARG001
@@ -1403,6 +1430,7 @@ def add_controller_routes(
         """
         import time as _t
 
+        from bibi import config
         from bibi.controller import jobs_view
         slug = jobs_view.slug_for(job_uid, _slug_kandidaten())
         if slug is None:
@@ -1423,7 +1451,10 @@ def add_controller_routes(
             aktiv={"status": _mehrfach(status), "src": _mehrfach(src), "days": days},
             daemon_status=_status(),
             git_status=_feed_git_status(), host_url=_scheduler_url(),
-            scheduler=_sched[0], scheduler_stale_since=_sched[1]))
+            scheduler=_sched[0], scheduler_stale_since=_sched[1],
+            # Der App-Link zeigt sonst auf den Rechner des Betrachters, sobald
+            # das FE aus dem Tailnet aufgerufen wird (m.rau/bibi#145).
+            public_host=config.public_host()))
 
     def _mehrfach(wert: str) -> list[str]:
         """``complete,error`` → ``["complete", "error"]``. Leer heißt „alle"."""
@@ -1503,7 +1534,10 @@ def add_controller_routes(
             scheduler_runs=sched_runs, client_runs=lokal_runs, now=now,
             scheduler_total=len(sched_runs), client_total=len(lokal_runs),
             scheduler_host=(_scheduler_url() or "").split("//")[-1].split(":")[0] or None,
-            client_host=_status().get("host"), oneshot=einmalig)
+            client_host=_status().get("host"), oneshot=einmalig,
+            # Ohne erreichbaren Host ist sein Slot unbekannt, nicht leer — die
+            # Kachel bleibt und sagt es (m.rau/bibi#146).
+            scheduler_offline=not _scheduler_status()[0])
         gesamt = len(liste.runs)
         # Erst das Fenster, dann die Filter: `LOAD MORE` verbreitert die
         # Reichweite und darf nicht davon abhängen, was gerade ausgeblendet ist.

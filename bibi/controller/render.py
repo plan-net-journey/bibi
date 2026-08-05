@@ -201,6 +201,11 @@ a.rowlink:hover { text-decoration: underline; }
 h2 { font-size: .95rem; color: var(--dim); margin: 1.5rem 0 .4rem; font-weight: 600; }
 .back { color: var(--dim); text-decoration: none; font-size: .85rem; }
 .tab-active { font-weight: 600; border-bottom: 2px solid currentColor; }
+/* Auf einer Unterseite ist derselbe Tab ein Link (m.rau/bibi#148) und muss
+   trotzdem aussehen wie der Nicht-Link auf dem Screen selbst — sonst wechselt
+   die Hervorhebung ihre Farbe, je nachdem wie tief man steht. */
+a.tab-active { color: inherit; text-decoration: none; }
+a.tab-active:hover { text-decoration: none; }
 .meta { color: var(--dim); font-size: .9rem; margin: .2rem 0 1rem; }
 /* Terminal-Boxen bleiben theme-unabhängig dunkel (PLAN-19 Befund 3, User-Fund:
    Light-Mode unleserlich) — vorher halbtransparentes Schwarz über dem
@@ -482,6 +487,12 @@ th.sorted { font-weight: 700; }
 .tile-head { font-weight: 700; font-size: .78rem; letter-spacing: .03em;
              color: var(--hdr-key); }
 .tile-state { font-family: ui-monospace, monospace; font-size: .85rem; }
+/* Gesperrte Kachel (m.rau/bibi#146): sichtbar, aber erkennbar nicht bedienbar
+   — dieselbe Behandlung wie der offline-Header, der gedimmt wird und seine
+   Werte behält, statt zu verschwinden (FE §2). Gestrichelter Rand, weil die
+   Dimmung allein im Light-Mode zu schwach trägt. */
+.tile-off { opacity: .55; border-style: dashed; }
+.tile-off .tile-state { font-style: italic; }
 .slot-none { color: var(--faint); font-size: .8rem; font-style: italic; }
 
 /* Kopfzeile der Lauf-Liste: Herkunft mit Zaehlung, Zustaende, Reichweite.
@@ -1546,8 +1557,9 @@ def status_header(
     return f'<div class="hdr">{links}{rechts}</div>'
 
 
-def _screen_nav(active: str, roles: list[str] | None = None) -> str:
-    """Die App-Bar: sechs Screens, der aktive ohne Link.
+def _screen_nav(active: str, roles: list[str] | None = None, *,
+                sub: bool = False) -> str:
+    """Die App-Bar: sechs Screens, der aktive ohne Link — außer man steht darunter.
 
     Auf **jedem** Knoten dieselben sechs — es gibt nur noch einen Client, und
     der Scheduler ist Backend ohne eigenes Frontend (FE-Spezifikation §1). Die
@@ -1564,9 +1576,18 @@ def _screen_nav(active: str, roles: list[str] | None = None) -> str:
     hat Historie und ist zum Nachschlagen da (FE-Spezifikation §7). ``API
     Docs`` ist aus der Leiste raus — die Route bleibt, aber eine generierte
     Schema-Seite ist kein Screen dieser App.
+
+    ``sub`` sagt, dass die zeigende Seite **unterhalb** von ``active`` liegt
+    (m.rau/bibi#148). Dann bleibt der Tab hervorgehoben und wird zusätzlich
+    zum Rückweg. Der Unterschied ist nicht *aktiv gegen inaktiv* — das war die
+    alte Lesart und sie machte den Tab auf jeder Unterseite tot — sondern *auf
+    dem Screen gegen unterhalb davon*: ein Link auf die Seite, auf der man
+    steht, ist eine Sackgasse; einer auf den Screen darüber ist der Weg zurück.
     """
     def _tab(t: str, h: str) -> str:
         if t == active:
+            if sub:
+                return f'<a class="tab-active" href="{h}">{t}</a>'
             return f'<span class="tab-active">{t}</span>'
         return f'<a class="back" href="{h}">{t}</a>'
     items = [_tab(t, h) for t, h in SCREENS]
@@ -1695,7 +1716,7 @@ _TIME_JS = """
 
 
 def _header(active: str, status: dict | None = None, *,
-            scheduler: dict | None = None,
+            scheduler: dict | None = None, sub: bool = False,
             scheduler_now: float | None = None, now: float | None = None) -> str:
     """Gemeinsame obere Navigationsleiste: links Titel + reine Tab-Leiste,
     rechts alle Toggles (FOLLOW/RESCAN/MAINT/Datum-Uhrzeit/THEME) — Bibi4-
@@ -1707,7 +1728,7 @@ def _header(active: str, status: dict | None = None, *,
     (PLAN-20 Befund 6) kommen aus ``status["roles"]`` — schon vorhanden
     (``/-/status``), keine neue Datenquelle nötig."""
     roles = (status or {}).get("roles")
-    left = f'<h1>bibi</h1>{_screen_nav(active, roles)}'
+    left = f'<h1>bibi</h1>{_screen_nav(active, roles, sub=sub)}'
     # Die Uhr zeigt die Zeit des Schedulers, nicht die eigene — deshalb reisen
     # sein `now` und der Renderzeitpunkt bis hierher durch.
     right = (f'{_ops_handles(status, scheduler=scheduler)}{_time_toggle()}'
@@ -3990,8 +4011,11 @@ def _jobs_zeile(row, now: float) -> str:
         # entfernen" und „Gruppierung ausblenden".
         f'<td>{"@" if row.oneshot else ""}'
         f'{models.display_kind(row.spec.get("payload"), row.spec.get("app_port"))}</td>'
-        # `row_status` ist der Slot-Zustand der Scheduler-DB; `status` heisst
-        # dieses Feld nur in der lokalen Job-DB (live abgenommen 2026-08-03).
+        # Client zuerst (m.rau/bibi#147) — dieselbe Ordnung wie im Header und in
+        # den Kacheln des Job-Details. `status` heisst dieses Feld in der
+        # lokalen Job-DB; in den Scheduler-Zeilen heisst es `row_status` (live
+        # abgenommen 2026-08-03).
+        f'<td>{l.get("status") or "—"}</td>'
         f'<td>{s.get("row_status") or s.get("status") or "—"}</td>'
         f'<td>{_uhrzeit(s.get("last_run_at"), now)}</td>'
         f'<td>{_uhrzeit(s.get("next_fire_at"), now)}</td>'
@@ -4000,7 +4024,6 @@ def _jobs_zeile(row, now: float) -> str:
         # derselbe Job zeigte mal `2.8s`, mal `4m 34s`, je nachdem was zuletzt
         # geschah. Unter fünf Läufen liefert der Scheduler bewusst nichts.
         f'<td>{_human_duration(s.get("runtime_p90"))}</td>'
-        f'<td>{l.get("status") or "—"}</td>'
         f'<td>{row.quote or "—"}</td>'
         "</tr>"
     )
@@ -4099,14 +4122,27 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
     kopf = (
         "<thead>"
         '<tr class="gruppen"><th></th><th></th>'
+        # **Client links, Scheduler rechts** (m.rau/bibi#147): links steht, was
+        # dieser Knoten selbst weiss, rechts, was der Scheduler sagt — mit dem
+        # Ausfall als Argument (FE §2): faellt der Host weg, verlieren genau die
+        # rechten Werte ihre Gueltigkeit. Die Tabelle drehte das bisher um und
+        # machte aus der Regel eine Ausnahme.
+        #
+        # `CLIENT`, nicht `LOCAL`: ein Wort fuer eine Sache. `LOCAL` ist nur aus
+        # Sicht des Betrachters lokal, `CLIENT` benennt die Herkunft — und der
+        # Header sagte ohnehin schon `CLIENT`.
+        #
         # RUNTIME ist seit m.rau/bibi#132 eine Scheduler-Eigenschaft: er weiss,
         # wann es *wieder* laeuft, und wie lange es *dauert*. Beide Angaben sind
-        # gefragt, beide gehoeren ihm — LOCAL bleibt der reine Zustand.
-        '<th colspan="4" class="grp">SCHEDULER</th>'
-        '<th colspan="1" class="grp">LOCAL</th><th></th></tr>'
+        # gefragt, beide gehoeren ihm — der Client bleibt der reine Zustand.
+        '<th colspan="1" class="grp">CLIENT</th>'
+        '<th colspan="4" class="grp">SCHEDULER</th><th></th></tr>'
         "<tr>"
         + _sort_kopf("slug", "SLUG", sort, direction)
         + _sort_kopf("type", "TYPE", sort, direction)
+        # Die Client-Spalte ist nicht sortierbar — `status` sortiert nach dem
+        # Scheduler-Zustand und tat das immer schon.
+        + "<th>STATUS</th>"
         + _sort_kopf("status", "STATUS", sort, direction)
         + _sort_kopf("last", "LAST", sort, direction)
         + _sort_kopf("next", "NEXT", sort, direction)
@@ -4114,7 +4150,7 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
         # keine davon. Dass die Zahl jetzt tragfaehig ist, macht das Sortieren
         # naheliegend — aber das ist eine Erweiterung der Vorgabe, keine Folge
         # aus ihr.
-        + "<th>RUNTIME</th><th>STATUS</th>"
+        + "<th>RUNTIME</th>"
         + _sort_kopf("24h", "24H", sort, direction)
         + "</tr></thead>"
     )
@@ -4152,13 +4188,22 @@ _JOBS_JS = """
   // zurueckblaettern. Die Auswertung passiert am Server -- dieselbe
   // Klassifikation wie beim ersten Aufbau, kein zweiter Filter im Browser.
   const url = new URL(window.location.href);
+  // Jede von hier gebaute URL traegt `f=1` (m.rau/bibi#156): sie sagt damit
+  // "diese Query ist die Antwort, auch wo sie schweigt". Ohne das Zeichen ist
+  // eine URL ohne `typ` von einer nie gesetzten nicht zu unterscheiden -- der
+  // Server faellt dann auf den Cookie zurueck und bringt genau den Filter
+  // wieder, den man eben abgewaehlt hat.
+  const gehe = () => {
+    url.searchParams.set('f', '1');
+    window.location.href = url.toString();
+  };
   const mehrfach = (name, wert) => {
     const da = url.searchParams.getAll(name);
     url.searchParams.delete(name);
     // Toggle: was schon drin ist, faellt raus.
     const neu = da.includes(wert) ? da.filter(v => v !== wert) : da.concat([wert]);
     neu.forEach(v => url.searchParams.append(name, v));
-    window.location.href = url.toString();
+    gehe();
   };
   const gruppe = (wert) => {
     if (['job','claude','app'].includes(wert)) return 'typ';
@@ -4174,7 +4219,7 @@ _JOBS_JS = """
     b.addEventListener('click', () => {
       if (b.dataset.group === 'off') url.searchParams.set('group', 'off');
       else url.searchParams.delete('group');
-      window.location.href = url.toString();
+      gehe();
     });
   });
   document.querySelectorAll('th[data-sort]').forEach(th => {
@@ -4185,11 +4230,41 @@ _JOBS_JS = """
       // Zweiter Klick auf dieselbe Spalte dreht die Richtung um.
       url.searchParams.set('dir', jetzt === th.dataset.sort && richtung === 'asc'
                                    ? 'desc' : 'asc');
-      window.location.href = url.toString();
+      gehe();
     });
   });
 })();
 """
+
+
+#: Der Marker, den jede vom Skript gebaute Ansichts-URL trägt (m.rau/bibi#156).
+#: Er beantwortet die eine Frage, die eine leere Query sonst offen lässt: *ist
+#: hier nichts gewählt, oder wurde alles abgewählt?* Ohne ihn brächte der
+#: Cookie den eben gelöschten Filter zurück, und der Knopf wäre tot.
+VIEW_MARKER = "f"
+
+
+def _jobs_view_query(*, typ: list[str] | None, status: list[str] | None,
+                     journal: list[str] | None, sort: str | None,
+                     direction: str, group: bool) -> str:
+    """Die aktuelle Ansicht als Query-String — für die Refetch-URL.
+
+    Der Bus lud bis #156 ``/-/jobs/list`` **ohne** Query nach. Damit kam bei
+    jedem Job-Statuswechsel die ungefilterte Liste zurück und ersetzte die
+    gefilterte: jede Filterwahl galt nur bis zum nächsten Ereignis, und das ist
+    der Normalbetrieb. Der Cookie allein reicht dagegen nicht — zwei Browser-
+    Tabs teilen sich einen, und der zweite überschriebe dem ersten die Sicht.
+    Die Query gehört deshalb an die URL, der Cookie ist nur für die Wiederkehr.
+    """
+    from urllib.parse import urlencode
+    paare: list[tuple[str, str]] = [(VIEW_MARKER, "1")]
+    for name, werte in (("typ", typ), ("status", status), ("journal", journal)):
+        paare += [(name, w) for w in (werte or [])]
+    if sort:
+        paare += [("sort", sort), ("dir", direction or "asc")]
+    if not group:
+        paare.append(("group", "off"))
+    return urlencode(paare)
 
 
 def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
@@ -4216,7 +4291,13 @@ def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
         # und ist kein Job-Ereignis. Nachgeladen wird die Liste, nicht die
         # Seite: sonst ginge bei jedem Ereignis Scroll-Position und Fokus
         # verloren (Befund m.rau, 2026-08-03).
-        '<div id="jobs" data-bus="jobs" data-bus-refetch="/-/jobs/list">'
+        # Die Query gehört an die Refetch-URL, sonst kommt die Liste roh
+        # zurück und macht jede Filterwahl beim ersten Ereignis zunichte
+        # (m.rau/bibi#156).
+        f'<div id="jobs" data-bus="jobs" data-bus-refetch="/-/jobs/list?'
+        + _jobs_view_query(typ=typ, status=status, journal=journal, sort=sort,
+                           direction=direction, group=group)
+        + '">'
         + jobs_screen(rows, now, typ=typ, status=status, journal=journal,
                       sort=sort, direction=direction, group=group)
         + "</div>"
@@ -4410,6 +4491,18 @@ def _slot_kachel(kachel, *, now: float) -> str:
     ziel = "scheduler" if kachel.quelle == "SCHEDULER" else "client"
     client = ziel == "client"
     titel = kachel.quelle + (f" &middot; {_e(kachel.host)}" if kachel.host else "")
+    if kachel.disabled:
+        # Gesperrt, nicht verborgen (m.rau/bibi#146). Der Grund steht **im**
+        # Text und nicht im `title`: auf einem Touch-Gerät gibt es kein Hover,
+        # und eine graue Kachel ohne Begründung ist nur eine andere Art, nichts
+        # zu sagen. Keine Verbleiste — ausgegraut heisst nicht bedienbar, und
+        # ein Knopf, der nur grau aussieht und trotzdem postet, verspricht eine
+        # Wirkung, die es nicht gibt.
+        return (
+            f'<div class="tile tile-off"><div class="tile-head">{titel}</div>'
+            f'<div class="tile-state">{_e(kachel.disabled)}</div>'
+            "</div>"
+        )
     if not kachel.status:
         # Kein Rateschritt: fehlt jeder Zustand, sagt die Kachel das, statt
         # `pending` zu behaupten (Befund bei der Abnahme, 2026-08-03).
@@ -4699,7 +4792,8 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
                        scheduler_stale_since: float | None = None,
                        beziehung: str | None = None,
                        days: int | None = None, reach: dict | None = None,
-                       aktiv: dict | None = None, weiter: int | None = None) -> str:
+                       aktiv: dict | None = None, weiter: int | None = None,
+                       public_host: str = "localhost") -> str:
     """Job Detail (FE-Spezifikation §5) — Hülle, Kopfzeile, Kacheln, Liste.
 
     **Oben die Kacheln: was ich tun kann. Unten die Liste: was geschehen ist**
@@ -4715,11 +4809,21 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
     trigger = spec.get("schedule") or spec.get("at_iso") or "—"
     typ = spec.get("kind") or "job"
     rel = f' <span class="rel">({_e(beziehung)})</span>' if beziehung else ""
+    # Der Weg zum Dienst gehört in den Kopf und nicht in eine Kachel
+    # (m.rau/bibi#145): `app_port` steht im MD-Frontmatter und gilt für den
+    # Job, nicht für einen Lauf — eine Kachel beschreibt einen Slot und wäre
+    # der falsche Ort für etwas, das auch ohne jeden Lauf gilt. Der Screen
+    # führte den Link bisher überhaupt nicht; die Bedingung, die das Ticket
+    # verdächtigte, sitzt im alten Detail unter `/-/ui/jobs/detail/…`.
+    app_port = spec.get("app_port")
+    app_cta = (f'<a class="cta" href="http://{_e(str(public_host))}:{_e(str(app_port))}/" '
+               f'target="_blank" rel="noopener">[APP]</a>') if app_port else ""
     kopf = (
         '<div class="jd-head">'
         '<a class="back" href="/-/jobs">&#9666; jobs</a>'
         f'<span class="jd-slug">{_e(slug)}</span>{rel}'
         f'<span class="jd-meta">{_e(typ)} &middot; {_e(str(trigger))}</span>'
+        f'{app_cta}'
         f'<a class="cta" href="/-/jobs/{_uid(slug)}/attrs">[ATTRS]</a>'
         "</div>"
     )
@@ -4731,7 +4835,7 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
         f"<style>{_CSS}</style>"
         f'<script src="/-/static/htmx-1.9.12.min.js"></script>'
         "</head><body>"
-        f"{_header('Jobs', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{_header('Jobs', daemon_status, scheduler=scheduler, sub=True, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{kopf}"
         # **Zwei angemeldete Regionen, beide mit ihrem Wrapper aus einer
@@ -4830,7 +4934,7 @@ def job_attrs_page_v5(*, slug: str, spec: dict, defaults: dict, now: float,
         f"<style>{_CSS}</style>"
         f'<script src="/-/static/htmx-1.9.12.min.js"></script>'
         "</head><body>"
-        f"{_header('Jobs', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{_header('Jobs', daemon_status, scheduler=scheduler, sub=True, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         '<div class="jd-head">'
         f'<a class="back" href="/-/jobs/{_uid(slug)}">&#9666; back to job</a>'
