@@ -398,8 +398,11 @@ th.sorted { font-weight: 700; }
 .chip.modified { background: var(--ambersoft); color: var(--amber); }
 .chip.new { background: var(--bluesoft); color: var(--blue); }
 .chip.conflict { background: var(--redsoft); color: var(--red); }
-/* Nodes-Screen Git-Status-Chips (Batch 9 Punkt 3) — dieselben Farben wie
-   .tree-*/.sync-* (Feed-Git-Kachel), hier als Chip statt Klartext. */
+/* Nodes-Screen Git-Status-Chips (Batch 9 Punkt 3) — dieselben Farben wie die
+   tree- und sync-Klassen der Feed-Git-Kachel, hier als Chip statt Klartext.
+   Die Klassennamen stehen bewusst ohne Stern: ".tree-" plus Stern ergibt die
+   Folge, die einen CSS-Kommentar schliesst — der Rest dieses Satzes landete
+   dadurch als ungueltiges CSS im Stylesheet, wo ihn nur der Parser sah. */
 .chip.synced { background: var(--greensoft); color: var(--green); }
 .chip.ahead { background: var(--ambersoft); color: var(--amber); }
 .chip.behind, .chip.diverged { background: var(--redsoft); color: var(--red); }
@@ -810,12 +813,12 @@ def _node_git_status_chips(git_status: str | None) -> str:
 #: ``deploy.update_state()`` — nebeneinander gelesen sollen beide Zeilen
 #: dieselbe Sprache sprechen (m.rau/bibi#67).
 _NODE_ENGINE_VERDICT: dict[str, tuple[str, str]] = {
-    "current": ("chip clean", "läuft auf dem erwarteten Tag"),
-    "behind": ("chip conflict", "ein neuerer Stand ist gepinnt"),
+    "current": ("chip clean", "running the expected tag"),
+    "behind": ("chip conflict", "a newer revision is pinned"),
     "branch": ("chip modified",
-               "an einen Branch gepinnt — ob er weitergewandert ist, "
-               "weiß dieser Knoten nicht"),
-    "unknown": ("chip", "Soll- oder Ist-Stand fehlt"),
+               "pinned to a branch — this node cannot tell whether it "
+               "has moved on"),
+    "unknown": ("chip", "expected or actual revision missing"),
 }
 
 
@@ -852,13 +855,13 @@ def _node_engine_cell(engine: str | None, expected: str | None = None,
         return f' <span class="{cls}">{_e(tree)}</span>'
 
     for marker, title in (
-            ("(editable)", "laeuft gegen ein Arbeits-Checkout, nicht gegen den "
-                           "gepinnten Stand"),
+            ("(editable)", "running against a working checkout, not the "
+                           "pinned revision"),
             # m.rau/bibi#58: eine Kopie eines Verzeichnisses sieht aus wie ein
             # Release und ist keins — derselbe Unterschied zum gepinnten Stand
             # wie beim editable install, nur schlechter zu bemerken.
-            ("(local)", "aus einem lokalen Verzeichnis installiert, nicht aus "
-                        "dem gepinnten Tag")):
+            ("(local)", "installed from a local directory, not from the "
+                        "pinned tag")):
         if marker in engine:
             base = engine.replace(marker, "").strip()
             return (f'{_e(base)}{_tree_chip()} '
@@ -868,7 +871,7 @@ def _node_engine_cell(engine: str | None, expected: str | None = None,
     from bibi.daemon import deploy as deploy_mod
     verdict = deploy_mod.label_verdict(expected, engine)
     cls, title = _NODE_ENGINE_VERDICT.get(
-        verdict, ("chip", "Stand nicht bestimmbar"))
+        verdict, ("chip", "revision cannot be determined"))
     cell = f'{_e(engine)}{_tree_chip()}'
     cell += f' <span class="{cls}" title="{_e(title)}">{_e(verdict)}</span>'
     if verdict == "behind":
@@ -972,7 +975,7 @@ def _expected_ref() -> str | None:
 def _clients_table(workers: list[dict], now: float,
                    expected: str | None = None) -> str:
     if not workers:
-        return '<p class="out-empty">— keine Knoten —</p>'
+        return '<p class="out-empty">— no nodes —</p>'
     rows = []
     for w in sorted(workers, key=lambda w: w.get("worker") or ""):
         stale = w.get("stale", False)
@@ -997,10 +1000,10 @@ def _clients_table(workers: list[dict], now: float,
     return (
         '<table><thead><tr><th>Name</th>'
         f"{_role_matrix_header()}"
-        '<th>Engine</th><th>Git-User</th>'
-        '<th>Git-Status</th><th>Status</th><th>Freigabe</th><th>Neustart</th>'
-        '<th>Connected seit</th>'
-        '<th>Letzter Heartbeat</th></tr></thead>'
+        '<th>Engine</th><th>Git user</th>'
+        '<th>Git status</th><th>Status</th><th>Approval</th><th>Restart</th>'
+        '<th>Connected since</th>'
+        '<th>Last heartbeat</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
 
@@ -1040,9 +1043,9 @@ def _expected_version_form(deploy_result: dict | None) -> str:
     msg = ""
     if deploy_result:
         if deploy_result.get("ok") and deploy_result.get("changed"):
-            msg = (f'<span class="chip clean">gesetzt: {_e(deploy_result.get("ref",""))}</span>'
-                   f' <span class="ts-dim">(war {_e(deploy_result.get("was",""))}'
-                   f'{", gepusht" if deploy_result.get("pushed") else ", NICHT gepusht"})</span>')
+            msg = (f'<span class="chip clean">set: {_e(deploy_result.get("ref",""))}</span>'
+                   f' <span class="ts-dim">(was {_e(deploy_result.get("was",""))}'
+                   f'{", pushed" if deploy_result.get("pushed") else ", NOT pushed"})</span>')
         elif deploy_result.get("ok"):
             msg = f'<span class="ts-dim">{_e(deploy_result.get("note",""))}</span>'
         else:
@@ -1052,7 +1055,7 @@ def _expected_version_form(deploy_result: dict | None) -> str:
                    f' <span class="ts-dim">{_e(deploy_result.get("detail",""))}</span>')
     return (
         '<p class="handles">'
-        '<label>Erwartete Engine-Version '
+        '<label>Expected engine version '
         f'<input name="version" value="{_e(cur)}" size="14"{list_attr}></label>'
         # Der Stand, den DIESE Seite beim Rendern gesehen hat (m.rau/bibi#57).
         # Ein Tab, der vor einem Release geöffnet wurde, trägt im Feld oben den
@@ -1064,11 +1067,11 @@ def _expected_version_form(deploy_result: dict | None) -> str:
         f"{datalist} "
         '<button class="startbtn" hx-post="/-/ui/clients/expected-version" '
         'hx-include="closest p" hx-target="#clientsboard" hx-swap="outerHTML" '
-        f'hx-disabled-elt="this">Setzen{_BTN_SPINNER}</button> '
+        f'hx-disabled-elt="this">Set{_BTN_SPINNER}</button> '
         '<button class="startbtn" hx-post="/-/ui/clients/expected-version?deploy=true" '
-        'hx-include="closest p" hx-confirm="Version setzen UND alle Knoten neu starten?" '
+        'hx-include="closest p" hx-confirm="Set the version AND restart every node?" '
         'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this">'
-        f'Setzen + Ausrollen{_BTN_SPINNER}</button> {msg}'
+        f'Set + deploy{_BTN_SPINNER}</button> {msg}'
         '</p>'
     )
 
@@ -1085,10 +1088,10 @@ def clients_fragment(workers: list[dict], now: float | None = None, *,
         # ausgeführt (Clients zuerst, Host zuletzt) — siehe clients_restart_all().
         '<p class="handles">'
         '<button class="startbtn" hx-post="/-/ui/clients/restart-all" '
-        'hx-confirm="ALLE Knoten neu starten?" hx-target="#clientsboard" '
+        'hx-confirm="Restart EVERY node?" hx-target="#clientsboard" '
         f'hx-swap="outerHTML" hx-disabled-elt="this">Restart all{_BTN_SPINNER}</button> '
         '<button class="startbtn" hx-post="/-/ui/clients/restart-all?deploy=true" '
-        'hx-confirm="Auf ALLEN Knoten den neuen Stand holen und neu starten?" '
+        'hx-confirm="Fetch the new revision on EVERY node and restart?" '
         'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this">'
         f'Deploy all{_BTN_SPINNER}</button>'
         '</p>'
@@ -1115,7 +1118,7 @@ def clients_page(workers: list[dict], now: float | None = None, *,
     daemon_status = daemon_status or {}
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
+        '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Nodes</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
@@ -1697,7 +1700,7 @@ _TIME_JS = """
   const KEY = 'bibiTimeFormat';
   const ORDER = ['abs', 'rel', 'both'];
   const ICON = {abs: '◐', rel: '◑', both: '◒'};
-  const TITLE = {abs: 'Zeit: absolut', rel: 'Zeit: relativ', both: 'Zeit: absolut + relativ'};
+  const TITLE = {abs: 'Time: absolute', rel: 'Time: relative', both: 'Time: absolute + relative'};
   const root = document.documentElement;
   function apply(mode){
     root.setAttribute('data-timeformat', mode);
@@ -1839,7 +1842,7 @@ def log_page(daemon_status: dict | None = None, *, git_status: dict | None = Non
     status = daemon_status or {}
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
+        '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Live-Log</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
@@ -1891,14 +1894,14 @@ def _status_card_list(status: dict, now: float) -> list[str]:
     if conn is not None:
         ok = conn.get("ok")
         if ok is True:
-            value, cls = "verbunden", "ok"
+            value, cls = "connected", "ok"
         elif ok is False:
-            value, cls = "getrennt", "bad"
+            value, cls = "disconnected", "bad"
         else:
-            value, cls = "wartet…", ""
+            value, cls = "waiting…", ""
         last_at = conn.get("last_at")
         sub = f"Heartbeat {_ago(last_at, now)}" if last_at is not None else ""
-        cards.append(_card("Host-Verbindung", value, sub, cls))
+        cards.append(_card("Host connection", value, sub, cls))
 
     auto_sync = bool(status.get("auto_sync"))
     cards.append(_card("Auto-Sync", "an" if auto_sync else "aus", cls="ok" if auto_sync else ""))
@@ -1963,7 +1966,7 @@ def _engine_update_line(status: dict) -> str:
         f'<span class="chip conflict">NEED UPDATE</span> '
         f'<span class="ts-dim">{_e(running)} → {_e(expected)}</span> '
         f'<button class="startbtn" hx-post="/-/ui/self/update" '
-        f'hx-confirm="Neuen Stand holen und diesen Knoten neu starten?" '
+        f'hx-confirm="Fetch the new revision and restart this node?" '
         f'hx-target="#feedstatus" hx-swap="outerHTML" hx-disabled-elt="this">'
         f'Update{_BTN_SPINNER}</button>'
     )
@@ -2287,7 +2290,7 @@ def daemon_page(daemon_status: dict | None = None, now: float | None = None) -> 
     status = daemon_status or {}
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
+        '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Daemon</title>"
         f"<style>{_CSS}</style></head><body>"
@@ -2309,13 +2312,13 @@ def daemon_page(daemon_status: dict | None = None, now: float | None = None) -> 
 #: MDs brauchen keinen eigenen Status — sie verschwinden von selbst aus der
 #: Liste, da discovery.discover() sie nicht mehr findet).
 _GIT_STATUS_LABEL = {
-    "new": ("chip new", "neu"),
-    "modified": ("chip modified", "geändert"),
+    "new": ("chip new", "new"),
+    "modified": ("chip modified", "modified"),
     # Bibi4-Iteration, User-Fund: "sind sie lokal modifiziert, konfliktär,
     # fehlen?" — konfliktär war zuvor nicht von modified unterschieden
     # (local_files_status(), git_status.py).
-    "conflict": ("chip conflict", "konfliktär"),
-    "clean": ("chip clean", "unverändert"),
+    "conflict": ("chip conflict", "conflicted"),
+    "clean": ("chip clean", "unchanged"),
 }
 
 _SPARK_W, _SPARK_H = 72, 20
@@ -2401,7 +2404,7 @@ def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
         last_cell = _time_toggle_cell(lr.get("finished_at"), now, rel_fn=_ago)
         runtime_cell = _duration_cell(lr)
     else:
-        status_cell = '<span class="side-empty">noch nie lokal gelaufen</span>'
+        status_cell = '<span class="side-empty">never run locally</span>'
         last_cell = runtime_cell = "—"
 
     type_cell = _jobs_type_cell(row, public_host)
@@ -2416,7 +2419,7 @@ def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
                 sort_url: str = "/-/ui/jobs/board",
                 sort_target: str = "#jobsboard") -> str:
     if not rows:
-        return '<p class="out-empty">— keine Job-MDs im Repository gefunden —</p>'
+        return '<p class="out-empty">— no job markdown found in this repository —</p>'
     body = "".join(_jobs_row(r, local_runs, now, public_host=public_host, index=i)
                   for i, r in enumerate(rows))
     head = _sortable_head(
@@ -2527,8 +2530,8 @@ def _local_job_meta_line(local: dict, *, public_host: str = "localhost",
                                            ("chip", _e(str(local.get("git_status", "—")))))
     app_port = local.get("app_port") if include_app_link else None
     app_link = (f' · <a href="http://{public_host}:{app_port}/" target="_blank" '
-               f'rel="noopener">Zur App →</a>' if app_port else "")
-    return (f'<div class="meta">Typ <b>{kind}</b> · '
+               f'rel="noopener">Open app →</a>' if app_port else "")
+    return (f'<div class="meta">Type <b>{kind}</b> · '
             f'Trigger <code>{trigger}</code> · Git <span class="{cls}">{git_label}</span>'
             f'{app_link}</div>')
 
@@ -2614,7 +2617,7 @@ def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
                               last_run_output=last_run_output, public_host=public_host)
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
+        '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>bibi · {s}</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
@@ -2798,7 +2801,7 @@ def feed_page(
     status = daemon_status or {}
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
+        '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>bibi · Feed</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
@@ -3001,7 +3004,7 @@ def output_block(events: list[dict], kind: str) -> str:
     relevant (Aufrufer reichen ihn weiterhin durch); die Darstellung selbst
     unterscheidet nicht mehr nach Job-Typ."""
     if not events:
-        return '<div class="out-empty">— kein Output —</div>'
+        return '<div class="out-empty">— no output —</div>'
     lines = "\n".join(_event_line(e) for e in _merge_deltas(events))
     return f'<pre class="term">{lines}</pre>'
 
@@ -3233,7 +3236,7 @@ def _journal_sentinel_row(slug: str, offset: int, *, base: str = _JOURNAL_BASE) 
     return (
         f'<tr id="journal-more" hx-get="{base}/{s}/runs?offset={offset}" '
         f'hx-trigger="revealed" hx-swap="outerHTML">'
-        f'<td colspan="7" class="muted">lädt weitere Läufe…</td></tr>'
+        f'<td colspan="7" class="muted">loading more runs…</td></tr>'
     )
 
 
@@ -3285,13 +3288,13 @@ def _live_placeholder_row(job: dict | None, now: float, *, anchor: str) -> str:
 def _journal_table_html(runs: list[dict], slug: str, now: float, *, offset: int = 0,
                         base: str = _JOURNAL_BASE, live_row: str = "") -> str:
     if not runs and not live_row:
-        return '<p class="out-empty">— noch keine Läufe —</p>'
+        return '<p class="out-empty">— no runs yet —</p>'
     rows = live_row + _run_rows(runs, slug, now, base=base)
     if len(runs) == _JOURNAL_PAGE_SIZE:
         rows += _journal_sentinel_row(slug, offset + _JOURNAL_PAGE_SIZE, base=base)
     return (
-        '<table><thead><tr><th>Zeit</th><th>Status</th><th>Grund</th>'
-        '<th>exit</th><th>Dauer</th><th>Commit</th><th></th></tr></thead>'
+        '<table><thead><tr><th>TIME</th><th>STATUS</th><th>REASON</th>'
+        '<th>EXIT</th><th>RUNTIME</th><th>COMMIT</th><th></th></tr></thead>'
         f"<tbody>{rows}</tbody></table>"
     )
 
@@ -3366,7 +3369,7 @@ def _run_rows(runs: list[dict], slug: str, now: float, *, base: str = _JOURNAL_B
             f"<td>{_commit_cell(r)}</td>"
             f'<td><a class="back" href="/-/ui/run/{rid}">→ Detail</a> '
             f'<button hx-delete="{base}/{s}/run/{rid}" hx-target="#journal" '
-            f'hx-swap="outerHTML" hx-confirm="Lauf-Record löschen?">Löschen</button></td>'
+            f'hx-swap="outerHTML" hx-confirm="Delete this run record?">Delete</button></td>'
             "</tr>"
         )
     return "".join(rows)
@@ -3446,17 +3449,17 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
                + "</div>")
     app_port = job.get("app_port") if job else None
     app_link = (f' <a href="http://{public_host}:{app_port}/" target="_blank" '
-                f'style="font-size:.82rem">Zur App →</a>' if app_port else "")
+                f'style="font-size:.82rem">Open app →</a>' if app_port else "")
     # PLAN-22 Befund 1: pending hat weder started_at noch Output — "aktiver
     # Lauf" suggerierte fälschlich, dass gerade schon etwas läuft.
     if is_terminal:
-        label = "letzter Lauf"
+        label = "last run"
     elif job.get("status") == "pending":
-        label = "wartet"
+        label = "waiting"
     elif job.get("status") == "deferred":
-        label = "wartet auf Retry"
+        label = "waiting for retry"
     else:
-        label = "aktiver Lauf"
+        label = "active run"
     return (f'<div class="live"><div class="live-head">'
             f'<span class="st {st}">{st}</span>'
             f'<span class="muted">{label}{tail}</span>{app_link}</div>{out}</div>')
@@ -3471,8 +3474,8 @@ def _hitl_panel(job: dict) -> str:
     if app_url:
         link = f'<a href="{_e(app_url)}" target="_blank" rel="noopener">{_e(app_url)}</a>'
     else:
-        link = '<span class="muted">app_url nicht verfügbar</span>'
-    return f'<div class="hitl"><div class="hitl-label">Eingabe erforderlich</div>{link}</div>'
+        link = '<span class="muted">app_url unavailable</span>'
+    return f'<div class="hitl"><div class="hitl-label">Input required</div>{link}</div>'
 
 
 #: §5.6-Verben, die der Controller als Buttons anbietet (Durchsetzung/Scope: 4.6).
@@ -3549,8 +3552,8 @@ def _action_bar(slug: str, job: dict | None, exec_mode: str | None = None,
     if (exec_mode or "host").strip().lower() == "container":
         btns += (f'<button hx-post="{base}/{s}/rebuild" hx-target="{target}" '
                  f'hx-swap="outerHTML" hx-disabled-elt="this" '
-                 f'title="Verwirft das per-Job-Image, nächster Lauf startet vom '
-                 f'Default-Image">REBUILD{_BTN_SPINNER}</button> ')
+                 f'title="Discards the per-job image; the next run starts '
+                 f'from the default image">REBUILD{_BTN_SPINNER}</button> ')
     return f'<div class="actions">{btns}</div>'
 
 
@@ -3580,8 +3583,8 @@ def live_fragment(
     else:
         last_run = "—"
     nxt = _until(s.get("next_fire_at"), now)
-    meta = (f"Typ <b>{kind}</b> · Trigger <code>{trigger}</code> · "
-            f"letzter Lauf <b>{last_run}</b> · nächster Lauf {nxt}")
+    meta = (f"Type <b>{kind}</b> · Trigger <code>{trigger}</code> · "
+            f"last run <b>{last_run}</b> · next run {nxt}")
     # PLAN-36 Stufe 36.3: einziger Update-Weg ist der Bus (data-bus/-refetch,
     # s. _EVENTS_JS — ein live:-Zustands-Event refetcht diese Region). Das
     # 36.2er-Sicherheitsnetz-Poll und der awaiting-2s-Sonderfall sind
@@ -3633,7 +3636,7 @@ def schedule_detail_page(
     name = _e((schedule or {}).get("slug") or slug)
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
+        '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>bibi · {name}</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
@@ -3699,8 +3702,8 @@ def _attr_table(e: dict) -> str:
     if s is not None and f is not None:
         s_str = _dt.datetime.fromtimestamp(s).strftime("%Y-%m-%d %H:%M:%S")
         f_str = _dt.datetime.fromtimestamp(f).strftime("%H:%M:%S")
-        dauer = f" (Dauer {round(rt)} s)" if rt is not None else ""
-        rows.append(f'<tr><td><b>Lauf</b></td><td>{_e(s_str)} → {_e(f_str)}{dauer}</td></tr>')
+        dauer = f" (runtime {round(rt)} s)" if rt is not None else ""
+        rows.append(f'<tr><td><b>Run</b></td><td>{_e(s_str)} → {_e(f_str)}{dauer}</td></tr>')
     elif rt is not None:
         rows.append(f'<tr><td><b>exec_runtime</b></td><td>{rt:.1f} s</td></tr>')
 
@@ -3807,10 +3810,10 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         # doppeltes "bibi" + verschachtelte Nav) — derselbe Aufbau wie
         # schedule_detail_page().
         back = (f'<a class="back" href="/-/ui/schedule/{slug}">← {slug}</a>'
-                if slug else '<a class="back" href="/-/">← zurück</a>')
+                if slug else '<a class="back" href="/-/">← back</a>')
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
+        '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>bibi · {run_id}</title>"
         f"<style>{_CSS}"
@@ -3896,7 +3899,7 @@ def schedule_attrs_page(slug: str, data: dict, now: float | None = None) -> str:
     runtime_html = _attrs_section("Scheduling", _ATTRS_RUNTIME_ORDER, data)
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
+        '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>bibi · {name} · Attribute</title>"
         f"<style>{_CSS}"
@@ -3907,7 +3910,7 @@ def schedule_attrs_page(slug: str, data: dict, now: float | None = None) -> str:
         ".attrtable a { color: inherit; word-break: break-all; }"
         "</style></head><body>"
         f'<div style="display:flex;gap:.75rem;align-items:baseline">'
-        f'<a class="back" href="/-/">← zurück</a>'
+        f'<a class="back" href="/-/">← back</a>'
         f'<a class="back" href="/-/ui/schedule/{name}">← Detail</a>'
         f'</div>'
         f'<h1><span class="st {st}">{name}</span> · Attribute</h1>'
@@ -3935,7 +3938,7 @@ def jobs_detail_attrs_page(slug: str, local: dict | None) -> str:
     config_html = _attrs_section("Konfiguration", _ATTRS_CONFIG_ORDER, data)
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="de"><head><meta charset="utf-8">'
+        '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>bibi · {name} · Attribute</title>"
         f"<style>{_CSS}"
@@ -4434,8 +4437,8 @@ def _slot_leiste(aktionen, *, job_id: str | None = None,
     if rebuild and job_id:
         teile.append(
             f'<button class="slot-do" data-verb="rebuild" data-id="{_e(job_id)}" '
-            f'data-ziel="{_e(ziel or "client")}" title="Verwirft das per-Job-Image, '
-            f'der naechste Lauf startet vom Default-Image">REBUILD</button>')
+            f'data-ziel="{_e(ziel or "client")}" title="Discards the per-job image; '
+            f'the next run starts from the default image">REBUILD</button>')
     return f'<span class="slot-bar">{" ".join(teile)}</span>'
 
 

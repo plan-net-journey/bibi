@@ -104,7 +104,7 @@ def test_handle_app_register_sets_app_port(conn):
 
 def test_handle_awaiting_with_port_sets_app_url(conn):
     # bibi.job.awaiting(..., port=9100) muss die FE-HITL-Verlinkung (app_url)
-    # versorgen — sonst zeigt das Panel "app_url nicht verfügbar" (render.py).
+    # versorgen — sonst zeigt das Panel "app_url unavailable" (render.py).
     _insert_job(conn)
     sig = {"name": "awaiting", "input_request": "Wie viele?", "input_format": "number", "port": 9100}
     _handle_signal(conn, "j1", sig)

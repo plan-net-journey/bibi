@@ -115,7 +115,7 @@ def test_git_segment_card_none_ignores_stuck():
     assert "Konflikte" not in html
 
 
-# --- Host-Kachel (PLAN-19 Befund 4: Hostname statt "verbunden", Link) -----------
+# --- Host-Kachel (PLAN-19 Befund 4: Hostname statt "connected", Link) -----------
 
 
 def test_host_card_shows_hostname_link_when_connected():
@@ -125,7 +125,7 @@ def test_host_card_shows_hostname_link_when_connected():
     assert 'class="ok"' in html
     assert 'href="http://sarasate.tail9f9173.ts.net:8780/-/"' in html
     assert ">sarasate.tail9f9173.ts.net<" in html
-    assert "verbunden" not in html
+    assert "connected" not in html
     assert "Heartbeat 4s ago" in html
 
 

@@ -243,7 +243,12 @@ _CSS_OHNE_MARKUP = {
     "awaiting", "complete", "deferred", "error", "failed", "killed", "new",
     "pending", "running", "starting", "zombie",
     # Git-/Sync-Zustaende, ueber _SYNC_LABEL_CLASS bzw. `tree-{…}` gesetzt.
-    "ahead", "behind", "diverged", "synced", "sync-",
+    # `sync-` stand hier bis zum 2026-08-05 und war nie eine Regel: die Folge
+    # `.tree-*/` in einem Kommentar schloss diesen vorzeitig, der Rest des
+    # Satzes wurde als CSS gelesen und lieferte `.sync-` als Selektor. Mit dem
+    # korrigierten Kommentar (m.rau/bibi#37) ist er weg — gefunden hat ihn die
+    # Gegenprobe unten, also genau das, wofuer sie gebaut wurde.
+    "ahead", "behind", "diverged", "synced",
     "sync-ahead", "sync-behind", "sync-synced", "tree-clean", "tree-modified",
     # Log-Level: `el.className = 'ln ' + (o.level||'').toLowerCase()` im
     # Live-Log-JS — die Stufe steht im Ereignis, nicht im Markup.

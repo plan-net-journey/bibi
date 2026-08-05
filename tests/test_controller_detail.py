@@ -63,7 +63,7 @@ def test_output_block_claude_uses_same_line_rendering_as_live():
 
 
 def test_output_block_empty():
-    assert "kein Output" in render.output_block([], "job")
+    assert "no output" in render.output_block([], "job")
 
 
 # ── Schedule-Detail ──────────────────────────────────────────────────────────
@@ -88,7 +88,7 @@ def test_schedule_detail_page_renders_runs():
 def test_schedule_detail_page_no_runs():
     html = render.schedule_detail_page(
         {"slug": "x", "kind": "job", "trigger": "never", "last_status": None}, [])
-    assert "noch keine Läufe" in html
+    assert "no runs yet" in html
 
 
 def test_run_rows_have_no_relative_time():
@@ -401,7 +401,7 @@ def test_schedule_detail_meta_shows_app_type_via_display_kind(app_with):
 
 def test_schedule_detail_route_shows_app_link_for_running_app_job(app_with):
     # Batch 9 Punkt 2(b): _detail_data() reichte job["app_port"] nie durch —
-    # _live_panel()s "Zur App →"-Link (render.py) blieb dadurch für jeden
+    # _live_panel()s "Open app →"-Link (render.py) blieb dadurch für jeden
     # App-Job auf der Host-Detailseite unsichtbar, obwohl der zugehörige
     # Schedule app_port längst kennt (schedule_view()).
     client = FakeClient(
@@ -411,7 +411,7 @@ def test_schedule_detail_route_shows_app_link_for_running_app_job(app_with):
     with TestClient(app_with(client)) as c:
         r = c.get("/-/ui/schedule/hitl-test-app")
         assert r.status_code == 200
-        assert "Zur App →" in r.text and ":9101" in r.text
+        assert "Open app →" in r.text and ":9101" in r.text
 
 
 def test_schedule_detail_route_shows_output_for_terminal_job(app_with):
@@ -528,22 +528,22 @@ def test_detail_shows_last_run_in_meta_and_live_state_in_panel():
              "started_at": 1.0, "finished_at": 2.0, "kind": "claude"}]
     job = {"id": "j1", "slug": "witz", "status": "pending", "next_fire_at": None}
     html = render.schedule_detail_inner(s, runs, job, slug="witz", now=10.0)
-    assert "letzter Lauf <b>error</b>" in html          # Journal-Historie in Meta
-    # PLAN-22 Befund 1: pending zeigt "wartet", nicht "aktiver Lauf" — es läuft
+    assert "last run <b>error</b>" in html          # Journal-Historie in Meta
+    # PLAN-22 Befund 1: pending zeigt "waiting", nicht "active run" — es läuft
     # ja noch gar nichts (kein started_at, leeres Journal).
-    assert 'class="live"' in html and "wartet" in html  # Live-Block
+    assert 'class="live"' in html and "waiting" in html  # Live-Block
     assert '<h2>Journal</h2>' in html                    # Journal-Liste bleibt unten
 
 
 def test_detail_live_panel_pending_shows_wartet_not_aktiver_lauf():
-    # PLAN-22 Befund 1: "aktiver Lauf" suggeriert einen laufenden Prozess —
+    # PLAN-22 Befund 1: "active run" suggeriert einen laufenden Prozess —
     # pending hat weder started_at noch Output, es wartet nur auf den Start.
     s = {"slug": "a", "kind": "job", "trigger": "now"}
     job = {"id": "j", "slug": "a", "status": "pending", "next_fire_at": None}
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
     assert 'class="st pending">pending' in html
-    assert "wartet" in html
-    assert "aktiver Lauf" not in html
+    assert "waiting" in html
+    assert "active run" not in html
 
 
 def test_detail_live_panel_for_running_job():
@@ -553,8 +553,8 @@ def test_detail_live_panel_for_running_job():
     assert 'class="live"' in html and 'class="st running">running' in html
     # Job-Lifecycle-Redesign (leichte Variante, 2026-07-27): ein laufender Job
     # ohne echte Journal-Zeilen zeigt jetzt eine reine Anzeige-Platzhalterzeile
-    # statt "noch keine Läufe" — verlinkt zurück auf die Live-Region (#live).
-    assert "noch keine Läufe" not in html
+    # statt "no runs yet" — verlinkt zurück auf die Live-Region (#live).
+    assert "no runs yet" not in html
     assert '<a class="back" href="#live">↑ live</a>' in html
 
 
@@ -566,8 +566,8 @@ def test_detail_live_panel_deferred_shows_wartet_auf_retry():
            "next_fire_at": 20.0}
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
     assert 'class="live"' in html and 'class="st deferred">deferred' in html
-    assert "wartet auf Retry" in html
-    assert "aktiver Lauf" not in html
+    assert "waiting for retry" in html
+    assert "active run" not in html
     assert "next run" in html
 
 
@@ -620,7 +620,7 @@ def test_detail_shows_live_panel_for_last_terminal_run():
     job = {"id": "j", "slug": "a", "status": "complete", "finished_at": 2.0}
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
     assert 'class="live"' in html and 'class="st complete">complete' in html
-    assert "letzter Lauf" in html and "finished 3s ago" in html
+    assert "last run" in html and "finished 3s ago" in html
 
 
 def test_detail_live_region_is_bus_only():
@@ -737,7 +737,7 @@ def test_hitl_panel_no_app_url_shows_fallback():
     job = {"id": "j2", "slug": "a", "status": "awaiting", "app_url": None}
     html = render.schedule_detail_inner({"slug": "a"}, [], job, slug="a", now=5.0)
     assert 'class="hitl"' in html
-    assert "app_url nicht verfügbar" in html
+    assert "app_url unavailable" in html
 
 
 def test_hitl_panel_region_carries_bus_address_when_awaiting():
@@ -786,7 +786,7 @@ def test_journal_fragment_oob_swap_attribute():
 def test_journal_fragment_shows_live_placeholder_for_in_progress_job(status):
     job = {"id": "j", "slug": "a", "status": status, "started_at": 1.0}
     html = render.journal_fragment([], "a", now=5.0, live_job=job)
-    assert "noch keine Läufe" not in html
+    assert "no runs yet" not in html
     assert f'<td class="st {status}">{status}</td>' in html
     assert '<a class="back" href="#live">↑ live</a>' in html
 
@@ -796,12 +796,12 @@ def test_journal_fragment_shows_live_placeholder_for_in_progress_job(status):
 def test_journal_fragment_omits_live_placeholder_for_non_active_job(status):
     job = {"id": "j", "slug": "a", "status": status, "started_at": 1.0}
     html = render.journal_fragment([], "a", now=5.0, live_job=job)
-    assert "noch keine Läufe" in html  # kein Platzhalter, echte Läufe fehlen weiterhin
+    assert "no runs yet" in html  # kein Platzhalter, echte Läufe fehlen weiterhin
 
 
 def test_journal_fragment_omits_live_placeholder_without_job():
     html = render.journal_fragment([], "a", now=5.0, live_job=None)
-    assert "noch keine Läufe" in html
+    assert "no runs yet" in html
 
 
 def test_journal_fragment_live_placeholder_sits_above_real_runs():

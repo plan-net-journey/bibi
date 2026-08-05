@@ -332,7 +332,7 @@ def test_kill_running_job(client):
 
 
 def test_kill_writes_output_ref_into_journal(client):
-    # User-Fund 2026-07-27 ("kein Output" auf /-/ui/run/… nach KILL): der
+    # User-Fund 2026-07-27 ("no output" auf /-/ui/run/… nach KILL): der
     # daemon-seitige killed-Report macht die Zeile terminal und schreibt das
     # Journal, der spätere Wrapper-Report MIT output_ref wird als
     # idempotenter Wiederholungs-Report verworfen — job_kill() muss den

@@ -18,7 +18,7 @@ from bibi.daemon.app import create_app
 
 def test_clients_table_empty_state():
     html = render._clients_table([], now=100)
-    assert "keine Knoten" in html
+    assert "no nodes" in html
 
 
 def test_clients_table_renders_worker_row():
@@ -223,7 +223,7 @@ def test_clients_screen_route_shows_host_itself_without_any_registered_worker(te
     with TestClient(app) as c:
         r = c.get("/-/ui/clients")
     assert r.status_code == 200
-    assert "keine Knoten" not in r.text
+    assert "no nodes" not in r.text
     assert '<span class="chip clean">connected</span>' in r.text
     assert r.text.count('role-box on"') == 1  # nur "controller" ist aktiv
 
@@ -262,7 +262,7 @@ def test_clients_table_includes_approval_column():
                "approval_status": "pending", "stale": False,
                "connected_at": 0, "last_heartbeat": 0}]
     html = render._clients_table(workers, now=0)
-    assert "<th>Freigabe</th>" in html
+    assert "<th>Approval</th>" in html
     assert 'hx-post="/-/ui/clients/n1/approve"' in html
 
 
@@ -297,7 +297,7 @@ def test_clients_table_offers_restart_and_deploy():
     workers = [{"worker": "w", "host": "h", "port": 8780, "node_id": "n1",
                 "stale": False, "connected_at": 0, "last_heartbeat": 0}]
     html = render._clients_table(workers, now=0)
-    assert "<th>Neustart</th>" in html
+    assert "<th>Restart</th>" in html
     assert 'hx-post="/-/ui/clients/n1/restart"' in html
     assert 'hx-post="/-/ui/clients/n1/deploy"' in html
     # Ein Klick, der einen laufenden Knoten beendet, darf nicht versehentlich
@@ -312,7 +312,7 @@ def test_clients_table_omits_restart_without_port():
                 "connected_at": 0, "last_heartbeat": 0}]
     html = render._clients_table(workers, now=0)
     assert "/restart" not in html
-    assert "<th>Neustart</th>" in html
+    assert "<th>Restart</th>" in html
 
 
 def test_clients_fragment_offers_restart_all():
@@ -399,7 +399,7 @@ def test_expected_version_form_warns_when_not_pushed(monkeypatch):
         [], now=0,
         deploy_result={"ok": True, "changed": True, "ref": "v0.2.3",
                        "was": "v0.2.2", "pushed": False})
-    assert "NICHT gepusht" in html
+    assert "NOT pushed" in html
 
 
 # ── m.rau/bibi#44: ein Sitzungs-Knoten hat keinen Supervisor ────────────────
@@ -414,7 +414,11 @@ def test_restart_cell_marks_a_session_node_before_the_click():
     html = render._clients_table(workers, now=0)
     assert ">session<" in html                    # als Chip lesbar, ohne Klick
     assert ">Stop" in html                        # das Verb sagt, was passiert
-    assert "Restart<" not in html                 # und verspricht keinen Neustart
+    # Nur die **Zelle** darf keinen Neustart versprechen. Seit #37 heißt der
+    # Spaltenkopf "Restart" — ohne diesen Zuschnitt prüfte die Zeile den
+    # Tabellenkopf mit und wäre für immer rot.
+    zelle = html.split("<tbody>")[1]
+    assert "Restart<" not in zelle                # und verspricht keinen Neustart
     assert "nobody brings it back" in html        # im Bestätigungsdialog
 
 
@@ -590,7 +594,7 @@ def test_an_absent_scheduler_still_shows_the_own_node(team_repo: Path, monkeypat
     app = create_app(roles.resolve({"controller"}), controller_client=_FakeClient())
     with TestClient(app) as c:
         html = c.get("/-/ui/clients").text
-    assert "keine Knoten" not in html
+    assert "no nodes" not in html
     assert "testnode.invalid" in _knoten(html)
 
 

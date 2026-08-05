@@ -93,14 +93,14 @@ def test_jobs_row_type_column_defaults_to_localhost():
 
 def test_jobs_table_shows_git_status_chip():
     html = render._jobs_table([_row("a", git_status="new")], {}, now=100.0)
-    assert 'class="chip new"' in html and ">neu<" in html
+    assert 'class="chip new"' in html and ">new<" in html
 
 
 def test_jobs_table_git_status_modified_chip_at_slug():
     # Bibi4-Iteration, User-Fund: keine eigene GIT-Spalte mehr, Chip sitzt
     # direkt am Slug.
     html = render._jobs_table([_row("a", git_status="modified")], {}, now=100.0)
-    assert 'class="chip modified"' in html and ">geändert<" in html
+    assert 'class="chip modified"' in html and ">modified<" in html
 
 
 def test_jobs_table_git_status_clean_shows_no_chip():
@@ -115,7 +115,7 @@ def test_jobs_table_shows_git_status_conflict_chip():
     # Bibi4-Iteration, User-Fund: "sind sie lokal modifiziert, konfliktär,
     # fehlen?" — eigener Zustand, nicht mehr im "modified"-Topf.
     html = render._jobs_table([_row("a", git_status="conflict")], {}, now=100.0)
-    assert 'class="chip conflict"' in html and ">konfliktär<" in html
+    assert 'class="chip conflict"' in html and ">conflicted<" in html
 
 
 def test_jobs_table_shows_last_local_run_status_and_links_to_run_detail():
@@ -126,7 +126,7 @@ def test_jobs_table_shows_last_local_run_status_and_links_to_run_detail():
 
 def test_jobs_table_no_local_run_yet_shows_placeholder_no_link():
     html = render._jobs_table([_row("a")], {}, now=100.0)
-    assert "noch nie lokal gelaufen" in html
+    assert "never run locally" in html
     assert 'href="/-/ui/run/' not in html
 
 
@@ -142,7 +142,7 @@ def test_jobs_table_slug_always_links_to_local_job_detail():
 
 def test_jobs_table_empty_shows_placeholder():
     html = render._jobs_table([], {}, now=100.0)
-    assert "keine Job-MDs im Repository gefunden" in html
+    assert "no job markdown found in this repository" in html
 
 
 def test_jobs_table_live_row_shows_running():
@@ -308,7 +308,7 @@ def test_jobs_detail_live_fragment_meta_line_shows_type_trigger_git():
     local = _row("a", git_status="modified")
     html = render.jobs_detail_live_fragment("a", None, local, None)
     assert "job" in html and "now" in html
-    assert 'class="chip modified"' in html and ">geändert<" in html
+    assert 'class="chip modified"' in html and ">modified<" in html
 
 
 def test_jobs_detail_live_fragment_meta_line_uses_same_markup_as_host():
@@ -330,20 +330,20 @@ def test_jobs_detail_live_fragment_shows_app_link_even_without_any_run():
     local = _row("a", app_port=9100)
     html = render.jobs_detail_live_fragment("a", None, local, None,
                                             public_host="example.ts.net")
-    assert '<a href="http://example.ts.net:9100/" target="_blank" rel="noopener">Zur App →</a>' in html
+    assert '<a href="http://example.ts.net:9100/" target="_blank" rel="noopener">Open app →</a>' in html
 
 
 def test_jobs_detail_live_fragment_no_app_link_without_app_port():
     html = render.jobs_detail_live_fragment("a", None, _row("a"), None)
-    assert "Zur App" not in html
+    assert "Open app" not in html
 
 
 def test_jobs_detail_live_fragment_no_status_duplicated_in_meta_line():
     # _local_job_meta_line() zeigt bewusst keinen eigenen Status mehr (anders
-    # als die alte _local_job_meta()) — "letzter Lauf" kommt nur noch einmal,
+    # als die alte _local_job_meta()) — "last run" kommt nur noch einmal,
     # aus _live_panel()s eigenem Label.
     html = render.jobs_detail_live_fragment("a", None, _row("a"), {"id": 5, "status": "complete"})
-    assert html.count("letzter Lauf") == 1
+    assert html.count("last run") == 1
 
 
 def test_jobs_detail_live_fragment_falls_back_to_last_run_output():
@@ -362,7 +362,7 @@ def test_jobs_detail_live_fragment_shows_hitl_panel_when_awaiting():
         "a", {"id": "jid1", "status": "awaiting", "app_url": "http://127.0.0.1:9100/",
              "events": []},
         _row("a"), None)
-    assert "Eingabe erforderlich" in html
+    assert "Input required" in html
     assert 'href="http://127.0.0.1:9100/"' in html
 
 
@@ -447,7 +447,7 @@ def test_jobs_detail_page_live_run_shows_journal_placeholder():
     live = {"id": "jid1", "status": "running", "started_at": 100.0}
     html = render.jobs_detail_page("a", _row("a", live=live), None, [], now=105.0,
                                    live=live)
-    assert "noch keine Läufe" not in html
+    assert "no runs yet" not in html
     assert '<a class="back" href="#jobsdetail-live">↑ live</a>' in html
 
 
@@ -761,7 +761,7 @@ def test_jobs_detail_run_delete_route(team_repo: Path, app_with):
         assert r.status_code == 200
         assert fake.delete_calls == [5]
         assert 'id="journal"' in r.text
-        assert "noch keine Läufe" in r.text  # Journal jetzt leer, sofort sichtbar
+        assert "no runs yet" in r.text  # Journal jetzt leer, sofort sichtbar
 
 
 def test_jobs_detail_start_route_posts_to_own_fragment_not_jobsboard(team_repo: Path, app_with):

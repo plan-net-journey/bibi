@@ -50,20 +50,20 @@ def test_status_cards_omit_host_connection_without_connect():
     # Kein "connect"-Key im Status ⇒ keine Rolle mit --connect ⇒ keine Kachel,
     # die einen nie stattfindenden Heartbeat suggerieren würde.
     html = render._status_cards({"roles": ["scheduler"]}, now=100.0)
-    assert "Host-Verbindung" not in html
+    assert "Host connection" not in html
 
 
 def test_status_cards_connected_shows_ok_and_last_heartbeat():
     html = render._status_cards(
         {"roles": ["connect"], "connect": {"ok": True, "last_at": 96.0}}, now=100.0)
-    assert "Host-Verbindung" in html and "verbunden" in html
+    assert "Host connection" in html and "connected" in html
     assert "4s ago" in html
 
 
 def test_status_cards_disconnected_shows_bad():
     html = render._status_cards(
         {"roles": ["connect"], "connect": {"ok": False, "last_at": 90.0}}, now=100.0)
-    assert "getrennt" in html and 'class="value bad"' in html
+    assert "disconnected" in html and 'class="value bad"' in html
 
 
 def test_status_cards_auto_sync_and_maintenance():

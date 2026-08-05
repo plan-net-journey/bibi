@@ -36,7 +36,7 @@ def test_execution_detail_meta():
     assert html.lower().startswith("<!doctype html>")
     assert "Witz:54" in html
     assert 'class="st complete"' in html
-    assert "<td><b>exit_code</b></td><td>0</td>" in html and "Dauer 12 s" in html
+    assert "<td><b>exit_code</b></td><td>0</td>" in html and "runtime 12 s" in html
     assert "<td><b>host</b></td><td>mac</td>" in html
     assert "<td><b>worker</b></td><td>mac</td>" in html
     assert "094df71" in html
@@ -174,7 +174,7 @@ def test_attr_table_no_longer_shows_raw_snapshot_row():
 def test_execution_detail_duration_from_timestamps():
     html = render.execution_detail_page(
         _entry(exec_runtime=None, started_at=100.0, finished_at=109.0), events=[], kind="job")
-    assert "Dauer 9 s" in html
+    assert "runtime 9 s" in html
 
 
 def test_execution_detail_escapes_slug():
