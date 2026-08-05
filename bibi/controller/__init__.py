@@ -1358,6 +1358,40 @@ def add_controller_routes(
     #: verbreitert es (FE §5.3).
     _RUN_TAGE = 30
 
+    # ACHTUNG, Reihenfolge: `/-/jobs/list` MUSS vor `/-/jobs/{job_uid}` stehen.
+    # Starlette matcht in Registrierungsreihenfolge, nicht nach Spezifität —
+    # stand die feste Route dahinter, schluckte der Platzhalter sie und
+    # antwortete `404 job not found, job_uid=list`. Genau so war es von
+    # `e38d29a` bis `#151`: der Bus meldete korrekt, htmx holte die URL, bekam
+    # 404 und swappte nicht (htmx swappt nur bei 2xx) — der Jobs-Screen
+    # aktualisierte sich nie von selbst. `test_no_static_route_is_shadowed_by_
+    # an_earlier_placeholder` hält das app-weit fest.
+    @app.get("/-/jobs/list", include_in_schema=False)
+    def screen_jobs_list(request: Request, sort: str | None = None,
+                         dir: str | None = None):
+        """Nur die Liste — das Nachlade-Ziel des Bus.
+
+        Die Seite bleibt stehen, damit Scroll-Position und Fokus erhalten
+        bleiben; getauscht wird der Inhalt von ``#jobs``.
+        """
+        import time as _t
+
+        from bibi.controller import jobs_view
+        jetzt = _t.time()
+        historie = _journal_for_rows()
+        zeilen = jobs_view.build_rows(
+            local=_local_job_mds(), scheduler=_host_schedules(), journal=historie,
+            now=jetzt, local_runs=_local_run_status())
+        _quoten(zeilen, historie, jetzt)
+        q = request.query_params
+        # `jobs_list_fragment`, nicht `jobs_screen`: die Antwort muss ihren
+        # Bus-Wrapper mitbringen, weil `_EVENTS_JS` mit `outerHTML` swappt —
+        # sonst ist die Region nach genau einem Update abgemeldet.
+        return HTMLResponse(render.jobs_list_fragment(
+            zeilen, jetzt, typ=q.getlist("typ"), status=q.getlist("status"),
+            journal=q.getlist("journal"), sort=sort, direction=(dir or "asc"),
+            group=q.get("group") != "off"))
+
     @app.get("/-/jobs/{job_uid}", include_in_schema=False)
     def screen_job_detail(request: Request, job_uid: str,  # noqa: ARG001
                           days: int = _RUN_TAGE, status: str = "", src: str = ""):
@@ -1901,29 +1935,6 @@ def add_controller_routes(
             begonnen = lauf.get("started_at") or jetzt
             aus[slug] = {**lauf, "exec_runtime": max(0.0, jetzt - begonnen)}
         return aus
-
-    @app.get("/-/jobs/list", include_in_schema=False)
-    def screen_jobs_list(request: Request, sort: str | None = None,
-                         dir: str | None = None):
-        """Nur die Liste — das Nachlade-Ziel des Bus.
-
-        Die Seite bleibt stehen, damit Scroll-Position und Fokus erhalten
-        bleiben; getauscht wird der Inhalt von ``#jobs``.
-        """
-        import time as _t
-
-        from bibi.controller import jobs_view
-        jetzt = _t.time()
-        historie = _journal_for_rows()
-        zeilen = jobs_view.build_rows(
-            local=_local_job_mds(), scheduler=_host_schedules(), journal=historie,
-            now=jetzt, local_runs=_local_run_status())
-        _quoten(zeilen, historie, jetzt)
-        q = request.query_params
-        return HTMLResponse(render.jobs_screen(
-            zeilen, jetzt, typ=q.getlist("typ"), status=q.getlist("status"),
-            journal=q.getlist("journal"), sort=sort, direction=(dir or "asc"),
-            group=q.get("group") != "off"))
 
     @app.get("/-/nodes", include_in_schema=False)
     def screen_nodes():

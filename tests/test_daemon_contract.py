@@ -137,3 +137,44 @@ def test_no_route_returns_html(client):
             for code, resp in responses.items():
                 content = resp.get("content", {})
                 assert "text/html" not in content, f"{method} {path} → HTML"
+
+
+def test_no_static_route_is_shadowed_by_an_earlier_placeholder():
+    """Starlette matcht Routen in **Registrierungsreihenfolge**, nicht nach
+    Spezifität. Ein fester Pfad, der nach einem gleich langen Platzhalter-Pfad
+    registriert wird, ist damit unerreichbar — und zwar still: der Platzhalter
+    antwortet, nur mit dem falschen Handler.
+
+    Live gefunden am 2026-08-05 an `/-/jobs/list`, dem Nachlade-Ziel des Bus:
+    `/-/jobs/{job_uid}` stand davor und lieferte `404 job not found,
+    job_uid=list`. Der Jobs-Screen aktualisierte sich deshalb nie von selbst,
+    obwohl der Bus korrekt meldete (m.rau/bibi#143 war nicht die Ursache — es
+    hat den toten Weg erst sichtbar gemacht).
+
+    Deshalb eine **App-weite** Invariante statt nur eines Tests auf die eine
+    Route: die Falle liegt in der Reihenfolge zweier Dekoratoren, die
+    hunderte Zeilen auseinanderstehen können, und sie kostet beim nächsten Mal
+    wieder Tage. Geprüft wird über alle Rollen zusammen, weil die
+    Registrierung rollenabhängig ist.
+    """
+    app = create_app(roles.resolve({"controller", "scheduler", "synchronizer"}))
+    routen = [(r.path, set(r.methods or ()))
+              for r in app.routes if hasattr(r, "path") and hasattr(r, "methods")]
+
+    def segmente(p: str) -> list[str]:
+        return p.strip("/").split("/")
+
+    for i, (pfad, methoden) in enumerate(routen):
+        if "{" in pfad:
+            continue
+        for frueher, m_frueher in routen[:i]:
+            if "{" not in frueher:
+                continue
+            s_neu, s_alt = segmente(pfad), segmente(frueher)
+            if len(s_neu) != len(s_alt) or not (methoden & m_frueher):
+                continue
+            verdeckt = all(alt.startswith("{") or neu == alt
+                           for neu, alt in zip(s_neu, s_alt))
+            assert not verdeckt, (
+                f"{pfad} ist unerreichbar — {frueher} ist vorher registriert "
+                f"und schluckt ihn. Feste Pfade vor Platzhalter-Pfade legen.")

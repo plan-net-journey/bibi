@@ -541,6 +541,69 @@ def test_the_list_fragment_is_the_refetch_target():
     assert '<div id="jobs"' in html
 
 
+def test_the_refetch_target_actually_answers(app_with, team_repo: Path):
+    """**Befund m.rau, 2026-08-05:** „Bei mir bleibt nach START weiterhin
+    einfach nur *starting* stehen. Und erst ein RELOAD produziert dann das
+    *complete*."
+
+    Die beiden Tests darüber prüfen, dass die Liste sich beim Bus **anmeldet** —
+    nicht, dass die angemeldete URL antwortet. Sie tat es nicht:
+    `/-/jobs/{job_uid}` ist vor `/-/jobs/list` registriert, und Starlette matcht
+    in Registrierungsreihenfolge. Der Platzhalter schluckte `list` und lieferte
+    `404 {"error": "job not found", "job_uid": "list"}`; htmx swappt nur bei
+    2xx, also blieb die Zeile stehen, bis jemand neu lud.
+
+    **Eine Absicht zu prüfen ist billiger als ihre Wirkung** — und genau deshalb
+    war der Weg seit seinem Einbau (`e38d29a`, 2026-08-03) tot, ohne dass ein
+    Test es bemerkte. Der Bus meldete darüber die ganze Zeit korrekt; am
+    laufenden System kamen `live:<slug>` und `jobs` nachweislich an.
+    """
+    _mit_job_md(team_repo, "laeuft")
+    app = app_with({"roles": ["controller"]},
+                   run_live={"laeuft": {"id": "abc", "started_at": NOW - 60,
+                                        "status": "running"}})
+    with TestClient(app) as c:
+        r = c.get("/-/jobs/list", headers={"accept": "text/html"})
+    assert r.status_code == 200, f"{r.status_code}: {r.text[:200]}"
+    assert "laeuft" in r.text
+
+
+def test_the_refetched_fragment_stays_subscribed(app_with, team_repo: Path):
+    """Der zweite Halbsatz desselben Befundes: **einmal aktualisieren genügt
+    nicht.**
+
+    `_EVENTS_JS` swappt mit `swap: 'outerHTML'` — das Ziel-Element wird durch
+    die Antwort *ersetzt*, nicht befüllt. Trägt die Antwort ihr eigenes
+    `data-bus` nicht, ist die Region nach dem ersten Update taub: der Wrapper
+    mit der Anmeldung ist weg, und kein weiteres Ereignis findet sie je wieder.
+
+    Genau so liefert es jedes andere Fragment (`/-/ui/feed/status`,
+    `/-/ui/clients/board`) — die Konvention stand, nur dieses eine hielt sie
+    nicht. Aufgefallen ist es nie, weil die Route davor `404` gab und der Swap
+    also nie stattfand: **ein Fehler hat den anderen verdeckt.**
+    """
+    _mit_job_md(team_repo, "laeuft")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        frag = c.get("/-/jobs/list", headers={"accept": "text/html"}).text
+    assert 'id="jobs"' in frag
+    assert 'data-bus="jobs"' in frag
+    assert 'data-bus-refetch="/-/jobs/list"' in frag
+
+
+def test_the_page_does_not_nest_the_wrapper_twice(app_with, team_repo: Path):
+    """Die Gegenprobe zum Test darüber: Seite und Fragment teilen sich **eine**
+    Quelle für den Wrapper. Baute die Seite ihn zusätzlich selbst, stünde
+    `id="jobs"` zweimal ineinander — und `document.querySelectorAll` träfe
+    beide, was jeden Refetch verdoppelt."""
+    _mit_job_md(team_repo, "laeuft")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        seite = c.get("/-/jobs", headers={"accept": "text/html"}).text
+    assert seite.count('id="jobs"') == 1
+    assert seite.count('data-bus="jobs"') == 1
+
+
 # ── RUNTIME ist eine Scheduler-Eigenschaft und ein Perzentil (#132) ────────
 
 

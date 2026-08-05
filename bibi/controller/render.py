@@ -4192,6 +4192,37 @@ _JOBS_JS = """
 """
 
 
+def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
+                       status: list[str] | None = None,
+                       journal: list[str] | None = None,
+                       sort: str | None = None, direction: str = "asc",
+                       group: bool = True) -> str:
+    """Die Bänder **samt ihrem Bus-Wrapper** — das Nachlade-Ziel des Bus.
+
+    Der Wrapper gehört ins Fragment, nicht nur in die Seite: ``_EVENTS_JS``
+    swappt mit ``outerHTML``, ersetzt das Ziel-Element also vollständig. Käme
+    die Antwort ohne ``data-bus``, wäre die Region nach dem ersten Update
+    abgemeldet und bewegte sich bis zum nächsten Reload nicht mehr.
+
+    Dieselbe Form wie ``feed_status_fragment()`` und ``clients_board_
+    fragment()`` — die Konvention stand, dieses eine Fragment hielt sie nicht
+    (Befund m.rau, 2026-08-05). Genau **eine** Quelle für den Wrapper, damit
+    Seite und Fragment nicht auseinanderlaufen können.
+    """
+    return (
+        # Am Bus angemeldet: `jobs` traegt jede Job-Zustandsaenderung, und der
+        # Scheduler-Diff des Collectors meldet ueber `feedstatus`, was sich
+        # drueben getan hat -- eine geloeschte MD faellt erst beim Rescan auf
+        # und ist kein Job-Ereignis. Nachgeladen wird die Liste, nicht die
+        # Seite: sonst ginge bei jedem Ereignis Scroll-Position und Fokus
+        # verloren (Befund m.rau, 2026-08-03).
+        '<div id="jobs" data-bus="jobs" data-bus-refetch="/-/jobs/list">'
+        + jobs_screen(rows, now, typ=typ, status=status, journal=journal,
+                      sort=sort, direction=direction, group=group)
+        + "</div>"
+    )
+
+
 def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
                  git_status: dict | None = None, host_url: str | None = None,
                  scheduler: dict | None = None,
@@ -4216,16 +4247,12 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         "</head><body>"
         f"{_header('Jobs', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
-        # Am Bus angemeldet: `jobs` traegt jede Job-Zustandsaenderung, und der
-        # Scheduler-Diff des Collectors meldet ueber `feedstatus`, was sich
-        # drueben getan hat -- eine geloeschte MD faellt erst beim Rescan auf
-        # und ist kein Job-Ereignis. Nachgeladen wird die Liste, nicht die
-        # Seite: sonst ginge bei jedem Ereignis Scroll-Position und Fokus
-        # verloren (Befund m.rau, 2026-08-03).
-        f'<div id="jobs" data-bus="jobs" data-bus-refetch="/-/jobs/list" '
-        f'hx-get="/-/jobs/list" hx-trigger="bibiJobsChanged from:body" '
-        f'hx-swap="innerHTML">'
-        f'{jobs_screen(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group)}</div>'
+        # Wrapper + Bänder kommen aus `jobs_list_fragment()` — derselben
+        # Funktion, die die Refetch-Route bedient. Der frühere `hx-get` mit
+        # `hx-trigger="bibiJobsChanged"` ist entfallen: das Ereignis hat nie
+        # jemand gefeuert (einzige Fundstelle im Repo war der Trigger selbst),
+        # und mit `hx-swap="innerHTML"` widersprach es dem `outerHTML` des Bus.
+        f'{jobs_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group)}'
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"
