@@ -216,6 +216,12 @@ class WorkerHeartbeat(BaseModel):
     # m.rau/bibi#67: clean/modified des Engine-Checkouts. Optional — ein
     # aelterer Client sendet es nicht, dann entfaellt der Chip im Screen.
     engine_tree: str | None = None
+    # m.rau/bibi#141: der Startschluessel des **ersten** Clients (Nodes.md
+    # §3.3). Reist im Body und nicht in der URL — eine URL landet in
+    # Bookmarks, Logs und Referrern. Er wird beim ersten erfolgreichen
+    # Heartbeat eingeloest und verbraucht; danach schickt der Client ihn nicht
+    # mehr, weil er ihn aus seiner env geloescht hat.
+    bootstrap_token: str | None = None
 
 
 class RestartRequest(BaseModel):

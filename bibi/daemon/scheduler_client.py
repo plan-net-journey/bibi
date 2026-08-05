@@ -67,7 +67,8 @@ class LocalScheduler:
                  engine: str | None = None,
                  engine_tree: str | None = None,
                  session: bool | None = None,
-                 git_commit: str | None = None) -> dict | None:
+                 git_commit: str | None = None,
+                 bootstrap_token: str | None = None) -> dict | None:
         return None  # Single-Node: keine Anmeldung, kein Bundle zu holen
 
     def deregister(self, node_id: str) -> bool:
@@ -120,7 +121,8 @@ class RemoteScheduler:
                  engine: str | None = None,
                  engine_tree: str | None = None,
                  session: bool | None = None,
-                 git_commit: str | None = None) -> dict | None:
+                 git_commit: str | None = None,
+                 bootstrap_token: str | None = None) -> dict | None:
         # PLAN-32 Stufe 32.1/32.2: liefert jetzt die volle Host-Antwort zurück
         # (approval_status-Nebeneffekte + config_version/config_bundle) —
         # vorher wurde die Antwort verworfen. Ein non-200 (z. B. 401 bei
@@ -139,6 +141,10 @@ class RemoteScheduler:
             "engine_tree": engine_tree,
             # m.rau/bibi#44: Sitzungs-Daemon (kein Supervisor) oder Unit.
             "session": session,
+            # m.rau/bibi#141: nur im allerersten Heartbeat dieses Knotens
+            # gesetzt. Im Body und nicht in der URL — eine URL landet in
+            # Bookmarks, Logs und Referrern.
+            "bootstrap_token": bootstrap_token,
         })
         if code != 200:
             raise RuntimeError(f"heartbeat rejected: HTTP {code}")

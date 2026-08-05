@@ -531,3 +531,359 @@ def test_sweeper_leaves_jobs_of_approved_node_alone(tmp_path: Path):
     assert conn.execute("SELECT status FROM jobs WHERE id=?",
                         (jid,)).fetchone()["status"] == "running"
     conn.close()
+
+
+# ── Bootstrap-Token (m.rau/bibi#141, Nodes.md §3.3) ─────────────────────────
+#
+# Der Startschluessel loest den Deadlock, den die Schranke an approve/block
+# erst erzeugt: ein frischer Scheduler hat null approved-Knoten, der erste
+# Client meldet sich als pending — und niemand ist berechtigt, ihn
+# freizugeben. Ohne Host-FE (bibi5 streicht es) bliebe nur ein SQL-Update
+# von Hand.
+#
+# Er ist ausdruecklich **kein** Wiedergaenger von BIBI_CONNECT_SECRET: einer,
+# einmal, befristet, fuer genau eine Freigabe — und nur ausgebbar, solange
+# der Bootstrap wirklich laeuft.
+
+
+def test_a_bootstrap_token_is_issued_while_nothing_is_approved(tmp_path: Path):
+    from bibi.daemon import job_db
+    conn = job_db.connect(tmp_path / "j.sqlite")
+    try:
+        assert job_db.create_bootstrap_token(conn, now=1000.0)
+    finally:
+        conn.close()
+
+
+def test_no_bootstrap_token_once_a_node_is_approved(tmp_path: Path):
+    """**Die Sicherung, die den Token vom alten Gate trennt.** Gibt es einen
+    freigeschalteten Knoten, ist der Bootstrap vorbei — ab da fuehrt der Weg
+    ueber den Nodes-Screen. Damit kann der Token nie zur bequemen Abkuerzung
+    werden: er existiert nur in der Lage, fuer die er gebaut ist."""
+    from bibi.daemon import job_db
+    conn = job_db.connect(tmp_path / "j.sqlite")
+    try:
+        job_db.set_node_approval(conn, "schon-da", "approved")
+        assert job_db.create_bootstrap_token(conn, now=1000.0) is None
+    finally:
+        conn.close()
+
+
+def test_redeeming_a_token_approves_that_node(tmp_path: Path):
+    from bibi.daemon import job_db
+    conn = job_db.connect(tmp_path / "j.sqlite")
+    try:
+        tok = job_db.create_bootstrap_token(conn, now=1000.0)
+        assert job_db.redeem_bootstrap_token(conn, tok, "erster", now=1100.0) is True
+        assert job_db.node_approval_status(conn, "erster") == "approved"
+    finally:
+        conn.close()
+
+
+def test_a_token_works_exactly_once(tmp_path: Path):
+    """Zwei Knoten mit demselben Token sind kein Rennen — der zweite geht leer
+    aus. Verbraucht wird in derselben Anweisung, die ihn prueft (ein `DELETE`
+    mit `rowcount`), damit dazwischen nichts passieren kann."""
+    from bibi.daemon import job_db
+    conn = job_db.connect(tmp_path / "j.sqlite")
+    try:
+        tok = job_db.create_bootstrap_token(conn, now=1000.0)
+        assert job_db.redeem_bootstrap_token(conn, tok, "erster", now=1100.0) is True
+        assert job_db.redeem_bootstrap_token(conn, tok, "zweiter", now=1100.0) is False
+        assert job_db.node_approval_status(conn, "zweiter") == "pending"
+    finally:
+        conn.close()
+
+
+def test_an_expired_token_is_worthless(tmp_path: Path):
+    """24 Stunden, danach wertlos — anders als das unbefristete Gate, das
+    abgeschafft wurde."""
+    from bibi.daemon import job_db
+    conn = job_db.connect(tmp_path / "j.sqlite")
+    try:
+        tok = job_db.create_bootstrap_token(conn, now=1000.0)
+        spaeter = 1000.0 + 24 * 3600 + 1
+        assert job_db.redeem_bootstrap_token(conn, tok, "zu-spaet", now=spaeter) is False
+        assert job_db.node_approval_status(conn, "zu-spaet") == "pending"
+    finally:
+        conn.close()
+
+
+def test_an_unknown_token_never_approves_anything(tmp_path: Path):
+    from bibi.daemon import job_db
+    conn = job_db.connect(tmp_path / "j.sqlite")
+    try:
+        assert job_db.redeem_bootstrap_token(conn, "ausgedacht", "wer-auch-immer",
+                                             now=1000.0) is False
+    finally:
+        conn.close()
+
+
+def test_a_heartbeat_with_a_valid_token_comes_back_approved(sched, team_repo: Path):
+    """Der Weg, der den Deadlock loest: der erste Client schickt seinen
+    Startschluessel im Heartbeat mit und ist danach freigeschaltet — ohne dass
+    jemand einen Screen aufschlagen musste, den es auf dem Host nicht gibt."""
+    from bibi.daemon import job_db
+    conn = job_db.connect()
+    try:
+        tok = job_db.create_bootstrap_token(conn)
+    finally:
+        conn.close()
+
+    r = sched.post("/-/worker", json={"worker": "erster", "host": "mac",
+                                      "node_id": "node-1", "bootstrap_token": tok})
+    assert r.status_code == 200
+
+    conn = job_db.connect()
+    try:
+        assert job_db.node_approval_status(conn, "node-1") == "approved"
+    finally:
+        conn.close()
+
+
+def test_a_heartbeat_with_a_spent_token_is_rejected(sched, team_repo: Path):
+    """Der zweite Knoten mit demselben Token bekommt `401` — und bleibt
+    `pending`. Er wird bewusst **abgewiesen** statt still als pending
+    durchgelassen: wer einen Startschluessel vorzeigt, der nicht gilt, soll
+    das erfahren und nicht glauben, es haette geklappt."""
+    from bibi.daemon import job_db
+    conn = job_db.connect()
+    try:
+        tok = job_db.create_bootstrap_token(conn)
+    finally:
+        conn.close()
+
+    assert sched.post("/-/worker", json={"worker": "erster", "host": "mac",
+                                         "node_id": "node-1",
+                                         "bootstrap_token": tok}).status_code == 200
+    r = sched.post("/-/worker", json={"worker": "zweiter", "host": "pi",
+                                      "node_id": "node-2", "bootstrap_token": tok})
+    assert r.status_code == 401
+
+    conn = job_db.connect()
+    try:
+        assert job_db.node_approval_status(conn, "node-2") == "pending"
+    finally:
+        conn.close()
+
+
+def test_a_heartbeat_without_a_token_still_registers_as_pending(sched):
+    """Die Gegenprobe: der Token ist ein **zusaetzlicher** Weg, keine neue
+    Pflicht. Ein Knoten ohne Startschluessel meldet sich weiterhin an und
+    wartet als `pending` auf seine Freigabe — genau wie der zehnte Knoten,
+    fuer den der Token nicht gedacht ist."""
+    r = sched.post("/-/worker", json={"worker": "spaeter", "host": "pi",
+                                      "node_id": "node-9"})
+    assert r.status_code == 200
+    from bibi.daemon import job_db
+    conn = job_db.connect()
+    try:
+        assert job_db.node_approval_status(conn, "node-9") == "pending"
+    finally:
+        conn.close()
+
+
+def test_bootstrapping_is_a_logged_event(sched, team_repo: Path, caplog):
+    """**Wer einen Startschluessel einloest, tut etwas Nachlesbares**
+    (Nodes.md §3.3, Klasse `E`). Die eingeloeste Zeile wird aus der DB
+    geloescht — bliebe der Vorgang auch im Log unsichtbar, waere hinterher
+    nicht mehr feststellbar, dass dieser Knoten sich selbst freigeschaltet hat
+    und nicht ein Mensch ihn freigab.
+    """
+    import logging as _log
+
+    from bibi.daemon import job_db
+    conn = job_db.connect()
+    try:
+        tok = job_db.create_bootstrap_token(conn)
+    finally:
+        conn.close()
+
+    with caplog.at_level(_log.INFO):
+        assert sched.post("/-/worker", json={
+            "worker": "erster", "host": "mac", "node_id": "node-1",
+            "bootstrap_token": tok}).status_code == 200
+
+    treffer = [r for r in caplog.records
+               if getattr(r, "bibi", {}).get("event") == "connect.bootstrapped"]
+    assert treffer, "kein connect.bootstrapped im Log"
+    assert treffer[0].bibi["fields"].get("node_id") == "node-1"
+
+
+def test_the_cli_prints_a_ready_made_init_line(team_repo: Path, capsys):
+    """`bibi-ctrl bootstrap-token` gibt nicht nur den Schluessel aus, sondern
+    die Zeile, die der Mensch am anderen Rechner braucht — er steht ohnehin
+    gerade in einer Shell, wenn er einen Scheduler aufsetzt."""
+    from bibi.ctrl import main
+    assert main(["bootstrap-token"]) == 0
+    aus = capsys.readouterr().out
+    assert "bibi-ctrl init" in aus and "--token" in aus
+
+
+def test_the_cli_refuses_once_the_bootstrap_is_over(team_repo: Path, capsys):
+    """Gibt es einen freigeschalteten Knoten, ist der Startschluessel-Weg
+    geschlossen — und der Befehl sagt, wo es stattdessen langgeht. Ohne diese
+    Verweigerung waere er genau das bequeme Dauergeheimnis, das mit
+    `BIBI_CONNECT_SECRET` abgeschafft wurde."""
+    from bibi.ctrl import main
+    from bibi.daemon import job_db
+    conn = job_db.connect()
+    try:
+        job_db.set_node_approval(conn, "schon-da", "approved")
+        conn.commit()
+    finally:
+        conn.close()
+    assert main(["bootstrap-token"]) != 0
+    assert "Nodes" in capsys.readouterr().out
+
+
+def test_the_printed_line_is_one_the_cli_actually_accepts(team_repo: Path, capsys):
+    """**Die Lehre aus m.rau/bibi#151, hier vorbeugend angewandt.** Nodes.md
+    §3.3 skizziert `bibi-ctrl init --connect … --token …` — aber `--connect`
+    gibt es bei `init` gar nicht, das Flag sitzt an `daemon`. Eine Zeile zum
+    Kopieren, die der Parser ablehnt, ist ein toter Weg mit Einladung.
+
+    Deshalb wird sie hier nicht auf Aussehen geprueft, sondern **dem Parser
+    vorgelegt**.
+    """
+    import shlex
+
+    from bibi.ctrl import main
+    assert main(["bootstrap-token"]) == 0
+    zeile = next(z for z in capsys.readouterr().out.splitlines()
+                 if "bibi-ctrl init" in z)
+    argv = shlex.split(zeile.strip())[1:]  # ohne das fuehrende "bibi-ctrl"
+    assert main(argv) == 0  # wirklich ausgefuehrt, nicht nur geparst
+
+
+def test_init_stores_the_token_in_the_node_env(team_repo: Path):
+    from bibi import config
+    from bibi.ctrl import main
+    assert main(["init", "--non-interactive", "--scheduler-url", "http://h:8780",
+                 "--role", "connect", "--token", "abc123"]) == 0
+    assert config.read_env().get("BIBI_BOOTSTRAP_TOKEN") == "abc123"
+
+
+def test_the_heartbeat_forgets_the_token_after_it_worked(team_repo: Path):
+    """**Ein Startschluessel, der liegen bleibt, ist ein Dauergeheimnis** —
+    genau das, was mit `BIBI_CONNECT_SECRET` abgeschafft wurde. Nach dem ersten
+    erfolgreichen Heartbeat schreibt der Client seine env ohne ihn zurueck.
+    """
+    from bibi import config
+    from bibi.daemon.heartbeat import Heartbeat
+
+    config.write_env({**config.read_env(), "BIBI_BOOTSTRAP_TOKEN": "einmalig"})
+
+    class _OK:
+        def register(self, *a, **kw):
+            self.gesehen = kw.get("bootstrap_token")
+            return {}
+
+    client = _OK()
+    hb = Heartbeat(client=client, worker_name="w", role="connect")
+    hb._beat()
+    assert client.gesehen == "einmalig", "der Token muss im Heartbeat mitreisen"
+    assert config.read_env().get("BIBI_BOOTSTRAP_TOKEN") == "", \
+        "nach dem ersten Erfolg gehoert er geloescht"
+
+
+# ── Die Schranke selbst (m.rau/bibi#141) ───────────────────────────────────
+#
+# Sie kommt bewusst NACH dem Startschluessel: allein erzeugt sie den Deadlock
+# erst, den es vorher nicht gab — ein frischer Scheduler koennte seinen ersten
+# Client nie freigeben.
+
+
+#: RFC 5737 TEST-NET-1 — nie ein echter Peer, wie in `test_job_control_approval`.
+#: Noetig, weil Starlettes TestClient sich als "testclient" meldet und damit
+#: als **lokal** gilt: der reale Angriff kam ueber das Netz, und nur so wird er
+#: hier auch nachgestellt.
+_FREMD = ("192.0.2.10", 51234)
+
+
+@pytest.fixture
+def fremder(team_repo: Path):
+    app = create_app(roles.resolve({"scheduler"}))
+    with TestClient(app, client=_FREMD) as c:
+        yield c
+
+
+def test_approve_from_the_network_without_a_header_is_refused(fremder):
+    """**Der Kern des Ticketbefunds.** `approve` und `block` waren die
+    einzigen schreibenden Routen ihrer Datei ohne Auth-Dependency: wer den
+    Scheduler erreichte, konnte sich selbst freischalten — und bekam beim
+    naechsten Heartbeat das Config-Bundle, also **alle** verteilten
+    Credentials der Flotte.
+
+    Neun Zeilen tiefer stand die Dependency bei `disconnect` laengst, mit
+    genau dieser Begruendung im Docstring.
+    """
+    fremder.post("/-/worker", json={"worker": "fremd", "host": "x",
+                                    "node_id": "eindringling"})
+    assert fremder.post("/-/worker/eindringling/approve").status_code == 403
+
+    from bibi.daemon import job_db
+    conn = job_db.connect()
+    try:
+        assert job_db.node_approval_status(conn, "eindringling") == "pending"
+    finally:
+        conn.close()
+
+
+def test_a_pending_node_cannot_approve_itself(fremder):
+    """Die zweite Haelfte desselben Angriffs, mit Header statt ohne: ein
+    Knoten, der sich brav gemeldet hat, darf sich trotzdem nicht selbst
+    freigeben. `pending` heisst *wartet auf eine Entscheidung*, nicht *darf
+    sie selbst treffen*."""
+    fremder.post("/-/worker", json={"worker": "fremd", "host": "x",
+                                    "node_id": "eindringling"})
+    r = fremder.post("/-/worker/eindringling/approve",
+                     headers={"X-Bibi-Node-Id": "eindringling"})
+    assert r.status_code == 403
+
+
+def test_block_is_guarded_too(fremder):
+    """`block` ist die andere Haelfte des Paars — ungeschuetzt koennte jeder
+    jeden aus der Flotte werfen, also einen Denial-of-Service gegen die
+    eigenen Knoten fahren."""
+    fremder.post("/-/worker", json={"worker": "opfer", "host": "x", "node_id": "brav"})
+    assert fremder.post("/-/worker/brav/block").status_code == 403
+
+
+def test_an_approved_node_may_approve_others(fremder):
+    """Die Gegenprobe, damit die Schranke nicht einfach alles zusperrt: wer
+    freigeschaltet ist, gibt weitere frei — genau der Weg, den der
+    Nodes-Screen des ersten Clients geht, sobald der Bootstrap vorbei ist.
+    Ohne diesen Test bliebe unklar, ob die Schranke unterscheidet oder nur
+    zusperrt."""
+    from bibi.daemon import job_db
+    conn = job_db.connect()
+    try:
+        job_db.set_node_approval(conn, "erster", "approved")
+        conn.commit()
+    finally:
+        conn.close()
+
+    fremder.post("/-/worker", json={"worker": "neu", "host": "y", "node_id": "zweiter"})
+    r = fremder.post("/-/worker/zweiter/approve", headers={"X-Bibi-Node-Id": "erster"})
+    assert r.status_code == 200
+
+    conn = job_db.connect()
+    try:
+        assert job_db.node_approval_status(conn, "zweiter") == "approved"
+    finally:
+        conn.close()
+
+
+def test_the_local_operator_keeps_the_manual_way(sched):
+    """**Bewusst offen gelassen, und deshalb festgehalten:** ein Aufruf vom
+    eigenen Rechner ohne Header bleibt erlaubt (`_require_approved_or_local`,
+    Nachtrag Befund 4). Gegen einen lokalen Angreifer schuetzt diese Ebene
+    ohnehin nicht — er koennte `bibi-ctrl` rufen oder die SQLite schreiben.
+
+    Fuer den Bootstrap ist es die Rueckfallebene hinter dem Startschluessel:
+    wer auf dem Host in einer Shell steht, kommt weiterhin durch. Ein Test
+    darauf, damit die Freiheit eine Entscheidung bleibt und nicht eines Tages
+    unbemerkt zugezogen wird."""
+    sched.post("/-/worker", json={"worker": "neu", "host": "y", "node_id": "kandidat"})
+    assert sched.post("/-/worker/kandidat/approve").status_code == 200

@@ -737,14 +737,41 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
     @app.post("/-/worker", tags=["worker"])
     def worker_heartbeat(hb: WorkerHeartbeat):
         status = "approved"  # kein node_id (älterer Client) -> Rückwärtskompatibilität
+        bootstrapped = False
         if hb.node_id:
             conn = job_db.connect()
             try:
                 status = job_db.node_approval_status(conn, hb.node_id)
+                # m.rau/bibi#141: der Startschlüssel des ersten Clients. Erst
+                # **nach** der Blocked-Prüfung unten wäre zu spät — aber davor
+                # steht die Statusabfrage, und ein blockierter Knoten darf sich
+                # auch mit einem gültigen Token nicht freikaufen. Deshalb hier,
+                # und nur für einen, der nicht ohnehin schon approved ist.
+                if hb.bootstrap_token and status == "pending":
+                    bootstrapped = job_db.redeem_bootstrap_token(
+                        conn, hb.bootstrap_token, hb.node_id)
+                    if bootstrapped:
+                        status = "approved"
             finally:
                 conn.close()
             if status == "blocked":
                 raise HTTPException(status_code=401, detail="node blocked by host operator")
+            # Ein vorgezeigter Startschlüssel, der nicht gilt, ist ein Fehler und
+            # kein Achselzucken: falsch, abgelaufen oder schon verbraucht sehen
+            # von hier aus gleich aus, und in allen drei Fällen soll der Client
+            # es erfahren statt zu glauben, es habe geklappt.
+            if hb.bootstrap_token and not bootstrapped and status != "approved":
+                raise HTTPException(status_code=401,
+                                    detail="bootstrap token invalid, expired or already used")
+            if bootstrapped:
+                # Die eingelöste Zeile ist aus der DB verschwunden — bliebe der
+                # Vorgang auch hier unsichtbar, wäre hinterher nicht mehr
+                # feststellbar, dass dieser Knoten sich selbst freischaltete und
+                # kein Mensch ihn freigab (Nodes.md §3.3, Klasse E).
+                activity.emit(log, logging.INFO, "connect.bootstrapped",
+                              "Knoten per Startschlüssel freigeschaltet",
+                              role="scheduler", node_id=hb.node_id,
+                              worker=hb.worker, host=hb.host)
         result = registry.heartbeat(hb.worker, hb.host, hb.git_status,
                                     node_id=hb.node_id, git_user=hb.git_user, role=hb.role,
                                     port=hb.port, engine=hb.engine,
@@ -763,8 +790,30 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
             result["config_bundle"] = bundle
         return result
 
-    @app.post("/-/worker/{node_id}/approve", tags=["worker"])
+    @app.post("/-/worker/{node_id}/approve", tags=["worker"],
+              dependencies=[Depends(_require_approved_or_local)])
     def worker_approve(node_id: str):
+        """Einen Knoten freischalten (m.rau/bibi#141).
+
+        **Die Dependency ist der ganze Fix, und ihr Fehlen war die Lücke:**
+        ``approve`` und ``block`` waren die einzigen schreibenden Routen dieser
+        Datei ohne sie — wer den Scheduler erreichte, schaltete sich selbst
+        frei und bekam beim nächsten Heartbeat ``config.distributable_config()``,
+        also jeden ``BIBI_JOB_ENV_*``-Wert des Hosts. Genau das, was die
+        Freigabe verhindern soll. Neun Zeilen tiefer stand dieselbe Zeile bei
+        ``worker_disconnect`` längst, mit derselben Begründung.
+
+        **Anders als dort ohne Selbst-Bedingung, und zwar umgekehrt:**
+        ``disconnect`` lässt einen Knoten nur *sich selbst* abmelden; hier darf
+        er *sich selbst gerade nicht* freigeben. Beides fällt aus derselben
+        Dependency: ein ``pending``-Knoten kommt nicht durch, und wer schon
+        ``approved`` ist, hat nichts mehr freizuschalten. Ein approvter Knoten
+        gibt fremde frei, der Host-Operator lokal ohne Header alle.
+
+        Dass ein frischer Scheduler damit niemanden mehr freigeben könnte, löst
+        der Startschlüssel aus ``bibi-ctrl bootstrap-token`` — beides gehört in
+        denselben Schritt, sonst sperrt diese Zeile jeden neuen Verbund aus.
+        """
         conn = job_db.connect()
         try:
             job_db.set_node_approval(conn, node_id, "approved")
@@ -772,7 +821,8 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
             conn.close()
         return {"node_id": node_id, "status": "approved"}
 
-    @app.post("/-/worker/{node_id}/block", tags=["worker"])
+    @app.post("/-/worker/{node_id}/block", tags=["worker"],
+              dependencies=[Depends(_require_approved_or_local)])
     def worker_block(node_id: str):
         conn = job_db.connect()
         try:

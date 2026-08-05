@@ -170,3 +170,19 @@ CREATE TABLE IF NOT EXISTS approved_nodes (
     status     TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | blocked
     updated_at REAL NOT NULL
 );
+
+-- Startschlüssel für den ersten Client (m.rau/bibi#141, Schema v22). Er löst
+-- den Deadlock, den die Schranke an approve/block erst erzeugt: ein frischer
+-- Scheduler hat null approved-Knoten, und ohne Host-FE ist niemand
+-- berechtigt, den ersten freizugeben.
+--
+-- Ausdrücklich kein Wiedergänger des abgeschafften BIBI_CONNECT_SECRET —
+-- einer, einmal, befristet. `expires_at` steht deshalb in der Zeile und nicht
+-- im Aufrufer: das Einlösen ist ein einziges DELETE mit beiden Bedingungen,
+-- und dazwischen kann nichts passieren. Eine eingelöste Zeile wird gelöscht,
+-- nicht markiert; nachlesbar bleibt der Vorgang über `connect.bootstrapped`.
+CREATE TABLE IF NOT EXISTS bootstrap_tokens (
+    token      TEXT PRIMARY KEY,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);

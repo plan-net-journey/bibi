@@ -109,6 +109,27 @@ class Heartbeat:
         if bundle is not None and version:
             config.write_distributed_env(bundle, version=version)
 
+    def _forget_bootstrap_token(self) -> None:
+        """Den Startschlüssel nach dem ersten Erfolg aus der env streichen
+        (m.rau/bibi#141).
+
+        **Ein Startschlüssel, der liegen bleibt, ist ein Dauergeheimnis** —
+        also genau das, was mit ``BIBI_CONNECT_SECRET`` abgeschafft wurde. Er
+        ist ohnehin verbraucht: der Scheduler hat seine Zeile beim Einlösen
+        gelöscht, ein zweiter Versuch bekäme ``401``. Ihn stehenzulassen hieße
+        also, ein wertloses Geheimnis dauerhaft auf der Platte zu halten und es
+        bei jedem Heartbeat mitzuschicken.
+
+        Bewusst an ``_beat()``s Erfolgspfad und nicht an den Start: ein
+        Scheduler, der beim ersten Versuch nicht erreichbar ist, darf den
+        Schlüssel nicht kosten.
+        """
+        werte = config.read_env()
+        if not werte.get("BIBI_BOOTSTRAP_TOKEN"):
+            return
+        config.write_env({**werte, "BIBI_BOOTSTRAP_TOKEN": ""})
+        os.environ.pop("BIBI_BOOTSTRAP_TOKEN", None)
+
     def _beat(self) -> None:
         try:
             git_status, git_commit = self._tree_status()
@@ -131,9 +152,13 @@ class Heartbeat:
                 # m.rau/bibi#44: ob ein Neustart-Knopf für diesen Knoten
                 # überhaupt einen Neustart bedeutet.
                 session=self.session,
-                git_commit=git_commit)
+                git_commit=git_commit,
+                # m.rau/bibi#141: nur beim allerersten Mal gesetzt — danach hat
+                # ``_forget_bootstrap_token()`` ihn aus der env gestrichen.
+                bootstrap_token=(config.read_env().get("BIBI_BOOTSTRAP_TOKEN") or None))
             if resp:
                 self._apply_config_bundle(resp)
+            self._forget_bootstrap_token()
             self.last_ok = True
             activity.emit(log, logging.DEBUG, "connect.heartbeat", role="connect",
                           worker=self.worker_name)

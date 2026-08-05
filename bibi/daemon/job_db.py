@@ -28,7 +28,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle, slot
 from bibi.schedule.models import Kind, Status, display_kind, job_uid
 from bibi.schedule.parser import SPECIAL_SCHEDULES, ParseResult
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 #: Terminalzustände, die den Slot **blockieren** statt ihn freizugeben — alle
 #: außer ``complete`` (Archivierungsregel A2, Zustandsmodell §3). Sie bleiben in
@@ -236,6 +236,21 @@ def _mig_jobs_commit(conn: sqlite3.Connection) -> None:  # v20 → v21
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT")
 
 
+def _mig_bootstrap_tokens(conn: sqlite3.Connection) -> None:  # v21 → v22
+    # Startschlüssel für den ersten Client (m.rau/bibi#141, Nodes.md §3.3).
+    # Eine eigene Tabelle statt eines `meta`-Eintrags, weil `expires_at` in die
+    # Bedingung der Abfrage gehört und nicht in den Aufrufer: das Einlösen ist
+    # ein einziges `DELETE … WHERE token=? AND expires_at>?`, und genau
+    # dadurch kann zwischen Prüfen und Verbrauchen nichts passieren.
+    conn.executescript(
+        "CREATE TABLE IF NOT EXISTS bootstrap_tokens ("
+        "    token      TEXT PRIMARY KEY,"
+        "    created_at REAL NOT NULL,"
+        "    expires_at REAL NOT NULL"
+        ");"
+    )
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -260,6 +275,7 @@ _MIGRATIONS: dict[int, list] = {
     18: [_mig_jobs_docker_args],
     19: [_mig_job_uid],
     20: [_mig_jobs_commit],
+    21: [_mig_bootstrap_tokens],
 }
 
 
@@ -2013,3 +2029,65 @@ def list_node_approvals(conn: sqlite3.Connection) -> dict[str, str]:
     statt einer je Zeile)."""
     return {r["node_id"]: r["status"]
             for r in conn.execute("SELECT node_id, status FROM approved_nodes")}
+
+
+#: Lebensdauer eines Startschlüssels. 24 h ist lang genug für „ich setze das
+#: morgen früh fertig auf" und kurz genug, dass ein vergessener Token nicht zum
+#: dauerhaften Gate wird — genau der Unterschied zum abgeschafften
+#: ``BIBI_CONNECT_SECRET`` (Nodes.md §3.3).
+BOOTSTRAP_TTL_S = 24 * 3600
+
+
+def create_bootstrap_token(conn: sqlite3.Connection, *, now: float | None = None,
+                           ttl_s: float = BOOTSTRAP_TTL_S) -> str | None:
+    """Einen Startschlüssel für den **ersten** Client ausgeben (m.rau/bibi#141).
+
+    ``None`` heißt: es gibt bereits einen ``approved``-Knoten, der Bootstrap
+    ist vorbei — ab da führt der Weg über den Nodes-Screen. **Diese Bedingung
+    steht hier und nicht in der CLI**, sonst wäre sie umgehbar, und sie ist es,
+    die den Token vom alten Dauergeheimnis trennt: er existiert nur in der
+    Lage, für die er gebaut ist, und kann nie zur bequemen Abkürzung werden.
+
+    Ein bestehender, noch gültiger Token wird **nicht** wiederverwendet — wer
+    den Befehl zweimal ruft, hat den ersten vermutlich verloren. Alte Zeilen
+    fallen dabei weg: mehrere gültige Startschlüssel nebeneinander wären
+    mehrere offene Türen, und niemand könnte sagen, wie viele es gerade sind.
+    """
+    now = time.time() if now is None else now
+    if conn.execute("SELECT 1 FROM approved_nodes WHERE status='approved' "
+                    "LIMIT 1").fetchone() is not None:
+        return None
+    token = secrets.token_hex(8)
+    conn.execute("DELETE FROM bootstrap_tokens")
+    conn.execute("INSERT INTO bootstrap_tokens (token, created_at, expires_at) "
+                 "VALUES (?, ?, ?)", (token, now, now + ttl_s))
+    conn.commit()
+    return token
+
+
+def redeem_bootstrap_token(conn: sqlite3.Connection, token: str | None,
+                           node_id: str, *, now: float | None = None) -> bool:
+    """Einen Startschlüssel einlösen: Knoten ``approved``, Token verbraucht.
+
+    **Prüfen und Verbrauchen sind eine einzige Anweisung** — ein ``DELETE``
+    mit beiden Bedingungen, dessen ``rowcount`` die Antwort ist. Zwei Knoten,
+    die denselben Token gleichzeitig schicken, sind dadurch kein Rennen: genau
+    einer trifft die Zeile an, der andere geht leer aus. Ein vorgeschaltetes
+    ``SELECT`` hätte hier eine Lücke gelassen, durch die beide passen.
+
+    Falsch, abgelaufen, schon verbraucht oder gar nicht mitgeschickt sind
+    derselbe Fall und dieselbe Antwort: ``False``. Der Aufrufer erfährt nicht,
+    welcher davon zutraf — ein Token-Prüfer, der zwischen „unbekannt" und
+    „abgelaufen" unterscheidet, verrät mehr als nötig.
+    """
+    if not token:
+        return False
+    now = time.time() if now is None else now
+    cur = conn.execute("DELETE FROM bootstrap_tokens WHERE token=? AND expires_at>?",
+                       (token, now))
+    if cur.rowcount != 1:
+        conn.rollback()
+        return False
+    set_node_approval(conn, node_id, "approved", now=now)
+    conn.commit()
+    return True

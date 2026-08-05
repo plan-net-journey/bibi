@@ -11,6 +11,7 @@ import sys
 
 from . import (
     at_cmd,
+    bootstrap_cmd,
     daemon_cmd,
     doctor_cmd,
     init_cmd,
@@ -51,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     mergeback_cmd.register(sub)
     job_cmd.register_rescan(sub)
     soul_cmd.register(sub)
+    bootstrap_cmd.register(sub)
 
     args = parser.parse_args(argv)
     if not getattr(args, "cmd", None):
