@@ -103,7 +103,8 @@ def read_port(root: Path | None = None) -> int | None:
 
 def write(port: int, *, host: str | None = None, roles: str | None = None,
           session: bool = False, root: Path | None = None) -> Path | None:
-    """Den tatsächlichen Bind-Port ablegen. ``None``, wenn kein Repo da ist.
+    """Den tatsächlichen Bind-Port ablegen. ``None``, wenn **nicht geschrieben**
+    wurde: kein Repo, oder ein lebender Fremdeintrag steht im Weg.
 
     Atomar über eine Temp-Datei, damit ein gleichzeitiger Leser nie einen halb
     geschriebenen Eintrag sieht — dieselbe Vorsicht wie bei ``config.write_env()``.
@@ -113,9 +114,24 @@ def write(port: int, *, host: str | None = None, roles: str | None = None,
     der startende Prozess es sicher weiß — von außen sind die beiden Fälle
     nicht unterscheidbar, und der Unterschied entscheidet, ob ein Neustart den
     Daemon zurückbringt oder eine Sitzung ohne Dashboard hinterlässt (#59).
+
+    **Ein fremder, lebender Eintrag wird nicht überschrieben** (m.rau/bibi#119).
+    ``clear()`` prüft die PID seit jeher — und war dadurch wirkungslos: hatte
+    ein zweiter Daemon erst überschrieben, stand dort die *eigene* PID, und sein
+    Ende räumte den Eintrag des noch laufenden ersten weg. Der Schutz gehört
+    deshalb auf beide Seiten. Ein **toter** Eintrag darf weiterhin überschrieben
+    werden, sonst schlüge ein ``kill -9`` in eine Sperre um, die nur von Hand zu
+    lösen ist.
+
+    Dass es überhaupt zwei Daemons gibt, verhindert ``daemon_cmd.run()``
+    (m.rau/bibi#155). Diese Prüfung ist die zweite Verteidigungslinie: sie greift
+    auch dort, wo nicht der Startpfad schreibt — Testläufe, Fremdstarts.
     """
     p = port_file(root)
     if p is None:
+        return None
+    live = read(root)
+    if live is not None and live.get("pid") != os.getpid():
         return None
     p.parent.mkdir(parents=True, exist_ok=True)
     payload = {"port": int(port), "pid": os.getpid(), "host": host,

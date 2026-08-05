@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
@@ -86,6 +87,60 @@ def test_clear_keeps_foreign_entry(team_repo: Path):
 
 def test_clear_is_noop_without_file(team_repo: Path):
     portfile.clear()  # darf nicht werfen
+
+
+# ── write() schützt den fremden lebenden Eintrag (m.rau/bibi#119) ────────────
+
+
+def test_write_keeps_a_live_foreign_entry(team_repo: Path):
+    """Der Schutz saß bisher nur im Löschen, nicht im Schreiben.
+
+    ``clear()`` prüft die PID seit jeher — und war damit wirkungslos, sobald
+    ``write()` bedingungslos überschrieben hatte: danach steht dort die *eigene*
+    PID, und der gehende Prozess räumt den Eintrag des bleibenden weg.
+    """
+    p = team_repo / "data" / portfile.FILENAME
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with _live_foreign_pid() as foreign:
+        p.write_text(json.dumps({"port": 54321, "pid": foreign}), encoding="utf-8")
+        assert portfile.write(65200) is None, "ein lebender Fremdeintrag wird nicht überschrieben"
+        entry = json.loads(p.read_text(encoding="utf-8"))
+        assert entry["pid"] == foreign
+        assert entry["port"] == 54321
+
+
+def test_write_replaces_a_dead_foreign_entry(team_repo: Path):
+    # Die Gegenprobe zum Test darüber: ein Absturz darf kein dauerhafter Riegel
+    # sein. Ohne sie wäre der Schutz mit einem kill -9 in eine Sperre umgeschlagen,
+    # die nur von Hand zu lösen ist.
+    p = team_repo / "data" / portfile.FILENAME
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"port": 54321, "pid": _dead_pid()}), encoding="utf-8")
+    assert portfile.write(65200) is not None
+    assert portfile.read_port() == 65200
+
+
+def test_write_overwrites_own_entry(team_repo: Path):
+    # Derselbe Prozess schreibt zweimal (Neustart des Servers im selben Prozess,
+    # Testläufe): der eigene Eintrag ist nie fremd.
+    portfile.write(54321)
+    assert portfile.write(65200) is not None
+    assert portfile.read_port() == 65200
+
+
+def test_the_second_daemon_no_longer_makes_the_first_invisible(team_repo: Path):
+    """Der Ablauf aus dem Ticket, in vier Zeilen.
+
+    A schreibt, B überschreibt, B endet und räumt — danach lief A ohne Eintrag
+    weiter und war für ``bibi-ctrl`` verschwunden (live am 2026-08-03).
+    """
+    p = team_repo / "data" / portfile.FILENAME
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with _live_foreign_pid() as daemon_a:
+        p.write_text(json.dumps({"port": 65112, "pid": daemon_a}), encoding="utf-8")
+        portfile.write(65200)   # Daemon B startet
+        portfile.clear()        # Daemon B endet
+        assert portfile.read_port() == 65112, "A lebt, also muss A auffindbar bleiben"
 
 
 # ── Freien Port belegen ─────────────────────────────────────────────────────
@@ -218,6 +273,24 @@ def _dead_pid() -> int:
     p = subprocess.Popen(["true"])
     p.wait()
     return p.pid
+
+
+@contextlib.contextmanager
+def _live_foreign_pid():
+    """Eine PID, die **lebt** und nicht die eigene ist.
+
+    ``os.getpid() + 1`` wäre billiger und für ``clear()`` genug — dort wird nur
+    verglichen. ``write()`` fragt dagegen nach Leben, und eine geratene Nachbar-PID
+    ist mal frei, mal belegt: der Test wäre dann von der Prozesstabelle abhängig
+    statt vom Code.
+    """
+    import subprocess
+    p = subprocess.Popen(["sleep", "30"])
+    try:
+        yield p.pid
+    finally:
+        p.terminate()
+        p.wait()
 
 
 def test_write_records_origin(tmp_path, monkeypatch):
