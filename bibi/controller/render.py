@@ -2866,9 +2866,29 @@ _OPS_HANDLES_JS = """
     const idleIcon = rescan.textContent;   // "⟳"
     rescan.addEventListener('click', async () => {
       rescan.disabled = true;
-      try { await fetch('/-/rescan', {method:'POST'}); } catch(_){}
-      rescan.textContent = '✓';
-      setTimeout(() => { rescan.textContent = idleIcon; rescan.disabled = false; }, 1200);
+      // Ueber den Controller, nicht relativ an diesen Knoten (m.rau/bibi#142):
+      // relativ traf der Aufruf den eigenen Client, wo es die Route gar nicht
+      // gibt. Und der Haken haengt jetzt an der Antwort statt an nichts — ein
+      // Knopf, der Erfolg behauptet, den es nicht gab, laedt nicht zum
+      // Nachsehen ein und bleibt deshalb lange unbemerkt.
+      let ok = false, titel = '';
+      try {
+        const r = await fetch('/-/ui/ops/rescan', {method:'POST'});
+        ok = r.ok;
+        const d = await r.json().catch(() => ({}));
+        const a = d.antwort || {};
+        titel = ok
+          ? ('rescanned: ' + (a.inserted ?? 0) + ' new, ' + (a.updated ?? 0)
+             + ' updated, ' + (a.removed ?? 0) + ' removed')
+          : ('rescan failed: ' + (d.error || r.status));
+      } catch(e) { titel = 'rescan failed: ' + e; }
+      rescan.textContent = ok ? '✓' : '✕';
+      rescan.title = titel;
+      setTimeout(() => {
+        rescan.textContent = idleIcon;
+        rescan.title = 'rescan the vault';
+        rescan.disabled = false;
+      }, ok ? 1200 : 4000);   // ein Fehler darf laenger stehen bleiben
     });
   }
   const maint = document.getElementById('maint');
@@ -2893,7 +2913,11 @@ _OPS_HANDLES_JS = """
     const on = maint.classList.contains('warn');
     let next = on;
     try {
-      const r = await fetch('/-/maintenance', {method: on ? 'DELETE' : 'POST'});
+      // Ebenfalls ueber den Controller (m.rau/bibi#142). Dieser Handle ist der
+      // wirksamere der beiden Faelle: relativ schaltete er den *lokalen*
+      // Maintenance-Modus eines Clients, der gar keine Jobs verteilt — er tat
+      // also etwas, nur am falschen Knoten.
+      const r = await fetch('/-/ui/ops/maintenance', {method: on ? 'DELETE' : 'POST'});
       const d = await r.json(); next = !!d.maintenance;   // echte Server-Antwort
     } catch(_) { next = on; }                              // Fehler → Zustand unverändert
     setMaint(next);

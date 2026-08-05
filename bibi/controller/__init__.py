@@ -1519,6 +1519,81 @@ def add_controller_routes(
         return JSONResponse(status_code=code,
                             content={"error": text, "verb": verb, "ziel": ziel})
 
+    # ── Ops-Handles der App-Bar, ueber den Controller (m.rau/bibi#142) ──────
+    #
+    # **Befund m.rau, 2026-08-05:** „Das Refresh funktioniert gar nicht, oder?
+    # In keinem Screen!?" — beide Handles riefen relativ auf und trafen damit
+    # den eigenen Client statt den Scheduler. Gemessen:
+    #
+    #     POST 127.0.0.1:54824/-/rescan       → 404  (Route haengt an `scheduler`)
+    #     POST 127.0.0.1:54824/-/maintenance  → 200  {"maintenance":true}  ← lokal
+    #
+    # Der Rescan lief ins Leere, die Maintenance-Umschaltung wirkte am falschen
+    # Knoten. FE-Spezifikation §2 verlangt fuer beide den Scheduler.
+    #
+    # **Warum der Umweg ueber den Controller und nicht absolut aus dem Browser:**
+    # der Scheduler sendet keine CORS-Header (gemessen am 2026-08-05), ein
+    # Cross-Origin-POST scheiterte also. Derselbe Grund und dasselbe Muster wie
+    # bei den Job-Verben unten.
+    #
+    # **Auf einem Knoten ohne konfigurierten Scheduler bleibt es lokal** — dort
+    # *ist* dieser Daemon der Scheduler, und der relative Aufruf war nie falsch.
+
+    def _ops_ziel() -> ControllerClient:
+        """Der Knoten, der die Ops-Aktion ausfuehrt.
+
+        Der Scheduler, wenn einer konfiguriert ist — sonst **dieser Daemon
+        selbst** ueber ``127.0.0.1``. Der zweite Fall ist der Host: dort *ist*
+        dieser Prozess der Scheduler, und der frueher relative Aufruf war nie
+        falsch. Er wird hier nur explizit statt implizit.
+
+        **Der Selbstaufruf blockiert nicht:** die Ziel-Routen sind ``def``,
+        nicht ``async def``, laufen also im Threadpool und nicht auf dem
+        Event-Loop, der diese Anfrage haelt.
+        """
+        url = _scheduler_url()
+        if url:
+            return ControllerClient(url)
+        from bibi import config as config_mod
+        return ControllerClient(f"http://127.0.0.1:{config_mod.daemon_port()}")
+
+    @app.post("/-/ui/ops/rescan", include_in_schema=False)
+    def screen_ops_rescan():
+        """``⟳`` — Rescan **auf dem Scheduler**.
+
+        Gibt die echte Antwort weiter (``inserted``/``updated``/``removed``),
+        damit der Knopf Erfolg nicht behaupten muss. Der Fehlerfall kommt als
+        ``502`` mit Text an, statt still zu verschwinden.
+        """
+        try:
+            antwort = _ops_ziel().rescan()
+        except Exception as e:  # noqa: BLE001 — die Meldung gehoert an den Knopf
+            activity.emit(log, logging.WARNING, "controller.rescan_failed",
+                          f"Rescan fehlgeschlagen: {e}", role="controller")
+            return JSONResponse(status_code=502, content={"error": str(e)})
+        return {"ok": True, "antwort": antwort}
+
+    @app.post("/-/ui/ops/maintenance", include_in_schema=False)
+    @app.delete("/-/ui/ops/maintenance", include_in_schema=False)
+    def screen_ops_maintenance(request: Request):
+        """``◐`` — Maintenance **auf dem Scheduler** an/aus.
+
+        Der wirksamere der beiden Faelle: er schaltete bisher den lokalen Modus
+        eines Clients, der gar keine Jobs verteilt — er tat also etwas, nur am
+        falschen Knoten, und das ist schwerer zu bemerken als ein Knopf, der
+        gar nichts tut.
+        """
+        an = request.method == "POST"
+        try:
+            antwort = _ops_ziel()._request(
+                "POST" if an else "DELETE", "/-/maintenance") or {}
+        except Exception as e:  # noqa: BLE001
+            activity.emit(log, logging.WARNING, "controller.maintenance_failed",
+                          f"Maintenance-Umschaltung fehlgeschlagen: {e}",
+                          role="controller")
+            return JSONResponse(status_code=502, content={"error": str(e)})
+        return antwort
+
     @app.post("/-/ui/jobs/verb/{ziel}/{job_id}/{verb}", include_in_schema=False)
     def screen_job_verb(ziel: str, job_id: str, verb: str):
         """START, RESET, KILL oder REBUILD auf einem Slot ausloesen.

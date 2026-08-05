@@ -192,6 +192,10 @@ class Collector:
         self._nodes_snapshot: tuple | None = None
         self._flags_snapshot: tuple | None = None
         self._sched_snapshot: tuple | None = None
+        #: Getrennt vom groben `_sched_snapshot` (m.rau/bibi#143): Slug-Ebene
+        #: des Schedulers, `slug → (status, fire)`. Ein eigener Speicher, weil
+        #: er ein anderes Ziel bedient — `live:<slug>` statt `feedstatus`.
+        self._sched_jobs_snapshot: dict[str, tuple] | None = None
         self._hb_snapshot: tuple | None = None
         self._sched_last_fetch: float = 0.0
         self._primed = False
@@ -429,10 +433,90 @@ class Collector:
         changed = self._primed and snap != self._sched_snapshot
         war_leer = self._sched_snapshot is None and snap is None
         self._sched_snapshot = snap
+        n = 0
         if changed and not war_leer:
             self.bus.publish_state("feedstatus")
-            return 1
-        return 0
+            n = 1
+        # Zweiter, feiner Fingerabdruck im selben Takt (m.rau/bibi#143) — er
+        # bedient ein anderes Ziel und darf den Header deshalb nicht anfassen.
+        return n + self._diff_scheduler_jobs()
+
+    def _fetch_scheduler_jobs(self) -> list[dict] | None:
+        """Job-Zeilen des konfigurierten Schedulers, oder ``None``.
+
+        Getrennt von :meth:`_fetch_scheduler_status`, weil es eine andere Route
+        ist (``/-/schedule`` statt ``/-/status``) — dieselbe Adressfindung,
+        dieselbe Zurueckhaltung im Fehlerfall.
+        """
+        try:
+            import os
+
+            from bibi import config
+            url = (os.environ.get("BIBI_SCHEDULER_URL")
+                   or config.read_env().get("BIBI_SCHEDULER_URL"))
+            if not url:
+                return None
+            from bibi.controller.client import ControllerClient
+            return ControllerClient(url, timeout=3.0).schedules()
+        except Exception:  # noqa: BLE001 — der Host darf ausfallen (§2.7)
+            return None
+
+    def _diff_scheduler_jobs(self) -> int:
+        """``live:<slug>``-Trigger fuer Job-Zustaende, die beim **Scheduler**
+        wechseln (m.rau/bibi#143).
+
+        **Befund m.rau, 2026-08-04/05:** *„ich sehe immer noch kein
+        kontinuierliches Update, wenn sich ein Job Status aendert. … Ich muss
+        immer wieder Refresh druecken."*
+
+        ``_diff_jobs()`` vergleicht die **lokale** Job-DB — auf einem Client
+        passiert dort nie etwas, die Jobs laufen beim Scheduler.
+        ``_diff_scheduler()`` daneben sieht zwar den Scheduler, traegt aber nur
+        **aggregierte** Zaehler und meldet ausschliesslich ``feedstatus``. Ein
+        Job, der von ``pending`` auf ``running`` geht, erreichte damit weder die
+        Zeile im Jobs-Screen noch die Slot-Kachel im Job-Detail.
+
+        **Warum ein zweiter Fingerabdruck und nicht ein groesserer:** der linke
+        Header-Block haengt an einem ``git status``. Ihn bei jeder
+        Slug-Aenderung nachladen zu lassen waere genau der Firehose, den der
+        Docstring oben ausschliesst. Zwei Fingerabdruecke, zwei Ziele — und die
+        Trennung ist getestet, nicht bloss beabsichtigt.
+
+        **Der Ausfall ist keine Aenderung.** Ist der Host weg (``None``), bleibt
+        der letzte Stand stehen, statt jeden Slug als geaendert zu melden;
+        dieselbe Zurueckhaltung wie beim groben Fingerabdruck. Der Ausfall
+        selbst steht im Header, der ihn ohnehin zeigt.
+        """
+        zeilen = self._fetch_scheduler_jobs()
+        if zeilen is None:
+            return 0
+        snap: dict[str, tuple] = {}
+        for r in zeilen:
+            slug = r.get("slug")
+            if not slug:
+                continue
+            # `row_status` zuerst: so heisst das Feld in den Scheduler-Zeilen
+            # aus `/-/schedule`, wo `status` schlicht `None` ist (dieselbe
+            # Reihenfolge wie in `jobs_view.py`).
+            snap[slug] = (r.get("row_status") or r.get("status"),
+                          r.get("fire") or r.get("next_fire_at"))
+        vorher = self._sched_jobs_snapshot
+        self._sched_jobs_snapshot = snap
+        if not self._primed or vorher is None:
+            return 0
+        geaendert = [s for s, v in snap.items() if vorher.get(s) != v]
+        # Ein verschwundener Slug ist ebenfalls eine Aenderung — sonst bleibt
+        # eine geloeschte Zeile stehen, bis jemand neu laedt.
+        geaendert += [s for s in vorher if s not in snap]
+        if not geaendert:
+            return 0
+        for slug in geaendert:
+            self.bus.publish_state(f"live:{slug}")
+        # Die Liste hoert auf EIN Sammel-Target, nicht auf jeden Slug einzeln
+        # (PLAN-36 Stufe 36.3) — ohne sie bewegt sich die Kachel im Detail und
+        # die Zeile in der Liste nicht, und genau die sieht man zuerst.
+        self.bus.publish_state("jobs")
+        return len(geaendert) + 1
 
     # ── Innereien ───────────────────────────────────────────────────────────
 

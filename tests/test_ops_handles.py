@@ -87,3 +87,63 @@ def test_maintenance_state_comes_from_the_scheduler_not_from_here():
     html = render._ops_handles(CLIENT, scheduler={"maintenance": True})
     punkt = [z for z in html.split("<") if "conn-dot" in z]
     assert punkt and "warn" in punkt[0], "der Modus des Hosts zählt"
+
+
+# ── Wohin die Handles greifen (m.rau/bibi#142) ──────────────────────────────
+#
+# **Befund m.rau, 2026-08-05:** „Das Refresh funktioniert gar nicht, oder? In
+# keinem Screen!?"
+#
+# Beide Handles riefen **relativ** auf und trafen damit den Daemon, der die
+# Seite ausgeliefert hat — den eigenen Client. Gemessen am selben Tag:
+#
+#     POST 127.0.0.1:54824/-/rescan        → 404   (Route haengt an `scheduler`)
+#     POST sarasate:8780/-/rescan          → 200   {"inserted":0,"updated":19,…}
+#     POST 127.0.0.1:54824/-/maintenance   → 200   {"maintenance":true}   ← lokal!
+#
+# Der Rescan lief ins Leere und meldete trotzdem `✓`; die Maintenance-Umschaltung
+# ist der schlimmere Fall, weil sie **wirkt** — nur am falschen Knoten. FE §2
+# verlangt fuer beide ausdruecklich den Scheduler.
+#
+# Der Weg dorthin ist der Controller, nicht der Browser: der Scheduler sendet
+# keine CORS-Header (gemessen), ein direkter Cross-Origin-POST scheiterte also.
+# Dasselbe Muster wie bei den Job-Verben (`/-/ui/jobs/verb/...`).
+
+
+def test_rescan_does_not_call_this_node_directly():
+    """Eine relative URL trifft immer den ausliefernden Daemon."""
+    js = render._OPS_HANDLES_JS
+    assert "'/-/rescan'" not in js and '"/-/rescan"' not in js
+
+
+def test_rescan_goes_through_the_controller():
+    js = render._OPS_HANDLES_JS
+    assert "/-/ui/ops/rescan" in js
+
+
+def test_maintenance_goes_through_the_controller():
+    """Der wirksame Fall: er schaltete den lokalen Modus statt den des Hosts."""
+    js = render._OPS_HANDLES_JS
+    assert "'/-/maintenance'" not in js and '"/-/maintenance"' not in js
+    assert "/-/ui/ops/maintenance" in js
+
+
+def test_rescan_checks_the_answer_before_claiming_success():
+    """`catch(_){}` fing jeden Fehler weg, und der Haken stand **ausserhalb**
+    des `try` — er hing damit an keiner Bedingung.
+
+    Ein Knopf, der Erfolg behauptet, den es nicht gab, ist teurer als einer,
+    der schweigt: er laedt nicht zum Nachsehen ein. Genau deshalb blieb der
+    Fehler so lange unbemerkt.
+    """
+    js = render._OPS_HANDLES_JS
+    kopf = js[js.index("const rescan"):js.index("const maint")]
+    assert "r.ok" in kopf or "res.ok" in kopf, "die Antwort wird nicht geprueft"
+    assert "catch(_){}" not in kopf, "der Fehler wird weiterhin verschluckt"
+
+
+def test_rescan_shows_a_failure():
+    """Sonst ist „ging nicht" von „ging" nicht zu unterscheiden."""
+    kopf = render._OPS_HANDLES_JS
+    kopf = kopf[kopf.index("const rescan"):kopf.index("const maint")]
+    assert "✕" in kopf or "!" in kopf

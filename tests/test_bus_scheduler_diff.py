@@ -235,3 +235,134 @@ def test_without_a_heartbeat_nothing_happens():
     c._primed = True
     assert c._diff_heartbeat() == 0
     assert bus.published == []
+
+
+# ── Die Slug-Ebene: der Client sieht Job-Zustände seines Schedulers (#143) ──
+#
+# **Befund m.rau, 2026-08-04/05:** „ich sehe immer noch kein kontinuierliches
+# Update, wenn sich ein Job Status ändert. … Ich muss immer wieder Refresh
+# drücken."
+#
+# Der Header-Fall oben war 2026-08-03 behoben, der Job-Fall daneben nie — er
+# sah aus wie derselbe, gelöste Fehler. `_diff_scheduler()` publiziert
+# ausschließlich `feedstatus` und trägt dabei **aggregierte** Zähler, nie einen
+# einzelnen Slug. Ein Job, der beim Scheduler von `pending` auf `running`
+# wechselt, erreicht damit weder die Zeile im Jobs-Screen noch die Slot-Kachel
+# im Job-Detail.
+#
+# Die Trennung der beiden Fingerabdrücke ist Teil des Verhaltens, nicht der
+# Umsetzung: der Header hängt an einem `git status`, und ihn bei jeder
+# Slug-Änderung dreckig zu machen wäre genau der Firehose, den der bestehende
+# Docstring ausschließt.
+
+
+def _collector_jobs(bus, status_antworten, job_antworten):
+    """Collector mit gefaktem Status- **und** Job-Abruf beim Scheduler."""
+    c = Collector(bus, registry=None)
+    s_folge = iter(status_antworten)
+    j_folge = iter(job_antworten)
+    c._fetch_scheduler_status = lambda: next(s_folge, status_antworten[-1])
+    c._fetch_scheduler_jobs = lambda: next(j_folge, job_antworten[-1])
+    c._primed = True
+    return c
+
+
+#: Ein Scheduler-Status, der sich nie ändert — so ist sicher, dass ein
+#: `feedstatus` in diesen Tests nur aus der Slug-Ebene stammen könnte.
+_RUHIG = {"workers": [], "job_stats": {"counts": {"complete": 1}}}
+
+
+def test_a_job_status_change_at_the_scheduler_publishes_its_slug():
+    """Der Fall aus dem Befund: ein Job wechselt beim Scheduler den Zustand.
+
+    Ohne diese Meldung erfährt die Slot-Kachel im Job-Detail nichts — sie hört
+    auf `live:<slug>`, und dieses Target entstand bisher nur aus der **lokalen**
+    Job-DB, in der auf einem Client nie etwas passiert.
+    """
+    bus = _Bus()
+    c = _collector_jobs(bus, [_RUHIG], [
+        [{"slug": "gmail-transfer", "row_status": "pending", "fire": 100.0}],
+        [{"slug": "gmail-transfer", "row_status": "running", "fire": 100.0}],
+    ])
+    _tick(c)                      # erster Abruf: Fingerabdruck merken
+    bus.published.clear()
+    _tick(c)                      # jetzt läuft er
+    assert "live:gmail-transfer" in bus.published
+
+
+def test_a_job_change_also_pokes_the_list():
+    """Die Jobs-Liste hört auf das Sammel-Target `jobs`, nicht auf jeden Slug.
+
+    Ohne sie bewegt sich die Kachel im Detail, die Zeile in der Liste aber
+    nicht — und genau die sieht man zuerst.
+    """
+    bus = _Bus()
+    c = _collector_jobs(bus, [_RUHIG], [
+        [{"slug": "gmail-transfer", "row_status": "pending", "fire": 100.0}],
+        [{"slug": "gmail-transfer", "row_status": "running", "fire": 100.0}],
+    ])
+    _tick(c)
+    bus.published.clear()
+    _tick(c)
+    assert "jobs" in bus.published
+
+
+def test_a_new_fire_time_counts_as_a_change():
+    """`next_fire_at` verschiebt sich, ohne dass ein Status wechselt.
+
+    Der aggregierte Fingerabdruck des Headers sieht das nicht (die Zähler
+    bleiben gleich); für die Zeile ist es trotzdem eine Änderung.
+    """
+    bus = _Bus()
+    c = _collector_jobs(bus, [_RUHIG], [
+        [{"slug": "Witz", "row_status": "pending", "fire": 100.0}],
+        [{"slug": "Witz", "row_status": "pending", "fire": 200.0}],
+    ])
+    _tick(c)
+    bus.published.clear()
+    _tick(c)
+    assert "live:Witz" in bus.published
+
+
+def test_an_unchanged_scheduler_stays_quiet():
+    """Sonst wäre es ein verkleideter Poll — dieselbe Regel wie oben."""
+    bus = _Bus()
+    zeilen = [{"slug": "Witz", "row_status": "pending", "fire": 100.0}]
+    c = _collector_jobs(bus, [_RUHIG], [zeilen, [dict(zeilen[0])]])
+    _tick(c)
+    bus.published.clear()
+    _tick(c)
+    assert bus.published == []
+
+
+def test_a_slug_change_does_not_dirty_the_header():
+    """**Die Trennung ist der Punkt dieser Änderung.**
+
+    Der linke Header-Block hängt an einem `git status`. Ihn bei jeder
+    Slug-Änderung nachladen zu lassen wäre der Firehose, den der bestehende
+    Docstring ausdrücklich ausschließt (*„Zu weit gefasst machte er den Header
+    bei jeder Kleinigkeit dreckig"*). Zwei Fingerabdrücke, zwei Ziele.
+    """
+    bus = _Bus()
+    c = _collector_jobs(bus, [_RUHIG], [
+        [{"slug": "Witz", "row_status": "pending", "fire": 100.0}],
+        [{"slug": "Witz", "row_status": "running", "fire": 100.0}],
+    ])
+    _tick(c)
+    bus.published.clear()
+    _tick(c)
+    assert "feedstatus" not in bus.published
+
+
+def test_an_unreachable_scheduler_is_not_a_crash():
+    """Der Host darf ausfallen (§2.7) — und der Ausfall darf nicht als
+    Änderung jedes Slugs erscheinen."""
+    bus = _Bus()
+    c = _collector_jobs(bus, [_RUHIG], [
+        [{"slug": "Witz", "row_status": "pending", "fire": 100.0}],
+        None,
+    ])
+    _tick(c)
+    bus.published.clear()
+    _tick(c)
+    assert "live:Witz" not in bus.published
