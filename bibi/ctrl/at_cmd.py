@@ -50,7 +50,13 @@ def resolve_when(when: str, *, now: _dt.datetime | None = None) -> _dt.datetime:
 
 
 def _rescan(base_url: str) -> bool:
-    """Best-effort POST ``/-/rescan`` an den Scheduler. True bei Erfolg."""
+    """Best-effort POST ``/-/rescan`` an den Scheduler. True bei Erfolg.
+
+    **Erreichbarkeit, nicht Wirkung.** Ein ``True`` heisst „der Scheduler hat
+    gescannt", nicht „er hat die eben geschriebene Datei gefunden" — auf einem
+    Client sind das zwei verschiedene Aussagen (m.rau/bibi#140), und die
+    zweite haengt an der Zustellung, nicht an diesem Aufruf.
+    """
     url = f"{base_url}/-/rescan"
     try:
         req = urllib.request.Request(url, method="POST")
@@ -58,6 +64,69 @@ def _rescan(base_url: str) -> bool:
             return True
     except (urllib.error.URLError, OSError):
         return False
+
+
+#: Hostnamen, hinter denen der Scheduler denselben Checkout liest wie dieser
+#: Befehl. Alles andere ist eine fremde Maschine mit einem fremden Vault.
+_HIER = {"localhost", "127.0.0.1", "::1", "0.0.0.0", ""}
+
+
+def _scheduler_ist_hier(base_url: str) -> bool:
+    """Sieht der Scheduler denselben Vault wie dieser Befehl?
+
+    **Die Frage ist die Adresse, nicht die Rolle.** Ein Knoten kann die
+    ``scheduler``-Rolle tragen und trotzdem auf einen fremden Host zeigen (zwei
+    Instanzen auf einer Maschine), und umgekehrt ist ein Knoten ohne gesetztes
+    ``BIBI_ROLE`` nicht automatisch ein Client — er weiss es nur nicht. Die
+    Adresse dagegen beantwortet genau, was hier zaehlt: liegt der Vault, den
+    der Scheduler liest, auf dieser Maschine?
+
+    Im Zweifel ``True``, also kein git-Umweg: das ist das Verhalten von vor
+    m.rau/bibi#140 und auf einem Ein-Knoten-Setup richtig.
+    """
+    from urllib.parse import urlparse
+    try:
+        return (urlparse(base_url).hostname or "") in _HIER
+    except ValueError:
+        return True
+
+
+def _hat_remote() -> bool:
+    """Gibt es ueberhaupt ein Ziel zum Pushen?
+
+    Ein Team ohne Remote ist ein vorgesehener Fall (DESIGN: hostlose Teams).
+    Dort ist eine fehlende Zustellung kein Fehler dieses Befehls, sondern eine
+    Eigenschaft der Umgebung — sie gehoert gesagt, nicht bestraft.
+    """
+    import subprocess
+
+    from bibi import repo
+    try:
+        p = subprocess.run(["git", "remote"], cwd=repo.root(), check=False,
+                           capture_output=True, text=True, timeout=10)
+        return bool(p.stdout.strip())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _zustellen(path) -> bool:
+    """Die MD zum Scheduler bringen — ueber den Vault, also ueber git.
+
+    **Warum git und nicht HTTP** (m.rau/bibi#140): der Vault *ist* der
+    Transportweg dieses Systems, und der Synchronizer verteilt ihn ohnehin auf
+    jeden Knoten. Eine eigene Route waere ein zweiter Weg fuer dieselbe Sache —
+    und sie muesste auf dem Scheduler in denselben git-Baum schreiben, den der
+    Synchronizer gerade bearbeitet.
+
+    Der Push ist hier **nicht** optional wie beim Synchronizer: ohne ihn feuert
+    der One-shot nie, und genau das ist der Fehler, um den es geht.
+    """
+    from bibi import git_ops, repo
+    rel = path.relative_to(repo.root()).as_posix()
+    if not git_ops.stage_and_commit_paths([rel], f"at: {path.stem}"):
+        return False
+    ok, _out, _kind = git_ops.push(git_ops.current_branch() or "trunk")
+    return bool(ok)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -89,7 +158,12 @@ def run(args: argparse.Namespace) -> int:
     # läuft der Rescan-Trigger auf einem Client-Knoten mit entferntem
     # Scheduler ins Leere.
     base_url = f"http://127.0.0.1:{args.port}" if args.port else config.scheduler_base_url()
-    rescanned = _rescan(base_url)
+
+    # Zustellung vor Rescan (m.rau/bibi#140). Ein Rescan auf einer Maschine,
+    # die diese Datei nicht hat, findet nichts — und meldete bisher trotzdem
+    # Erfolg. Auf dem Scheduler selbst entfaellt der Schritt: dort liest der
+    # Daemon denselben Vault, in den eben geschrieben wurde.
+    lokal = bool(args.port) or _scheduler_ist_hier(base_url)
 
     rel = path.relative_to(repo.root()).as_posix()
     eta = dt - _dt.datetime.now()
@@ -98,8 +172,27 @@ def run(args: argparse.Namespace) -> int:
     print(f"  at:   {iso}  (in {eta_s // 60}m {eta_s % 60}s)")
     print(f"  typ:  {typ_display}")
     print(f"  pfad: {rel}")
+
+    if not lokal:
+        if not _hat_remote():
+            # Kein Ziel zum Pushen — das ist kein Fehler dieses Befehls,
+            # sondern eine Eigenschaft der Umgebung. Sagen statt scheitern.
+            print(f"  zustellung: kein git-Remote — der Scheduler auf {base_url} "
+                  "sieht diesen Checkout nicht")
+        elif _zustellen(path):
+            print("  zustellung: committet + gepusht")
+        else:
+            # Kein Rescan: er faende auf dem Scheduler nichts und ergaebe mit
+            # einem `ok` genau die Falschaussage, um die es hier geht.
+            print("  zustellung: FEHLGESCHLAGEN — die MD ist nur lokal und feuert nicht")
+            print(f"  der Scheduler liegt auf {base_url} und sieht diesen Checkout nicht.")
+            print(f"  von Hand:  git add -- '{rel}' && git commit -m 'at' && git push",
+                  file=sys.stderr)
+            return 1
+
+    rescanned = _rescan(base_url)
     print(f"  rescan: {'ok' if rescanned else f'Daemon nicht erreichbar ({base_url}) — beim nächsten Rescan/Start erfasst'}")
-    print(f"beobachten: bibi-ctrl job list", file=sys.stderr)
+    print("beobachten: bibi-ctrl job list", file=sys.stderr)
     return 0
 
 
