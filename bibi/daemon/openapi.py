@@ -70,6 +70,17 @@ class ScheduleView(BaseModel):
     last_status: Status | None = None
     last_run_at: float | None = None
     oneshot: bool = False  # One-shot (at:) — Basis fürs Archiv (§4.4)
+    # Der Lauf, der gerade im Slot steht (m.rau/bibi#131). Bis zu seiner
+    # Archivierung gibt es ihn nur hier: unter A2 wandert ein terminaler Fehler
+    # erst auf START/RESET ins Journal. `fire` bildet mit Slug und Job-ID die
+    # kanonische `run_id` (`job_db.run_id_for()`) — ohne sie gäbe es weder einen
+    # Weg zum Output noch einen stabilen Deep-Link.
+    started_at: float | None = None
+    finished_at: float | None = None
+    exit_code: int | None = None
+    output_ref: str | None = None
+    commit_sha: str | None = None
+    fire: int = 0
 
 
 class NextRequest(BaseModel):
@@ -128,11 +139,20 @@ class JournalEntryView(BaseModel):
     id: int | None = None  # DB-Zeilen-ID — Schlüssel für DELETE /-/journal/{id}
     run_id: str
     slug: str
+    # Der Join-Schlüssel der kombinierten Lauf-Liste (m.rau/bibi#103): ein
+    # Client mischt seine eigenen Läufe unter die des Schedulers, und beide
+    # Seiten führen denselben Job unter demselben ``job_uid``.
+    job_uid: str | None = None
     kind: Kind
     status: Status
     reason: Reason | None = None
     started_at: float | None = None
     finished_at: float | None = None
+    # Wann die Zeile ins Journal wanderte. Unter der Archivierungsregel A2
+    # beliebig viel später als ``finished_at``: ein terminaler Lauf ≠
+    # ``complete`` blockiert seinen Slot, bis ein Mensch START oder RESET
+    # auslöst, und erst diese Aktion archiviert ihn.
+    archived_at: float | None = None
     exit_code: int | None = None
     exec_runtime: float | None = None
     host: str | None = None
@@ -196,6 +216,12 @@ class WorkerHeartbeat(BaseModel):
     # m.rau/bibi#67: clean/modified des Engine-Checkouts. Optional — ein
     # aelterer Client sendet es nicht, dann entfaellt der Chip im Screen.
     engine_tree: str | None = None
+    # m.rau/bibi#141: der Startschluessel des **ersten** Clients (Nodes.md
+    # §3.3). Reist im Body und nicht in der URL — eine URL landet in
+    # Bookmarks, Logs und Referrern. Er wird beim ersten erfolgreichen
+    # Heartbeat eingeloest und verbraucht; danach schickt der Client ihn nicht
+    # mehr, weil er ihn aus seiner env geloescht hat.
+    bootstrap_token: str | None = None
 
 
 class RestartRequest(BaseModel):
@@ -320,15 +346,23 @@ def add_contract_routes(app: FastAPI) -> None:
         return _todo("GET /-/worker")
 
     # ── Journal (§1.4) ───────────────────────────────────────────────────────
-    @app.get("/-/journal", response_model=list[JournalEntryView], tags=["journal"])
-    def journal_list(slug: str | None = None, host: str | None = None):  # noqa: ARG001
-        return _todo("GET /-/journal")
+    # GET /-/journal: bewusst KEIN Stub hier (mehr) — seit m.rau/bibi#103 ist
+    # die Route rollenunabhängig immer real (``app.py::_add_journal_route()``,
+    # registriert vor dieser Funktion → gewinnt ohnehin), aus demselben Grund
+    # wie POST /-/scheduler/status/{id} oben: das Journal ist keine disponierte
+    # Domäne, jeder Knoten führt sein eigenes und muss es ausliefern können.
+    # Das Schema hängt dort an ``responses=`` statt an ``response_model=``,
+    # weil letzteres die intern genutzten Felder (``payload``/``pinned_host``,
+    # s. ``job_db.journal_view()``) aus der Antwort filtern würde.
 
     @app.delete("/-/journal/{jid}", tags=["journal"])
     def journal_delete(jid: int):  # noqa: ARG001
         return _todo("DELETE /-/journal/{id}")
 
-    # ── Lifecycle-Zeitreihe (PLAN-21 Befund 11) ───────────────────────────────
-    @app.get("/-/landings", tags=["journal"])
-    def landings_list(since: float | None = None):  # noqa: ARG001
-        return _todo("GET /-/landings")
+    # Die Lifecycle-Zeitreihe (PLAN-21 Befund 11) ist mit m.rau/bibi#121
+    # ersatzlos entfallen: sie belieferte das Landungs-Histogramm, und das ging
+    # mit #120. Eine Route im gefrorenen Vertrag, die nichts mehr bedient, ist
+    # schlimmer als eine fehlende — wer den Vertrag liest, hält sie für ein
+    # Versprechen. Ihr Pfad steht hier bewusst nicht mehr wörtlich: der
+    # Nachweis in test_the_landings_chain_is_gone_everywhere ist eine
+    # Textsuche, und ein Kommentar, der sie auslöst, wäre ein blinder Fleck.

@@ -149,16 +149,32 @@ def test_git_user_included_in_heartbeat(gitrepo: Path):
 
 
 def test_loop_sends_periodically(gitrepo: Path):
+    """Der Loop schickt nach dem Start-Beat weitere im Takt des Intervalls.
+
+    **Wartet auf das Ereignis, nicht auf die Uhr** (m.rau/bibi#114). Die frühere
+    Fassung schlief 0,17 s bei 0,05 s Takt und verlangte drei Zustellungen — eine
+    Aussage über Wanduhr-Genauigkeit, die niemand garantiert. Unter sechs
+    parallelen pytest-Workern kamen zwei an, und der Test war rot, ohne dass am
+    Heartbeat etwas falsch gewesen wäre.
+
+    Jetzt endet er, sobald die dritte Zustellung da ist: im Normalfall schneller
+    als vorher, und unter Last trotzdem grün. Die Zeitschranke ist nur noch eine
+    Obergrenze für den Fehlerfall, keine Behauptung über den Normalfall.
+    """
     client = _FakeClient()
-    hb = Heartbeat(client=client, worker_name="w1", repo_root=gitrepo, interval=0.05)
+    hb = Heartbeat(client=client, worker_name="w1", repo_root=gitrepo, interval=0.01)
 
     async def run():
         await hb.start()
-        await asyncio.sleep(0.17)
-        await hb.stop()
+        try:
+            frist = time.monotonic() + 5.0
+            while len(client.calls) < 3 and time.monotonic() < frist:
+                await asyncio.sleep(0.005)
+        finally:
+            await hb.stop()
 
     asyncio.run(run())
-    # 1 sofort beim Start + mind. 2 weitere im 0.05s-Takt binnen 0.17s.
+    # 1 sofort beim Start + mindestens 2 weitere aus dem Loop.
     assert len(client.calls) >= 3
 
 

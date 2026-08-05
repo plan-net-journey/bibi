@@ -9,7 +9,40 @@ Schedules bleibt unter ``/-/ui/schedules`` erreichbar, ist nur nicht mehr
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
 from bibi.controller import render
+from bibi.daemon import roles
+from bibi.daemon.app import create_app
+
+
+class _FakeClient:
+    """Scheduler-Antworten fuer die Route-Pruefung — leer, aber wohlgeformt."""
+
+    def __init__(self, status: dict) -> None:
+        self._status = status
+
+    def status(self) -> dict:
+        return self._status
+
+    def schedules(self):
+        return []
+
+    def journal(self, **_):
+        return []
+
+    def jobs(self, **_):
+        return []
+
+
+@pytest.fixture
+def app_with(team_repo: Path):
+    def _make(status: dict):
+        return create_app(roles.resolve({"controller"}), controller_client=_FakeClient(status))
+    return _make
 
 
 def test_header_has_no_follow_toggle():
@@ -38,7 +71,7 @@ def test_header_includes_ops_handles():
 
 def test_ops_handles_rescan_is_always_generic():
     html = render._ops_handles({})
-    assert 'id="rescan" class="toggle" title="Rescan auslösen">⟳<' in html
+    assert 'id="rescan" class="toggle" title="rescan the vault">⟳<' in html
 
 
 def test_ops_handles_js_restores_idle_icon():
@@ -67,7 +100,7 @@ def test_feed_header_rescan_ignores_git_status():
     feed_data = {"entities": [], "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
     html = render.feed_page(
         feed_data, git_status={"tree": "clean", "sync": "ahead", "branch": "trunk"}, now=100.0)
-    assert 'id="rescan" class="toggle" title="Rescan auslösen">⟳<' in html
+    assert 'id="rescan" class="toggle" title="rescan the vault">⟳<' in html
     assert "SYNC: ahead" not in html.split('<div class="statuscards">')[0]  # nicht in der Nav
 
 
@@ -196,74 +229,19 @@ def test_logbox_slug_link_has_fixed_theme_independent_color():
     assert ".logbox a.slug { color:" in render._CSS
 
 
-def test_screen_nav_feed_tab_is_home():
-    # PLAN-18 Stufe 18.3: Feed ist zurück und jetzt der Home-Screen (/-/),
-    # Schedules zieht auf seine eigene Route um. Schedules nur mit
-    # scheduler-Rolle sichtbar (PLAN-20 Befund 6). Tab-Label seit der
-    # Bibi4-Iteration "Jobs" (User-Fund "eine App") statt "Schedules" —
-    # die Route bleibt unverändert.
-    html = render._screen_nav("Live-Log", roles=["scheduler"])
+def test_screen_nav_feed_is_home():
+    """Feed ist der Home-Screen (``/-/``) und bleibt es — das war schon vor
+    bibi5 so und ist der einzige Teil der alten Nav-Logik, der überlebt."""
+    html = render._screen_nav("Jobs")
     assert 'href="/-/">Feed' in html
-    assert 'href="/-/ui/schedules">Jobs' in html
-
-
-def test_screen_nav_hides_schedules_without_scheduler_role():
-    html = render._screen_nav("Live-Log", roles=["connect"])
-    assert 'href="/-/ui/schedules"' not in html
-
-
-def test_screen_nav_hides_schedules_and_jobs_without_any_role():
-    html = render._screen_nav("Live Log")
-    assert 'href="/-/ui/schedules"' not in html
-    assert 'href="/-/ui/jobs"' not in html
-    # Rollenunabhängige Tabs bleiben immer da.
-    assert 'href="/-/">Feed' in html and 'href="/-/ui/logs">Live Log' not in html
-    assert "Live Log" in html  # aktiver Tab, ohne Link
-
-
-def test_screen_nav_shows_archive_tab_with_scheduler_role():
-    # Bibi4-Iteration, User-Fund: Archive/Journal auf einen eigenen Screen
-    # verschoben — Host-Archive-Tab nur mit scheduler-Rolle.
-    html = render._screen_nav("Live-Log", roles=["scheduler"])
-    assert 'href="/-/ui/archive">Archive' in html
-
-
-def test_screen_nav_hides_host_archive_without_scheduler_role():
-    html = render._screen_nav("Live-Log", roles=["connect"])
-    assert 'href="/-/ui/archive"' not in html
-
-
-def test_screen_nav_shows_archive_tab_with_connect_role():
-    # Bibi4-Iteration, User-Fund: lokale Läufe auf einen eigenen Screen
-    # verschoben — Client-Archive-Tab nur mit connect-Rolle.
-    html = render._screen_nav("Live-Log", roles=["connect"])
-    assert 'href="/-/ui/jobs/archive">Archive' in html
-
-
-def test_screen_nav_hides_client_archive_without_connect_role():
-    html = render._screen_nav("Live-Log", roles=["scheduler"])
-    assert 'href="/-/ui/jobs/archive"' not in html
-
-
-def test_screen_nav_shows_nodes_tab_with_scheduler_role():
-    # Bibi4-Iteration, User-Fund: Connected-Clients-Screen, nur beim Host.
-    # Batch 9 Punkt 3: Tab-Label umbenannt von "Clients" zu "Nodes", Route
-    # (/-/ui/clients) bewusst unverändert.
-    html = render._screen_nav("Live-Log", roles=["scheduler"])
-    assert 'href="/-/ui/clients">Nodes' in html
-
-
-def test_screen_nav_hides_clients_tab_without_scheduler_role():
-    html = render._screen_nav("Live-Log", roles=["connect"])
-    assert 'href="/-/ui/clients"' not in html
 
 
 def test_screen_nav_active_tab_has_active_class():
     # PLAN-25 Befund 2, User-Fund: der aktive Tab war bisher nur reiner Text
     # ohne eigene CSS-Klasse — "Hervorhebung" war die zufällige Abwesenheit
     # von .back-Grau, kein bewusstes visuelles Signal.
-    html = render._screen_nav("Live Log")
-    assert '<span class="tab-active">Live Log</span>' in html
+    html = render._screen_nav("Live")
+    assert '<span class="tab-active">Live</span>' in html
     assert ".tab-active {" in render._CSS
 
 
@@ -272,16 +250,11 @@ def test_ops_handles_has_no_follow_button():
     assert 'id="follow"' not in html
 
 
-def test_schedules_page_has_exactly_one_theme_button_and_no_follow():
-    html = render.schedules_page([], now=1.0)
-    assert html.count('id="follow"') == 0  # PLAN-36 Stufe 36.3 (E8)
-    assert html.count('id="theme"') == 1
-
 
 def test_schedule_detail_page_has_header_nav_without_follow():
     job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0}
     html = render.schedule_detail_page({"slug": "a", "kind": "job"}, [], job, slug="a")
-    assert 'href="/-/"' in html and 'href="/-/ui/logs"' in html
+    assert 'href="/-/"' in html and 'href="/-/log"' in html
     assert 'id="liveclock"' in html
     assert 'id="follow"' not in html  # PLAN-36 Stufe 36.3 (E8)
 
@@ -298,18 +271,12 @@ def test_schedule_detail_page_has_rescan_and_maint():
     assert render._OPS_HANDLES_JS in html
 
 
-def test_schedules_page_has_rescan_and_maint():
-    html = render.schedules_page([], daemon_status={"maintenance": False, "roles": ["scheduler"]})
-    assert 'id="rescan"' in html
-    assert 'id="maint" class="toggle"' in html and "⚙" in html
-    assert render._OPS_HANDLES_JS in html
-
 
 def test_execution_detail_page_has_header_nav_without_follow():
     entry = {"id": 1, "run_id": "x:1", "slug": "x", "kind": "job", "status": "complete",
              "started_at": 1.0, "finished_at": 2.0, "domain": "scheduled"}
     html = render.execution_detail_page(entry, [], "job")
-    assert 'href="/-/"' in html and 'href="/-/ui/logs"' in html
+    assert 'href="/-/"' in html and 'href="/-/log"' in html
     assert 'id="liveclock"' in html
     assert 'id="follow"' not in html  # PLAN-36 Stufe 36.3 (E8)
 
@@ -333,3 +300,118 @@ def test_log_page_has_rescan_and_maint_without_follow():
     assert 'id="rescan"' in html
     assert 'id="maint" class="toggle warn"' in html
     assert 'id="follow"' not in html and "bibiToggleFollow" not in html
+
+
+# --- bibi5: eine App-Bar für alle Knoten (Umbauplan Schritt 1) ---------------
+#
+# „Es gibt nur noch einen Client" (FE-Spezifikation §1). Damit entfällt der
+# Grund für die rollenabhängige Tab-Menge: bisher zeigte ein Scheduler-Knoten
+# `/-/ui/schedules`, ein Client `/-/ui/jobs`, und beide hießen „Jobs" — dieselbe
+# Beschriftung für zwei Screens, weil zwei Frontends existierten. In bibi5 gibt
+# es einen Screen je Aufgabe, und jeder Knoten zeigt dieselben fünf.
+
+
+def test_screen_nav_shows_the_same_five_tabs_on_every_node():
+    """Fünf Screens, feste Reihenfolge, unabhängig von der Rolle.
+
+    Die Reihenfolge ist nicht beliebig: Feed und Jobs sind die täglichen, Nodes
+    ist Betrieb, Live und Log sind Diagnose. Sie steht so in der
+    FE-Spezifikation §1 und in jedem Wireframe.
+
+    `Archive` ist seit m.rau/bibi#130 nicht mehr dabei — die Frage „was lief"
+    beantwortet die `RELIABILITY`-Spalte im Jobs-Screen schneller.
+    """
+    erwartet = [("Feed", "/-/"), ("Jobs", "/-/jobs"),
+                ("Nodes", "/-/nodes"), ("Live", "/-/live"), ("Log", "/-/log")]
+    for rollen in ([], ["scheduler"], ["connect"], ["scheduler", "worker"]):
+        html = render._screen_nav("Feed", roles=rollen)
+        for label, href in erwartet:
+            if label == "Feed":
+                continue  # aktiver Tab, absichtlich ohne Link
+            assert f'href="{href}">{label}' in html, f"{label} fehlt bei roles={rollen}"
+
+
+def test_screen_nav_no_longer_branches_on_roles():
+    """Zwei Knoten, dieselbe Leiste — das ist der Kern von „ein Client".
+
+    Vorher unterschieden sich Scheduler- und Client-Knoten in Tab-Menge *und*
+    Zielen; ein Screenshot war ohne Kenntnis der Rolle nicht einzuordnen.
+    """
+    assert render._screen_nav("Feed", roles=["scheduler"]) == \
+           render._screen_nav("Feed", roles=["connect"])
+
+
+def test_screen_nav_drops_api_docs_and_the_old_split_routes():
+    """`API Docs` war ein Fremdkörper in der Screen-Leiste — es öffnete einen
+    neuen Tab auf eine generierte Seite, die kein Screen dieser App ist. Die
+    Route bleibt, der Platz in der App-Bar nicht.
+
+    Die alten rollengeteilten Ziele verschwinden mit: sie sind der Host-FE-Rest.
+    """
+    html = render._screen_nav("Feed", roles=["scheduler", "connect"])
+    assert "API Docs" not in html
+    assert "/-/ui/schedules" not in html
+    assert "/-/ui/jobs" not in html
+    assert "/-/ui/clients" not in html
+
+
+def test_screen_nav_active_tab_stays_clickable_on_a_subpage():
+    """Der aktive Tab ist auf einer **Unterseite** ein Link (m.rau/bibi#148).
+
+    „Der aktive Tab ist kein Link" stimmt auf dem Screen selbst — dorthin zu
+    verlinken, wo man steht, ist eine Sackgasse. Auf seinen Unterseiten stimmt
+    es nicht: dort ist der Tab die natürliche Zurück-Geste, und genau so wird er
+    benutzt. Der Unterschied ist nicht *aktiv gegen inaktiv*, sondern **auf dem
+    Screen gegen unterhalb davon**.
+
+    Die Hervorhebung bleibt in beiden Fällen — man ist ja weiterhin in Jobs.
+    """
+    auf_dem_screen = render._screen_nav("Jobs")
+    assert '<span class="tab-active">Jobs</span>' in auf_dem_screen
+
+    darunter = render._screen_nav("Jobs", sub=True)
+    assert '<a class="tab-active" href="/-/jobs">Jobs</a>' in darunter
+    assert '<span class="tab-active">' not in darunter
+
+
+def test_job_subpages_link_their_own_tab_back_to_the_screen(monkeypatch):
+    """Beide Jobs-Unterseiten führen den Tab als Rückweg (m.rau/bibi#148).
+
+    Am Renderer geprüft und nicht nur an ``_screen_nav()``: der Fehler saß
+    nicht in der Nav-Funktion allein, sondern darin, dass ihr niemand sagte,
+    wo sie steht. Ein Test auf die Funktion allein wäre grün gewesen, während
+    die Seiten weiter tote Tabs zeigen.
+    """
+    spec = {"slug": "a", "kind": "job"}
+    detail = render.job_detail_page_v5(slug="a", spec=spec, now=0.0)
+    attrs = render.job_attrs_page_v5(slug="a", spec=spec, defaults={}, now=0.0)
+    for name, html in (("detail", detail), ("attrs", attrs)):
+        assert '<a class="tab-active" href="/-/jobs">Jobs</a>' in html, name
+
+
+def test_screen_nav_separates_live_from_log():
+    """`Live Log` war ein Screen für zwei Dinge. Der Unterschied ist das
+    Gedächtnis (FE-Spezifikation §7): Live hat keines und erzählt, was gerade
+    geschieht; Log hat Historie und ist zum Nachschlagen da."""
+    html = render._screen_nav("Feed", roles=["scheduler"])
+    assert "Live Log" not in html
+    assert 'href="/-/live">Live' in html
+    assert 'href="/-/log">Log' in html
+
+
+# --- bibi5: die fünf Screens haben eigene Routen -----------------------------
+
+
+def test_every_screen_in_the_app_bar_is_reachable(app_with):
+    """Kein Tab zeigt ins Leere.
+
+    Die App-Bar steht auf jedem Screen und nennt fünf Ziele; existiert eines
+    davon nicht, ist die Leiste selbst der Fehler — man klickt und landet im
+    404. Vorher konnte das nicht passieren, weil die Leiste nur zeigte, was die
+    Rolle hergab; jetzt zeigt sie immer alles und muss es auch halten.
+    """
+    app = app_with({"roles": ["scheduler", "connect"]})
+    with TestClient(app) as c:
+        for label, href in render.SCREENS:
+            r = c.get(href)
+            assert r.status_code == 200, f"{label} ({href}) → {r.status_code}"

@@ -12,6 +12,7 @@ Schema-Versionierung über ``PRAGMA user_version``: die Basis (v1) liegt in
 from __future__ import annotations
 
 import json
+import math
 import secrets
 import shutil
 import socket
@@ -23,11 +24,22 @@ from pathlib import Path
 from dateutil import parser as _date_parser
 
 from bibi import repo
-from bibi.schedule import discovery, dispatcher, lifecycle
-from bibi.schedule.models import Kind, Status, display_kind
-from bibi.schedule.parser import ParseResult
+from bibi.schedule import discovery, dispatcher, lifecycle, slot
+from bibi.schedule.models import Kind, Status, display_kind, job_uid
+from bibi.schedule.parser import SPECIAL_SCHEDULES, ParseResult
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 22
+
+#: Terminalzustände, die den Slot **blockieren** statt ihn freizugeben — alle
+#: außer ``complete`` (Archivierungsregel A2, Zustandsmodell §3). Sie bleiben in
+#: der Scheduler-DB stehen, bis ein Mensch START oder RESET auslöst; solange
+#: feuert der Job nicht mehr, auch wenn sein Cron-Ausdruck weiter gilt. Das ist
+#: eine bewusste Entscheidung mit Preis (m.rau, 2026-08-02: „error bleibt
+#: terminal"), abgefedert durch die Retry-Kette davor: ``error`` wird erst nach
+#: ``exhaust`` erreicht, also nachdem die Wiederholungen aufgebraucht sind.
+_BLOCKS_THE_SLOT = frozenset(
+    {Status.ERROR, Status.INACTIVE, Status.ZOMBIE, Status.KILLED}
+)
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -185,6 +197,60 @@ def _mig_jobs_docker_args(conn: sqlite3.Connection) -> None:  # v18 → v19
         conn.execute("ALTER TABLE jobs ADD COLUMN docker_args TEXT")
 
 
+def _mig_job_uid(conn: sqlite3.Connection) -> None:  # v19 → v20
+    # Job-Identität als Spalte (Zustandsmodell §6). **Ohne Backfill**: alte
+    # Zeilen bleiben NULL. Sie zu füllen hieße, für jeden gepinnten Lauf den
+    # Basis-Slug zu erraten (`EngineCI-46ec57c7` → `EngineCI`) — live 252
+    # Pseudo-Slugs für 33 echte Jobs. Ein Fehlgriff dabei hängt Läufe an den
+    # falschen Job, und das fiele niemandem auf. Die Historie bleibt über den
+    # Slug erreichbar, nur nicht über den neuen Join.
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "job_uid"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN job_uid TEXT")
+    if _has_table(conn, "journal") and not _has_column(conn, "journal", "job_uid"):
+        conn.execute("ALTER TABLE journal ADD COLUMN job_uid TEXT")
+        # Der Index deckt den Zugriffspfad der Lauf-Liste ab (alle Läufe eines
+        # Jobs, jüngste zuerst). `archived_at` kommt aus der Basis, ist in einer
+        # sehr alten DB aber noch nicht zwingend da — eine Migration darf über
+        # den Stand *anderer* Migrationen nichts annehmen. Ohne die Spalte
+        # genügt der einspaltige Index; die spätere Sortierspalte kostet dann
+        # einen Row-Lookup, was bei einer DB dieses Alters nicht ins Gewicht
+        # fällt.
+        if _has_column(conn, "journal", "archived_at"):
+            conn.execute("CREATE INDEX IF NOT EXISTS journal_job_uid_idx "
+                         "ON journal (job_uid, archived_at DESC)")
+        else:
+            conn.execute("CREATE INDEX IF NOT EXISTS journal_job_uid_idx "
+                         "ON journal (job_uid)")
+
+
+def _mig_jobs_commit(conn: sqlite3.Connection) -> None:  # v20 → v21
+    # Der Slot muss den Worktree-Commit seines Laufs halten (m.rau/bibi#101).
+    # Bis zur Archivierungsregel A2 gab es dafür keinen Grund: `commit_sha` und
+    # `branch` kamen als Parameter des Terminal-Reports und wanderten im selben
+    # Aufruf in die Journal-Zeile — zwischen Report und Archivierung lag kein
+    # Zeitraum. Unter A2 liegen dort Tage, in denen der blockierte Lauf im Slot
+    # steht; ohne Ablage wäre die Verbindung Lauf ↔ Vault-Wirkung genau bei den
+    # Läufen verloren, bei denen sie am meisten hilft.
+    for col in ("commit_sha", "branch"):
+        if _has_table(conn, "jobs") and not _has_column(conn, "jobs", col):
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT")
+
+
+def _mig_bootstrap_tokens(conn: sqlite3.Connection) -> None:  # v21 → v22
+    # Startschlüssel für den ersten Client (m.rau/bibi#141, Nodes.md §3.3).
+    # Eine eigene Tabelle statt eines `meta`-Eintrags, weil `expires_at` in die
+    # Bedingung der Abfrage gehört und nicht in den Aufrufer: das Einlösen ist
+    # ein einziges `DELETE … WHERE token=? AND expires_at>?`, und genau
+    # dadurch kann zwischen Prüfen und Verbrauchen nichts passieren.
+    conn.executescript(
+        "CREATE TABLE IF NOT EXISTS bootstrap_tokens ("
+        "    token      TEXT PRIMARY KEY,"
+        "    created_at REAL NOT NULL,"
+        "    expires_at REAL NOT NULL"
+        ");"
+    )
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -207,6 +273,9 @@ _MIGRATIONS: dict[int, list] = {
     16: [_mig_jobs_error_time],
     17: [_mig_approved_nodes],
     18: [_mig_jobs_docker_args],
+    19: [_mig_job_uid],
+    20: [_mig_jobs_commit],
+    21: [_mig_bootstrap_tokens],
 }
 
 
@@ -280,20 +349,21 @@ def compute_next_fire(spec, now: float | None = None) -> float | None:
         except ValueError:
             return None
     sched = spec.schedule
-    if sched is None or sched in ("startup", "autostart", "never", "on_demand"):
-        return None
     if sched == "now":
         return now
+    if sched is None or sched in SPECIAL_SCHEDULES:
+        return None
     return _next_cron(sched, now)
 
 
-_SPECIAL = ("now", "startup", "never", "on_demand", "autostart")
-
-
 def is_recurring(schedule: str | None) -> bool:
-    """True für wiederkehrende (croniter-)Schedules — nicht ``now``/``startup``/
-    ``never`` und kein ``at:`` (one-shot)."""
-    return schedule is not None and schedule not in _SPECIAL
+    """True für wiederkehrende (croniter-)Schedules — kein Spezialwert und
+    kein ``at:`` (one-shot).
+
+    Die Liste der Spezialwerte kommt aus dem Parser, nicht aus einer eigenen
+    Kopie: eine zweite Liste läuft auseinander, sobald eine Schreibweise
+    dazukommt."""
+    return schedule is not None and schedule not in SPECIAL_SCHEDULES
 
 
 def _next_cron(expr: str, now: float) -> float | None:
@@ -325,6 +395,7 @@ def _spec_columns(pr: ParseResult, now: float) -> dict:
     assert s is not None
     return {
         "slug": s.slug,
+        "job_uid": job_uid(s.slug),
         "schedule_ref": pr.schedule_ref,
         "slug_explicit": 1 if pr.slug_explicit else 0,
         "kind": s.kind.value,
@@ -462,7 +533,11 @@ def active_worktree_slugs(conn: sqlite3.Connection) -> set[str]:
     for r in rows:
         if not r["active"]:
             continue
-        if lifecycle.is_terminal(Status(r["status"])) and r["next_fire_at"] is None:
+        # `slot.is_finished()` statt `lifecycle.is_terminal()`: der Slot kann
+        # `done` tragen (verbrauchter Oneshot), und das ist kein `models.Status`
+        # — die Umwandlung stürbe daran. Inhaltlich gehört `done` genau hierher:
+        # ein verbrauchter Termin ohne nächste Feuerung braucht keinen Worktree.
+        if slot.is_finished(r["status"]) and r["next_fire_at"] is None:
             continue
         known.add(r["slug"])
     return known
@@ -541,6 +616,59 @@ def get_job_exec_mode(conn: sqlite3.Connection, job_id: str) -> tuple[str, str |
     return (row["slug"], row["exec_mode"]) if row else None
 
 
+#: Wie viele Läufe in das Perzentil eingehen, und wie viele es mindestens
+#: braucht (m.rau/bibi#132). Ein P90 über drei Werte ist eine Behauptung.
+_P90_FENSTER = 30
+_P90_MINDESTBESTAND = 5
+
+
+def runtime_p90(conn: sqlite3.Connection, *, fenster: int = _P90_FENSTER,
+                mindestbestand: int = _P90_MINDESTBESTAND) -> dict[str, float]:
+    """Die übliche Laufzeit je Slug: P90 der letzten ``fenster`` Läufe.
+
+    **Vorgabe m.rau** (m.rau/bibi#132): *„Die Runtime ist ebenfalls eine
+    Scheduler Eigenschaft. Sie kommt vom Scheduler und ist der 90. Perzentil P90
+    der Laufzeit der letzten 30 Laeufe."* Vorher stand in der Spalte die Dauer
+    des *letzten* Laufs — derselbe Job zeigte mal ``2.8s``, mal ``4m 34s``, je
+    nachdem was zuletzt geschah. Ein Perzentil beantwortet „wie lange dauert das
+    normalerweise"; der Ausreißer bleibt in der Lauf-Liste sichtbar.
+
+    **Nur ``complete`` zählt.** Das ist zugleich die Antwort auf m.rau/bibi#123
+    (``exec_runtime`` misst bei einem aufgeräumten Lauf die Standzeit statt der
+    Rechenzeit) — und sie fällt schärfer aus als „Aufräum-Läufe erkennen". Auf
+    der Scheduler-DB nachgemessen, 23 793 Läufe: **jeder** Wert über einer
+    Stunde gehört zu einem ``killed`` (``by_user`` 13, ``by_wall_time`` 4,
+    ``no_process`` 4), kein einziger zu einem ``complete``. Ein Lauf, der
+    abgebrochen wurde, hat nie zu Ende gerechnet — seine Dauer beantwortet die
+    Frage der Spalte gar nicht.
+
+    **Nearest-rank statt Interpolation:** die Zahl ist ein beobachteter Lauf und
+    keine erfundene Zwischengröße. Bei dreißig Werten ist es der 27.
+
+    Nur ``domain='scheduled'``: ``bibi-ctrl run``-Läufe eines Clients gehören der
+    anderen Seite der Zeile, und eine Zahl, die beide mischt, beantwortet keine
+    der beiden Fragen.
+    """
+    werte: dict[str, list[float]] = {}
+    for r in conn.execute(
+        "SELECT slug, exec_runtime FROM ("
+        "  SELECT slug, exec_runtime,"
+        "         ROW_NUMBER() OVER (PARTITION BY slug ORDER BY id DESC) AS rn"
+        "    FROM journal"
+        "   WHERE domain='scheduled' AND status='complete'"
+        "     AND exec_runtime IS NOT NULL"
+        ") WHERE rn <= ?", (fenster,)
+    ).fetchall():
+        werte.setdefault(r["slug"], []).append(float(r["exec_runtime"]))
+    aus: dict[str, float] = {}
+    for slug, v in werte.items():
+        if len(v) < mindestbestand:
+            continue
+        v.sort()
+        aus[slug] = v[math.ceil(0.9 * len(v)) - 1]
+    return aus
+
+
 def list_schedules(conn: sqlite3.Connection) -> list[dict]:
     # Letzten disponierten Lauf je Slug aus dem Journal (für STATUS = „letzter Lauf",
     # nicht der nach Cron-Re-Arm harmlose Zeilen-Status `pending`).
@@ -551,8 +679,11 @@ def list_schedules(conn: sqlite3.Connection) -> list[dict]:
         ") m ON j.id = m.mx"
     ).fetchall():
         last[r["slug"]] = {"id": r["id"], "status": r["status"], "finished_at": r["finished_at"]}
+    # Eine Abfrage für alle Slugs, nicht eine je Zeile (m.rau/bibi#132).
+    p90 = runtime_p90(conn)
     rows = conn.execute("SELECT * FROM jobs ORDER BY slug").fetchall()
-    out = [schedule_view(r, last_run=last.get(r["slug"])) for r in rows]
+    out = [schedule_view(r, last_run=last.get(r["slug"]), runtime_p90=p90.get(r["slug"]))
+           for r in rows]
 
     # Journal-only-Phantome (PLAN-14 Stufe 14.6): Slugs mit disponierter
     # Journal-Historie, aber ohne (mehr) zugehörige jobs-Zeile — vor Stufe 14.5
@@ -568,6 +699,9 @@ def list_schedules(conn: sqlite3.Connection) -> list[dict]:
         if r["slug"] in known:
             continue
         out.append({
+            # Journal-Phantom: es gibt keine jobs-Zeile mehr, also auch keinen
+            # Slot und keine Verben.
+            "id": None,
             "slug": r["slug"], "kind": r["kind"], "trigger": "",
             "next_fire_at": None, "last_status": r["status"],
             "last_run_at": r["finished_at"], "last_run_id": r["id"],
@@ -644,7 +778,8 @@ def get_job_by_slug(conn: sqlite3.Connection, slug: str) -> dict | None:
 _LIVE_ROW_STATUSES = {"starting", "running", "failed", "awaiting", "deferred", "pending"}
 
 
-def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
+def schedule_view(row: sqlite3.Row, last_run: dict | None = None, *,
+                  runtime_p90: float | None = None) -> dict:
     trigger = row["schedule"] if row["schedule"] is not None else row["at_iso"]
     row_status = row["status"]
     # STATUS-Spalte: gerade aktiv (_LIVE_ROW_STATUSES) → Zeilen-Status direkt;
@@ -673,9 +808,17 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
     # ein laufender Job noch keine eigene Journal-Zeile hat.
     last_run_id = last_run["id"] if last_run is not None else None
     return {
+        # Die Job-Zeilen-ID. Der Slot **ist** diese Zeile, und die drei Verben
+        # laufen ueber `POST /-/job/{id}/{verb}` — ohne sie sind START, RESET
+        # und KILL im Screen nicht verdrahtbar (Befund m.rau 2026-08-04).
+        "id": row["id"],
         "slug": row["slug"], "kind": row["kind"], "trigger": trigger or "",
         "next_fire_at": row["next_fire_at"], "last_status": last_status,
         "last_run_at": last_run_at, "last_run_id": last_run_id, "row_status": row_status,
+        # Wie lange das normalerweise dauert — P90 der letzten 30 Läufe
+        # (m.rau/bibi#132). Steht neben `next_fire_at`, weil beide Fragen dem
+        # Scheduler gehören: wann es *wieder* läuft, und wie lange es *dauert*.
+        "runtime_p90": runtime_p90,
         # One-shot (at:) hat kein wiederkehrendes schedule — Basis fürs Archiv (§4.4).
         "oneshot": row["schedule"] is None,
         # kind ist seit PLAN-10 (Unified Job Model) immer "job" — payload/app_port
@@ -693,6 +836,28 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None) -> dict:
         # baut — dieselbe Ableitung wie schon lange bei job_full_view()
         # (Zeile oben), hier nur zusätzlich in der schlankeren Listen-Sicht.
         "schedule_ref": row["schedule_ref"],
+        # ── Der Lauf, der gerade im Slot steht (m.rau/bibi#131) ──────────────
+        # Bis zu seiner Archivierung gibt es ihn **nur** hier: unter A2 wandert
+        # ein terminaler Fehler erst auf START/RESET ins Journal, und ein
+        # laufender hat dort ohnehin noch keine Zeile. Die Lauf-Liste in Job
+        # Detail führt ihn trotzdem — dafür braucht sie mehr als `row_status`.
+        #
+        # `fire` ist dabei der Schlüssel im Wortsinn: erst damit lässt sich die
+        # kanonische `run_id` bilden (`run_id_for()`), und ohne die gäbe es
+        # weder einen Weg zum Output noch einen stabilen Deep-Link.
+        #
+        # Nicht zu verwechseln mit `last_status`/`last_run_at` darüber: die
+        # mischen Zeile und Journal zu einer Anzeige-Aussage. Hier stehen die
+        # rohen Slot-Felder unter ihren DB-Namen.
+        "reason": row["reason"],
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+        "exit_code": row["exit_code"],
+        "output_ref": row["output_ref"],
+        "commit_sha": row["commit_sha"],
+        "fire": row["fire"],
+        "host": row["host"],
+        "worker": row["worker"],
     }
 
 
@@ -909,9 +1074,17 @@ def report_status(
     """Worker meldet einen Zustandswechsel (§4.4, output-frei). Rückgabe:
     ``ok`` | ``invalid`` (verbotener Übergang, §5.4) | ``not_found``."""
     now = time.time() if now is None else now
-    row = conn.execute("SELECT status, kind, schedule, slug FROM jobs WHERE id=?", (job_id,)).fetchone()
+    # `at_iso` mit: es entscheidet, ob `complete` den Slot verbraucht (s. u.).
+    row = conn.execute(
+        "SELECT status, kind, schedule, slug, at_iso FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return "not_found"
+    if row["status"] == slot.DONE:
+        # Ein verbrauchter Slot hat keinen Ausgang (Zustandsmodell §1): kein
+        # Lauf kommt mehr, also gibt es auch keinen Zustandswechsel zu melden.
+        # `done` ist kein `models.Status` — ohne diese Prüfung stürbe die
+        # Umwandlung unten mit `ValueError`, statt „geht hier nicht" zu sagen.
+        return "invalid"
     current = Status(row["status"])
     target = Status(status)
     if target is current and target in lifecycle.TERMINAL:
@@ -956,6 +1129,10 @@ def report_status(
         fields["finished_at"] = None
         fields["exit_code"] = None
         fields["output_ref"] = None
+        # Auch der Worktree-Commit gehört dem abgeschlossenen Zyklus (v21) —
+        # er ist zu diesem Zeitpunkt schon archiviert (A2, s. u.).
+        fields["commit_sha"] = None
+        fields["branch"] = None
         # Reset respektiert den Trigger, statt blind sofort zu feuern (User-
         # Feedback: RESET reihte bei `schedule: never` fälschlich einen neuen
         # Lauf ein — "steht ja auf never"). Wiederkehrende Schedules bekommen
@@ -1007,6 +1184,13 @@ def report_status(
         fields["worker"] = worker
     if output_ref is not None:  # nur Referenz — der Scheduler bleibt output-frei (§4.4)
         fields["output_ref"] = output_ref
+    # (v21) Der Slot hält den Worktree-Commit, solange sein Lauf dort steht.
+    # Unter A2 liegen zwischen Terminal-Report und Archivierung Tage; ohne
+    # diese Ablage wäre die Verbindung Lauf ↔ Vault-Wirkung genau dort weg.
+    if commit_sha is not None:
+        fields["commit_sha"] = commit_sha
+    if branch is not None:
+        fields["branch"] = branch
     if target is Status.AWAITING:
         if app_url is not None:
             fields["app_url"] = app_url
@@ -1026,10 +1210,32 @@ def report_status(
         assignments += ", fire=fire+1"
     fields["id"] = job_id
 
-    # Terminal-Übergang → eine Journal-Zeile (disponierte Domäne, §1.4). complete
-    # rearmt NICHT mehr sofort hier — das übernimmt reserve_next() lazy, sobald der
-    # nächste next_fire_at-Tick tatsächlich fällig ist (siehe Kommentar oben).
+    # ── Wann archiviert wird: die Regel A1/A2 (m.rau/bibi#101) ──────────────
     #
+    # Der Übergang ins Journal ist **nicht statusgetrieben**. Er hat genau zwei
+    # Auslöser, und der Unterschied zwischen ihnen ist die Asymmetrie der Folgen:
+    #
+    # **A1 — `complete` archiviert sofort und von selbst.** Bliebe der Lauf
+    # stehen, fände der nächste keinen Platz und die Automatisierung stünde
+    # still. (Das Rearming des Slots übernimmt `reserve_next()` lazy, sobald der
+    # nächste Tick fällig ist — der Platz ist damit frei, ohne dass hier ein
+    # Trigger neu gerechnet wird.)
+    #
+    # **A2 — jeder andere terminale Zustand wartet auf einen Menschen.**
+    # `error`/`inactive`/`zombie`/`killed` bleiben im Slot stehen, bis START
+    # oder RESET sie abräumt; erst diese Aktion schreibt sie ins Journal. Ein
+    # Fehler, der sich selbst archiviert, verschwindet unbemerkt — er wäre nur
+    # noch in einer Liste zu finden, in der niemand nachsieht, während der Job
+    # scheinbar unauffällig weiterläuft.
+    #
+    # Die Archivierung hängt deshalb am **Übergang**, nicht am Zustand: beim
+    # Erreichen von `complete`, und beim Verlassen eines blockierten Slots nach
+    # `pending`. Dass beide Verben (START und RESET) über denselben Übergang
+    # laufen, ist der Grund, warum hier eine Bedingung genügt statt zweier
+    # Sonderwege in den Verb-Funktionen.
+    archives = target is Status.COMPLETE or (
+        current in _BLOCKS_THE_SLOT and target is Status.PENDING)
+
     # **Status und Journal-Zeile sind EIN Vorgang** (m.rau/bibi#95). Ohne Klammer
     # committen sie einzeln (``connect()``: „übrige Schreibpfade committen je
     # Statement") — und dazwischen liegt ein Fenster, in dem jeder Leser einen
@@ -1037,19 +1243,54 @@ def report_status(
     # FE, CLI und jeder andere Knoten lesen dieselbe DB. „Fertig" ist logisch
     # ein Vorgang und darf nicht als zwei sichtbar werden.
     #
-    # Nur der terminale Fall wird geklammert: sonst ist das UPDATE ein einzelnes
-    # Statement und für sich atomar. Eine fremde Transaktion wird nicht
-    # angetastet — dann committet der Aufrufer.
-    if target not in lifecycle.TERMINAL:
+    # Nur der archivierende Fall wird geklammert: sonst ist das UPDATE ein
+    # einzelnes Statement und für sich atomar. Eine fremde Transaktion wird
+    # nicht angetastet — dann committet der Aufrufer.
+    if not archives:
         conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
         return "ok"
+
+    # Die Reihenfolge ist bei den beiden Auslösern verschieden, und sie folgt
+    # daraus, *welchen* Lauf die Journal-Zeile beschreibt:
+    #
+    # A1 — archiviert wird der Lauf, der gerade endet. Erst das UPDATE, dann
+    #      die Zeile: `_write_journal()` liest die Job-Zeile und braucht dort
+    #      den frischen Endzustand (`complete`, `finished_at`, `exit_code`).
+    # A2 — archiviert wird der Lauf, der *vorher* dastand. Erst die Zeile, dann
+    #      das UPDATE: der PENDING-Zweig oben räumt `started_at`, `exit_code`,
+    #      `output_ref` und den Commit weg, und danach wäre der Lauf, den wir
+    #      gerade sichern wollen, nicht mehr rekonstruierbar. Nebenbei trägt die
+    #      Zeile so noch den alten `fire`-Zähler — genau den, unter dem der Lauf
+    #      lief, während `fire+1` schon dem neuen Zyklus gehört.
+    archive_first = target is Status.PENDING
+
+    # `at` ist der einzige Trigger, der sich verbraucht — und damit die einzige
+    # Ausführungsgarantie „genau einmal". Ein Rhythmus bekommt nach `complete`
+    # den nächsten Termin, ein Oneshot hat keinen mehr: sein Slot geht auf
+    # ``done``, den einzigen Zustand ohne Ausgang.
+    #
+    # Das ist bewusst ein zweiter Schritt **nach** dem Journal-Schreiben, nicht
+    # ein anderer Wert im selben UPDATE: der *Lauf* endet als ``complete`` und
+    # wird auch so archiviert, der *Slot* wird danach verbraucht. Genau die
+    # Spiegelung aus Zustandsmodell §1 — ``complete`` steht nie im Slot,
+    # ``done`` nie im Journal. Beides in einem Zug hieße, ``done`` in die
+    # Journal-Zeile zu schreiben.
+    consumes_slot = target is Status.COMPLETE and row["at_iso"] is not None
 
     own_tx = not conn.in_transaction
     if own_tx:
         conn.execute("BEGIN IMMEDIATE")
     try:
-        conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
-        _write_journal(conn, job_id, now, commit_sha=commit_sha, branch=branch)
+        if archive_first:
+            _write_journal(conn, job_id, now, commit_sha=commit_sha, branch=branch)
+            conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
+        else:
+            conn.execute(f"UPDATE jobs SET {assignments} WHERE id=:id", fields)
+            _write_journal(conn, job_id, now, commit_sha=commit_sha, branch=branch)
+            if consumes_slot:
+                conn.execute(
+                    "UPDATE jobs SET status=?, next_fire_at=NULL, updated_at=? WHERE id=?",
+                    (slot.DONE, now, job_id))
     except BaseException:
         if own_tx:
             conn.execute("ROLLBACK")
@@ -1198,6 +1439,11 @@ def start_now(conn: sqlite3.Connection, job_id: str, now: float | None = None) -
     row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return "not_found"
+    if row["status"] == slot.DONE:
+        # Verbrauchter Oneshot: START zeigt nichts an, was ginge. Wer ihn
+        # erneut laufen lassen will, legt eine neue `at`-Datei an oder macht
+        # ihn zu einem `adhoc`-Job (Zustandsmodell §5).
+        return "invalid"
     status = Status(row["status"])
     if status in (Status.PENDING, Status.DEFERRED, Status.FAILED):
         # failed/deferred brauchen keine attempts-1-Logik — "sofortiger Start"
@@ -1484,18 +1730,30 @@ def _write_journal(
     if row["started_at"] is not None and row["finished_at"] is not None:
         exec_runtime = row["finished_at"] - row["started_at"]
     cur = conn.execute(
-        "INSERT INTO journal (run_id, slug, kind, status, reason, started_at, "
+        "INSERT INTO journal (run_id, slug, job_uid, kind, status, reason, started_at, "
         "finished_at, exit_code, exec_runtime, host, worker, output_ref, commit_sha, "
-        "branch, payload, pinned_host, snapshot, archived_at) VALUES (:run_id,:slug,:kind,"
-        ":status,:reason,:started_at,:finished_at,:exit_code,:exec_runtime,:host,:worker,"
+        "branch, payload, pinned_host, snapshot, archived_at) VALUES (:run_id,:slug,:job_uid,"
+        ":kind,:status,:reason,:started_at,:finished_at,:exit_code,:exec_runtime,:host,:worker,"
         ":output_ref,:commit_sha,:branch,:payload,:pinned_host,:snapshot,:archived_at)",
         {
-            "run_id": run_id, "slug": row["slug"], "kind": row["kind"],
+            "run_id": run_id, "slug": row["slug"],
+            # Geerbt, nicht neu berechnet: der Slug dieser Zeile kann der eines
+            # gepinnten Laufs sein (`EngineCI-46ec57c7`) — sein `job_uid` gehört
+            # trotzdem dem Basis-Job, sonst findet die kombinierte Lauf-Liste
+            # ihre lokalen Läufe nicht wieder.
+            "job_uid": row["job_uid"],
+            "kind": row["kind"],
             "status": row["status"], "reason": row["reason"],
             "started_at": row["started_at"], "finished_at": row["finished_at"],
             "exit_code": row["exit_code"], "exec_runtime": exec_runtime,
             "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
-            "commit_sha": commit_sha, "branch": branch, "payload": row["payload"],
+            # Der Report reicht sie direkt durch (A1); fehlen sie, stammt der
+            # Aufruf von START/RESET auf einem blockierten Slot (A2) und die
+            # Werte liegen dort, wo der Lauf sie beim Terminal-Report abgelegt
+            # hat (v21).
+            "commit_sha": commit_sha if commit_sha is not None else row["commit_sha"],
+            "branch": branch if branch is not None else row["branch"],
+            "payload": row["payload"],
             "pinned_host": row["pinned_host"],
             # job_full_view() statt job_view() (User-Feedback 2026-07-03: "ein
             # Schedule oder Attempts kann sich ändern" — der Snapshot muss ALLE
@@ -1510,8 +1768,16 @@ def _write_journal(
 def journal_view(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"], "run_id": row["run_id"], "slug": row["slug"],
+        # job_uid trägt den Join der kombinierten Lauf-Liste (m.rau/bibi#103):
+        # ohne ihn müsste die Anzeige die Zusammengehörigkeit weiter am
+        # Slug-Suffix erraten — genau das Muster, das dieser Schlüssel ablöst.
+        "job_uid": row["job_uid"],
         "kind": row["kind"], "status": row["status"], "reason": row["reason"],
         "started_at": row["started_at"], "finished_at": row["finished_at"],
+        # Beide Zeiten, weil sie unter der Archivierungsregel A2 auseinander-
+        # laufen: ein terminaler Lauf bleibt im Slot stehen, bis jemand START
+        # oder RESET auslöst — bis dahin wächst der Abstand beliebig.
+        "archived_at": row["archived_at"],
         "exit_code": row["exit_code"], "exec_runtime": row["exec_runtime"],
         "host": row["host"], "worker": row["worker"], "output_ref": row["output_ref"],
         "commit_sha": row["commit_sha"], "branch": row["branch"],
@@ -1528,12 +1794,13 @@ def get_journal(conn: sqlite3.Connection, journal_id: int) -> dict | None:
     """Eine Journal-Zeile per ID (für Output-Replay & Detail-Sicht, §4.2). Anders
     als ``journal_view()`` (Listenansicht, bewusst schlank — 50 Zeilen pro Scroll-
     Batch sollen keinen Snapshot-JSON-Ballast tragen) liefert diese Einzelabfrage
-    zusätzlich ``snapshot``/``archived_at`` — die Lauf-Detail-Seite zeigt daraus
-    die zum Laufzeitpunkt eingefrorene Konfiguration (User-Feedback 2026-07-03)."""
+    zusätzlich den ``snapshot``: die zum Laufzeitpunkt eingefrorene Konfiguration
+    (User-Feedback 2026-07-03). ``archived_at`` trägt seit m.rau/bibi#103 schon
+    die Liste."""
     row = conn.execute("SELECT * FROM journal WHERE id=?", (journal_id,)).fetchone()
     if row is None:
         return None
-    return {**journal_view(row), "snapshot": row["snapshot"], "archived_at": row["archived_at"]}
+    return {**journal_view(row), "snapshot": row["snapshot"]}
 
 
 def delete_journal(conn: sqlite3.Connection, journal_id: int) -> bool:
@@ -1585,21 +1852,6 @@ def list_journal(
         sql += " LIMIT ? OFFSET ?"
         params += [limit, offset or 0]
     return [journal_view(r) for r in conn.execute(sql, params).fetchall()]
-
-
-def journal_landings(conn: sqlite3.Connection, *, since: float | None = None) -> list[dict]:
-    """Dünn projizierte Landungen (``status``+``finished_at``) für das
-    Lauf-Historie-Chart (PLAN-21 Befund 11 v2) — ``journal`` ist per
-    Konstruktion schon terminal-only (``_write_journal`` feuert nur bei
-    ``target in lifecycle.TERMINAL``), darum reicht ein simpler Zeitfilter
-    ohne die volle ``journal_view()``-Projektion (Snapshot/Payload etc.)."""
-    q = "SELECT status, finished_at FROM journal WHERE finished_at IS NOT NULL"
-    params: dict = {}
-    if since is not None:
-        q += " AND finished_at >= :since"
-        params["since"] = since
-    q += " ORDER BY finished_at ASC"
-    return [dict(r) for r in conn.execute(q, params).fetchall()]
 
 
 #: Live-Zustände, die als **Abweichung** zählen (PLAN-4 §3/§4.1): „lief nicht".
@@ -1777,3 +2029,65 @@ def list_node_approvals(conn: sqlite3.Connection) -> dict[str, str]:
     statt einer je Zeile)."""
     return {r["node_id"]: r["status"]
             for r in conn.execute("SELECT node_id, status FROM approved_nodes")}
+
+
+#: Lebensdauer eines Startschlüssels. 24 h ist lang genug für „ich setze das
+#: morgen früh fertig auf" und kurz genug, dass ein vergessener Token nicht zum
+#: dauerhaften Gate wird — genau der Unterschied zum abgeschafften
+#: ``BIBI_CONNECT_SECRET`` (Nodes.md §3.3).
+BOOTSTRAP_TTL_S = 24 * 3600
+
+
+def create_bootstrap_token(conn: sqlite3.Connection, *, now: float | None = None,
+                           ttl_s: float = BOOTSTRAP_TTL_S) -> str | None:
+    """Einen Startschlüssel für den **ersten** Client ausgeben (m.rau/bibi#141).
+
+    ``None`` heißt: es gibt bereits einen ``approved``-Knoten, der Bootstrap
+    ist vorbei — ab da führt der Weg über den Nodes-Screen. **Diese Bedingung
+    steht hier und nicht in der CLI**, sonst wäre sie umgehbar, und sie ist es,
+    die den Token vom alten Dauergeheimnis trennt: er existiert nur in der
+    Lage, für die er gebaut ist, und kann nie zur bequemen Abkürzung werden.
+
+    Ein bestehender, noch gültiger Token wird **nicht** wiederverwendet — wer
+    den Befehl zweimal ruft, hat den ersten vermutlich verloren. Alte Zeilen
+    fallen dabei weg: mehrere gültige Startschlüssel nebeneinander wären
+    mehrere offene Türen, und niemand könnte sagen, wie viele es gerade sind.
+    """
+    now = time.time() if now is None else now
+    if conn.execute("SELECT 1 FROM approved_nodes WHERE status='approved' "
+                    "LIMIT 1").fetchone() is not None:
+        return None
+    token = secrets.token_hex(8)
+    conn.execute("DELETE FROM bootstrap_tokens")
+    conn.execute("INSERT INTO bootstrap_tokens (token, created_at, expires_at) "
+                 "VALUES (?, ?, ?)", (token, now, now + ttl_s))
+    conn.commit()
+    return token
+
+
+def redeem_bootstrap_token(conn: sqlite3.Connection, token: str | None,
+                           node_id: str, *, now: float | None = None) -> bool:
+    """Einen Startschlüssel einlösen: Knoten ``approved``, Token verbraucht.
+
+    **Prüfen und Verbrauchen sind eine einzige Anweisung** — ein ``DELETE``
+    mit beiden Bedingungen, dessen ``rowcount`` die Antwort ist. Zwei Knoten,
+    die denselben Token gleichzeitig schicken, sind dadurch kein Rennen: genau
+    einer trifft die Zeile an, der andere geht leer aus. Ein vorgeschaltetes
+    ``SELECT`` hätte hier eine Lücke gelassen, durch die beide passen.
+
+    Falsch, abgelaufen, schon verbraucht oder gar nicht mitgeschickt sind
+    derselbe Fall und dieselbe Antwort: ``False``. Der Aufrufer erfährt nicht,
+    welcher davon zutraf — ein Token-Prüfer, der zwischen „unbekannt" und
+    „abgelaufen" unterscheidet, verrät mehr als nötig.
+    """
+    if not token:
+        return False
+    now = time.time() if now is None else now
+    cur = conn.execute("DELETE FROM bootstrap_tokens WHERE token=? AND expires_at>?",
+                       (token, now))
+    if cur.rowcount != 1:
+        conn.rollback()
+        return False
+    set_node_approval(conn, node_id, "approved", now=now)
+    conn.commit()
+    return True

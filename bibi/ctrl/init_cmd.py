@@ -35,6 +35,10 @@ _FLAG_TO_KEY = {
     "claude_bin": "BIBI_CLAUDE_BIN",
     "node_name": "BIBI_NODE_NAME",
     "public_host": "BIBI_PUBLIC_HOST",
+    # m.rau/bibi#141: der Startschlüssel des ersten Clients. Er wird gesetzt wie
+    # jeder andere Wert, verhält sich danach aber anders — der Heartbeat löscht
+    # ihn nach dem ersten Erfolg wieder aus der env (s. ``config.KEYS``).
+    "token": "BIBI_BOOTSTRAP_TOKEN",
 }
 
 
@@ -50,6 +54,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--claude-bin")
     p.add_argument("--node-name")
     p.add_argument("--public-host")
+    p.add_argument("--token",
+                   help="Bootstrap-Token des Schedulers (m.rau/bibi#141) — "
+                        "einmalig, wird nach dem ersten Heartbeat verworfen")
     p.set_defaults(func=run)
 
 

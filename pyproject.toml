@@ -1,6 +1,6 @@
 [project]
 name = "bibi"
-version = "0.6.0"
+version = "0.7.0"
 description = "bibi — deploybare Engine (bibi-ctrl + Skills/Agents) für Markdown-geführte Team-Repos"
 requires-python = ">=3.11"
 # PEP 639: SPDX-Ausdruck statt `License ::`-Classifier (die sind damit deprecated).
@@ -38,11 +38,20 @@ dev = [
     "fastapi>=0.110",
     "uvicorn>=0.27",
     "pytest-cov>=7.1.0",
+    "pytest-xdist>=3.6",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["slow: echte Prozesse/Docker — nur mit --slow"]
+# Parallel als Standard (m.rau/bibi#115). Auf 8 Kernen gemessen: die volle Suite
+# parallel (53 s) ist schneller als die halbe seriell (86 s). Damit ist der
+# `slow`-Marker als Geschwindigkeitswerkzeug hinfällig — er benennt nur noch,
+# was wirklich teuer ist: echte Signalzustellung, Docker, Silence-Timeouts.
+#
+# `auto` nimmt alle Kerne. Läuft daneben ein Daemon, ist `-n logical-1` der
+# Rückfallweg; ein `-n` auf der Kommandozeile gewinnt gegen diesen Wert.
+addopts = "-n auto"
 
 [build-system]
 requires = ["hatchling"]

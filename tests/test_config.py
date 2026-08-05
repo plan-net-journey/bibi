@@ -53,6 +53,9 @@ def test_write_then_read_roundtrip(cfg_home: Path):
         "BIBI_NODE_NAME": "sarasate-client",
         "BIBI_PUBLIC_HOST": "sarasate.tail9f9173.ts.net",
         "BIBI_NODE_ID": "abc123",
+        # m.rau/bibi#141 — hier mit Wert, obwohl er im Betrieb meist leer ist:
+        # der Roundtrip soll jeden Schluessel tragen, nicht die haeufigsten.
+        "BIBI_BOOTSTRAP_TOKEN": "7f3a9c21e4b8d05f",
     }
     config.write_env(values)
     assert config.read_env() == values

@@ -17,17 +17,6 @@ def test_live_clock_markup():
     assert 'id="liveclock"' in html and "live" in html
 
 
-def test_schedules_page_ticks_clock():
-    html = render.schedules_page([], now=1.0)
-    assert 'id="liveclock"' in html
-    assert "setInterval" in html and "toLocaleTimeString" in html  # tickt clientseitig
-
-
-def test_schedules_page_has_clock():
-    assert 'id="liveclock"' in render.schedules_page([], now=1.0)
-
-
-# ── Nav-Konsistenz + Log-Links ────────────────────────────────────────────────
 
 
 def test_log_page_has_nav_and_clock():
@@ -46,7 +35,9 @@ def test_log_page_includes_feed_status_header():
         git_status={"tree": "clean", "sync": "synced", "branch": "trunk"},
         host_url="http://sarasate.tail9f9173.ts.net:8780")
     assert 'id="feedstatus"' in html
-    assert html.count('<div class="card">') == 4  # Host/Mode/Git/Job Status
+    # bibi5: zwei Bloecke nach Herkunft statt vier Kacheln — links dieser
+    # Knoten, rechts der Scheduler (FE-Spezifikation §2).
+    assert html.count('class="hdr-block') == 2
 
 
 def test_log_links_slug_to_schedule_detail():
@@ -70,12 +61,21 @@ def test_term_and_logbox_stay_dark_regardless_of_theme():
     # denselben Wert trägt. Das ist schärfer als vorher — ein Literal konnte
     # nur an einer Stelle falsch sein, ein Token kann in einem Satz abweichen,
     # und genau das würde die Boxen theme-abhängig machen.
+    # Waren drei Boxen, sind zwei (Rueckbau 2026-08-04): `.md pre` gehoerte zu
+    # einem Markdown-Block, den es im FE nicht mehr gibt — kein `class="md"`
+    # steht mehr im Markup, und gerendert wird dort auch kein Markdown. Die
+    # Aussage wandert auf ihren verbliebenen Traeger, statt mit dem alten
+    # geloescht zu werden (Lehre aus m.rau/bibi#130); die Gegenprobe darunter
+    # haelt fest, dass die dritte Box WEG ist und nicht etwa unformatiert
+    # dasteht — genau der Unterschied, den ein blosses Streichen verschweigt.
     import re
 
-    for box in (".term {", ".logbox {", ".md pre {"):
+    for box in (".term {", ".logbox {"):
         decl = render._CSS[render._CSS.index(box):][:220]
         assert "var(--term-bg)" in decl, box
         assert "var(--term-text)" in decl, box
+    assert ".md pre" not in render._CSS, \
+        "der Markdown-Block ist zurueck — dann gehoert er wieder in die Schleife"
 
     vals: dict[str, set[str]] = {}
     for sel in (":root", ':root[data-theme="light"]', ':root[data-theme="dark"]'):

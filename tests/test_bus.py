@@ -245,11 +245,22 @@ def test_collector_job_change_publishes_collective_targets(collector):
     col.tick_once()
     conn.close()
     assert "jobs" in bus.states and "feedstatus" in bus.states
-    assert "chart" not in bus.states  # kein Journal-INSERT → Chart bleibt ruhig
+    # Ein blosser Zustandswechsel ist keine Archivierung — das Target bleibt
+    # ruhig, sonst waere es dasselbe wie "jobs" und truege keine eigene Aussage.
+    assert "archived" not in bus.states
 
 
-def test_collector_journal_insert_publishes_chart(collector):
-    # Das Chart zählt terminale Landungen — nur ein Journal-INSERT ändert es.
+def test_collector_publishes_archived_when_a_run_reaches_the_journal(collector):
+    """m.rau/bibi#108: die einzige Verbindung zwischen Strom und Liste.
+
+    Der Strom traegt die Liste nicht, er stoesst sie an — wird ein Lauf
+    archiviert, laedt die Lauf-Liste ihre erste Seite neu. Ohne dieses Ereignis
+    bleibt das Job-Detail nach einem Lauf stehen, bis jemand neu laedt.
+
+    Das Target hiess frueher `chart` und meinte das Landungs-Histogramm. Das
+    Chart ist mit m.rau/bibi#120 entfallen, das Ereignis nicht: es feuerte
+    schon immer genau bei einem Journal-INSERT. Was fehlte, war ein Name, der
+    sagt, was passiert ist, statt wer frueher zugehoert hat."""
     col, bus, root = collector
     conn = job_db.connect()
     _insert_job(conn, status="running")
@@ -257,7 +268,28 @@ def test_collector_journal_insert_publishes_chart(collector):
     job_db.report_status(conn, "j1", status="complete", exit_code=0)
     col.tick_once()
     conn.close()
-    assert "chart" in bus.states and "jobs" in bus.states
+    assert "archived" in bus.states and "jobs" in bus.states
+
+
+def test_a_blocked_run_publishes_archived_only_when_it_is_cleared(collector):
+    """Unter der Archivierungsregel A2 (m.rau/bibi#101) faellt die Archivierung
+    nicht mehr mit dem Terminal-Werden zusammen: ein `killed` bleibt im Slot
+    stehen, bis ein Mensch ihn abraeumt. Das Ereignis folgt dem — sonst laedt
+    die Lauf-Liste zum falschen Zeitpunkt nach, naemlich dann, wenn dort noch
+    nichts Neues zu sehen ist."""
+    col, bus, root = collector
+    conn = job_db.connect()
+    _insert_job(conn, status="running")
+    col.tick_once()  # prime
+
+    job_db.report_status(conn, "j1", status="killed", reason="by_user")
+    col.tick_once()
+    assert "archived" not in bus.states  # blockiert, noch nichts im Journal
+
+    job_db.start_now(conn, "j1")
+    col.tick_once()
+    conn.close()
+    assert "archived" in bus.states
 
 
 def test_collector_quiet_tick_publishes_nothing_collective(collector):

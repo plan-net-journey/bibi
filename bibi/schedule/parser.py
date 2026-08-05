@@ -8,8 +8,18 @@ Drei Ausgänge (wie bibi3' Parser, auf das bibi4-Modell übertragen):
 - **ok**    — ``ScheduleSpec`` steht.
 
 Trigger-Syntax (§5.2): ``schedule:`` ist ein croniter-Ausdruck **oder** ein
-Spezialwert (``now``/``startup``/``never``/``autostart``); ``at:`` ein ISO-8601-Zeitpunkt.
-Genau einer von beiden. Typ-Schlüssel: nur ``job:`` (PLAN-10 Stufe 10.0).
+Spezialwert, ``at:`` ein ISO-8601-Zeitpunkt. Genau einer von beiden. Die
+Spezialwerte tragen drei Absichten, jede mit einer kanonischen Form und
+mehreren zugelassenen Schreibweisen:
+
+- **„läuft nach Plan"** — ``startup`` (auch ``autostart``)
+- **„wird gerufen"** — ``on_demand`` (auch ``adhoc``, ``ad-hoc``)
+- **„ruht"** — ``never`` (auch leer, ``~``, ``-``)
+
+Dazu ``now`` als Sonderfall. Aufgelöst wird beim Parsen, damit nachgelagerte
+Stellen nur die kanonische Form kennen müssen.
+
+Typ-Schlüssel: nur ``job:`` (PLAN-10 Stufe 10.0).
 ``job: claude: <prompt>`` → claude-Prefix-Expansion beim Spawn.
 
 Slug-Ableitung (§6.6/bibi3 §2.5): explizites ``slug:`` gewinnt; sonst bei
@@ -42,17 +52,23 @@ from bibi.schedule.models import (
 _CLAUDE_PREFIX_RE = re.compile(r"^\s*claude\s*:\s*(.+)", re.DOTALL)
 
 #: Spezialwerte von ``schedule:`` (§5.2) — keine cron-Ausdrücke.
-SPECIAL_SCHEDULES: frozenset[str] = frozenset({"now", "startup", "never", "on_demand", "autostart"})
+SPECIAL_SCHEDULES: frozenset[str] = frozenset(
+    {"now", "startup", "never", "on_demand", "autostart", "adhoc", "ad-hoc", "-"}
+)
 
-#: Schreibweisen, die auf denselben Trigger hinauslaufen (m.rau/bibi#50).
-#: ``autostart`` stand seit jeher in ``SPECIAL_SCHEDULES`` und wurde deshalb
-#: klaglos angenommen -- ausgewertet wurde aber nur ``startup``
-#: (``job_db.py``: ``WHERE schedule='startup'``). Ein Job mit diesem Wert
-#: startete also nie und meldete auch keinen Fehler; ``DESIGN.md`` §5.3
-#: empfiehlt ihn zugleich ausdruecklich fuer langlaufende Server. Die
-#: Aufloesung passiert hier beim Parsen, damit alle nachgelagerten Stellen
-#: weiterhin genau einen Wert kennen muessen.
-_SCHEDULE_ALIASES: dict[str, str] = {"autostart": "startup"}
+#: Schreibweisen, die auf denselben Trigger hinauslaufen. Aufgeloest wird beim
+#: Parsen, damit jede nachgelagerte Stelle nur genau einen Wert je Trigger
+#: kennen muss -- ``job_db.py`` fragt ``WHERE schedule='startup'`` ab, nicht
+#: beide Schreibweisen.
+#:
+#: Drei Absichten, je eine kanonische Form: „laeuft nach Plan" = Cron/
+#: ``startup``, „wird gerufen" = ``on_demand``, „ruht" = ``never``.
+_SCHEDULE_ALIASES: dict[str, str] = {
+    "autostart": "startup",
+    "adhoc": "on_demand",
+    "ad-hoc": "on_demand",
+    "-": "never",
+}
 
 
 def _strip_comment(value):

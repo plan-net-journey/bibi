@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import socket
 import subprocess
 from pathlib import Path
 
@@ -142,6 +144,29 @@ def _isolate_node_config(tmp_path_factory, monkeypatch: pytest.MonkeyPatch):
               # Adress-Tests leaken (analog zur bestehenden Begründung oben).
               "BIBI_SCHEDULER_URL", "BIBI_PUBLIC_HOST"):
         monkeypatch.delenv(k, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _stable_hostname(monkeypatch: pytest.MonkeyPatch):
+    """Der Hostname der Maschine gehört nicht in eine Testausgabe.
+
+    **Fund m.rau, 2026-08-03** (m.rau/bibi#117): in einem Assertion-Trace stand
+    ``'Mac.fritz.box'``. Hardcodiert war er nicht — er kam aus
+    ``socket.gethostname()``, das die Engine an zwölf Stellen ruft (``heartbeat``,
+    ``worker``, ``controller``, ``run_cmd``), dazu ``platform.node()`` in der
+    Auto-Commit-Nachricht von ``git_ops``.
+
+    Derselbe Riss, den ``_hermetic_env`` und ``_isolate_node_config`` für
+    ``BIBI_*`` und die Knoten-Config bereits schließen; ``#75`` hat ihn
+    übersehen, weil kein Test den Wert *prüft* — alle reichen ihn nur durch.
+    Nachgemessen: die volle Suite läuft mit fixiertem Hostnamen vollständig
+    grün, 2351 Tests. Der Schaden war also keiner; was fehlte, ist
+    Reproduzierbarkeit — in einem Container ist ``gethostname()`` eine
+    Zufalls-ID, und Testdaten, die von der Maschine abhängen, sind zwischen zwei
+    Läufen nicht vergleichbar.
+    """
+    monkeypatch.setattr(socket, "gethostname", lambda: "testnode.invalid")
+    monkeypatch.setattr(platform, "node", lambda: "testnode.invalid")
 
 
 @pytest.fixture(autouse=True)

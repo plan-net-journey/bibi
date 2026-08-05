@@ -291,3 +291,42 @@ def test_the_comment_rule_does_not_touch_the_payload():
     Pfaden und docker_args."""
     r = _parse('---\nschedule: never\njob: "echo \'#hashtag\'"\n---\n')
     assert r.is_ok and "#hashtag" in r.spec.payload
+
+
+# --- bibi5: „wird gerufen" gegen „ruht" (m.rau/bibi#104, #105) ---------------
+#
+# Beide feuern nicht von selbst — der Unterschied ist die Absicht, und sie
+# entscheidet über die Sichtbarkeit: `adhoc` steht immer im Jobs-Screen,
+# `never` steht dort gar nicht. Damit hat jede der drei Absichten genau eine
+# Schreibweise: „läuft nach Plan" = Cron/`startup`, „wird gerufen" = `adhoc`,
+# „ruht" = `never`/leer/`~`/`-`.
+
+
+def test_adhoc_is_an_alias_of_on_demand():
+    """`on_demand` beschreibt die Mechanik, `adhoc` die Absicht — und im
+    Jobs-Screen steht die Absicht. Aufgelöst wird beim Parsen, damit alle
+    nachgelagerten Stellen weiterhin genau einen Wert kennen müssen; derselbe
+    Weg wie bei `autostart` → `startup`.
+
+    Der Bindestrich-Schreibweise `ad-hoc` wird mit aufgenommen, weil sie sich
+    beim Tippen von selbst ergibt und ein Fehler dafür nichts erklären würde."""
+    for value in ("adhoc", "ad-hoc"):
+        r = _parse(f"---\nschedule: {value}\njob: echo hi\n---\n")
+        assert r.is_ok, f"{value!r} sollte gültig sein: {r.error}"
+        assert r.spec.schedule == "on_demand", value
+
+
+def test_dash_reads_as_never():
+    """`-` ist die fünfte Schreibweise für „ruht" und die einzige, die heute
+    noch in den Fehlerausgang läuft — live in fünf Dateien mit `"- # never"`,
+    die bei jedem Rescan einen cron-Fehler werfen. Das ist derselbe
+    Versteck-Trick, den m.rau/bibi#50 für `""` und `~` bereits legitimiert hat:
+    wer eine MD aus dem Blick nehmen will, soll das sagen können, ohne dass
+    daraus ein Defekt wird.
+
+    Gequotet werden muss er in YAML ohnehin (`schedule: "-"`), sonst liest der
+    Parser einen Listenanfang."""
+    for value in ('"-"', '"- # never"', '"-  "'):
+        r = _parse(f"---\nschedule: {value}\njob: echo hi\n---\n")
+        assert r.is_ok, f"{value!r} sollte gültig sein: {r.error}"
+        assert r.spec.schedule == "never", value

@@ -39,6 +39,7 @@ from bibi.schedule.models import (
     DEFAULT_SILENCE_TIMEOUT_JOB,
     Status,
     is_claude_payload,
+    job_uid,
 )
 
 log = logging.getLogger("bibi.worker")
@@ -46,6 +47,34 @@ log = logging.getLogger("bibi.worker")
 
 def _output_path(repo_root: Path, job_id: str) -> Path:
     return repo_root / "data" / "job" / job_id / "output.jsonl"
+
+
+def output_path_of(row, repo_root: Path) -> Path:
+    """``output.jsonl`` einer Job-Zeile: **erst ``output_ref``, dann die
+    Neuberechnung** aus ``slug``/``fire``/``id``.
+
+    Die eine Stelle für diese Reihenfolge — beide Richtungen sind je einmal
+    falsch gebaut worden, und zwar am selben Tag (2026-08-04):
+
+    * Nur neu rechnen (``Worker.output_path()``) verfehlt jeden Lauf von vor
+      ``run_id_for()`` (2026-07-01), dessen Datei unter der blossen ``job_id``
+      liegt — die Kachel meldete ``output unavailable``, obwohl die Datei lag.
+    * Nur den Verweis lesen (``controller``s Slot-Output) verfehlt jeden
+      **laufenden** Lauf, denn dort ist die Spalte immer ``NULL``: der Wrapper
+      füllt sie erst beim Terminal-Report. `burndown-app` lief seit einem Tag,
+      239 Zeilen Ausgabe lagen da, der Screen sagte ``(no output yet)``.
+
+    ``row`` ist alles, was ``["output_ref"]``/``["slug"]``/``["fire"]``/``["id"]``
+    beantwortet — eine ``sqlite3.Row`` ebenso wie ein ``dict``.
+    """
+    try:
+        ref = row["output_ref"]
+    except (KeyError, IndexError):  # sqlite3.Row wirft IndexError, dict KeyError
+        ref = None
+    if ref:
+        return repo_root / ref
+    run_id = job_db.run_id_for(row["slug"] or "", row["id"], row["fire"] or 0)
+    return _output_path(repo_root, run_id)
 
 
 def _write_inplace_seed(run_dir: Path) -> Path | None:
@@ -1056,6 +1085,19 @@ def run_pinned(
         if pr is None or pr.spec is None:
             raise LookupError(f"kein Schedule mit Slug {slug!r}")
         s = pr.spec
+        if s.at is not None:
+            # `at` ist der einzige Trigger, der sich verbraucht — und damit die
+            # einzige Ausführungsgarantie „genau einmal" im System
+            # (m.rau/bibi#111, Zustandsmodell §5). Ein lokaler Lauf wäre ein
+            # zweiter Verbrauch desselben Termins: der Scheduler feuert seinen
+            # eigenen trotzdem, der Job liefe zweimal und die Garantie wäre
+            # gebrochen, ohne dass es jemand merkt. Abbruch **vor** dem INSERT,
+            # sonst bliebe eine gepinnte Zeile stehen, die nie läuft.
+            raise ValueError(
+                f"{s.slug!r} ist ein Oneshot (at: {s.at}) und läuft nur über den "
+                f"Scheduler — der garantiert genau einmal, ein lokaler Lauf wäre "
+                f"ein zweiter Verbrauch desselben Termins. Soll der Job wiederholt "
+                f"auf Zuruf laufen, gehört 'schedule: adhoc' in die MD statt 'at:'.")
         eff_slug, payload, eff_kind, eff_model = s.slug, s.payload, s.kind.value, s.model
         eff_soul, eff_session = s.soul, s.session
         eff_schedule_ref = pr.schedule_ref
@@ -1098,15 +1140,21 @@ def run_pinned(
     conn = job_db.connect(db_path)
     try:
         conn.execute(
-            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, model, soul, "
+            "INSERT INTO jobs (id, slug, job_uid, schedule_ref, kind, payload, model, soul, "
             "session, app_port, app_prefix, exec_mode, image, silence_timeout, wall_time, "
             "schedule, next_fire_at, attempts, backoff, defer_time, error_time, "
             "pinned_host, status, enqueued_at) VALUES "
-            "(:id, :slug, :schedule_ref, :kind, :payload, :model, :soul, :session, "
+            "(:id, :slug, :job_uid, :schedule_ref, :kind, :payload, :model, :soul, :session, "
             ":app_port, :app_prefix, :exec_mode, :image, :silence_timeout, :wall_time, "
             "'now', :now, :attempts, :backoff, :defer_time, :error_time, "
             ":pinned_host, 'pending', :now)",
-            {"id": jid, "slug": unique_slug, "schedule_ref": eff_schedule_ref or unique_slug,
+            # `job_uid` kommt aus ``eff_slug``, nicht aus ``unique_slug``: der
+            # Zufallssuffix macht die *Zeile* eindeutig, nicht den *Job*. Ein
+            # lokaler Lauf von `EngineCI` gehört zu `EngineCI` — hier ist der
+            # Basis-Slug bekannt, deshalb wird er hier gesetzt und nirgends
+            # später aus dem Suffix zurückgerechnet (models.job_uid()).
+            {"id": jid, "slug": unique_slug, "job_uid": job_uid(eff_slug),
+             "schedule_ref": eff_schedule_ref or unique_slug,
              "kind": eff_kind, "payload": payload, "model": eff_model, "soul": eff_soul,
              "session": eff_session, "app_port": eff_app_port, "app_prefix": eff_app_prefix,
              "exec_mode": eff_exec_mode, "image": eff_image,
@@ -1186,20 +1234,43 @@ class Worker:
     def output_path(self, job_id: str) -> Path:
         """``output.jsonl``-Pfad des **aktuellen** Laufs eines Jobs (Live-Routen).
 
-        Löst die stabile ``job_id`` über die DB auf den laufenden run_id
-        (``run_id_for()``) auf — so zeigt ``/-/job/{id}/…`` immer nur den
-        jüngsten Lauf (Historie früherer Läufe läuft über ``output_ref`` im
-        Journal). Ist die ID unbekannt (z. B. ephemerer ``/run``), bleibt sie
-        selbst der Pfad."""
+        **Erst ``jobs.output_ref``, dann die Neuberechnung** — dieselbe
+        Reihenfolge wie ``app.py::_journal_output_path()`` für Journal-Zeilen.
+        Der Verweis ist der Pfad, unter dem der Lauf **tatsächlich** geschrieben
+        hat; die Neuberechnung ist eine Ableitung aus dem Zustand der Zeile
+        *jetzt*. Wo beide auseinanderlaufen, gewinnt die Datei auf Platte.
+
+        Gefunden 2026-08-04 an einem Slot-Lauf auf sarasate (``m.rau/bibi#131``-
+        Nachlauf): ``20260702.at-080500-aa2b`` steht seit dem 3. Juli auf
+        ``error``, seine Ausgabe liegt unter ``data/job/414d6af0/`` — der blossen
+        ``job_id``, wie **alle** Läufe von vor ``run_id_for()`` (2026-07-01, live
+        noch sieben Verzeichnisse). Die Neuberechnung ergab
+        ``data/job/20260702.at-080500-aa2b:0:414d6af0/``, das es nie gab, und die
+        Kachel meldete ``output unavailable``, obwohl die Zeile den richtigen
+        Pfad die ganze Zeit mitführte.
+
+        **Der Fallback bleibt der Normalfall und trägt weiter**: während
+        ``starting``/``running``/``awaiting`` ist die Spalte immer ``NULL`` (der
+        Wrapper füllt sie erst beim Terminal-Report, s. ``local_run_live()``) —
+        also genau in dem Fenster, für das die Live-Routen existieren. Ein
+        veralteter Verweis kann dabei nicht gewinnen: jeder Weg in einen neuen
+        Lauf nullt ihn (``reserve_next()`` beim Lazy Rearm aus ``complete``,
+        ``report_status()`` beim Übergang nach ``pending``, ``_rearm_after_kill()``),
+        und wo ``fire`` gleich bleibt (Retry aus ``failed``/``deferred``), zeigen
+        Verweis und Neuberechnung ohnehin auf dieselbe Datei.
+
+        Ist die ID unbekannt (z. B. ephemerer ``/run``), bleibt sie selbst der
+        Pfad."""
         root, _ = self._roots()
         conn = job_db.connect(self.db_path)
         try:
             row = conn.execute(
-                "SELECT slug, fire FROM jobs WHERE id=?", (job_id,)).fetchone()
+                "SELECT id, slug, fire, output_ref FROM jobs WHERE id=?", (job_id,)).fetchone()
         finally:
             conn.close()
-        run_id = job_db.run_id_for(row["slug"], job_id, row["fire"]) if row else job_id
-        return _output_path(root, run_id)
+        if row is None:
+            return _output_path(root, job_id)
+        return output_path_of(row, root)
 
     def _register(self, job_id: str, proc: subprocess.Popen | None) -> None:
         if proc is None:

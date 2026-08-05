@@ -235,6 +235,10 @@ def test_wall_time_kills_job(gitrepo: Path):
     assert row["status"] == "killed" and row["reason"] == "by_wall_time"
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     try:
+        # A2 (m.rau/bibi#101): `killed` blockiert den Slot, erst das Abraeumen
+        # archiviert — der Reason reist dabei mit.
+        assert job_db.list_journal(conn) == []
+        job_db.start_now(conn, jid)
         assert job_db.list_journal(conn)[0]["reason"] == "by_wall_time"
     finally:
         conn.close()
@@ -290,6 +294,10 @@ def test_retry_then_error(gitrepo: Path, monkeypatch):
     row = _wait_terminal(gitrepo, jid)
     assert row["status"] == "error"
     conn = job_db.connect(dbp)
+    # A2 (m.rau/bibi#101): der erschoepfte Lauf bleibt im Slot stehen — dort ist
+    # er zu sehen. Ins Journal wandert er erst, wenn ihn jemand abraeumt.
+    assert job_db.list_journal(conn) == []
+    job_db.start_now(conn, jid)
     assert any(j["status"] == "error" for j in job_db.list_journal(conn))
     conn.close()
 
@@ -313,6 +321,9 @@ def test_attempts_zero_reaches_error_without_hanging(gitrepo: Path, monkeypatch)
     assert row["attempt"] == 0
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     try:
+        # A2 (m.rau/bibi#101): erst das Abraeumen archiviert.
+        assert job_db.list_journal(conn) == []
+        job_db.start_now(conn, jid)
         assert any(j["status"] == "error" for j in job_db.list_journal(conn))
     finally:
         conn.close()
@@ -358,6 +369,9 @@ def test_retry_exponential_3x_to_error(gitrepo: Path, monkeypatch):
             assert row["status"] == "error"
 
     conn = job_db.connect(dbp)
+    # A2 (m.rau/bibi#101): erst das Abraeumen archiviert.
+    assert job_db.list_journal(conn) == []
+    job_db.start_now(conn, jid)
     assert any(j["status"] == "error" for j in job_db.list_journal(conn))
     conn.close()
 
@@ -1214,6 +1228,45 @@ def test_output_path_resolves_current_run(gitrepo: Path):
     w = _worker(gitrepo)
     run_id = job_db.run_id_for("r", jid, 0)
     assert w.output_path(jid) == gitrepo / "data" / "job" / run_id / "output.jsonl"
+
+
+def test_output_path_prefers_output_ref(team_repo: Path):
+    # Der Verweis der Zeile schlaegt die Neuberechnung: Laeufe von vor
+    # run_id_for() (2026-07-01) liegen unter der blossen job_id, live noch
+    # sieben Stueck auf sarasate. Wer den Pfad neu rechnet, greift bei ihnen
+    # ins Leere — dieselbe Reihenfolge wie in app.py::_journal_output_path().
+    jid = secrets.token_hex(4)
+    conn = job_db.connect()
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+            "output_ref, enqueued_at, fire) VALUES (?,?,?,?,?, 'error', ?,?,0)",
+            (jid, "alt", "alt.md", "job", "echo", f"data/job/{jid}/output.jsonl",
+             time.time()),
+        )
+    finally:
+        conn.close()
+    w = Worker(autopoll=False, worker_name="w1")
+    assert w.output_path(jid) == team_repo / "data" / "job" / jid / "output.jsonl"
+
+
+def test_output_path_falls_back_without_output_ref(team_repo: Path):
+    # Gegenprobe zum vorigen: ohne Verweis bleibt es bei der Neuberechnung —
+    # waehrend `running` ist die Spalte immer NULL (der Wrapper fuellt sie erst
+    # beim Terminal-Report), und genau dafuer existieren die Live-Routen.
+    jid = secrets.token_hex(4)
+    conn = job_db.connect()
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+            "enqueued_at, fire) VALUES (?,?,?,?,?, 'running', ?,7)",
+            (jid, "alt", "alt.md", "job", "echo", time.time()),
+        )
+    finally:
+        conn.close()
+    w = Worker(autopoll=False, worker_name="w1")
+    run_id = job_db.run_id_for("alt", jid, 7)
+    assert w.output_path(jid) == team_repo / "data" / "job" / run_id / "output.jsonl"
 
 
 @pytest.mark.slow

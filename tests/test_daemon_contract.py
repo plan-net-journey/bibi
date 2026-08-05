@@ -27,7 +27,10 @@ def test_openapi_covers_job_scheduler_worker_journal(client):
     assert "/-/scheduler/status/{id}" in paths
     assert "/-/worker" in paths
     assert "/-/journal" in paths
-    assert "/-/landings" in paths
+    # Die Lifecycle-Zeitreihe ist mit m.rau/bibi#121 ersatzlos entfallen — sie
+    # belieferte das Landungs-Histogramm, und das ging mit #120. Der Vertrag
+    # schrumpft damit, und das ist richtig: er soll beschreiben, was es gibt.
+    assert not any("landings" in p for p in paths)
 
 
 def test_openapi_is_versioned(client):
@@ -74,9 +77,12 @@ def test_status_enum_in_schema(client):
         ("post", "/-/job/abc/start", None),
         ("post", "/-/job/abc/reset", None),
         ("get", "/-/worker", None),
-        ("get", "/-/journal", None),
+        # KEIN ("get", "/-/journal") hier (mehr) — seit m.rau/bibi#103
+        # rollenunabhängig immer real, s. test_journal_list_is_not_a_stub
+        # unten und tests/test_journal_route.py.
         ("delete", "/-/journal/1", None),
-        ("get", "/-/landings", None),
+        # KEIN ("get", "/-/landings") hier (mehr) — die Route ist mit
+        # m.rau/bibi#121 ersatzlos entfallen, samt ihrem Stub.
     ],
 )
 def test_all_stubs_return_501_json_no_html(client, method, path, body):
@@ -99,6 +105,29 @@ def test_status_route_works_without_any_role(client):
     assert r.json()["error"] == "job not found"
 
 
+def test_journal_list_is_not_a_stub(client):
+    """m.rau/bibi#103: GET /-/journal antwortet auch ohne jede Rolle real.
+
+    Das Journal ist keine disponierte Domäne — jeder Knoten führt sein eigenes
+    und muss es ausliefern können, sonst hat das Job-Detail eines Clients keine
+    LOCAL-Gruppe. Eine leere Liste statt 501 beweist: die echte Route
+    antwortet, nicht der Stub."""
+    r = client.get("/-/journal")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_journal_schema_carries_join_key_and_archive_time(client):
+    """Beide Felder sind Vertragsbestandteil, nicht Beiwerk: ohne ``job_uid``
+    kann ein Client seine Läufe nicht mit denen des Schedulers zusammenführen,
+    und ohne ``archived_at`` ist unter A2 nicht unterscheidbar, wann ein Lauf
+    lief und wann ihn jemand abgeräumt hat."""
+    props = client.get("/-/openapi.json").json()["components"]["schemas"][
+        "JournalEntryView"]["properties"]
+    assert "job_uid" in props
+    assert "archived_at" in props
+
+
 def test_no_route_returns_html(client):
     # Der gesamte Vertrag ist HTML-frei (Korrektur an bibi3, §1.1).
     spec = client.get("/-/openapi.json").json()
@@ -108,3 +137,44 @@ def test_no_route_returns_html(client):
             for code, resp in responses.items():
                 content = resp.get("content", {})
                 assert "text/html" not in content, f"{method} {path} → HTML"
+
+
+def test_no_static_route_is_shadowed_by_an_earlier_placeholder():
+    """Starlette matcht Routen in **Registrierungsreihenfolge**, nicht nach
+    Spezifität. Ein fester Pfad, der nach einem gleich langen Platzhalter-Pfad
+    registriert wird, ist damit unerreichbar — und zwar still: der Platzhalter
+    antwortet, nur mit dem falschen Handler.
+
+    Live gefunden am 2026-08-05 an `/-/jobs/list`, dem Nachlade-Ziel des Bus:
+    `/-/jobs/{job_uid}` stand davor und lieferte `404 job not found,
+    job_uid=list`. Der Jobs-Screen aktualisierte sich deshalb nie von selbst,
+    obwohl der Bus korrekt meldete (m.rau/bibi#143 war nicht die Ursache — es
+    hat den toten Weg erst sichtbar gemacht).
+
+    Deshalb eine **App-weite** Invariante statt nur eines Tests auf die eine
+    Route: die Falle liegt in der Reihenfolge zweier Dekoratoren, die
+    hunderte Zeilen auseinanderstehen können, und sie kostet beim nächsten Mal
+    wieder Tage. Geprüft wird über alle Rollen zusammen, weil die
+    Registrierung rollenabhängig ist.
+    """
+    app = create_app(roles.resolve({"controller", "scheduler", "synchronizer"}))
+    routen = [(r.path, set(r.methods or ()))
+              for r in app.routes if hasattr(r, "path") and hasattr(r, "methods")]
+
+    def segmente(p: str) -> list[str]:
+        return p.strip("/").split("/")
+
+    for i, (pfad, methoden) in enumerate(routen):
+        if "{" in pfad:
+            continue
+        for frueher, m_frueher in routen[:i]:
+            if "{" not in frueher:
+                continue
+            s_neu, s_alt = segmente(pfad), segmente(frueher)
+            if len(s_neu) != len(s_alt) or not (methoden & m_frueher):
+                continue
+            verdeckt = all(alt.startswith("{") or neu == alt
+                           for neu, alt in zip(s_neu, s_alt))
+            assert not verdeckt, (
+                f"{pfad} ist unerreichbar — {frueher} ist vorher registriert "
+                f"und schluckt ihn. Feste Pfade vor Platzhalter-Pfade legen.")

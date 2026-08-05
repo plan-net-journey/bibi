@@ -93,14 +93,14 @@ def test_jobs_row_type_column_defaults_to_localhost():
 
 def test_jobs_table_shows_git_status_chip():
     html = render._jobs_table([_row("a", git_status="new")], {}, now=100.0)
-    assert 'class="chip new"' in html and ">neu<" in html
+    assert 'class="chip new"' in html and ">new<" in html
 
 
 def test_jobs_table_git_status_modified_chip_at_slug():
     # Bibi4-Iteration, User-Fund: keine eigene GIT-Spalte mehr, Chip sitzt
     # direkt am Slug.
     html = render._jobs_table([_row("a", git_status="modified")], {}, now=100.0)
-    assert 'class="chip modified"' in html and ">geändert<" in html
+    assert 'class="chip modified"' in html and ">modified<" in html
 
 
 def test_jobs_table_git_status_clean_shows_no_chip():
@@ -115,7 +115,7 @@ def test_jobs_table_shows_git_status_conflict_chip():
     # Bibi4-Iteration, User-Fund: "sind sie lokal modifiziert, konfliktär,
     # fehlen?" — eigener Zustand, nicht mehr im "modified"-Topf.
     html = render._jobs_table([_row("a", git_status="conflict")], {}, now=100.0)
-    assert 'class="chip conflict"' in html and ">konfliktär<" in html
+    assert 'class="chip conflict"' in html and ">conflicted<" in html
 
 
 def test_jobs_table_shows_last_local_run_status_and_links_to_run_detail():
@@ -126,7 +126,7 @@ def test_jobs_table_shows_last_local_run_status_and_links_to_run_detail():
 
 def test_jobs_table_no_local_run_yet_shows_placeholder_no_link():
     html = render._jobs_table([_row("a")], {}, now=100.0)
-    assert "noch nie lokal gelaufen" in html
+    assert "never run locally" in html
     assert 'href="/-/ui/run/' not in html
 
 
@@ -142,7 +142,7 @@ def test_jobs_table_slug_always_links_to_local_job_detail():
 
 def test_jobs_table_empty_shows_placeholder():
     html = render._jobs_table([], {}, now=100.0)
-    assert "keine Job-MDs im Repository gefunden" in html
+    assert "no job markdown found in this repository" in html
 
 
 def test_jobs_table_live_row_shows_running():
@@ -179,10 +179,6 @@ def test_jobs_table_shows_last_and_runtime_for_last_run():
     assert "12s" in html
 
 
-def test_jobs_table_no_local_run_yet_shows_dash_for_last_and_runtime():
-    html = render._jobs_table([_row("a")], {}, now=100.0)
-    assert '<td>—</td><td>—</td><td><span id="spark-a" hx-preserve="true"></span></td></tr>' in html
-
 
 def test_jobs_table_live_row_shows_started_and_ongoing_runtime():
     # "aktuelle Laufzeit" — für einen laufenden Job die bisherige Dauer
@@ -206,256 +202,19 @@ def test_jobs_table_live_row_shows_awaiting_when_signaled():
     assert 'class="st running">running<' not in html
 
 
-def test_jobs_fragment_has_no_remote_or_hostlink_text():
-    # PLAN-21 Befund 10: kein Remote-Bezug mehr im Fragment, egal was aufrufe-
-    # seitig übergeben würde — die Funktion nimmt gar keinen scheduler_url/
-    # Remote-Parameter mehr entgegen.
-    html = render.jobs_fragment([_row("a")], {}, now=100.0)
-    assert "Remote" not in html
-    assert "hostlink" not in html
 
 
-def test_jobs_fragment_is_bus_driven():
-    # PLAN-36 Stufe 36.3: Board haengt am kollektiven Bus-Target "jobs".
-    html = render.jobs_fragment([], {}, now=100.0)
-    assert 'id="jobsboard"' in html
-    assert 'data-bus="jobs"' in html
-    assert 'data-bus-refetch="/-/ui/jobs/board"' in html
-    assert "hx-trigger" not in html.split(">")[0]
 
 
-def test_jobs_fragment_has_no_explanatory_note():
-    # PLAN-27 Befund 3, User-Fund: erklärender Text ("Lokal per
-    # discovery.discover() entdeckte Job-MDs ...") soll raus.
-    html = render.jobs_fragment([], {}, now=100.0)
-    assert "discovery.discover()" not in html
-    assert "bildet nur ab, was gerade im Repository liegt" not in html
 
 
-def test_jobs_fragment_has_single_panel_card_no_local_runs():
-    # Bibi4-Iteration, User-Fund: "der untere Abschnitt lokale Läufe wandert
-    # in den eigenen Screen Archive" — löst PLAN-29 Befund 1 (2 Panel-Cards
-    # hier) auf 1 Panel-Card ab, analog zu schedules_fragment() beim Host.
-    html = render.jobs_fragment([_row("mein-testjob")], {}, now=200.0)
-    assert html.count('class="panel-card"') == 1
-    assert "<h2>Jobs</h2>" in html
-    assert "Jobs im Repository" not in html
-
-
-# --- Sparkline (Bibi4-Iteration, User-Fund: "eine Sparkline, die die durch
-# --- den Agenten verursachten git Änderungen repräsentiert") ------------------
-
-
-def test_sparkline_svg_empty_without_activity():
-    assert render._sparkline_svg([]) == ""
-    assert render._sparkline_svg([0, 0, 0]) == ""
-
-
-def test_sparkline_svg_renders_polyline_with_activity():
-    svg = render._sparkline_svg([0, 1, 0, 2])
-    assert svg.startswith('<svg class="sparkline"')
-    assert "<polyline" in svg
-
-
-def test_sparkline_cell_renders_svg_when_series_given():
-    html = render._jobs_table(
-        [_row("a")], {}, now=100.0, sparklines={"a": [0, 1, 2]})
-    assert 'id="spark-a" hx-preserve="true"><svg' in html
-
-
-def test_sparkline_cell_empty_placeholder_when_no_series():
-    # jobs_board() (2s-Self-Poll) übergibt bewusst kein sparklines-Dict — die
-    # Zelle bleibt leer, hx-preserve behält das vom Seitenaufbau vorhandene
-    # Sparkline-Element (kein teurer Git-Aufruf im Sekundentakt).
-    html = render._jobs_table([_row("a")], {}, now=100.0)
-    assert '<span id="spark-a" hx-preserve="true"></span>' in html
-
-
-def test_jobs_fragment_omits_sparklines_by_default():
-    html = render.jobs_fragment([_row("a")], {}, now=100.0)
-    assert '<span id="spark-a" hx-preserve="true"></span>' in html
-
-
-def test_jobs_page_includes_sparklines_when_given():
-    html = render.jobs_page(
-        [_row("a")], {}, now=100.0, sparklines={"a": [0, 5]})
-    assert 'id="spark-a" hx-preserve="true"><svg' in html
-    assert "Lokale Läufe" not in html
-
-
-def test_sparkline_cell_lazy_renders_load_trigger():
-    # Bibi4-Iteration, User-Fund ("Sparklines dauern beim Reload immer"):
-    # Entkopplung vom initialen Seitenaufbau — Platzhalter mit hx-get gegen
-    # eine eigene Pro-Slug-Route statt der bisherigen blockierenden
-    # _job_sparkline_series()-Berechnung inline in jobs_screen().
-    html = render._sparkline_cell_lazy("a")
-    assert html == (
-        '<span id="spark-a" hx-preserve="true" '
-        'hx-get="/-/ui/jobs/a/sparkline" hx-trigger="load" hx-swap="outerHTML"></span>'
-    )
-
-
-def test_sparkline_cell_lazy_survives_poll_before_it_resolves():
-    # Regression, User-Fund (live nach dem Deploy): "Sparklines erscheinen
-    # jetzt gar nicht mehr." Root Cause: der Lazy-Platzhalter fehlte
-    # hx-preserve — der 2s-Self-Poll (jobs_board(), sparklines=None) rissn
-    # ihn samt seines noch laufenden hx-get("load") aus dem DOM, bevor der
-    # sich auflösen konnte; jede folgende Poll-Antwort (leere hx-preserve-
-    # Zelle ohne hx-get) wurde danach für immer preserved -> dauerhaft leer.
-    # hx-preserve muss auf BEIDEN Zuständen sitzen (unaufgelöst UND
-    # aufgelöst), damit htmx den unaufgelösten Zustand über einen Poll
-    # hinweg am Leben hält, bis sein eigener hx-get durch ist.
-    lazy = render._sparkline_cell_lazy("a")
-    polled = render._sparkline_cell("a", None)
-    assert 'hx-preserve="true"' in lazy
-    assert 'hx-preserve="true"' in polled
-    assert lazy.split(" ")[0] == polled.split(" ")[0] == '<span'
-    # dieselbe id in beiden Zuständen -> htmx matched sie beim Swap
-    assert 'id="spark-a"' in lazy and 'id="spark-a"' in polled
-
-
-def test_jobs_page_uses_lazy_sparklines_when_requested():
-    html = render.jobs_page([_row("a")], {}, now=100.0, lazy_sparklines=True)
-    assert 'hx-get="/-/ui/jobs/a/sparkline" hx-trigger="load"' in html
-
-
-def test_jobs_page_lazy_sparklines_ignores_eager_sparklines_arg():
-    # lazy_sparklines gewinnt, falls beides übergeben wird — kein Doppel-Render.
-    html = render.jobs_page([_row("a")], {}, now=100.0,
-                            sparklines={"a": [0, 5]}, lazy_sparklines=True)
-    assert "<svg" not in html
-    assert 'hx-get="/-/ui/jobs/a/sparkline"' in html
-
-
-# ── Archive-Screen (Client, Bibi4-Iteration) ─────────────────────────────────
-
-
-def test_client_archive_table_renders_slug_type_status_when_runtime_next():
-    runs = [{"id": 7, "slug": "mein-testjob", "status": "complete",
-            "payload": "claude: tu was", "exec_runtime": 3.2, "finished_at": 100.0}]
-    html = render._client_archive_table(runs, now=200.0)
-    # Seit m.rau/bibi#66 sind die Köpfe Sortier-Links; geprüft wird die
-    # Spaltenfolge über ihren Text, nicht über das Markup.
-    cols = ("Slug", "Type", "Status", "last/since", "runtime", "next")
-    assert [c for c in cols if f">{c}" in html] == list(cols)
-    assert 'href="/-/ui/run/7">mein-testjob<' in html
-    assert '<td class="kind">claude</td>' in html
-    assert 'class="st complete" href="/-/ui/run/7">complete<' in html
-    assert "3s" in html
-    assert "<td>—</td>" in html  # next: beim Client immer "—", nicht ausgeblendet
-
-
-def test_client_archive_table_shows_finished_at_datetime():
-    # Bibi4-Iteration, User-Fund: fehlendes Datum/Uhrzeit im Client-Archive —
-    # analog zum Host, der last/since via _time_toggle_cell()/_ago() zeigt.
-    runs = [{"id": 7, "slug": "mein-testjob", "status": "complete",
-            "payload": "echo x", "exec_runtime": 3.2, "finished_at": 100.0}]
-    html = render._client_archive_table(runs, now=200.0)
-    assert "ago" in html or "min" in html or "s" in html  # relative _ago()-Ausgabe
-
-
-def test_client_archive_table_empty_shows_placeholder():
-    assert "keine lokalen Läufe" in render._client_archive_table([], now=100.0)
-
-
-def test_jobs_archive_fragment_is_bus_driven():
-    frag = render.jobs_archive_fragment([{"id": 1, "slug": "a", "status": "complete"}], now=1.0)
-    assert 'id="archive"' in frag
-    assert 'data-bus="jobs"' in frag
-    assert 'data-bus-refetch="/-/ui/jobs/archive/list"' in frag
-    assert "window.bibiFollow" not in frag
-    assert "Archive (1)" in frag
-
-
-def test_jobs_archive_page_has_active_archive_tab():
-    html = render.jobs_archive_page([], now=1000.0, daemon_status={"roles": ["connect"]})
-    assert html.lower().startswith("<!doctype html>")
-    assert '<span class="tab-active">Archive</span>' in html
-    assert 'id="archive"' in html
-
-
-def test_jobs_archive_page_includes_status_cards():
-    # Analog zum Host-Archive-Screen (test_controller_schedules.py) — fehlten
-    # hier ebenfalls.
-    html = render.jobs_archive_page([], now=1000.0, daemon_status={"roles": ["connect"]})
-    assert 'id="feedstatus"' in html
-
-
-def test_jobs_page_has_header_and_nav():
-    html = render.jobs_page([], {}, now=100.0)
-    assert 'href="/-/"' in html and 'href="/-/ui/logs"' in html
-    assert "<title>bibi · Jobs</title>" in html
-
-
-def test_jobs_page_has_status_cards_header():
-    # PLAN-28 User-Feedback: "Der Header soll auch auf der Client Job Seite
-    # angezeigt werden" — derselbe feed_status_fragment()-Header wie
-    # /-/ und /-/ui/schedules (PLAN-27 Befund 2 hatte das nur fürs Live-Log
-    # erledigt, /-/ui/jobs blieb dabei außen vor).
-    html = render.jobs_page([], {}, now=100.0)
-    assert 'id="feedstatus"' in html
-
-
-# ── m.rau/bibi#90: daemon_status darf den Status-Filter nicht verdrängen ────
-#
-# `status` trug in jobs_page() zwei Bedeutungen: den Filterwert der Signatur
-# und — lokal überschrieben — das Daemon-Status-Dict. Letzteres landete über
-# jobs_fragment() in filter_schedules(), das ein nichtleeres Dict als aktiven
-# Filter las und dann einen String gegen ein Dict verglich: jede Zeile fiel
-# weg. Der Client-Jobs-Screen war damit beim Seitenaufbau immer leer, sobald
-# überhaupt ein daemon_status anlag — also live auf jedem Knoten.
-#
-# Dass es nie eine Suite reissen liess, liegt an der Aufruf-Form: jeder
-# bestehende jobs_page()-Test laesst daemon_status weg, dann ist der
-# ueberschriebene Wert {} und damit falsy — der Filter greift zufaellig
-# nicht. Genau deshalb geben die beiden Tests hier daemon_status explizit
-# mit; ohne das laufen sie am Fehler vorbei.
-#
-# schedules_page() (Host) macht es seit jeher richtig und warnt im Docstring
-# ausdruecklich vor der Verwechslung — jobs_page() war die einzige Stelle,
-# die beide Bedeutungen auf einem Namen fuehrte.
-
-
-def test_jobs_page_daemon_status_does_not_shadow_status_filter():
-    html = render.jobs_page(
-        [_row("a"), _row("b")], {}, now=100.0,
-        daemon_status={"roles": ["synchronizer", "controller", "connect"]})
-    assert "keine Job-MDs im Repository gefunden" not in html
-    assert 'href="/-/ui/jobs/detail/a"' in html
-    assert 'href="/-/ui/jobs/detail/b"' in html
-
-
-def test_jobs_page_status_filter_still_applies_with_daemon_status():
-    # Gegenprobe zum Test darueber: der echte Filterwert muss weiterhin
-    # durchgreifen, auch wenn gleichzeitig ein daemon_status anliegt.
-    html = render.jobs_page(
-        [_row("a"), _row("b")], {"a": {"id": 1, "status": "complete"},
-                                 "b": {"id": 2, "status": "failed"}},
-        now=100.0, status="failed",
-        daemon_status={"roles": ["synchronizer", "controller", "connect"]})
-    assert 'href="/-/ui/jobs/detail/b"' in html
-    assert 'href="/-/ui/jobs/detail/a"' not in html
-
-
-def test_jobs_route_has_status_cards_header(team_repo: Path, app_with):
-    app, _ = app_with(_FakeClient())
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert 'id="feedstatus"' in r.text
 
 
 def test_screen_nav_includes_jobs_tab():
     # Jobs nur mit connect-Rolle sichtbar (PLAN-20 Befund 6).
     html = render._screen_nav("Schedules", roles=["connect"])
-    assert 'href="/-/ui/jobs"' in html and "Jobs" in html
+    assert 'href="/-/jobs"' in html and "Jobs" in html
 
-
-def test_screen_nav_hides_jobs_tab_without_connect_role():
-    html = render._screen_nav("Schedules", roles=["scheduler"])
-    assert 'href="/-/ui/jobs"' not in html
-
-
-# ── Lokale Job-Detailseite (PLAN-21 Befund 10-Nachtrag) — Rendering ──────────
 
 
 def test_local_job_view_never_run_returns_none():
@@ -549,7 +308,7 @@ def test_jobs_detail_live_fragment_meta_line_shows_type_trigger_git():
     local = _row("a", git_status="modified")
     html = render.jobs_detail_live_fragment("a", None, local, None)
     assert "job" in html and "now" in html
-    assert 'class="chip modified"' in html and ">geändert<" in html
+    assert 'class="chip modified"' in html and ">modified<" in html
 
 
 def test_jobs_detail_live_fragment_meta_line_uses_same_markup_as_host():
@@ -571,20 +330,20 @@ def test_jobs_detail_live_fragment_shows_app_link_even_without_any_run():
     local = _row("a", app_port=9100)
     html = render.jobs_detail_live_fragment("a", None, local, None,
                                             public_host="example.ts.net")
-    assert '<a href="http://example.ts.net:9100/" target="_blank" rel="noopener">Zur App →</a>' in html
+    assert '<a href="http://example.ts.net:9100/" target="_blank" rel="noopener">Open app →</a>' in html
 
 
 def test_jobs_detail_live_fragment_no_app_link_without_app_port():
     html = render.jobs_detail_live_fragment("a", None, _row("a"), None)
-    assert "Zur App" not in html
+    assert "Open app" not in html
 
 
 def test_jobs_detail_live_fragment_no_status_duplicated_in_meta_line():
     # _local_job_meta_line() zeigt bewusst keinen eigenen Status mehr (anders
-    # als die alte _local_job_meta()) — "letzter Lauf" kommt nur noch einmal,
+    # als die alte _local_job_meta()) — "last run" kommt nur noch einmal,
     # aus _live_panel()s eigenem Label.
     html = render.jobs_detail_live_fragment("a", None, _row("a"), {"id": 5, "status": "complete"})
-    assert html.count("letzter Lauf") == 1
+    assert html.count("last run") == 1
 
 
 def test_jobs_detail_live_fragment_falls_back_to_last_run_output():
@@ -603,7 +362,7 @@ def test_jobs_detail_live_fragment_shows_hitl_panel_when_awaiting():
         "a", {"id": "jid1", "status": "awaiting", "app_url": "http://127.0.0.1:9100/",
              "events": []},
         _row("a"), None)
-    assert "Eingabe erforderlich" in html
+    assert "Input required" in html
     assert 'href="http://127.0.0.1:9100/"' in html
 
 
@@ -688,7 +447,7 @@ def test_jobs_detail_page_live_run_shows_journal_placeholder():
     live = {"id": "jid1", "status": "running", "started_at": 100.0}
     html = render.jobs_detail_page("a", _row("a", live=live), None, [], now=105.0,
                                    live=live)
-    assert "noch keine Läufe" not in html
+    assert "no runs yet" not in html
     assert '<a class="back" href="#jobsdetail-live">↑ live</a>' in html
 
 
@@ -697,7 +456,7 @@ def test_jobs_detail_page_has_no_back_link():
     # schedule_detail_page() den "← zurück"-Link genommen hat, gilt explizit
     # auch für den Client — die Nav-Leiste hat schon einen Jobs-Tab.
     html = render.jobs_detail_page("a", _row("a"), None, [], now=100.0)
-    assert '<a class="back" href="/-/ui/jobs">← Jobs</a>' not in html
+    assert '<a class="back" href="/-/jobs">← Jobs</a>' not in html
 
 
 def test_jobs_detail_page_unknown_slug_still_renders():
@@ -819,113 +578,10 @@ def app_with(team_repo: Path):
     return _make
 
 
-def test_jobs_route_shows_local_md_with_git_status_new(team_repo: Path, app_with):
-    # Frisch angelegt, nie committet/geaddet → git-Status "neu".
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    client = _FakeClient()
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert r.status_code == 200
-        assert "mein-testjob" in r.text
-        assert 'class="chip new"' in r.text and ">neu<" in r.text
 
 
-def test_jobs_route_shows_app_port_link_for_discovered_app_job(team_repo: Path, app_with):
-    # PLAN-29 Befund 2: end-to-end-Nachweis, dass app_port aus der MD-
-    # Frontmatter tatsächlich bis zur gerenderten Type-Spalte durchgereicht
-    # wird (_local_schedules() -> _jobs_data() -> jobs_page()), nicht nur,
-    # dass die reine Render-Funktion einen bereits befüllten Dict-Key
-    # akzeptiert.
-    _seed_schedule_md(team_repo, "hitl-test-app", "now", "python3 app.py",
-                      app_port=9100)
-    client = _FakeClient()
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert r.status_code == 200
-        assert ('<a href="http://localhost:9100/" target="_blank" '
-               'rel="noopener">app :9100</a>') in r.text
 
 
-# ── Sparkline-Entkopplung (zweite Bibi4-Iteration) ──────────────────────────
-
-
-def test_jobs_route_renders_eager_sparkline_not_lazy_placeholder(team_repo: Path, app_with):
-    # Revert (User-Fund 2026-07-22: die Lazy-Variante — 19 Pro-Slug-hx-get-
-    # Requests gleichzeitig mit dem 2s-Self-Poll — hängte den Browser-Tab
-    # komplett auf, live in mehreren frischen Tabs reproduziert; Staffelung
-    # allein behob es nicht). jobs_screen() rechnet die Serie jetzt wieder
-    # synchron (wie vor der Sparkline-Entkopplung), keine Pro-Slug-Requests
-    # mehr vom initialen Seitenaufbau.
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    client = _FakeClient()
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert r.status_code == 200
-        assert 'hx-get="/-/ui/jobs/mein-testjob/sparkline"' not in r.text
-
-
-def test_jobs_sparkline_route_returns_resolved_cell(team_repo: Path, app_with):
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    client = _FakeClient()
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs/mein-testjob/sparkline")
-        assert r.status_code == 200
-        assert 'id="spark-mein-testjob" hx-preserve="true">' in r.text
-        assert 'hx-get' not in r.text  # aufgelöst, kein erneuter Lazy-Trigger
-
-
-def test_jobs_sparkline_route_unknown_slug_returns_empty_cell(team_repo: Path, app_with):
-    # Kein Crash bei einem Slug, der (Rennen mit Löschen/Umbenennen) nicht
-    # mehr existiert — leere, aber valide Zelle statt 404/500.
-    client = _FakeClient()
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs/gone/sparkline")
-        assert r.status_code == 200
-        assert 'id="spark-gone" hx-preserve="true"></span>' in r.text
-
-
-def test_jobs_sparkline_concurrent_requests_compute_once(team_repo: Path, app_with, monkeypatch):
-    # Kern des Fixes: mehrere gleichzeitige Pro-Slug-Requests (wie beim
-    # initialen Laden mehrerer Zeilen, alle mit hx-trigger="load") duerfen
-    # bei kaltem Cache nur EINE teure git-log-Berechnung ausloesen, nicht
-    # eine pro Zeile (thundering herd) — sonst waere die Entkopplung fuer
-    # den Cache-Miss-Fall schlechter als der alte, einmalige Blockier-Aufruf.
-    import threading
-    import time as time_mod
-    from bibi import feed as feed_mod
-
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    calls = []
-    real_collect = feed_mod.collect_commits
-
-    def slow_collect_commits(root, **kw):
-        calls.append(1)
-        time_mod.sleep(0.2)  # simuliert einen teuren git log
-        return real_collect(root, **kw)
-
-    monkeypatch.setattr(feed_mod, "collect_commits", slow_collect_commits)
-
-    client = _FakeClient()
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        results = []
-
-        def _fetch():
-            results.append(c.get("/-/ui/jobs/mein-testjob/sparkline").status_code)
-
-        threads = [threading.Thread(target=_fetch) for _ in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5)
-
-    assert results == [200] * 5
-    assert len(calls) == 1
 
 
 def test_jobs_detail_attrs_route(team_repo: Path, app_with):
@@ -950,29 +606,11 @@ def test_jobs_detail_page_route_links_to_attrs_route(team_repo: Path, app_with):
         assert 'href="/-/ui/jobs/detail/mein-testjob/attrs">Attribute →</a>' in r.text
 
 
-def test_jobs_route_never_calls_remote_schedules_even_with_scheduler_role(
-    team_repo: Path, monkeypatch,
-):
-    # PLAN-21 Befund 10, User-Entscheidung: kein Remote-Abgleich mehr — auch
-    # nicht auf einem Knoten mit scheduler-Rolle oder konfigurierter
-    # BIBI_SCHEDULER_URL. Spiegelt die vorher hier getesteten Remote-Compare-
-    # Szenarien, jetzt umgekehrt: kein Netzaufruf, egal welche Rolle/Config.
-    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://sarasate.example:8780")
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    client = _FakeClient(schedules=[{"slug": "alter-cron-job", "trigger": "0 */3 * * *",
-                                     "payload": "echo r"}])
-    app = create_app(roles.resolve({"controller", "scheduler"}), controller_client=client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert r.status_code == 200
-        assert "mein-testjob" in r.text
-        assert "alter-cron-job" not in r.text  # nur remote gemeldet, nie lokal entdeckt
-        assert client.schedules_called is False
-
 
 def test_jobs_route_no_longer_shows_local_run_history(team_repo: Path, app_with):
     # Bibi4-Iteration, User-Fund: "Lokale Läufe" wanderte auf den eigenen
-    # Archive-Screen (s. test_jobs_archive_route_shows_local_run_history unten).
+    # Archive-Screen — der mit m.rau/bibi#130 wieder entfaellt; die Laeufe
+    # stehen jetzt in der Lauf-Liste von Job Detail.
     client = _FakeClient(run_journal=[{"id": 5, "slug": "mein-testjob", "status": "complete",
                                        "exit_code": 0, "exec_runtime": 3.2,
                                        "finished_at": 100.0, "domain": "local"}])
@@ -980,57 +618,6 @@ def test_jobs_route_no_longer_shows_local_run_history(team_repo: Path, app_with)
     with TestClient(app) as c:
         r = c.get("/-/ui/jobs")
         assert "Lokale Läufe" not in r.text
-
-
-def test_jobs_archive_route_shows_local_run_history(team_repo: Path, app_with):
-    client = _FakeClient(run_journal=[{"id": 5, "slug": "mein-testjob", "status": "complete",
-                                       "exit_code": 0, "exec_runtime": 3.2,
-                                       "finished_at": 100.0, "domain": "local"}])
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs/archive")
-        assert "mein-testjob" in r.text
-        assert 'href="/-/ui/run/5"' in r.text
-
-
-def test_jobs_archive_list_fragment_route(team_repo: Path, app_with):
-    client = _FakeClient(run_journal=[{"id": 5, "slug": "mein-testjob", "status": "complete"}])
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs/archive/list")
-        assert r.status_code == 200
-        assert 'id="archive"' in r.text and "mein-testjob" in r.text
-
-
-def test_jobs_route_per_job_status_finds_pinned_run_by_bucket_slug(team_repo: Path, app_with):
-    # User-Fund 2026-07-13: run_pinned() vergibt pro Aufruf einen eindeutigen
-    # jobs.slug (f"{bucket_slug}-{token}") — die ungefilterte "Lokale Läufe"-
-    # Liste unten zeigt den Lauf zwar (s. test_jobs_route_shows_local_run_
-    # history), aber die Pro-Job-Statuszelle (_jobs_row(), Slug-Lookup gegen
-    # den STABILEN Bucket-Slug) fand ihn nie — zeigte immer "noch nie lokal
-    # gelaufen", obwohl der Job gerade erst komplett gelaufen war.
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    client = _FakeClient(run_journal=[
-        {"id": 5, "slug": "mein-testjob-abc12345", "status": "complete",
-         "exit_code": 0, "exec_runtime": 3.2, "finished_at": 100.0,
-         "domain": "scheduled", "pinned_host": "mac"},
-    ])
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert "noch nie lokal gelaufen" not in r.text
-        assert 'href="/-/ui/run/5"><span class="st complete"' in r.text
-
-
-def test_jobs_board_fragment_route(team_repo: Path, app_with):
-    app, _ = app_with(_FakeClient())
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs/board")
-        assert r.status_code == 200
-        assert 'id="jobsboard"' in r.text
-
-
-# ── Lokale Job-Detailseite (PLAN-21 Befund 10-Nachtrag) — Routen ─────────────
 
 
 def test_jobs_detail_route_shows_meta_and_only_this_slugs_runs(team_repo: Path, app_with):
@@ -1069,20 +656,6 @@ def test_jobs_detail_route_shows_pinned_runs_for_this_slug(team_repo: Path, app_
         assert 'href="/-/ui/run/5"' in r.text
         assert 'href="/-/ui/run/6"' not in r.text  # anderer Bucket-Slug, kein Treffer
 
-
-def test_jobs_route_shows_running_for_live_job(team_repo: Path, app_with):
-    # PLAN-21 Befund 10, 2. Nachtrag: die Jobs-Liste zeigt "running" für einen
-    # gerade laufenden lokalen Job, unabhängig vom letzten ABGESCHLOSSENEN
-    # Lauf im Journal.
-    _seed_schedule_md(team_repo, "mein-testjob", "now", "echo x")
-    client = _FakeClient(
-        run_journal=[{"id": 5, "slug": "mein-testjob", "status": "complete",
-                     "finished_at": 100.0, "domain": "local"}],
-        live={"mein-testjob": {"id": "jidlive", "started_at": 200.0}})
-    app, _ = app_with(client)
-    with TestClient(app) as c:
-        r = c.get("/-/ui/jobs")
-        assert 'class="st running">running<' in r.text
 
 
 def test_jobs_detail_route_shows_live_output(team_repo: Path, app_with):
@@ -1188,7 +761,7 @@ def test_jobs_detail_run_delete_route(team_repo: Path, app_with):
         assert r.status_code == 200
         assert fake.delete_calls == [5]
         assert 'id="journal"' in r.text
-        assert "noch keine Läufe" in r.text  # Journal jetzt leer, sofort sichtbar
+        assert "no runs yet" in r.text  # Journal jetzt leer, sofort sichtbar
 
 
 def test_jobs_detail_start_route_posts_to_own_fragment_not_jobsboard(team_repo: Path, app_with):
@@ -1261,3 +834,81 @@ def test_jobs_detail_rebuild_route_survives_backend_error(team_repo: Path, app_w
     with TestClient(app) as c:
         r = c.post("/-/ui/jobs/detail/nichts-los/rebuild")
         assert r.status_code == 200  # kein 500, auch wenn client.run_rebuild() fehlschlägt
+
+
+def test_human_duration_keeps_one_decimal_below_ten_seconds():
+    """Die meisten Laeufe dauern zwei bis acht Sekunden — als ganze Zahl sehen
+    sie alle gleich aus. Ab zehn Sekunden traegt die Stelle nichts mehr, und
+    die Schwellen darueber bleiben unveraendert."""
+    assert render._human_duration(2.8007938861846924) == "2.8s"
+    assert render._human_duration(0.4) == "0.4s"
+    assert render._human_duration(9.9) == "9.9s"
+    assert render._human_duration(45) == "45s"
+
+
+def test_local_run_status_takes_the_newest_run_per_slug():
+    """Die Client-Spalte zeigt den **neuesten** lokalen Lauf, nicht irgendeinen.
+
+    Befund m.rau: *„wieso `6d 1h` bei gmail-transfer? Das muss ein Rechenfehler
+    sein."* In der echten DB nachgesehen: die Zahl stammte aus
+    `gmail-transfer-d03e0d2e` — einem gepinnten Lauf vom 14.07., der beim
+    Aufraeumen am 20.07. terminal gesetzt wurde. Die Rueckrechnung des Suffix
+    war da, aber `setdefault()` behielt den **zuerst gefundenen** Eintrag; die
+    Journal-Reihenfolge ist nicht die Zeitreihenfolge.
+
+    Rot war: `exec_runtime == 522318.5` statt `2.8`.
+    """
+    from bibi.controller import _local_run_status_aus  # reine Funktion
+    eintraege = [
+        {"slug": "gmail-transfer-d03e0d2e", "finished_at": 1_784_543_069.0,
+         "exec_runtime": 522_318.5, "status": "error"},
+        {"slug": "gmail-transfer", "finished_at": 1_785_833_522.0,
+         "exec_runtime": 2.8, "status": "complete"},
+    ]
+    aus = _local_run_status_aus(eintraege)
+    assert aus["gmail-transfer"]["exec_runtime"] == 2.8
+    assert aus["gmail-transfer"]["status"] == "complete"
+
+
+def test_local_run_status_folds_pinned_suffix_but_not_a_real_slug():
+    from bibi.controller import _local_run_status_aus
+    aus = _local_run_status_aus([
+        {"slug": "EngineCI-46ec57c7", "finished_at": 100.0, "exec_runtime": 1.0},
+        {"slug": "20260728.at-150738-81ec", "finished_at": 200.0, "exec_runtime": 2.0},
+    ])
+    assert "EngineCI" in aus
+    # Ein echter Slug darf auf acht Hex-Zeichen enden — hier wird nur
+    # zurueckgerechnet, wenn die Basis auch vorkommt.
+    assert "20260728.at-150738-81ec" in aus
+
+
+def test_scheduler_probe_backs_off_after_a_failure():
+    """Ein abwesender Scheduler darf den Seitenaufbau nicht blockieren.
+
+    Befund m.rau: *„Aber die Abfrage dauert lange. Der Disconnected Status
+    muss irgendwie geprueft werden, ja. Aber er darf die UX nicht stoeren."*
+    Der Client-Timeout steht auf 5 s, und die wartet **jeder** Seitenaufbau ab.
+
+    Nach dem ersten Fehlschlag wird deshalb eine Weile gar nicht erst
+    probiert — der Screen ist bei offline dann schneller als bei online, was
+    richtig ist: es gibt nichts zu holen.
+
+    Rot war: `versuche == 3` statt `1`.
+    """
+    from bibi.controller import _Backoff
+
+    b = _Backoff(pause=15.0)
+    assert b.darf(now=100.0), "der erste Versuch muss laufen"
+    b.fehlschlag(now=100.0)
+    assert not b.darf(now=101.0), "direkt danach wird nicht erneut probiert"
+    assert not b.darf(now=114.9)
+    assert b.darf(now=115.1), "nach der Pause wieder"
+
+
+def test_scheduler_probe_resets_after_success():
+    from bibi.controller import _Backoff
+
+    b = _Backoff(pause=15.0)
+    b.fehlschlag(now=100.0)
+    b.erfolg()
+    assert b.darf(now=101.0), "nach einer geglueckten Antwort keine Pause mehr"

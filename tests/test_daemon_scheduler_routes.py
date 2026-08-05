@@ -171,3 +171,34 @@ def test_scheduler_status_running_clears_app_url(sched):
     client.post(f"/-/scheduler/status/{jid}", json={"status": "running"})
     job = client.get(f"/-/job/{jid}").json()
     assert job["app_url"] is None
+
+
+def test_schedule_view_carries_the_job_id(tmp_path):
+    """Der Slot **ist** die Job-Zeile — ihre ID gehört dazu.
+
+    Ohne sie konnten START/RESET/KILL nie verdrahtet werden: die Verben laufen
+    über `POST /-/job/{id}/{verb}`, und `/-/schedule` lieferte jedes Feld ausser
+    dem einen, das der Aufruf braucht. Genau deshalb waren die drei Knoepfe in
+    Schritt 2 Attrappen (Befund m.rau: *„START, RESET, KILL haben alle keinen
+    Effekt"*).
+
+    Rot war: `KeyError: 'id'`.
+    """
+    from pathlib import Path as _P
+
+    from bibi.daemon import job_db
+    from bibi.schedule import parser
+
+    conn = job_db.connect(tmp_path / "jobs.sqlite")
+    try:
+        pr = parser.parse_text(
+            '---\nslug: EngineCI\nschedule: "0 * * * *"\njob: echo hi\n---\n',
+            schedule_ref="case/x/EngineCI.md", path=_P("case/x/EngineCI.md"))
+        assert pr.is_ok, pr.error
+        jid = job_db.upsert_schedule(conn, pr, 1000.0)
+        zeilen = job_db.list_schedules(conn)
+    finally:
+        conn.close()
+
+    eintrag = next(z for z in zeilen if z["slug"] == "EngineCI")
+    assert eintrag["id"] == jid

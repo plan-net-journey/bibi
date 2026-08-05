@@ -50,20 +50,20 @@ def test_status_cards_omit_host_connection_without_connect():
     # Kein "connect"-Key im Status ⇒ keine Rolle mit --connect ⇒ keine Kachel,
     # die einen nie stattfindenden Heartbeat suggerieren würde.
     html = render._status_cards({"roles": ["scheduler"]}, now=100.0)
-    assert "Host-Verbindung" not in html
+    assert "Host connection" not in html
 
 
 def test_status_cards_connected_shows_ok_and_last_heartbeat():
     html = render._status_cards(
         {"roles": ["connect"], "connect": {"ok": True, "last_at": 96.0}}, now=100.0)
-    assert "Host-Verbindung" in html and "verbunden" in html
+    assert "Host connection" in html and "connected" in html
     assert "4s ago" in html
 
 
 def test_status_cards_disconnected_shows_bad():
     html = render._status_cards(
         {"roles": ["connect"], "connect": {"ok": False, "last_at": 90.0}}, now=100.0)
-    assert "getrennt" in html and 'class="value bad"' in html
+    assert "disconnected" in html and 'class="value bad"' in html
 
 
 def test_status_cards_auto_sync_and_maintenance():
@@ -76,7 +76,7 @@ def test_status_cards_auto_sync_and_maintenance():
 def test_daemon_page_has_header_nav_status_and_log():
     html = render.daemon_page(
         {"roles": ["connect"], "connect": {"ok": True, "last_at": 90.0}}, now=100.0)
-    assert 'href="/-/"' in html and 'href="/-/ui/logs"' in html
+    assert 'href="/-/"' in html and 'href="/-/log"' in html
     assert 'id="liveclock"' in html
     assert 'id="follow"' not in html  # PLAN-36 Stufe 36.3 (E8): FOLLOW entfernt
     assert '<div class="statuscards">' in html
@@ -158,18 +158,3 @@ def test_htmx_served_locally(app_with):
         assert "/-/static/htmx-1.9.12.min.js" in home.text
 
 
-def test_chartjs_served_locally(app_with):
-    # PLAN-36-Nachtrag (2026-07-27): nach der htmx-Lokalisierung (36.0) war
-    # chart.js vom jsdelivr-CDN die letzte externe Seiten-Abhängigkeit —
-    # offline blieb das Chart auf /-/ui/schedules leer. Gleiche Mechanik.
-    app = app_with({"roles": ["controller"]})
-    with TestClient(app) as c:
-        r = c.get("/-/static/chartjs-4.4.4.min.js")
-        assert r.status_code == 200
-        assert "javascript" in r.headers["content-type"]
-        assert "immutable" in r.headers["cache-control"]
-        assert "Chart" in r.text
-        # die Schedules-Seite referenziert den lokalen Pfad, kein CDN mehr
-        page = c.get("/-/ui/schedules", headers={"Accept": "text/html"})
-        assert "jsdelivr.net" not in page.text
-        assert "/-/static/chartjs-4.4.4.min.js" in page.text

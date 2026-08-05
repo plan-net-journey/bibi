@@ -11,6 +11,7 @@ passiert beim Spawn im Worker, App-Verhalten ist reine Laufzeit-Konvention.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from enum import StrEnum
@@ -77,6 +78,29 @@ def display_kind(payload: str | None, app_port: int | None) -> str:
     if app_port:
         return "app"
     return effective_kind(payload)
+
+
+def job_uid(slug: str) -> str:
+    """Identität eines Jobs: ``md5(slug)``, ordnerübergreifend (Zustandsmodell §6).
+
+    Deterministisch aus dem Slug abgeleitet und deshalb ohne Absprache auf
+    beiden Seiten gleich — der Scheduler und jeder Client berechnen denselben
+    Wert. Das ist die Voraussetzung für die kombinierte Lauf-Liste, die zwei
+    unabhängige Datenbanken über einen Vergleich zusammenführt statt über ein
+    Slug-Muster.
+
+    Zwei gleich benannte MDs in verschiedenen Ordnern bekommen denselben
+    ``job_uid``. Das ist die beabsichtigte Wirkung: die Kollision soll
+    auffallen (Label ``duplicate``) statt zu zwei stillschweigend getrennten
+    Jobs zu werden.
+
+    **Rät nicht am Slug herum.** Ein gepinnter Lauf trägt einen Slug mit
+    Zufallssuffix (``EngineCI-46ec57c7``); welcher Teil davon der Basis-Slug
+    ist, weiß der Aufrufer — ``worker.run_pinned()`` hat ihn, bevor er den
+    Suffix anhängt. Hier abzuschneiden hieße raten, und ein echter Slug darf
+    auf acht Hex-Zeichen enden.
+    """
+    return hashlib.md5(slug.encode("utf-8")).hexdigest()
 
 
 class Reason(StrEnum):

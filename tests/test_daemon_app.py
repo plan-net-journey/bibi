@@ -62,6 +62,23 @@ def test_lifespan_starts_and_status_includes_synchronizer(sync_app):
     assert body["maintenance"] is False
 
 
+def test_status_describes_the_node_itself(sync_app):
+    """``/-/status`` sagt, **wer** antwortet — nicht nur, wie es ihm geht.
+
+    Ein Knoten meldet sich per Heartbeat beim Scheduler; der Scheduler meldet
+    sich nirgends. Seine Zeile im Nodes-Screen entstand deshalb immer lokal —
+    und war von einem anderen Knoten aus nicht zu bekommen. Genau das war der
+    Grund, warum der Screen auf einem Client den Knoten nicht zeigen konnte,
+    dem die Flotte gehört. Dieselben Felder, die ein Heartbeat trägt.
+    """
+    client, _ = sync_app
+    node = client.get("/-/status").json()["node"]
+    assert node["node_id"]
+    assert node["worker"] == "testnode.invalid"
+    assert "synchronizer" in (node["role"] or "")
+    assert "engine" in node and "git_status" in node
+
+
 def test_maintenance_toggle(sync_app):
     client, _ = sync_app
     assert client.post("/-/maintenance").json() == {"maintenance": True}

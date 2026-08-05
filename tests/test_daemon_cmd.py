@@ -3,12 +3,34 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from bibi.ctrl import daemon_cmd, main
+
+
+def _dead_pid() -> int:
+    """Eine PID, die sicher nicht mehr lebt (s. test_daemon_portfile.py)."""
+    p = subprocess.Popen(["true"])
+    p.wait()
+    return p.pid
+
+
+@contextlib.contextmanager
+def _live_foreign_pid():
+    """Eine lebende PID, die nicht die eigene ist — geratene Nachbar-PIDs sind
+    mal frei, mal belegt und machen den Test von der Prozesstabelle abhängig."""
+    p = subprocess.Popen(["sleep", "30"])
+    try:
+        yield p.pid
+    finally:
+        p.terminate()
+        p.wait()
 
 
 @pytest.fixture
@@ -311,6 +333,130 @@ def test_run_writes_portfile_while_serving(env_iso, monkeypatch: pytest.MonkeyPa
 
     assert seen["port"] is not None
     assert portfile.read_port() is None
+
+
+# ── „genau einer" im Startpfad (m.rau/bibi#155) ──────────────────────────────
+
+
+def test_run_refuses_to_start_beside_a_live_daemon(
+    env_iso, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    """Der zweite Daemon auf demselben Checkout bricht ab, statt anzulaufen.
+
+    Vor ``--port auto`` (#45) erledigte das ein ``EADDRINUSE``: zwei Daemons
+    wollten denselben festen Port, der zweite starb. Kein entworfener Schutz,
+    aber ein wirksamer — und sein Wegfall wurde nie ersetzt. Seither findet der
+    zweite geräuschlos einen freien Port. Fünf Startpaare an einem Nachmittag
+    (2026-08-05) waren die Folge, nicht der Ausrutscher.
+    """
+    from bibi.daemon import portfile
+    captured = _capture_server(monkeypatch)
+    monkeypatch.setenv("BIBI_DAEMON_PORT", "")
+    p = env_iso / "data" / portfile.FILENAME
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    with _live_foreign_pid() as foreign:
+        p.write_text(json.dumps({"port": 55885, "pid": foreign}), encoding="utf-8")
+
+        rc = daemon_cmd.run(_args(controller=True, host="127.0.0.1", port="auto",
+                                  log_level=None))
+
+        assert rc != 0
+        assert captured == {}, "uvicorn darf nie hochgefahren werden"
+        # Der laufende Daemon bleibt unberührt — auch in der Portdatei. Ein
+        # Abbruch, der dem anderen den Eintrag wegräumt, hätte nur die Hälfte
+        # des Fehlers behoben.
+        assert json.loads(p.read_text(encoding="utf-8"))["pid"] == foreign
+        err = capsys.readouterr().err
+        assert str(foreign) in err and "55885" in err
+
+
+def test_run_starts_when_the_recorded_daemon_is_dead(
+    env_iso, monkeypatch: pytest.MonkeyPatch
+):
+    # Die Gegenprobe: ein ``kill -9`` lässt die Datei stehen. Wäre schon ihre
+    # Existenz der Riegel, käme man nach einem Absturz ohne Handarbeit nicht
+    # mehr hoch — die Prüfung fragt deshalb nach Leben, nicht nach Datei.
+    from bibi.daemon import portfile
+    captured = _capture_server(monkeypatch)
+    monkeypatch.setenv("BIBI_DAEMON_PORT", "")
+    p = env_iso / "data" / portfile.FILENAME
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"port": 55885, "pid": _dead_pid()}), encoding="utf-8")
+
+    rc = daemon_cmd.run(_args(controller=True, host="127.0.0.1", port="auto",
+                              log_level=None))
+
+    assert rc == 0
+    assert captured["port"] > 0
+    captured["sockets"][0].close()
+
+
+def test_run_refuses_while_another_start_is_still_in_flight(
+    env_iso, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    """Die Portdatei allein reicht nicht — sie entsteht zu spät.
+
+    ``run()`` schreibt sie erst kurz vor ``server.run()``: nach Rollenauflösung,
+    Synchronizer, Worker, Heartbeat und den uvicorn-Importen. Wer in diesem
+    Fenster startet, sieht eine leere Datei und läuft an. **Genau so sahen die
+    beobachteten Doppelstarts aus** — 1 s, 4 s, 7 s Abstand (2026-08-05).
+
+    Der Lock schließt das Fenster, weil er vor allem anderen genommen und bis
+    zum Prozessende gehalten wird. Er ist bewusst **nicht** ``session-start.lock``:
+    den hält ``session.main()`` bereits, während es ``daemon run`` als Subprozess
+    startet — derselbe Lock ließe den regulären Weg über ``bibi`` scheitern.
+    """
+    import fcntl
+    captured = _capture_server(monkeypatch)
+    monkeypatch.setenv("BIBI_DAEMON_PORT", "")
+    lock_path = env_iso / "data" / daemon_cmd.RUN_LOCK_FILENAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    held = lock_path.open("a+")
+    try:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        rc = daemon_cmd.run(_args(controller=True, host="127.0.0.1", port="auto",
+                                  log_level=None))
+
+        assert rc != 0
+        assert captured == {}, "uvicorn darf nie hochgefahren werden"
+        assert "läuft bereits" in capsys.readouterr().err
+    finally:
+        fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+        held.close()
+
+
+def test_run_releases_the_lock_when_it_ends(env_iso, monkeypatch: pytest.MonkeyPatch):
+    # Ein Lock, der den Prozess überlebt, wäre eine Sperre statt eines Schutzes.
+    # ``flock`` gibt der Kernel beim Prozessende frei — hier zählt, dass ``run()``
+    # das Handle nicht über sein eigenes Ende hinaus festhält.
+    import fcntl
+    captured = _capture_server(monkeypatch)
+    monkeypatch.setenv("BIBI_DAEMON_PORT", "")
+
+    assert daemon_cmd.run(_args(controller=True, host="127.0.0.1", port="auto",
+                                log_level=None)) == 0
+    captured["sockets"][0].close()
+
+    fh = (env_iso / "data" / daemon_cmd.RUN_LOCK_FILENAME).open("a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # darf nicht werfen
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    finally:
+        fh.close()
+
+
+def test_run_starts_when_nothing_is_recorded(env_iso, monkeypatch: pytest.MonkeyPatch):
+    # Der Normalfall bleibt der Normalfall: keine Datei, kein Riegel.
+    captured = _capture_server(monkeypatch)
+    monkeypatch.setenv("BIBI_DAEMON_PORT", "")
+
+    rc = daemon_cmd.run(_args(controller=True, host="127.0.0.1", port="auto",
+                              log_level=None))
+
+    assert rc == 0
+    captured["sockets"][0].close()
 
 
 def test_run_returns_2_on_validation_error(env_iso):

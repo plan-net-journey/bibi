@@ -146,12 +146,122 @@ def _resolve_shutdown_timeout() -> int:
     return SHUTDOWN_TIMEOUT_DEFAULT_S
 
 
+#: ``daemon run`` bricht ab, weil auf diesem Checkout schon einer läuft
+#: (m.rau/bibi#155). Eigener Code, damit ein Aufrufer ihn von einem Rollen-/
+#: Eingabefehler (2) unterscheiden kann: hier ist nichts falsch eingegeben,
+#: hier ist nur nichts zu tun.
+EXIT_ALREADY_RUNNING = 3
+
+#: Der Lock, der „genau einer" durchsetzt — unter ``data/``, also je Checkout
+#: getrennt wie Job-DB und Portdatei. Bewusst **nicht** ``session-start.lock``:
+#: den hält ``session.main()`` bereits, während es ``daemon run`` als Subprozess
+#: startet; derselbe Lock ließe den regulären Weg über ``bibi`` scheitern.
+RUN_LOCK_FILENAME = "daemon-run.lock"
+
+
+def _acquire_run_lock():
+    """Das exklusive Recht, auf diesem Checkout ein Daemon zu **sein** — oder
+    ``None``, wenn es schon jemand hat.
+
+    **Der Schutz gehört hierher, weil hier jeder Startweg vorbeikommt.** Was es
+    vorher gab, deckte je einen ab: ``session._acquire_start_lock()`` nur den
+    über ``bibi``, ``portfile.clear()`` nur das Aufräumen. ``run()`` selbst
+    prüfte gar nichts — es band einen Port und schrieb die Portdatei.
+
+    Vor der Port-Automatik (m.rau/bibi#45) erledigte das ein ``EADDRINUSE``:
+    der zweite Daemon wollte denselben festen Port und starb. Kein entworfener
+    Schutz, aber ein wirksamer, und sein Wegfall wurde nie ersetzt — seither
+    findet der zweite geräuschlos einen freien Port. Am 2026-08-05 waren es
+    fünf Startpaare an einem Nachmittag, aus jeweils *einem* Sitzungsstart.
+
+    **Warum ein Lock und nicht die Portdatei.** Die Portdatei ist die naheliegende
+    Quelle und als alleinige Prüfung zu spät: ``run()`` schreibt sie erst kurz
+    vor ``server.run()``, nach Rollenauflösung, Synchronizer, Worker, Heartbeat
+    und den uvicorn-Importen. Die beobachteten Startpaare lagen 1 bis 16 Sekunden
+    auseinander — mitten in diesem Fenster. Der Lock dagegen wird vor allem
+    anderen genommen und bis zum Prozessende gehalten.
+
+    ``LOCK_NB``: der zweite Daemon soll **abbrechen**, nicht warten. Warten hieße,
+    ihn am Leben zu lassen, bis der erste endet — und dann liefe er los, obwohl
+    der Grund seines Starts längst vorbei ist. Der blockierende Lock in
+    ``session.py`` will das Gegenteil und ist deshalb dort richtig: wer über
+    ``bibi`` kommt, wartet kurz und hängt sich danach an den laufenden an.
+
+    ``flock`` statt einer selbstgebauten Lock-Datei, aus demselben Grund wie
+    dort: der Kernel gibt ihn beim Prozessende von selbst frei, ein ``kill -9``
+    hinterlässt also keine verwaiste Sperre.
+    """
+    import fcntl
+    root = repo.root_or_none()
+    if root is None:
+        return None, False   # kein Repo: nichts zu schützen (s. portfile.port_file)
+    path = root / "data" / RUN_LOCK_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = path.open("a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None, True
+    return fh, False
+
+
+def _release_run_lock(fh) -> None:
+    """Den Lock loslassen. Der Kernel täte es beim Prozessende ohnehin — hier
+    steht es trotzdem, weil ``run()`` auch **zurückkehrt**, ohne dass der Prozess
+    endet: der Boot-Signal-Zweig, und jeder Test, der ``run()`` direkt aufruft.
+    Auf CPythons Refcount zu bauen hieße, den Schutz an ein Implementierungs-
+    detail zu hängen."""
+    if fh is None:
+        return
+    import fcntl
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    finally:
+        fh.close()
+
+
+def _refuse_second_daemon() -> str:
+    """Die Meldung zum Abbruch — mit PID und Port, wenn sie zu haben sind.
+
+    Der Lock weiß nur *dass* jemand da ist. Wer, steht in der Portdatei — und die
+    fehlt genau dann, wenn der andere noch startet. Beide Fälle bekommen einen
+    Satz, statt den zweiten mit einer Lücke im ersten abzufertigen.
+    """
+    from bibi.daemon import portfile
+    entry = portfile.read()
+    wer = (f" (PID {entry['pid']}, Port {entry['port']})" if entry
+           else " (er startet gerade — noch ohne Portdatei)")
+    return (f"Auf diesem Checkout läuft bereits ein Daemon{wer} — "
+            f"es startet keiner daneben.\n"
+            f"Den laufenden benutzen (`bibi-ctrl status`), oder ihn beenden.")
+
+
 def run(args: argparse.Namespace) -> int:
     r, errs = resolve_from_args(args)
     if errs:
         for e in errs:
             print(e, file=sys.stderr)
         return 2
+
+    # Vor allem anderen: es darf nur einen geben (m.rau/bibi#155). Vor dem Bind
+    # und vor jedem Thread — ein Abbruch danach hätte dem laufenden Daemon schon
+    # in den Zustand getreten.
+    run_lock, taken = _acquire_run_lock()
+    if not taken:
+        # Zweite Linie: ein Daemon, der **keinen** Lock hält. Das ist kein
+        # Sonderfall, sondern der Normalfall beim Ausrollen dieser Änderung
+        # selbst — der laufende Prozess stammt aus der Version davor. Ihn nur
+        # am Lock zu erkennen hieße, den ersten Neustart nach dem Upgrade
+        # ungeschützt zu lassen, also genau den, bei dem es zählt.
+        from bibi.daemon import portfile
+        entry = portfile.read()
+        taken = entry is not None and entry.get("pid") != os.getpid()
+        if taken:
+            _release_run_lock(run_lock)
+    if taken:
+        print(_refuse_second_daemon(), file=sys.stderr)
+        return EXIT_ALREADY_RUNNING
 
     # Gemeinsamer sync_lock (PLAN-6 §3 D2): koordiniert Synchronizer-Pull/Push mit
     # dem Merge-back nach trunk im Scheduler — sie dürfen sich nicht überschneiden.
@@ -260,6 +370,7 @@ def run(args: argparse.Namespace) -> int:
     if boot_signal.apply_and_clear():
         if sock is not None:
             sock.close()
+        _release_run_lock(run_lock)
         return 0
     # Den tatsächlichen Port ablegen (m.rau/bibi#45), damit ihn andere Prozesse
     # dieses Checkouts finden: ``bibi-ctrl status`` im zweiten Terminal, die
@@ -288,6 +399,7 @@ def run(args: argparse.Namespace) -> int:
         # Portdatei (s. dort); diese Zeile ist der Gürtel dazu, nicht der
         # Hosenträger. Gegen SIGKILL hilft ohnehin nur die PID-Prüfung beim Lesen.
         portfile.clear()
+        _release_run_lock(run_lock)
     return 0
 
 

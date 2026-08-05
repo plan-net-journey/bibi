@@ -412,6 +412,58 @@ def test_schedule_view_exposes_exec_mode(conn, tmp_path: Path):
     assert sched["containerjob"]["exec_mode"] == "container"
 
 
+def test_schedule_view_carries_the_run_standing_in_the_slot(conn, tmp_path: Path):
+    """m.rau/bibi#131: die Lauf-Liste fuehrt auch den Lauf, der noch im Slot
+    steht — und der existiert bis zu seiner Archivierung **nur** hier.
+
+    Bis dahin trug diese Sicht nur `row_status` und `last_run_at`. Damit liess
+    sich eine Lauf-Zeile nicht bilden: kein Beginn, kein Ende, kein Exit-Code,
+    kein Commit, und ohne `fire` auch keine `run_id` — also auch kein Weg zum
+    Output. Ein laufender Job war beim Scheduler damit der einzige, dessen
+    Ausgabe niemand oeffnen konnte.
+    """
+    _write(tmp_path / "case" / "läuft.md", '---\nschedule: "* * * * *"\njob: "echo hi"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    # Ueber die echte Reservierung, nicht ueber ein UPDATE von Hand: `started_at`
+    # setzt `reserve_next()`, und nur dieser Weg vergibt auch das `fire`, aus
+    # dem die `run_id` entsteht.
+    conn.execute("UPDATE jobs SET next_fire_at=1.0 WHERE slug='läuft'")  # fällig
+    jid = job_db.reserve_next(conn, worker="w1", host="h")["id"]
+    job_db.report_status(conn, jid, status="running", output_ref="data/job/x/output.jsonl")
+    sched = next(s for s in job_db.list_schedules(conn) if s["slug"] == "läuft")
+    assert sched["started_at"] is not None
+    assert sched["output_ref"] == "data/job/x/output.jsonl"
+    # `fire` ist der Teil, der die `run_id` ueberhaupt erst bildbar macht —
+    # dieselbe, die der Worker vergibt (`run_id_for()`).
+    assert sched["fire"] == conn.execute(
+        "SELECT fire FROM jobs WHERE id=?", (jid,)).fetchone()["fire"]
+
+
+def test_schedule_view_carries_reason_exit_code_and_commit(conn, tmp_path: Path):
+    """Der blockierte Fall (A2): `error · nonzero_exit`, Exit-Code und der
+    Worktree-Commit. Genau fuer ihn wurde `jobs.commit_sha` in v21 angelegt —
+    *„unter A2 wandert ein terminaler Fehler erst auf START/RESET ins Journal,
+    und bis dahin gaebe es sonst keinen Ort fuer die Verbindung Lauf ↔
+    Vault-Wirkung"*. Ohne diese Felder bliebe die COMMIT-Spalte des einen
+    Laufs leer, den man am ehesten nachverfolgen will."""
+    _write(tmp_path / "case" / "kaputt.md", '---\nschedule: "* * * * *"\njob: "false"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    conn.execute("UPDATE jobs SET next_fire_at=1.0 WHERE slug='kaputt'")  # fällig
+    jid = job_db.reserve_next(conn, worker="w1", host="h")["id"]
+    job_db.report_status(conn, jid, status="running")
+    # Der echte Weg nach `error` fuehrt ueber `failed` (exhaust) — `running` geht
+    # nicht direkt dorthin. Ein Test, der die Zustandsfolge erfindet, prueft
+    # seine eigene Erfindung.
+    job_db.report_status(conn, jid, status="failed", reason="nonzero_exit", exit_code=1)
+    job_db.report_status(conn, jid, status="error", reason="nonzero_exit",
+                         exit_code=1, commit_sha="b6f8967")
+    sched = next(s for s in job_db.list_schedules(conn) if s["slug"] == "kaputt")
+    assert sched["reason"] == "nonzero_exit"
+    assert sched["exit_code"] == 1
+    assert sched["finished_at"] is not None
+    assert sched["commit_sha"] == "b6f8967"
+
+
 def test_get_job_exec_mode(conn, tmp_path: Path):
     _write(tmp_path / "case" / "containerjob.md",
           '---\nschedule: never\njob: "echo hi"\nexec_mode: container\n---\n')
@@ -573,33 +625,44 @@ def test_reset_increments_fire_and_allows_new_journal_entry(conn, tmp_path: Path
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = conn.execute("SELECT id FROM jobs WHERE slug='once'").fetchone()["id"]
 
-    # Erster Lauf → error
+    def _journal():
+        return conn.execute(
+            "SELECT run_id, status FROM journal WHERE slug='once' ORDER BY id").fetchall()
+
+    # Erster Lauf → error. A2 (m.rau/bibi#101): der Fehler bleibt im Slot
+    # stehen und ist dort zu sehen; das Journal ist noch leer.
     job_db.report_status(conn, jid, status="starting")  # #38: pending -> starting -> running
     job_db.report_status(conn, jid, status="running")
     job_db.report_status(conn, jid, status="failed")
     job_db.report_status(conn, jid, status="error")
     fire1 = conn.execute("SELECT fire FROM jobs WHERE id=?", (jid,)).fetchone()["fire"]
-    j1 = conn.execute("SELECT run_id, status FROM journal WHERE slug='once' ORDER BY id").fetchall()
-    assert len(j1) == 1 and j1[0]["status"] == "error"
+    assert _journal() == []
 
-    # RESET muss fire++ (neue run_id für den nächsten Lauf)
+    # RESET archiviert den blockierten Lauf UND macht fire++ (neue run_id für
+    # den nächsten). Beides ist derselbe Vorgang: der Platz wird geräumt.
     job_db.report_status(conn, jid, status="pending")
+    j1 = _journal()
+    assert len(j1) == 1 and j1[0]["status"] == "error"
     fire2 = conn.execute("SELECT fire FROM jobs WHERE id=?", (jid,)).fetchone()["fire"]
     assert fire2 == fire1 + 1, "fire muss beim RESET erhöht werden"
 
-    # Zweiter Lauf → gleicher Terminal-Status (error), muss trotzdem in den Journal
+    # Zweiter Lauf → gleicher Terminal-Status (error), muss trotzdem einen
+    # eigenen Eintrag bekommen, sobald auch er abgeräumt wird.
     job_db.report_status(conn, jid, status="starting")  # #38: pending -> starting -> running
     job_db.report_status(conn, jid, status="running")
     job_db.report_status(conn, jid, status="failed")
     job_db.report_status(conn, jid, status="error")
-    j2 = conn.execute("SELECT run_id, status FROM journal WHERE slug='once' ORDER BY id").fetchall()
-    assert len(j2) == 2, "zweiter Lauf muss eigenen Journal-Eintrag bekommen"
-    assert j2[0]["run_id"] != j2[1]["run_id"], "run_id muss sich zwischen den Läufen unterscheiden"
 
-    # schedule_view: last_status soll den letzten Lauf zeigen (error, neuere finished_at)
+    # schedule_view: last_status soll den letzten Lauf zeigen — solange er im
+    # Slot steht, ist das der Slot-Zustand selbst.
     scheds = job_db.list_schedules(conn)
     s = next(x for x in scheds if x["slug"] == "once")
     assert s["last_status"] == "error"
+
+    job_db.report_status(conn, jid, status="pending")
+    j2 = _journal()
+    assert len(j2) == 2, "zweiter Lauf muss eigenen Journal-Eintrag bekommen"
+    assert j2[0]["run_id"] != j2[1]["run_id"], "run_id muss sich zwischen den Läufen unterscheiden"
 
 
 def test_reset_from_killed_resets_attempt_to_zero(conn, tmp_path: Path):
@@ -645,14 +708,22 @@ def test_kill_from_complete_archives_and_keeps_old_journal_entry(conn, tmp_path:
     assert row["fire"] == fire1 + 1, "eigener run_id fuer den neuen Zyklus"
     assert row["next_fire_at"] is None, "Lazy Rearm darf diesen Zustand nicht ueberholen"
 
-    entries = conn.execute(
-        "SELECT run_id, status FROM journal WHERE slug='once' ORDER BY id").fetchall()
-    assert [e["status"] for e in entries] == ["complete", "killed"]
-    assert entries[0]["run_id"] != entries[1]["run_id"]
+    def _entries():
+        return conn.execute(
+            "SELECT run_id, status FROM journal WHERE slug='once' ORDER BY id").fetchall()
+
+    # A2 (m.rau/bibi#101): `complete` hat sich selbst archiviert, der frische
+    # `killed`-Zyklus blockiert den Slot und wartet auf einen Menschen.
+    assert [e["status"] for e in _entries()] == ["complete"]
 
     # RESET holt den Job trotzdem jederzeit zurueck in den Schedule (reine
-    # Lauf-Ebene, keine MD-Aenderung noetig).
+    # Lauf-Ebene, keine MD-Aenderung noetig) — und archiviert dabei den
+    # killed-Zyklus. Die eigentliche Aussage bleibt: beide Eintraege stehen
+    # danach nebeneinander, mit verschiedenen run_ids.
     assert job_db.report_status(conn, jid, status="pending") == "ok"
+    entries = _entries()
+    assert [e["status"] for e in entries] == ["complete", "killed"]
+    assert entries[0]["run_id"] != entries[1]["run_id"]
 
 
 def test_schedule_view_shows_pending_after_reset_not_stale_terminal_status(conn, tmp_path: Path):
@@ -1092,3 +1163,95 @@ def test_terminal_status_is_never_visible_without_its_journal_row(tmp_path: Path
             "Journal-Zeile noch nicht committet ist — genau das Fenster aus #95.")
     finally:
         conn.close()
+
+
+# ── P90-Laufzeit je Job (m.rau/bibi#132) ───────────────────────────────────
+#
+# **Vorgabe m.rau:** *„Die Runtime ist ebenfalls eine Scheduler Eigenschaft. Sie
+# kommt vom Scheduler und ist der 90. Perzentil P90 der Laufzeit der letzten 30
+# Laeufe."* Vorher stand dort die Dauer des *letzten* Laufs, und die springt —
+# derselbe Job zeigte mal `2.8s`, mal `4m 34s`. Ein Perzentil beantwortet „wie
+# lange dauert das normalerweise", und das ist die Frage, die man vor einer
+# Laufzeitspalte hat.
+
+
+def _lauf(conn, slug: str, runtime: float | None, *, status: str = "complete",
+          reason: str | None = None, domain: str = "scheduled") -> None:
+    conn.execute(
+        "INSERT INTO journal (run_id, slug, kind, status, reason, exec_runtime, "
+        "finished_at, archived_at, domain) VALUES (?,?,?,?,?,?,?,?,?)",
+        (f"{slug}:{conn.total_changes}", slug, "job", status, reason, runtime,
+         1000.0, 1000.0, domain))
+
+
+def test_runtime_p90_is_the_ninetieth_percentile_not_the_last_run(conn):
+    """Dreissig Laeufe von 1 bis 30 Sekunden: P90 ist der 27. Wert.
+
+    Nearest-rank, nicht interpoliert — die Zahl soll ein **beobachteter** Lauf
+    sein und keine erfundene Zwischengroesse. Bei dreissig Werten ist der
+    27. genau der, unter dem 90 % liegen.
+    """
+    for i in range(1, 31):
+        _lauf(conn, "a", float(i))
+    assert job_db.runtime_p90(conn)["a"] == 27.0
+
+
+def test_runtime_p90_stays_silent_below_five_runs(conn):
+    """Ein P90 ueber drei Werte ist eine Behauptung, keine Statistik."""
+    for i in range(4):
+        _lauf(conn, "a", 10.0)
+    assert "a" not in job_db.runtime_p90(conn)
+    _lauf(conn, "a", 10.0)
+    assert job_db.runtime_p90(conn)["a"] == 10.0
+
+
+def test_runtime_p90_ignores_runs_that_never_finished_computing(conn):
+    """**Der Fall aus m.rau/bibi#123.** `gmail-transfer-d03e0d2e` „lief" vom
+    14.07. bis zum 20.07. und wurde zusammen mit einem zweiten Lauf auf dieselbe
+    Sekunde beendet — das war kein Lauf ueber sechs Tage, sondern ein
+    Aufraeumvorgang. `exec_runtime` misst dort die **Standzeit**.
+
+    Erkannt wird das nicht am Aufraeumen, sondern am Ergebnis: **nur ein
+    `complete` hat zu Ende gerechnet.** Auf der Scheduler-DB nachgemessen
+    (23 793 Laeufe): jeder einzelne Wert ueber einer Stunde gehoert zu einem
+    `killed` — `by_user` (13), `by_wall_time` (4), `no_process` (4). Kein
+    `complete` liegt darueber. Die einfachere Regel ist hier zugleich die
+    schaerfere.
+    """
+    for _ in range(9):
+        _lauf(conn, "a", 2.0)
+    _lauf(conn, "a", 522_318.5, status="killed", reason="by_user")
+    assert job_db.runtime_p90(conn)["a"] == 2.0
+
+
+def test_runtime_p90_looks_only_at_the_last_thirty(conn):
+    """Was vor dem Fenster liegt, zaehlt nicht — sonst waere die Zahl ein
+    Gedaechtnis statt einer Auskunft ueber jetzt."""
+    for _ in range(20):
+        _lauf(conn, "a", 900.0)      # alte, langsame Laeufe
+    for _ in range(30):
+        _lauf(conn, "a", 3.0)        # die letzten dreissig
+    assert job_db.runtime_p90(conn)["a"] == 3.0
+
+
+def test_runtime_p90_ignores_local_runs(conn):
+    """`domain='local'` sind `bibi-ctrl run`-Laeufe eines Clients. Die Spalte
+    ist eine **Scheduler**-Eigenschaft (FE §4.3) — eine Zahl, die beide Seiten
+    mischt, beantwortet keine der beiden Fragen."""
+    for _ in range(9):
+        _lauf(conn, "a", 2.0)
+    for _ in range(9):
+        _lauf(conn, "a", 500.0, domain="local")
+    assert job_db.runtime_p90(conn)["a"] == 2.0
+
+
+def test_list_schedules_carries_the_p90(conn):
+    """Die Zahl gehoert an die Schedule-Zeile, nicht in einen zweiten Abruf:
+    der Jobs-Screen holt ohnehin `/-/schedule` je Seitenaufbau."""
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, schedule, status) "
+        "VALUES ('i1','a','x/a.md','job','echo x','0 * * * *','pending')")
+    for i in range(1, 31):
+        _lauf(conn, "a", float(i))
+    zeile = next(s for s in job_db.list_schedules(conn) if s["slug"] == "a")
+    assert zeile["runtime_p90"] == 27.0

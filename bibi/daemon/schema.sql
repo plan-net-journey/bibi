@@ -13,6 +13,12 @@
 CREATE TABLE IF NOT EXISTS jobs (
     id              TEXT PRIMARY KEY,          -- Scheduler-vergebene Hash-ID (§4.4)
     slug            TEXT NOT NULL UNIQUE,
+    -- Job-Identität: md5(slug), ordnerübergreifend (v20, Zustandsmodell §6).
+    -- Anders als `id` nicht vergeben, sondern abgeleitet — deshalb auf jedem
+    -- Knoten derselbe Wert, ohne dass die Knoten sich abstimmen. Das ist der
+    -- Join-Schlüssel der kombinierten Lauf-Liste. Ein gepinnter Lauf trägt den
+    -- uid seines *Basis*-Slugs, nicht den seines Suffix-Slugs.
+    job_uid         TEXT,
     schedule_ref    TEXT NOT NULL,             -- MD-Pfad relativ zum Vault
     slug_explicit   INTEGER NOT NULL DEFAULT 0,
     kind            TEXT NOT NULL,             -- job | claude | app (§5.3)
@@ -66,6 +72,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     host            TEXT,
     worker          TEXT,
     output_ref      TEXT,                      -- referenziert output.jsonl (§1.4)
+    -- (v21) Worktree-Commit des laufenden/blockierten Laufs. Der Slot hält ihn,
+    -- solange der Lauf dort steht: unter der Archivierungsregel A2 wandert ein
+    -- terminaler Fehler erst auf START/RESET ins Journal, und bis dahin gäbe es
+    -- sonst keinen Ort für die Verbindung Lauf ↔ Vault-Wirkung.
+    commit_sha      TEXT,
+    branch          TEXT,                      -- agent/<slug>
     pid             INTEGER,                   -- Wrapper-PID (v9, Orphan-Erkennung §10.2)
     pid_started_at  TEXT,                      -- Prozess-Startzeit opak (PID-Recycling-Guard)
     app_url         TEXT,                      -- HITL-Eingabe-Endpunkt der App (v10, §10.4)
@@ -85,6 +97,10 @@ CREATE TABLE IF NOT EXISTS journal (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id        TEXT NOT NULL,               -- slug:trial, konstant über Retries
     slug          TEXT NOT NULL,
+    job_uid       TEXT,                        -- (v20) geerbt aus jobs.job_uid — nicht
+                                               -- erneut aus dem eigenen Slug abgeleitet,
+                                               -- sonst verlöre ein gepinnter Lauf den
+                                               -- Bezug zu seinem Basis-Job.
     kind          TEXT NOT NULL,
     status        TEXT NOT NULL,
     reason        TEXT,
@@ -114,6 +130,10 @@ CREATE TABLE IF NOT EXISTS journal (
 
 CREATE INDEX IF NOT EXISTS journal_slug_idx
     ON journal (slug, archived_at DESC);
+
+-- (v20) Der Zugriffspfad der Lauf-Liste: alle Läufe eines Jobs, jüngste zuerst.
+CREATE INDEX IF NOT EXISTS journal_job_uid_idx
+    ON journal (job_uid, archived_at DESC);
 
 -- Append-only Lifecycle-Übergänge (Schema v14) — anders als journal (nur der
 -- Terminal-Übergang) jeder Statuswechsel, inkl. running/awaiting/failed/
@@ -149,4 +169,20 @@ CREATE TABLE IF NOT EXISTS approved_nodes (
     node_id    TEXT PRIMARY KEY,
     status     TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | blocked
     updated_at REAL NOT NULL
+);
+
+-- Startschlüssel für den ersten Client (m.rau/bibi#141, Schema v22). Er löst
+-- den Deadlock, den die Schranke an approve/block erst erzeugt: ein frischer
+-- Scheduler hat null approved-Knoten, und ohne Host-FE ist niemand
+-- berechtigt, den ersten freizugeben.
+--
+-- Ausdrücklich kein Wiedergänger des abgeschafften BIBI_CONNECT_SECRET —
+-- einer, einmal, befristet. `expires_at` steht deshalb in der Zeile und nicht
+-- im Aufrufer: das Einlösen ist ein einziges DELETE mit beiden Bedingungen,
+-- und dazwischen kann nichts passieren. Eine eingelöste Zeile wird gelöscht,
+-- nicht markiert; nachlesbar bleibt der Vorgang über `connect.bootstrapped`.
+CREATE TABLE IF NOT EXISTS bootstrap_tokens (
+    token      TEXT PRIMARY KEY,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL
 );

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -17,7 +18,7 @@ from bibi.daemon.app import create_app
 
 def test_clients_table_empty_state():
     html = render._clients_table([], now=100)
-    assert "keine Knoten" in html
+    assert "no nodes" in html
 
 
 def test_clients_table_renders_worker_row():
@@ -222,7 +223,7 @@ def test_clients_screen_route_shows_host_itself_without_any_registered_worker(te
     with TestClient(app) as c:
         r = c.get("/-/ui/clients")
     assert r.status_code == 200
-    assert "keine Knoten" not in r.text
+    assert "no nodes" not in r.text
     assert '<span class="chip clean">connected</span>' in r.text
     assert r.text.count('role-box on"') == 1  # nur "controller" ist aktiv
 
@@ -261,7 +262,7 @@ def test_clients_table_includes_approval_column():
                "approval_status": "pending", "stale": False,
                "connected_at": 0, "last_heartbeat": 0}]
     html = render._clients_table(workers, now=0)
-    assert "<th>Freigabe</th>" in html
+    assert "<th>Approval</th>" in html
     assert 'hx-post="/-/ui/clients/n1/approve"' in html
 
 
@@ -296,7 +297,7 @@ def test_clients_table_offers_restart_and_deploy():
     workers = [{"worker": "w", "host": "h", "port": 8780, "node_id": "n1",
                 "stale": False, "connected_at": 0, "last_heartbeat": 0}]
     html = render._clients_table(workers, now=0)
-    assert "<th>Neustart</th>" in html
+    assert "<th>Restart</th>" in html
     assert 'hx-post="/-/ui/clients/n1/restart"' in html
     assert 'hx-post="/-/ui/clients/n1/deploy"' in html
     # Ein Klick, der einen laufenden Knoten beendet, darf nicht versehentlich
@@ -311,7 +312,7 @@ def test_clients_table_omits_restart_without_port():
                 "connected_at": 0, "last_heartbeat": 0}]
     html = render._clients_table(workers, now=0)
     assert "/restart" not in html
-    assert "<th>Neustart</th>" in html
+    assert "<th>Restart</th>" in html
 
 
 def test_clients_fragment_offers_restart_all():
@@ -398,7 +399,7 @@ def test_expected_version_form_warns_when_not_pushed(monkeypatch):
         [], now=0,
         deploy_result={"ok": True, "changed": True, "ref": "v0.2.3",
                        "was": "v0.2.2", "pushed": False})
-    assert "NICHT gepusht" in html
+    assert "NOT pushed" in html
 
 
 # ── m.rau/bibi#44: ein Sitzungs-Knoten hat keinen Supervisor ────────────────
@@ -413,7 +414,11 @@ def test_restart_cell_marks_a_session_node_before_the_click():
     html = render._clients_table(workers, now=0)
     assert ">session<" in html                    # als Chip lesbar, ohne Klick
     assert ">Stop" in html                        # das Verb sagt, was passiert
-    assert "Restart<" not in html                 # und verspricht keinen Neustart
+    # Nur die **Zelle** darf keinen Neustart versprechen. Seit #37 heißt der
+    # Spaltenkopf "Restart" — ohne diesen Zuschnitt prüfte die Zeile den
+    # Tabellenkopf mit und wäre für immer rot.
+    zelle = html.split("<tbody>")[1]
+    assert "Restart<" not in zelle                # und verspricht keinen Neustart
     assert "nobody brings it back" in html        # im Bestätigungsdialog
 
 
@@ -434,3 +439,204 @@ def test_restart_cell_treats_unknown_origin_as_before():
     html = render._clients_table(workers, now=0)
     assert ">Restart" in html
     assert ">session<" not in html
+
+
+# ── Der Nodes-Screen auf einem Client (Selbstaufruf-Falle, vierter Fall) ────
+#
+# Der Screen war für den **Host** gebaut und funktionierte dort: seine
+# WorkerRegistry führt jeden Knoten, der sich per Heartbeat gemeldet hat. Auf
+# einem Client ist ``status["workers"]`` leer — dort meldet sich niemand an —,
+# und übrig blieb allein die synthetische Eigenzeile. Mit dem Wegfall der
+# ``controller``-Rolle auf sarasate am 2026-08-04 gab es keinen Knoten mehr, auf
+# dem er richtig funktionierte: eine Rollenänderung hat einen latenten Fehler
+# sichtbar gemacht, nicht verursacht.
+#
+# Dass es ein Fehler ist und keine Absicht, sagt der Screen selbst — er trägt
+# „Restart all", „Deploy all" und die erwartete Engine-Version. Flottensteuerung
+# auf einer Tabelle mit einem einzigen Knoten ist sinnlos.
+
+
+def _knoten(html: str) -> set[str]:
+    """Die Namen **in der Tabelle**, nicht auf der Seite.
+
+    Die vierte Lehre aus m.rau/bibi#131: ein ``"X" in html`` prüft das ganze
+    Dokument. Der Hostname des Schedulers steht auch in der Kopfzeile — ein
+    Test darauf wäre grün, ohne dass je eine Zeile entstünde.
+    """
+    koerper = html.split("<tbody>", 1)[-1].split("</tbody>", 1)[0]
+    namen = set()
+    for tr in re.findall(r"<tr>.*?</tr>", koerper, re.S):
+        erste = re.search(r"<td>(.*?)</td>", tr, re.S)
+        if erste:
+            namen.add(re.sub(r"<[^>]+>", "", erste.group(1)).strip().split(" :")[0])
+    return namen
+
+
+def _worker(name: str, node_id: str, port: int = 8781) -> dict:
+    return {"worker": name, "host": name, "port": port, "node_id": node_id,
+            "git_user": "m.rau", "git_status": "trunk · clean · synced",
+            "engine": "bibi5 @ a48c6db", "stale": False,
+            "connected_at": 0, "last_heartbeat": 0, "approval_status": "approved"}
+
+
+class _FernerScheduler:
+    """Ersatz für ``ControllerClient``, wenn der Scheduler **woanders** läuft.
+
+    Fabrik und Verbindung in einem: sowohl ``_scheduler_status()`` als auch
+    ``_host_client()`` rufen ``ControllerClient(url, timeout=…)``.
+    """
+
+    def __init__(self, status: dict) -> None:
+        self._status = status
+
+    def __call__(self, url: str, *, timeout: float = 5.0):
+        return self
+
+    def status(self) -> dict:
+        return self._status
+
+    def schedules(self) -> list[dict]:
+        return []
+
+    def journal(self, **_):
+        return []
+
+
+def _client_app(monkeypatch, scheduler_status: dict):
+    """Ein Knoten mit ``controller``-Rolle, dessen Scheduler entfernt läuft."""
+    from bibi import controller as controller_pkg
+
+    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://scheduler.invalid:8780")
+    monkeypatch.setattr(controller_pkg, "ControllerClient",
+                        _FernerScheduler(scheduler_status))
+    return create_app(roles.resolve({"controller"}), controller_client=_FakeClient())
+
+
+def test_the_nodes_screen_on_a_client_shows_the_whole_federation(
+        team_repo: Path, monkeypatch):
+    """**Der Fund vom 2026-08-04 nachts.** Ein Client führt keine
+    Worker-Registry — die Föderationssicht gehört dem Scheduler.
+
+    Live gemessen: ``/-/worker`` des Schedulers führte beide Knoten
+    (``sarasate-client`` und ``Mac.fritz.box``, beide ``stale: false``), der
+    Nodes-Screen des Mac zeigte davon **einen**: sich selbst. Der Header
+    derselben Seite schrieb zwei Zeilen darüber ``clients 2`` — der Screen
+    widersprach sich also innerhalb eines Bildschirms.
+    """
+    app = _client_app(monkeypatch, {
+        "roles": ["scheduler"],
+        "workers": [_worker("sarasate-client", "n-client"),
+                    _worker("fremder-knoten", "n-fremd")],
+    })
+    with TestClient(app) as c:
+        html = c.get("/-/ui/clients").text
+    assert {"sarasate-client", "fremder-knoten"} <= _knoten(html)
+
+
+def test_the_nodes_screen_on_a_client_shows_the_scheduler_itself(
+        team_repo: Path, monkeypatch):
+    """Der Scheduler heartbeatet sich nie bei sich selbst — er steht in keiner
+    Registry, auch nicht in seiner eigenen.
+
+    Auf dem Host war das folgenlos: dort entstand seine Zeile lokal
+    (``_host_worker_entry()``). Von einem Client aus gibt es diese Quelle nicht,
+    und ohne Ersatz fehlte ausgerechnet der Knoten, dem die Flotte gehört.
+    ``Restart all`` hätte ihn stumm ausgelassen — genau die halbe Reparatur,
+    die m.rau/bibi#122 gekostet hat.
+    """
+    app = _client_app(monkeypatch, {
+        "roles": ["scheduler"],
+        "workers": [_worker("sarasate-client", "n-client")],
+        "node": _worker("sarasate", "n-sched", port=8780),
+    })
+    with TestClient(app) as c:
+        html = c.get("/-/ui/clients").text
+    assert "sarasate" in _knoten(html)
+
+
+def test_the_own_node_appears_exactly_once(team_repo: Path, monkeypatch):
+    """Die Gegenprobe zur ersten Hälfte: kennt der Scheduler uns bereits, darf
+    die synthetische Eigenzeile nicht danebenstehen.
+
+    Die Registry-Zeile ist dabei die reichere — sie trägt ``Connected seit`` und
+    ``Letzter Heartbeat``, die eine lokal gebaute Zeile nicht kennen kann.
+    """
+    from bibi import config
+
+    eigen = config.node_id()
+    app = _client_app(monkeypatch, {
+        "roles": ["scheduler"],
+        "workers": [_worker("testnode.invalid", eigen, port=64409)],
+        "node": _worker("sarasate", "n-sched", port=8780),
+    })
+    with TestClient(app) as c:
+        html = c.get("/-/ui/clients").text
+    koerper = html.split("<tbody>", 1)[-1].split("</tbody>", 1)[0]
+    assert len(re.findall(r"<tr>", koerper)) == 2, koerper
+
+
+def test_an_absent_scheduler_still_shows_the_own_node(team_repo: Path, monkeypatch):
+    """Ist der Scheduler weg, bleibt die eigene Zeile — sonst stünde der Screen
+    leer da und behauptete, es gebe keinen Knoten, während man auf ihm sitzt."""
+    from bibi import controller as controller_pkg
+
+    class _Tot:
+        def __call__(self, url, *, timeout=5.0):
+            return self
+
+        def __getattr__(self, name):
+            def _ruf(*_a, **_kw):
+                raise OSError("scheduler weg")
+            return _ruf
+
+    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://scheduler.invalid:8780")
+    monkeypatch.setattr(controller_pkg, "ControllerClient", _Tot())
+    app = create_app(roles.resolve({"controller"}), controller_client=_FakeClient())
+    with TestClient(app) as c:
+        html = c.get("/-/ui/clients").text
+    assert "no nodes" not in html
+    assert "testnode.invalid" in _knoten(html)
+
+
+def test_restart_all_on_a_client_reaches_the_whole_federation(
+        team_repo: Path, monkeypatch):
+    """Der funktionale Beweis, dass die Liste die Flotte ist und nicht die
+    Anzeige: „Restart all" läuft über dieselbe Quelle."""
+    _FakeClient.restarts = []
+    app = _client_app(monkeypatch, {
+        "roles": ["scheduler"],
+        "workers": [_worker("sarasate-client", "n-client", port=8781)],
+        "node": _worker("sarasate", "n-sched", port=8780),
+    })
+    with TestClient(app) as c:
+        r = c.post("/-/ui/clients/restart-all")
+    assert r.status_code == 200
+    getroffen = {port for _host, port, _deploy in _FakeClient.restarts}
+    assert {8780, 8781} <= getroffen, _FakeClient.restarts
+
+
+def test_restart_all_leaves_the_scheduler_and_the_own_node_for_last(
+        team_repo: Path, monkeypatch):
+    """Rollierend, und die Reihenfolge ist nicht beliebig.
+
+    **Der Scheduler trägt die Föderation** — startet er zusammen mit den
+    Clients neu, laufen deren Heartbeats für die Dauer beider Neustarts ins
+    Leere. **Der eigene Knoten führt die Schleife aus** — wer sich selbst in der
+    Mitte neu startet, stellt den Rest nie zu.
+
+    Auf dem Host fielen beide Rollen zusammen, „Host zuletzt" genügte. Von einem
+    Client aus sind es zwei verschiedene Knoten, und die eigene Zeile stand
+    ohne Sortierung ganz **vorn**: der Klick hätte zuerst den Browser abgehängt,
+    der ihn ausgelöst hat.
+    """
+    _FakeClient.restarts = []
+    monkeypatch.setenv("BIBI_DAEMON_PORT", "64409")
+    app = _client_app(monkeypatch, {
+        "roles": ["scheduler"],
+        "workers": [_worker("anderer-client", "n-anderer", port=8782)],
+        "node": dict(_worker("sarasate", "n-sched", port=8780),
+                     role="synchronizer,scheduler,worker"),
+    })
+    with TestClient(app) as c:
+        c.post("/-/ui/clients/restart-all")
+    assert [port for _host, port, _deploy in _FakeClient.restarts] == [8782, 8780, 64409]

@@ -101,7 +101,7 @@ def test_journal_output_empty_when_no_ref_and_no_file(sched):
 
 
 def test_journal_output_falls_back_to_run_id_path_when_ref_null(sched):
-    # User-Fund 2026-07-27 ("kein Output" auf /-/ui/run/… nach KILL):
+    # User-Fund 2026-07-27 ("no output" auf /-/ui/run/… nach KILL):
     # daemon-seitige Terminal-Reports (job_kill by_user, Sweeper-Zombie)
     # schrieben die Journal-Zeile ohne output_ref, der Wrapper-Nachzügler
     # mit dem Verweis wurde als idempotenter Wiederholungs-Report verworfen —

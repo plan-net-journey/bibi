@@ -180,3 +180,62 @@ def test_cli_schweigt_wenn_req_schon_gemeldet_hat(capsys):
 
     assert _fail(0, None, "job list") == 1
     assert capsys.readouterr().err == ""
+
+
+# ── Der Controller muss sich ausweisen (Live-Fund 2026-08-04) ────────────────
+
+
+def test_the_controller_client_sends_its_node_id(monkeypatch):
+    """**Alle vier Verben der SCHEDULER-Kachel waren tot**, und niemand hat es
+    gemerkt: `ControllerClient` schickte keinen `X-Bibi-Node-Id`, der Host
+    verlangt ihn seit dem 2026-07-25 fuer jede Job-Control-Route, und ein
+    Klick antwortete `HTTP Error 403: Forbidden`.
+
+    Unsichtbar war es, weil sarasate bis zum 2026-08-04 selbst die
+    `controller`-Rolle trug: dort lief die Abnahme ueber das **eigene** FE,
+    also als Loopback-Aufruf ohne Header — und genau der ist ausdruecklich
+    erlaubt. Mit dem Wegfall der Rolle wurde aus demselben Klick ein
+    entfernter Aufruf, und die Luecke lag offen.
+
+    Live gemessen (Mac gegen sarasate:8780): ohne Header `403 node approval
+    required`, mit Header `404 job not found` — dieselbe Anfrage, nur die
+    Identitaet fehlte.
+    """
+    from bibi import config
+    from bibi.controller.client import ControllerClient
+    gesehen: dict = {}
+
+    class _Antwort:
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _fake_urlopen(req, timeout=None):  # noqa: ARG001
+        gesehen["headers"] = dict(req.header_items())
+        return _Antwort()
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    ControllerClient("http://host:8780").job_action("j1", "kill")
+    # header_items() liefert die Namen in Titel-Schreibweise.
+    schluessel = {k.lower(): v for k, v in gesehen["headers"].items()}
+    assert schluessel.get("X-bibi-node-id".lower()) == config.node_id()
+
+
+def test_a_remote_verb_without_the_header_is_refused(team_repo):  # noqa: ARG001
+    """Die Gegenprobe, und der Grund, warum der Header noetig ist: der Host
+    weist einen entfernten Aufruf ohne Identitaet ab. Ohne diesen Test waere
+    der obige nur eine Behauptung ueber ein Detail."""
+    from fastapi.testclient import TestClient
+
+    from bibi.daemon import roles
+    from bibi.daemon.app import create_app
+    from bibi.daemon.worker import Worker
+    app = create_app(roles.resolve({"scheduler", "worker"}),
+                     worker=Worker(autopoll=False, worker_name="w1"))
+    with TestClient(app, client=("100.64.0.9", 55000)) as c:
+        assert c.post("/-/job/egal/kill").status_code == 403

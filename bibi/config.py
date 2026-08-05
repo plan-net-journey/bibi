@@ -49,6 +49,13 @@ KEYS: dict[str, str] = {
     # als jeder andere Wert hier NIE interaktiv abgefragt (init_cmd.py
     # special-cased das) — ein Mensch soll nie eine UUID eintippen müssen.
     "BIBI_NODE_ID": "",
+    # Startschlüssel für den allerersten Heartbeat dieses Knotens
+    # (m.rau/bibi#141, Nodes.md §3.3). **Der einzige Wert hier, der sich selbst
+    # wieder löscht:** nach dem ersten erfolgreichen Heartbeat schreibt der
+    # Client die env ohne ihn zurück. Er ist ein Startschlüssel, kein Zugang —
+    # ihn liegenzulassen machte ihn genau zu dem Dauergeheimnis, dessen
+    # Abschaffung (BIBI_CONNECT_SECRET) der Anlass für seine Bauform war.
+    "BIBI_BOOTSTRAP_TOKEN": "",
 }
 
 DAEMON_PORT_DEFAULT = 8769

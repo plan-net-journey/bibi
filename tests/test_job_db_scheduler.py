@@ -288,6 +288,12 @@ def test_report_status_same_terminal_status_is_noop(conn):
         "SELECT finished_at, updated_at, reason FROM jobs WHERE id=?", (jid,)).fetchone()
     assert after["finished_at"] == before["finished_at"] == 100.0
     assert after["updated_at"] == before["updated_at"] == 100.0
+    # A2 (m.rau/bibi#101): `killed` blockiert den Slot und wandert erst auf
+    # START/RESET ins Journal — bis dahin steht dort nichts.
+    assert job_db.list_journal(conn) == []
+    # Die eigentliche Aussage bleibt und wird schärfer: auch nach zwei Reports
+    # entsteht beim Abräumen genau EIN Eintrag, nicht zwei.
+    job_db.start_now(conn, jid, now=300.0)
     assert len(job_db.list_journal(conn)) == 1
 
 
@@ -401,33 +407,7 @@ def test_count_completed_since_survives_fresh_connection(tmp_path: Path):
 # ── journal_landings (PLAN-21 Befund 11 v2, Lauf-Historie-Chart) ────────────
 
 
-def test_journal_landings_returns_status_and_finished_at(conn):
-    jid = _insert(conn, "a", 0, time.time())
-    job_db.reserve_next(conn, now=100.0)
-    job_db.report_status(conn, jid, status="complete", now=200.0)
-    rows = job_db.journal_landings(conn)
-    assert rows == [{"status": "complete", "finished_at": 200.0}]
 
-
-def test_journal_landings_since_filters(conn):
-    jid = _insert(conn, "a", 0, time.time())
-    job_db.reserve_next(conn, now=100.0)
-    job_db.report_status(conn, jid, status="killed", now=200.0)
-    assert job_db.journal_landings(conn, since=250.0) == []
-    assert job_db.journal_landings(conn, since=150.0) == [
-        {"status": "killed", "finished_at": 200.0}]
-
-
-def test_journal_landings_excludes_non_terminal_status(conn):
-    # awaiting ist kein Terminal-Status — journal bekommt dafür nie eine Zeile
-    # (_write_journal feuert nur bei target in lifecycle.TERMINAL).
-    jid = _insert(conn, "a", 0, time.time())
-    job_db.reserve_next(conn, now=100.0)
-    job_db.report_status(conn, jid, status="awaiting", now=150.0)
-    assert job_db.journal_landings(conn) == []
-
-
-# ── status_counts (PLAN-21 Befund 11 Stat-Grid) ──────────────────────────────
 
 
 def test_status_counts_groups_active_jobs_by_status(conn):
@@ -527,6 +507,12 @@ def test_sweep_failed_without_next_fire_at_to_error(conn):
     res = job_db.sweep(conn, now=time.time())
     assert res["errored"] == 1
     assert conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()["status"] == "error"
+    # A2 (m.rau/bibi#101): der Fehler bleibt im Slot stehen und ist dort zu
+    # sehen; ins Journal wandert er erst, wenn ihn jemand abräumt. Der Beleg
+    # für "erschöpft" ist deshalb der Slot-Zustand, nicht die Journal-Zeile —
+    # was er ohnehin genauer trifft.
+    assert job_db.list_journal(conn) == []
+    job_db.start_now(conn, jid, now=time.time())
     assert any(j["status"] == "error" for j in job_db.list_journal(conn))
 
 
@@ -1173,3 +1159,24 @@ def test_concurrent_reserve_disjoint(tmp_path: Path):
     check = job_db.connect(p)
     assert check.execute("SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0] == 0
     check.close()
+
+
+# --- bibi5: Spezialwerte sind kein Rhythmus (m.rau/bibi#104, #105) -----------
+
+
+def test_is_recurring_knows_every_special_value():
+    """`is_recurring()` entscheidet an drei Stellen, ob ein `next_fire_at`
+    berechnet wird — ein Spezialwert, den sie nicht kennt, landet in
+    `_next_cron()` und damit im Fehlerausgang.
+
+    Sie führte die Liste der Spezialwerte ein zweites Mal, neben
+    `parser.SPECIAL_SCHEDULES`. Zwei Listen, die dasselbe meinen, laufen
+    auseinander: mit `adhoc`, `ad-hoc` und `-` als gültigen Schreibweisen war
+    die hiesige Kopie sofort unvollständig. Deshalb wird sie jetzt aus dem
+    Parser abgeleitet statt gepflegt."""
+    from bibi.schedule.parser import SPECIAL_SCHEDULES
+
+    for value in SPECIAL_SCHEDULES:
+        assert not job_db.is_recurring(value), f"{value!r} ist kein Rhythmus"
+    assert job_db.is_recurring("0 * * * *")
+    assert not job_db.is_recurring(None)

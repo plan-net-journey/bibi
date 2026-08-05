@@ -43,6 +43,7 @@ import asyncio
 import logging
 import re
 import threading
+import time
 from collections import deque
 from pathlib import Path
 
@@ -170,7 +171,7 @@ class Collector:
 
     def __init__(self, bus: Bus, *, db_path: Path | None = None,
                  repo_root: Path | None = None, interval: float = 1.0,
-                 autorun: bool = True, registry=None) -> None:
+                 autorun: bool = True, registry=None, heartbeat=None) -> None:
         self.bus = bus
         self.db_path = db_path
         self.repo_root = repo_root
@@ -181,11 +182,22 @@ class Collector:
         # den stale-Übergang OHNE neuen Heartbeat (stale wird beim list()-
         # Aufruf zeitbasiert berechnet, nicht gespeichert).
         self.registry = registry
+        #: Der eigene Heartbeat (nur mit `connect`-Rolle vorhanden). Der
+        #: Collector liest davon `last_at`/`last_ok`, wie er von der
+        #: Registry die Knotenliste liest — kein Poll, eine Referenz.
+        self.heartbeat = heartbeat
         self._jobs: dict[str, tuple] = {}    # job_id → (status, fire)
         self._journal_max: int | None = None
         self._tails: dict[str, dict] = {}    # job_id → {run_id, path, kind, sent}
         self._nodes_snapshot: tuple | None = None
         self._flags_snapshot: tuple | None = None
+        self._sched_snapshot: tuple | None = None
+        #: Getrennt vom groben `_sched_snapshot` (m.rau/bibi#143): Slug-Ebene
+        #: des Schedulers, `slug → (status, fire)`. Ein eigener Speicher, weil
+        #: er ein anderes Ziel bedient — `live:<slug>` statt `feedstatus`.
+        self._sched_jobs_snapshot: dict[str, tuple] | None = None
+        self._hb_snapshot: tuple | None = None
+        self._sched_last_fetch: float = 0.0
         self._primed = False
         self._task: asyncio.Task | None = None
         self._running = False
@@ -245,20 +257,32 @@ class Collector:
         self._journal_max = jmax
 
         # Sammel-Targets (PLAN-36 Stufe 36.3) — die Listen-/Übersichts-Screens
-        # hören auf EIN Target statt auf jeden Slug einzeln: "jobs" (Schedules-/
-        # Jobs-/Archiv-Listen + Job-Status-Kachel), "chart" (Run-History,
-        # nur bei neuen Journal-Landungen), "feedstatus" (Status-Kacheln,
-        # zusätzlich vom Flags-Diff unten getriggert).
+        # hören auf EIN Target statt auf jeden Slug einzeln: "jobs" (Jobs- und
+        # Archiv-Listen), "archived" (nur bei neuen Journal-Zeilen),
+        # "feedstatus" (Status-Kacheln, zusätzlich vom Flags-Diff unten
+        # getriggert).
         if any_job_change or new_journal:
             self.bus.publish_state("jobs")
             self.bus.publish_state("feedstatus")
             stats["state"] += 1
         if new_journal:
-            self.bus.publish_state("chart")
+            # „run archived" (m.rau/bibi#108) — die einzige Verbindung zwischen
+            # Strom und Liste: der Strom trägt die Liste nicht, er stößt sie an.
+            # Feuert genau bei einem Journal-INSERT und deshalb, seit der
+            # Archivierungsregel A2, zum richtigen Zeitpunkt: ein blockierter
+            # Lauf erzeugt das Ereignis erst, wenn ihn jemand abräumt.
+            #
+            # Hieß bis bibi5 `chart` und meinte das Landungs-Histogramm; das
+            # Chart ist mit m.rau/bibi#120 entfallen, das Ereignis nicht. Ein
+            # Target, das nach seinem Zuhörer benannt ist statt nach dem, was
+            # geschehen ist, verliert seinen Sinn, sobald der Zuhörer geht.
+            self.bus.publish_state("archived")
             stats["state"] += 1
 
         stats["state"] += self._diff_nodes()
         stats["state"] += self._diff_flags()
+        stats["state"] += self._diff_scheduler()
+        stats["state"] += self._diff_heartbeat()
 
         # Tails: Output-Zuwachs publizieren; Läufe, die nicht mehr aktiv
         # wachsen (Terminal/deferred), nach einem letzten Read entlassen.
@@ -311,6 +335,188 @@ class Collector:
             self.bus.publish_state("feedstatus")
             return 1
         return 0
+
+    #: Wie oft der Scheduler befragt wird. Der Collector tickt sekuendlich;
+    #: ein HTTP-Aufruf je Tick waere Netzlast fuer eine Anzeige, die sich
+    #: selten aendert. Fuenf Sekunden sind die Obergrenze dafuer, wie lange
+    #: der Header nach einem Ereignis veraltet sein darf — der Heartbeat
+    #: selbst kommt nur alle 15 s.
+    _SCHED_POLL_S = 5.0
+
+    def _diff_heartbeat(self) -> int:
+        """"feedstatus"-Trigger fuer den **eigenen** Heartbeat.
+
+        Die einzige Zeile des linken Header-Blocks, die sich regelmaessig
+        aendert — alle 15 s meldet sich dieser Knoten beim Host. Sie entsteht
+        hier im Prozess, wird also nicht abgefragt, sondern abgelesen: eine
+        Referenz auf das Heartbeat-Objekt, derselbe Weg wie bei ``registry``.
+
+        Ohne diesen Diff blieb die Zeile stehen, bis zufaellig etwas anderes
+        den Header dreckig machte (Befund m.rau, 2026-08-03: "der heartbeat
+        bleibt weiter stehen"). ``_diff_scheduler()`` sieht sie nicht — sie
+        gehoert diesem Knoten, nicht dem Host.
+
+        ``last_ok`` gehoert in den Fingerabdruck: der Wechsel von "verbunden"
+        auf "nicht verbunden" ist die wichtigste Aenderung dieser Zeile.
+        """
+        hb = self.heartbeat
+        if hb is None:
+            return 0
+        snap = (getattr(hb, "last_at", None), getattr(hb, "last_ok", None))
+        changed = self._primed and snap != self._hb_snapshot
+        self._hb_snapshot = snap
+        if changed:
+            self.bus.publish_state("feedstatus")
+            return 1
+        return 0
+
+    def _fetch_scheduler_status(self) -> dict | None:
+        """Status des konfigurierten Schedulers, oder ``None``.
+
+        ``None`` heisst zweierlei und wird gleich behandelt: kein Scheduler
+        konfiguriert (dieser Knoten ist selbst einer) oder nicht erreichbar.
+        Im ersten Fall gibt es nichts zu beobachten, im zweiten ist der
+        Ausfall die Nachricht — beides fuehrt zu einem stabilen Fingerabdruck
+        bzw. zu genau einer Veroeffentlichung beim Wechsel.
+        """
+        try:
+            # NICHT config.scheduler_base_url(): die bevorzugt bewusst
+            # BIBI_DAEMON_PORT ("sprich mit MEINEM Daemon", von `bibi-ctrl
+            # daemon` selbst gesetzt) und liefert in einem Daemon-Prozess
+            # deshalb die eigene Adresse. Ihr Docstring nennt das einen
+            # "reinen Lokalitaets-Override, kein Federations-Ziel" -- hier
+            # ist aber genau das Federations-Ziel gemeint. Ohne diese
+            # Unterscheidung fragt der Client sich selbst und sieht nie eine
+            # Aenderung (live beobachtet: workers=0, counts=(), started_at =
+            # eigener Prozessstart).
+            import os
+            from bibi import config
+            url = (os.environ.get("BIBI_SCHEDULER_URL")
+                   or config.read_env().get("BIBI_SCHEDULER_URL"))
+            if not url:
+                return None
+            from bibi.controller.client import ControllerClient
+            return ControllerClient(url, timeout=3.0).status()
+        except Exception:  # noqa: BLE001 — der Host darf ausfallen (§2.7)
+            return None
+
+    def _diff_scheduler(self) -> int:
+        """"feedstatus"-Trigger fuer die Werte, die vom **Scheduler** kommen.
+
+        Der Header zeigt verbundene Clients, den naechsten Termin und die
+        Job-Zaehler — alles Fremdzustand. ``_diff_nodes()`` und
+        ``_diff_flags()`` sehen ihn nicht: sie beobachten die lokale Registry
+        und die lokalen Flags, und auf einem reinen Client aendert sich dort
+        nie etwas. Der SSE-Strom war deshalb stumm, und der Header
+        aktualisierte nur beim Reload (Befund m.rau, 2026-08-03).
+
+        Der Fingerabdruck deckt genau das ab, was im rechten Block steht. Zu
+        weit gefasst machte er den Header bei jeder Kleinigkeit dreckig — und
+        der haengt an einem git-Aufruf.
+        """
+        jetzt = time.time()
+        if jetzt - self._sched_last_fetch < self._SCHED_POLL_S:
+            return 0
+        self._sched_last_fetch = jetzt
+        s = self._fetch_scheduler_status()
+        if s is None:
+            snap: tuple | None = None
+        else:
+            js = s.get("job_stats") or {}
+            snap = (
+                len(s.get("workers") or []),
+                tuple(sorted((js.get("counts") or {}).items())),
+                js.get("next_due_at"),
+                s.get("maintenance"),
+                s.get("started_at"),
+            )
+        changed = self._primed and snap != self._sched_snapshot
+        war_leer = self._sched_snapshot is None and snap is None
+        self._sched_snapshot = snap
+        n = 0
+        if changed and not war_leer:
+            self.bus.publish_state("feedstatus")
+            n = 1
+        # Zweiter, feiner Fingerabdruck im selben Takt (m.rau/bibi#143) — er
+        # bedient ein anderes Ziel und darf den Header deshalb nicht anfassen.
+        return n + self._diff_scheduler_jobs()
+
+    def _fetch_scheduler_jobs(self) -> list[dict] | None:
+        """Job-Zeilen des konfigurierten Schedulers, oder ``None``.
+
+        Getrennt von :meth:`_fetch_scheduler_status`, weil es eine andere Route
+        ist (``/-/schedule`` statt ``/-/status``) — dieselbe Adressfindung,
+        dieselbe Zurueckhaltung im Fehlerfall.
+        """
+        try:
+            import os
+
+            from bibi import config
+            url = (os.environ.get("BIBI_SCHEDULER_URL")
+                   or config.read_env().get("BIBI_SCHEDULER_URL"))
+            if not url:
+                return None
+            from bibi.controller.client import ControllerClient
+            return ControllerClient(url, timeout=3.0).schedules()
+        except Exception:  # noqa: BLE001 — der Host darf ausfallen (§2.7)
+            return None
+
+    def _diff_scheduler_jobs(self) -> int:
+        """``live:<slug>``-Trigger fuer Job-Zustaende, die beim **Scheduler**
+        wechseln (m.rau/bibi#143).
+
+        **Befund m.rau, 2026-08-04/05:** *„ich sehe immer noch kein
+        kontinuierliches Update, wenn sich ein Job Status aendert. … Ich muss
+        immer wieder Refresh druecken."*
+
+        ``_diff_jobs()`` vergleicht die **lokale** Job-DB — auf einem Client
+        passiert dort nie etwas, die Jobs laufen beim Scheduler.
+        ``_diff_scheduler()`` daneben sieht zwar den Scheduler, traegt aber nur
+        **aggregierte** Zaehler und meldet ausschliesslich ``feedstatus``. Ein
+        Job, der von ``pending`` auf ``running`` geht, erreichte damit weder die
+        Zeile im Jobs-Screen noch die Slot-Kachel im Job-Detail.
+
+        **Warum ein zweiter Fingerabdruck und nicht ein groesserer:** der linke
+        Header-Block haengt an einem ``git status``. Ihn bei jeder
+        Slug-Aenderung nachladen zu lassen waere genau der Firehose, den der
+        Docstring oben ausschliesst. Zwei Fingerabdruecke, zwei Ziele — und die
+        Trennung ist getestet, nicht bloss beabsichtigt.
+
+        **Der Ausfall ist keine Aenderung.** Ist der Host weg (``None``), bleibt
+        der letzte Stand stehen, statt jeden Slug als geaendert zu melden;
+        dieselbe Zurueckhaltung wie beim groben Fingerabdruck. Der Ausfall
+        selbst steht im Header, der ihn ohnehin zeigt.
+        """
+        zeilen = self._fetch_scheduler_jobs()
+        if zeilen is None:
+            return 0
+        snap: dict[str, tuple] = {}
+        for r in zeilen:
+            slug = r.get("slug")
+            if not slug:
+                continue
+            # `row_status` zuerst: so heisst das Feld in den Scheduler-Zeilen
+            # aus `/-/schedule`, wo `status` schlicht `None` ist (dieselbe
+            # Reihenfolge wie in `jobs_view.py`).
+            snap[slug] = (r.get("row_status") or r.get("status"),
+                          r.get("fire") or r.get("next_fire_at"))
+        vorher = self._sched_jobs_snapshot
+        self._sched_jobs_snapshot = snap
+        if not self._primed or vorher is None:
+            return 0
+        geaendert = [s for s, v in snap.items() if vorher.get(s) != v]
+        # Ein verschwundener Slug ist ebenfalls eine Aenderung — sonst bleibt
+        # eine geloeschte Zeile stehen, bis jemand neu laedt.
+        geaendert += [s for s in vorher if s not in snap]
+        if not geaendert:
+            return 0
+        for slug in geaendert:
+            self.bus.publish_state(f"live:{slug}")
+        # Die Liste hoert auf EIN Sammel-Target, nicht auf jeden Slug einzeln
+        # (PLAN-36 Stufe 36.3) — ohne sie bewegt sich die Kachel im Detail und
+        # die Zeile in der Liste nicht, und genau die sieht man zuerst.
+        self.bus.publish_state("jobs")
+        return len(geaendert) + 1
 
     # ── Innereien ───────────────────────────────────────────────────────────
 

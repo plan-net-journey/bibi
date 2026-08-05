@@ -25,12 +25,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from bibi import config, repo, state
-from bibi.daemon import activity, boot_signal, job_db, mergeback, openapi, output_format
+from bibi.daemon import (activity, boot_signal, job_db, mergeback, node_info, openapi,
+                         output_format)
 from bibi.daemon import worker as worker_mod  # Modul-Alias (bibi.daemon.app.worker ist eine Worker-Instanz)
 from bibi.schedule import models
 from bibi.daemon.openapi import (
-    JobReservation, JobView, KillRequest, NextRequest, RestartRequest, RunRequest,
-    StatusReport, WorkerHeartbeat, WorkerView,
+    JobReservation, JobView, JournalEntryView, KillRequest, NextRequest, RestartRequest,
+    RunRequest, StatusReport, WorkerHeartbeat, WorkerView,
 )
 from bibi.daemon import roles as roles_mod  # Modul-Alias (der Parameter heißt `roles`)
 from bibi.daemon.roles import Roles
@@ -508,6 +509,36 @@ def _add_status_route(app: FastAPI, *, sync_lock=None, synchronizer=None) -> Non
         return {"id": id, "status": str(report.status)}
 
 
+def _add_journal_route(app: FastAPI) -> None:
+    """``GET /-/journal`` — bewusst **rollenunabhängig** registriert,
+    herausgelöst aus ``_add_scheduler_routes()`` (m.rau/bibi#103).
+
+    Das Journal ist keine disponierte Domäne: jeder Knoten führt sein eigenes,
+    vollständiges — Scheduler und Client sind darin gleichwertig und
+    unabhängig, zusammengeführt wird erst in der Anzeige. Scheduler-gated
+    antwortete die Route auf einem reinen Client mit 501, und damit hätte das
+    Job-Detail keine ``LOCAL``-Gruppe.
+
+    ``/-/run/journal`` bleibt vorerst daneben bestehen; es ist dieselbe Abfrage
+    mit ``mine_only=True`` und damit auf ``?domain=local`` abbildbar.
+    """
+
+    # ``responses`` statt ``response_model``: das Schema gehört in den Vertrag,
+    # aber die Antwort darf nicht darauf zusammengeschnitten werden —
+    # ``journal_view()`` liefert zusätzlich ``payload``/``pinned_host``, und
+    # ``render.py::_is_own_run()`` liest genau die aus dieser Liste.
+    @app.get("/-/journal", tags=["journal"],
+             responses={200: {"model": list[JournalEntryView]}})
+    def journal(slug: str | None = None, host: str | None = None, domain: str | None = None,
+                limit: int | None = None, offset: int | None = None):
+        conn = job_db.connect()
+        try:
+            return job_db.list_journal(conn, slug=slug, host=host, domain=domain,
+                                       limit=limit, offset=offset)
+        finally:
+            conn.close()
+
+
 def _journal_output_path(entry: dict) -> Path:
     """Output-Datei einer Journal-Zeile: ``output_ref``, sonst der
     deterministische ``data/job/<run_id>/output.jsonl``-Pfad.
@@ -611,17 +642,9 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                       worker=req.worker if req else None)
         return res
 
-    # ── Journal (disponierte Domäne, §1.4) ───────────────────────────────────
-    @app.get("/-/journal", tags=["journal"])
-    def journal(slug: str | None = None, host: str | None = None, domain: str | None = None,
-                limit: int | None = None, offset: int | None = None):
-        conn = job_db.connect()
-        try:
-            return job_db.list_journal(conn, slug=slug, host=host, domain=domain,
-                                       limit=limit, offset=offset)
-        finally:
-            conn.close()
-
+    # ── Journal ──────────────────────────────────────────────────────────────
+    # Die Liste selbst lebt in ``_add_journal_route()``, rollenunabhängig
+    # (m.rau/bibi#103) — hier stehen nur noch die Detail- und Output-Wege.
     @app.get("/-/journal/{jid}", tags=["journal"])
     def journal_get(jid: int):
         # Eine Journal-Zeile (Metadaten) — Quelle des Execution-Detail (§C.4).
@@ -699,18 +722,6 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                                 content={"error": "journal entry not found", "id": jid})
         return {"deleted": jid}
 
-    # ── Lauf-Historie-Chart: Terminal-Landungen (PLAN-21 Befund 11 v2) ────────
-    @app.get("/-/landings", tags=["journal"])
-    def landings_list(since: float | None = None):
-        # Dünne Landungs-Projektion (status+finished_at) — Bucket-Aggregation
-        # für den Chart passiert im Controller/Render-Layer (reine Funktionen,
-        # kein DB-Zugriff dort).
-        conn = job_db.connect()
-        try:
-            return job_db.journal_landings(conn, since=since)
-        finally:
-            conn.close()
-
     # ── Worker-Verbund: Anmeldung/Heartbeat + Liste (PLAN-3 §3.6, A12) ────────
     # PLAN-32 Stufe 32.1 ("Open Trust"): der frühere BIBI_CONNECT_SECRET-Gate
     # (``_auth``, oben) entfällt hier zugunsten eines Host-seitig gepflegten
@@ -726,14 +737,41 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
     @app.post("/-/worker", tags=["worker"])
     def worker_heartbeat(hb: WorkerHeartbeat):
         status = "approved"  # kein node_id (älterer Client) -> Rückwärtskompatibilität
+        bootstrapped = False
         if hb.node_id:
             conn = job_db.connect()
             try:
                 status = job_db.node_approval_status(conn, hb.node_id)
+                # m.rau/bibi#141: der Startschlüssel des ersten Clients. Erst
+                # **nach** der Blocked-Prüfung unten wäre zu spät — aber davor
+                # steht die Statusabfrage, und ein blockierter Knoten darf sich
+                # auch mit einem gültigen Token nicht freikaufen. Deshalb hier,
+                # und nur für einen, der nicht ohnehin schon approved ist.
+                if hb.bootstrap_token and status == "pending":
+                    bootstrapped = job_db.redeem_bootstrap_token(
+                        conn, hb.bootstrap_token, hb.node_id)
+                    if bootstrapped:
+                        status = "approved"
             finally:
                 conn.close()
             if status == "blocked":
                 raise HTTPException(status_code=401, detail="node blocked by host operator")
+            # Ein vorgezeigter Startschlüssel, der nicht gilt, ist ein Fehler und
+            # kein Achselzucken: falsch, abgelaufen oder schon verbraucht sehen
+            # von hier aus gleich aus, und in allen drei Fällen soll der Client
+            # es erfahren statt zu glauben, es habe geklappt.
+            if hb.bootstrap_token and not bootstrapped and status != "approved":
+                raise HTTPException(status_code=401,
+                                    detail="bootstrap token invalid, expired or already used")
+            if bootstrapped:
+                # Die eingelöste Zeile ist aus der DB verschwunden — bliebe der
+                # Vorgang auch hier unsichtbar, wäre hinterher nicht mehr
+                # feststellbar, dass dieser Knoten sich selbst freischaltete und
+                # kein Mensch ihn freigab (Nodes.md §3.3, Klasse E).
+                activity.emit(log, logging.INFO, "connect.bootstrapped",
+                              "Knoten per Startschlüssel freigeschaltet",
+                              role="scheduler", node_id=hb.node_id,
+                              worker=hb.worker, host=hb.host)
         result = registry.heartbeat(hb.worker, hb.host, hb.git_status,
                                     node_id=hb.node_id, git_user=hb.git_user, role=hb.role,
                                     port=hb.port, engine=hb.engine,
@@ -752,8 +790,30 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
             result["config_bundle"] = bundle
         return result
 
-    @app.post("/-/worker/{node_id}/approve", tags=["worker"])
+    @app.post("/-/worker/{node_id}/approve", tags=["worker"],
+              dependencies=[Depends(_require_approved_or_local)])
     def worker_approve(node_id: str):
+        """Einen Knoten freischalten (m.rau/bibi#141).
+
+        **Die Dependency ist der ganze Fix, und ihr Fehlen war die Lücke:**
+        ``approve`` und ``block`` waren die einzigen schreibenden Routen dieser
+        Datei ohne sie — wer den Scheduler erreichte, schaltete sich selbst
+        frei und bekam beim nächsten Heartbeat ``config.distributable_config()``,
+        also jeden ``BIBI_JOB_ENV_*``-Wert des Hosts. Genau das, was die
+        Freigabe verhindern soll. Neun Zeilen tiefer stand dieselbe Zeile bei
+        ``worker_disconnect`` längst, mit derselben Begründung.
+
+        **Anders als dort ohne Selbst-Bedingung, und zwar umgekehrt:**
+        ``disconnect`` lässt einen Knoten nur *sich selbst* abmelden; hier darf
+        er *sich selbst gerade nicht* freigeben. Beides fällt aus derselben
+        Dependency: ein ``pending``-Knoten kommt nicht durch, und wer schon
+        ``approved`` ist, hat nichts mehr freizuschalten. Ein approvter Knoten
+        gibt fremde frei, der Host-Operator lokal ohne Header alle.
+
+        Dass ein frischer Scheduler damit niemanden mehr freigeben könnte, löst
+        der Startschlüssel aus ``bibi-ctrl bootstrap-token`` — beides gehört in
+        denselben Schritt, sonst sperrt diese Zeile jeden neuen Verbund aus.
+        """
         conn = job_db.connect()
         try:
             job_db.set_node_approval(conn, node_id, "approved")
@@ -761,7 +821,8 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
             conn.close()
         return {"node_id": node_id, "status": "approved"}
 
-    @app.post("/-/worker/{node_id}/block", tags=["worker"])
+    @app.post("/-/worker/{node_id}/block", tags=["worker"],
+              dependencies=[Depends(_require_approved_or_local)])
     def worker_block(node_id: str):
         conn = job_db.connect()
         try:
@@ -1090,7 +1151,7 @@ def create_app(
     worker_registry = WorkerRegistry() if roles.scheduler else None
     if collector is None:
         from bibi.daemon.bus import Collector
-        collector = Collector(bus, registry=worker_registry)
+        collector = Collector(bus, registry=worker_registry, heartbeat=heartbeat)
     # Bugfix (User-Fund: ein erschoepfter gepinnter Job blieb auf einem reinen
     # Client fuer immer in "failed" haengen): job_db.sweep() (failed+erschoepft
     # -> error, deferred+defer_max -> inactive) lief bisher nur unter
@@ -1218,10 +1279,25 @@ def create_app(
             "sync_conflict": state.get_sync_conflict(),
             "maintenance": state.get_maintenance(),
             "started_at": started_at,
+            # Die Serverzeit. Ein Client zeigt sie als *die* Uhr des UI
+            # (m.rau, 2026-08-03: "am liebsten haette ich die scheduler
+            # Uhrzeit ... rechts oben mit Ticker, und sonst nirgends") --
+            # in einem verteilten System ist die fremde Uhr die
+            # interessantere, und ihr Auseinanderlaufen wird nur sichtbar,
+            # wenn sie jemand ausspricht.
+            "now": time.time(),
             # Eigener Hostname (PLAN-21 Befund 6) — die Host-Karte zeigt ihn auf
             # Knoten ohne connect-Rolle statt des früheren "lokal"-Platzhalters.
             "hostname": socket.gethostname(),
         }
+        # Wer antwortet hier. Der Scheduler meldet sich nie bei sich selbst,
+        # steht also in keiner Registry — ohne diese Selbstauskunft kann ein
+        # Client seine Zeile im Nodes-Screen nicht bauen und ließe ausgerechnet
+        # den Knoten aus, dem die Flotte gehört (s. ``node_info``).
+        try:
+            out["node"] = node_info.self_entry(roles)
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            pass
         # Soll/Ist der Engine (m.rau/bibi#43) — rein lokal abgeleitet, kein
         # Heartbeat-Feld und keine Host-Abhängigkeit; funktioniert also gerade
         # dann, wenn der Host nicht erreichbar ist. Defensiv: ein Knoten, der
@@ -1701,40 +1777,37 @@ def create_app(
                 bus.unsubscribe(sub)
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    # ── /feed: Git-Historie zu Entitäten + Heatmap (PLAN-18) — rollenunabhängig ─
+    # ── /feed: Git-Historie zu Einheiten — rollenunabhängig ────────────────────
     # Reine Git-/Filesystem-Introspektion (bibi/feed.py), kein job_db-Zugriff —
     # funktioniert auf jedem Knoten, auch einem reinen Client ohne Scheduler/
-    # Worker. Eigenständig abfragbar (User-Wunsch "Heatmap auch query-fähig
-    # machen"), nicht nur ins Feed-HTML gebacken.
-    #
-    # ``weeks`` ist **entkoppelt** von ``days`` (PLAN-20 Befund 3, User-Fund:
-    # "Heatmap immer um eine Woche nachladen") — eigener ``collect_commits()``-
-    # Aufruf mit eigenem Zeitfenster, nicht dieselbe (an ``days`` gebundene)
-    # Commit-Liste wie die Änderungsliste. Sonst wäre die 5-Wochen-Heatmap beim
-    # Default-Seitenaufruf (``days=1``) fast leer, weil sie nur die Commits
-    # sähe, die die Liste ohnehin schon geladen hat.
+    # Worker. Eigenständig abfragbar, nicht nur ins Feed-HTML gebacken.
     @app.get("/-/feed", tags=["daemon"])
-    def feed(days: int | None = None, weeks: int | None = None):
+    def feed(days: int | None = None):
         from bibi import feed as feed_mod
         root = repo.root()
         commits = feed_mod.collect_commits(root, since_days=days)
-        agent_shas = feed_mod.agent_commit_shas(root, since_days=days)
-        entities = feed_mod.group_entities(commits, agent_shas,
-                                           case_dir_name=repo.case_dir_name())
-        eff_weeks = weeks if weeks is not None else feed_mod.HEATMAP_WEEKS
-        heatmap_commits = feed_mod.collect_commits(root, since_days=eff_weeks * 7)
-        grid = feed_mod.heatmap_buckets(heatmap_commits, weeks=eff_weeks)
+        slugs = feed_mod.agent_slugs(root, since_days=days)
+        cases = feed_mod.discover_cases(root, case_dir_name=repo.case_dir_name())
+        entries = feed_mod.group_entries(commits, slugs, cases=cases)
+        # Was noch nicht committet ist, steht in keinem `git log` und waere
+        # sonst der einzige Zustand des Vaults, den der Feed nicht kennt
+        # (m.rau/bibi#133). Haengt bewusst nicht am `days`-Fenster: offen ist
+        # offen, unabhaengig davon, wie weit man zurueckblickt.
+        offen = feed_mod.uncommitted_units(root, cases=cases)
         return {
             "since_days": days,
-            "weeks": eff_weeks,
             "commit_base_url": feed_mod.remote_commit_base_url(root),
-            "entities": [
-                {"kind": e.kind, "name": e.name, "last_changed": e.last_changed,
-                 "last_commit_sha": e.last_commit_sha,
-                 "authors": sorted(e.authors), "all_agent": e.all_agent}
-                for e in entities
+            "uncommitted": [
+                {"unit": e.unit, "last_changed": e.last_changed,
+                 "author": e.author, "states": list(e.states), "changes": e.changes}
+                for e in offen
             ],
-            "heatmap": grid,
+            "entries": [
+                {"unit": e.unit, "last_changed": e.last_changed,
+                 "last_commit_sha": e.last_commit_sha,
+                 "authors": sorted(e.authors), "changes": e.changes}
+                for e in entries
+            ],
         }
 
     @app.get("/-/log/stream", tags=["daemon"])
@@ -1765,6 +1838,8 @@ def create_app(
     # status/{id} — auf JEDEM Knoten, nicht nur mit roles.scheduler (s. Docstring
     # von _add_status_route()).
     _add_status_route(app, sync_lock=sync_lock, synchronizer=synchronizer)
+    # Journal-Liste ebenso: jeder Knoten führt sein eigenes (m.rau/bibi#103).
+    _add_journal_route(app)
     # /-/restart ebenso rollenunabhängig: ein Deploy trifft alle Knoten, und der
     # häufigste Adressat ist ein reiner Client (s. _add_daemon_routes()). Der
     # sync_lock wird durchgereicht, damit der Deploy-Pull nicht mit dem

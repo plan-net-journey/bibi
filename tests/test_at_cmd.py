@@ -80,3 +80,71 @@ def test_at_rescan_uses_scheduler_base_url_without_port(team_repo: Path, capsys,
     assert rc == 0
     out = capsys.readouterr().out
     assert "sarasate.tail9f9173.ts.net:59998" in out
+
+
+# ── Auf einem Client erreicht die MD den Scheduler nicht (m.rau/bibi#140) ────
+#
+# `at` schreibt die Schedule-MD in den **lokalen** Checkout (`repo.case_dir()`),
+# schickt den Rescan aber an `config.scheduler_base_url()` — auf einem Client
+# also an eine andere Maschine, die diese Datei nie zu Gesicht bekommt. Der
+# Rescan gelingt technisch (200), findet nichts, und `_rescan()` meldet
+# trotzdem `True`: es prueft nur die Erreichbarkeit.
+#
+# **Live nachgewiesen am 2026-08-05** (Mac-Client → sarasate): die MD lag auf
+# dem Mac, `/srv/bibi-notes/vault/case/` auf sarasate kannte sie nicht, und der
+# Job erschien ueber 20 Abfragen in keiner `job list`. Die CLI hatte
+# `rescan: ok` gemeldet.
+#
+# Der Weg zum Scheduler ist der Vault selbst: er ist git, und der Synchronizer
+# verteilt ihn. Also gehoert die MD committet und gepusht, bevor rescannt wird
+# — und wenn das nicht geht, muss es dastehen statt eines `ok`.
+
+
+def _als_client(monkeypatch, *, push_ok: bool = True):
+    """Ein Knoten ohne `scheduler`-Rolle, dessen Scheduler woanders steht."""
+    monkeypatch.setattr(at_cmd.config, "scheduler_base_url",
+                        lambda: "http://ein-anderer-knoten:8780")
+    monkeypatch.setattr(at_cmd, "_rescan", lambda url: True)   # Host antwortet
+    monkeypatch.setattr(at_cmd, "_hat_remote", lambda: True, raising=False)
+    gerufen: dict = {}
+    monkeypatch.setattr(at_cmd, "_zustellen",
+                        lambda p: (gerufen.setdefault("pfad", p), push_ok)[1],
+                        raising=False)
+    return gerufen
+
+
+def test_at_on_a_client_delivers_the_md_to_the_scheduler(team_repo: Path,
+                                                         capsys, monkeypatch):
+    """Die MD muss den Knoten verlassen, sonst feuert sie nie."""
+    gerufen = _als_client(monkeypatch)
+    rc = main(["at", "+5min", "x"])
+    assert rc == 0
+    assert "pfad" in gerufen, "die MD wurde nicht zugestellt"
+
+
+def test_at_on_a_client_does_not_claim_a_success_it_cannot_have(
+        team_repo: Path, capsys, monkeypatch):
+    """Scheitert die Zustellung, ist `rescan: ok` eine Falschaussage.
+
+    Genau diese Meldung hat den Fehler am 2026-08-05 verdeckt: der Auftrag
+    galt als eingeplant und lief nie.
+    """
+    _als_client(monkeypatch, push_ok=False)
+    rc = main(["at", "+5min", "x"])
+    out = capsys.readouterr().out
+    assert "ok" not in out.split("rescan:")[-1].split("\n")[0], out
+    assert rc != 0 or "nicht" in out.lower(), out
+
+
+def test_at_on_the_scheduler_does_not_need_git(team_repo: Path, monkeypatch):
+    """Auf dem Host sieht der Daemon denselben Vault — kein Umweg noetig."""
+    monkeypatch.setattr(at_cmd.config, "scheduler_base_url",
+                        lambda: "http://localhost:8769")   # der Scheduler ist hier
+    monkeypatch.setattr(at_cmd, "_rescan", lambda url: True)
+    gerufen: dict = {}
+    monkeypatch.setattr(at_cmd, "_zustellen",
+                        lambda p: gerufen.setdefault("pfad", p) or True,
+                        raising=False)
+    rc = main(["at", "+5min", "x"])
+    assert rc == 0
+    assert "pfad" not in gerufen, "auf dem Scheduler wurde unnoetig gepusht"
