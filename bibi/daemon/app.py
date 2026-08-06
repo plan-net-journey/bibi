@@ -1257,6 +1257,15 @@ def create_app(
         openapi_url="/-/openapi.json",
     )
 
+    # Der Bus gehört zur App und wurde bisher nur innen benutzt. ``daemon_cmd``
+    # braucht ihn ab m.rau/bibi#176 von außen: das SIGTERM erreicht den
+    # Signal-Handler von uvicorn, nicht diese Datei, und dort muss jemand den
+    # SSE-Strömen sagen können, dass Schluss ist — **bevor** uvicorns Frist
+    # anläuft. ``app.state`` ist der dafür vorgesehene Ort, und ein Attribut
+    # ist ehrlicher als ein Modul-Singleton: es gibt einen Bus **pro App**,
+    # und die Tests bauen regelmäßig mehrere.
+    app.state.bus = bus
+
     # Defensiv: ein Endpunkt-Fehler darf den Daemon nie killen — generischer
     # Handler liefert 500-JSON statt einer ungefangenen Exception (§2.7).
     @app.exception_handler(Exception)
@@ -1756,6 +1765,15 @@ def create_app(
                         return
                 while True:
                     batch = await bus.wait(sub, timeout=EVENTS_PING_S)
+                    # m.rau/bibi#176: der Knoten fährt herunter — dann endet
+                    # dieser Strom von selbst, statt in uvicorns Frist zu
+                    # laufen und als abgebrochene Task im Traceback zu landen.
+                    # ``begin_shutdown()`` weckt jeden Abonnenten, der Check
+                    # steht deshalb direkt hinter dem Aufwachen und braucht
+                    # keine eigene Schleife.
+                    if bus.closing:
+                        yield 'data: {"t":"bye"}\n\n'
+                        return
                     if not batch:
                         # Echtes data-Event statt SSE-Kommentarzeile (PLAN-36
                         # Stufe 36.3): Kommentare erreichen JS nie (die

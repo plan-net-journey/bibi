@@ -125,3 +125,55 @@ def test_events_idle_stream_sends_data_pings_not_counting_limit(app_env):
     # 0.35s Leerlauf bei EVENTS_PING_S=0.1 → mehrere Pings VOR dem State-Event.
     assert _ping_count(body) >= 1
     assert _data_events(body) == [{"t": "hello"}, {"t": "state", "target": "jobs"}]
+
+
+# --- m.rau/bibi#176: ein geplantes Beenden sieht nicht aus wie ein Absturz ---
+
+
+def test_shutdown_ends_the_stream_instead_of_running_into_the_timeout(app_env):
+    """Der Strom endet, wenn der Daemon herunterfaehrt — von selbst.
+
+    Bisher lief er in uvicorns ``timeout_graceful_shutdown``, die Task wurde
+    abgebrochen, und der Abbruch erschien als ~50 Zeilen Stacktrace mit
+    ``Exception in ASGI application``. Nichts davon war kaputt; niemand konnte
+    das der Ausgabe ansehen.
+
+    **Ohne ``with TestClient(...)``, und das ist kein Stilfehler:** der GET
+    laeuft hier ohne ``limit`` und endet vor dem Fix nie. Der Lifespan-Exit des
+    Kontextmanagers wartet aber auf offene Anfragen — der Rot-Schritt haette
+    also den Testlauf aufgehaengt statt fehlzuschlagen. Ein Test, der haengt,
+    sagt nichts; einer, der scheitert, sagt alles.
+    """
+    import time
+
+    app, bus, _ = app_env
+    box: dict[str, str] = {}
+    c = TestClient(app)
+
+    def read() -> None:
+        box["body"] = c.get("/-/events").text
+
+    th = threading.Thread(target=read, daemon=True)
+    th.start()
+    time.sleep(0.3)          # der Abonnent ist eingeschrieben, der Strom steht
+
+    begin = getattr(bus, "begin_shutdown", None)
+    assert begin is not None, "der Bus kann seine Stroeme nicht schliessen"
+    begin()
+
+    th.join(timeout=5)
+    assert not th.is_alive(), \
+        "der Strom haengt weiter — genau das laeuft in uvicorns Frist und endet im Traceback"
+
+    evts = _data_events(box["body"])
+    assert evts[0] == {"t": "hello"}
+    assert evts[-1] == {"t": "bye"}, "der Abschied sagt, dass es geplant war"
+
+
+def test_a_bus_without_shutdown_keeps_streaming(app_env):
+    # Gegenprobe: der Abschied kommt vom Shutdown, nicht von irgendeinem Tick.
+    app, bus, _ = app_env
+    with TestClient(app) as c:
+        evts = _data_events(c.get("/-/events", params={"limit": 1}).text)
+    assert evts == [{"t": "hello"}]
+    assert not bus.closing

@@ -95,6 +95,37 @@ class Bus:
         self._subs: set[_Subscriber] = set()
         self._lock = threading.Lock()
         self._append_limit = append_limit
+        self._closing = False
+
+    @property
+    def closing(self) -> bool:
+        """Fährt der Knoten herunter? Dann enden die Ströme von selbst."""
+        return self._closing
+
+    def begin_shutdown(self) -> None:
+        """Allen Abonnenten sagen, dass Schluss ist (m.rau/bibi#176).
+
+        Der ``/-/events``-Strom ist im Normalfall endlos. Beim Herunterfahren
+        wartete uvicorn deshalb seine ``timeout_graceful_shutdown`` ab, brach
+        die Task dann ab — und protokollierte den Abbruch als *„Exception in
+        ASGI application"* samt rund fünfzig Zeilen Stacktrace. Kaputt war
+        nichts; nur konnte das niemand der Ausgabe ansehen, und ein geplanter
+        Vorgang, der wie ein Absturz aussieht, lehrt seinen Leser nebenbei,
+        Tracebacks zu überfliegen.
+
+        **Die Frist bleibt unverändert** — sie ist die Absicherung für alles,
+        was sich nicht von selbst schließt. Sie greift nur nicht mehr für den
+        einen Strom, von dem wir wissen, dass er nie von selbst endet.
+
+        Idempotent und aus jedem Thread aufrufbar: der Aufruf kommt aus dem
+        Signal-Handler, nicht aus dem Event-Loop. ``_wake()`` ist dafür
+        gebaut (``call_soon_threadsafe``, s. dort).
+        """
+        with self._lock:
+            self._closing = True
+            subs = list(self._subs)
+        for s in subs:
+            self._wake(s)
 
     def subscribe(self) -> _Subscriber:
         sub = _Subscriber(asyncio.get_running_loop())
