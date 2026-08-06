@@ -29,12 +29,19 @@ Verbindungsziel, er verbindet sich nicht zu sich selbst"*). Of the five bits
 the engine knows, only two are a real decision — does this node hold the job
 database, and does it serve a UI.
 
-| This node is… | `--role` | `--connect` | daemon |
+| This node is… | `--profile` | roles it derives | daemon |
 |---|---|---|---|
-| **Client** — a workstation | `synchronizer,controller` | if there is a scheduler | **session daemon, no supervisor** |
-| **Worker** — execution only | `synchronizer,worker` | always | supervisor |
-| **Scheduler** — the server | `synchronizer,scheduler`[`,controller`] | never (invariant) | supervisor |
-| **Scheduler+Worker** | `synchronizer,scheduler,worker`[`,controller`] | never (invariant) | supervisor |
+| **Client** — a workstation | `client` | `synchronizer,controller` | **session daemon, no supervisor** |
+| **Worker** — execution only | `worker` | `synchronizer,worker` | supervisor |
+| **Scheduler** — the server | `scheduler` | `synchronizer,scheduler` | supervisor |
+| **Scheduler+Worker** | `scheduler+worker` | `synchronizer,scheduler,worker` | supervisor |
+
+**Since `v0.7.2` the engine speaks this vocabulary itself** — `bibi-ctrl init
+--profile <name>` derives the roles, so this skill passes the answer through
+instead of translating it (m.rau/bibi#174). `--with-ui` adds `controller` to a
+scheduler; `--role` still takes a raw list for anyone who wants one. A
+scheduler carries no UI by default, and `init` refuses a `worker` with no
+scheduler URL rather than configuring one.
 
 **A client comes in two shapes, and the scheduler question decides which
 (m.rau/bibi#179).** With a scheduler it also gets `--connect` and joins the
@@ -299,11 +306,10 @@ One question at a time via `AskUserQuestion`, not all at once.
   `claude`, resolved via `PATH`, which is enough for the foreground/`tmux`
   path this skill's container case uses). Only ask if `command -v claude`
   fails to resolve at all.
-- **Not asked, because it is derived:** `--role`. It falls out of the node
-  kind and the two follow-up questions via the table in the scope note —
-  asking for it again would be asking the same question in the engine's
-  vocabulary instead of the human's, which is precisely what m.rau/bibi#174
-  is about.
+- **Not asked, because it is derived:** `--role`. The node kind *is* the
+  answer, and since `v0.7.2` the engine derives the roles from it itself
+  (m.rau/bibi#174). Asking for the list would be asking the same question a
+  second time, in the engine's vocabulary instead of the human's.
 - **Not asked, left at the engine default:** `--public-host` (only matters
   for a node dispatching app jobs — a pure client never does),
   `--status-poll-interval`/`--job-status-poll-interval` (already-tuned UI
@@ -313,14 +319,23 @@ One question at a time via `AskUserQuestion`, not all at once.
 
 ```bash
 <bibi-ctrl> init --non-interactive \
-  --role "<from the table in the scope note>" \
+  --profile "<client|worker|scheduler|scheduler+worker>" \
+  [--with-ui] \
   [--scheduler-url "<answer>"] \
   --remote "<answer>" \
   [--node-name "<answer>"] \
   [--claude-bin "<answer>"]
 ```
 
-**`--role` is read back, never assumed.** `bibi-ctrl daemon run` resolves
+**Pass the profile, not a role list.** The engine owns the mapping since
+`v0.7.2`; translating it here would mean two places that must agree, and one
+of them would drift. `--profile` and `--role` together are refused outright —
+they answer the same question.
+
+**`--with-ui` only for a scheduler that is the team's first node.** On a
+client it is a no-op, not an error, so passing it out of habit costs nothing.
+
+**Read the roles back, never assume them.** `bibi-ctrl daemon run` resolves
 roles from the config file (`BIBI_CONFIG_PATH` > `XDG_CONFIG_HOME` >
 `~/.config/bibi/env`), **not** from any `Environment=BIBI_ROLE=…` a unit
 might carry — `daemon install --role` writes that line and nothing reads it.
