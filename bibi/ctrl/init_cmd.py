@@ -22,10 +22,29 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import subprocess
 import sys
+from datetime import datetime
 
 from .. import config
 from ..daemon import roles as R
+
+
+def _origin_url() -> str:
+    """``origin`` des Checkouts, in dem wir stehen — leer, wenn es keines gibt.
+
+    Nur zur **Erkennung** einer fremden Konfiguration (m.rau/bibi#173), nie als
+    Wert: gesetzt wird ``BIBI_REMOTE`` weiterhin ausschließlich aus Flag oder
+    Antwort. Ein Fehlschlag (kein Repo, kein git, kein ``origin``) ist kein
+    Fehler, sondern nur eine Erkennung weniger.
+    """
+    try:
+        out = subprocess.run(["git", "remote", "get-url", "origin"],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
 
 #: Flag-``dest`` (argparse: Bindestriche -> Unterstriche) -> ``config.KEYS``-Name.
 #: ``BIBI_NODE_ID`` bewusst nicht enthalten -- kein Flag dafür, s. Moduldoc.
@@ -189,12 +208,11 @@ def run(args: argparse.Namespace) -> int:
     for key in _order:
         fallback = config.KEYS[key]
         if key == "BIBI_NODE_ID":
-            # Bibi4-Iteration: nie abfragen — ein Mensch soll keine UUID
-            # eintippen. Bestehenden Wert übernehmen, sonst neu generieren
-            # (config.node_id() selbst würde nur lesen, hier aktiv setzen,
-            # damit ein --force-Rewrite ihn nicht als leer überschreibt).
-            import uuid
-            values[key] = existing.get(key) or uuid.uuid4().hex
+            # Nie abfragen — ein Mensch soll keine UUID eintippen. Der Wert
+            # entsteht unten, nach der Schleife: ob der bestehende übernommen
+            # wird, hängt daran, ob diese Konfiguration überhaupt zu diesem
+            # Knoten gehört, und das steht erst fest, wenn ``BIBI_REMOTE``
+            # beantwortet ist (m.rau/bibi#173).
             continue
         default = existing.get(key) or fallback
         explicit = flag_values.get(key)
@@ -276,6 +294,41 @@ def run(args: argparse.Namespace) -> int:
                 else:
                     _profile = None
                 _role_value = values[key]
+
+    # ── Gehört die Datei, die wir gleich überschreiben, überhaupt uns? ──────
+    #
+    # m.rau/bibi#173, Live-Fall vom 2026-08-06: wer eine **zweite** Instanz auf
+    # demselben Rechner aufsetzt, überschrieb bisher die Konfiguration der
+    # ersten — ohne Sicherung und ohne ein Wort. Verloren gingen die verteilten
+    # ``BIBI_JOB_ENV_*``-Werte, die Poll-Intervalle und ``BIBI_PUBLIC_HOST``.
+    #
+    # Erkannt wird das an ``BIBI_REMOTE``: eine Konfiguration gehört zu genau
+    # einem Team-Repo. Steht dort ein anderes als das, was dieser Lauf
+    # einträgt, ist die Datei fremd. Fehlt die Angabe in diesem Lauf, zählt das
+    # ``origin`` des Checkouts, in dem wir stehen — sonst bliebe genau der Fall
+    # unentdeckt, in dem jemand ``init`` ohne ``--remote`` in einem zweiten
+    # Klon aufruft.
+    _old_remote = (existing.get("BIBI_REMOTE") or "").strip()
+    _new_remote = (values.get("BIBI_REMOTE") or "").strip() or _origin_url() or ""
+    _foreign = bool(_old_remote and _new_remote and _old_remote != _new_remote)
+
+    if _foreign:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = path.with_name(f"{path.name}.bak-{stamp}")
+        shutil.copy2(path, backup)
+        print(f"Bestehende Konfiguration gehört zu {_old_remote} — gesichert "
+              f"nach {backup}")
+
+    # ``BIBI_NODE_ID``: übernehmen, wenn es derselbe Knoten ist — sonst neu.
+    # **Das ist die schärfere Hälfte des Fundes.** Bisher wurde der bestehende
+    # Wert bedingungslos übernommen; die zweite Instanz erbte damit die
+    # Identität der ersten, und beide meldeten sich am Scheduler unter
+    # demselben Schlüssel. Das Ticket beschreibt den Verlust der Identität —
+    # tatsächlich war es ihre Verdopplung, und die ist schwerer zu bemerken:
+    # es sieht aus, als liefe ein Knoten, wo zwei laufen.
+    import uuid
+    values["BIBI_NODE_ID"] = ("" if _foreign else existing.get("BIBI_NODE_ID", "")) \
+        or uuid.uuid4().hex
 
     # Ein Worker ohne Scheduler ist keine Aufstellung, sondern eine
     # Fehlkonfiguration: er startet, meldet sich gesund und bekommt nie einen

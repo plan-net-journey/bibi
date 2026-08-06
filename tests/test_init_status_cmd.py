@@ -564,3 +564,62 @@ def test_bootstrap_token_still_settable_by_flag_without_connect(cfg_home: Path,
     assert main(["init", "--non-interactive", "--profile", "client",
                  "--token", "abc123"]) == 0
     assert config.read_env()["BIBI_BOOTSTRAP_TOKEN"] == "abc123"
+
+
+# --- m.rau/bibi#173: eine fremde Konfiguration wird nicht stillschweigend
+#     ueberschrieben -------------------------------------------------------
+
+
+def _backups(cfg_home: Path) -> list[Path]:
+    return sorted((cfg_home / "bibi").glob("env.bak-*"))
+
+
+def test_init_backs_up_a_foreign_config_before_overwriting(cfg_home: Path,
+                                                           monkeypatch, capsys):
+    # Der Live-Fall vom 2026-08-06: der Rechner betreibt schon eine Instanz,
+    # ein init nach Anleitung haette deren BIBI_NODE_ID und die verteilten
+    # BIBI_JOB_ENV_*-Werte ersatzlos ueberschrieben.
+    config.write_env({"BIBI_REMOTE": "https://github.com/org/erste.git",
+                      "BIBI_NODE_ID": "a" * 32,
+                      "BIBI_ROLE": "synchronizer,worker"})
+    _forbid_input(monkeypatch)
+    rc = main(["init", "--non-interactive", "--profile", "client",
+               "--remote", "https://github.com/org/zweite.git"])
+    assert rc == 0
+    saved = _backups(cfg_home)
+    assert len(saved) == 1, "genau eine Sicherung"
+    alt = config.read_env(saved[0])
+    assert alt["BIBI_NODE_ID"] == "a" * 32        # die Identitaet ist gerettet
+    assert alt["BIBI_REMOTE"] == "https://github.com/org/erste.git"
+    assert saved[0].name in capsys.readouterr().out   # und es wird gesagt
+
+
+def test_init_does_not_back_up_a_rerun_on_the_same_repo(cfg_home: Path, monkeypatch):
+    # Idempotenz bleibt idempotent: derselbe Knoten, zweimal eingerichtet,
+    # soll keine Sicherungskopien anhaeufen.
+    config.write_env({"BIBI_REMOTE": "https://github.com/org/erste.git",
+                      "BIBI_NODE_ID": "a" * 32})
+    _forbid_input(monkeypatch)
+    assert main(["init", "--non-interactive", "--profile", "client",
+                 "--remote", "https://github.com/org/erste.git"]) == 0
+    assert _backups(cfg_home) == []
+
+
+def test_init_does_not_back_up_when_there_is_nothing_to_lose(cfg_home: Path,
+                                                             monkeypatch):
+    _forbid_input(monkeypatch)
+    assert main(["init", "--non-interactive", "--profile", "client"]) == 0
+    assert _backups(cfg_home) == []
+
+
+def test_the_node_id_survives_a_foreign_overwrite(cfg_home: Path, monkeypatch):
+    # Der teuerste Einzelverlust aus dem Ticket: ohne BIBI_NODE_ID verliert der
+    # Knoten seine Identitaet und seine Freigabe am Scheduler. Die neue Datei
+    # bekommt eine neue — aber die alte ist wiederherstellbar.
+    config.write_env({"BIBI_REMOTE": "https://github.com/org/erste.git",
+                      "BIBI_NODE_ID": "a" * 32})
+    _forbid_input(monkeypatch)
+    main(["init", "--non-interactive", "--profile", "client",
+          "--remote", "https://github.com/org/zweite.git"])
+    assert config.read_env()["BIBI_NODE_ID"] != "a" * 32
+    assert config.read_env(_backups(cfg_home)[0])["BIBI_NODE_ID"] == "a" * 32
