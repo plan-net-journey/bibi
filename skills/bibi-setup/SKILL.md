@@ -15,12 +15,22 @@ init` → start the daemon by hand → open the browser yourself) with a single,
 safely re-runnable skill: a guided interview instead of a copy-paste runbook,
 known values prefilled, the daemon running by the end.
 
-**Scope, first wave (PLAN-33): client role only.** Sets up
-`synchronizer,controller` + `--connect` — enough to see the team federation
-(job lists, git/sync status of other nodes) and serve this node's own
-dashboard. Worker/scheduler roles bring their own complexity (job dispatch,
-wall-clock ownership) this skill doesn't cover yet — say so if asked, don't
-quietly add them.
+**Scope: client role only.** Sets up `synchronizer,controller`. Worker and
+scheduler roles bring their own complexity (job dispatch, wall-clock
+ownership) this skill doesn't cover yet — say so if asked, don't quietly add
+them.
+
+**A client comes in two shapes, and the first question decides which
+(m.rau/bibi#179).** With a scheduler it also gets `--connect` and joins the
+federation. Without one it is a complete, working node on its own — the case
+zyklus, `bibi-ctrl run`, its own dashboard and `doctor` all work from day
+one. What it gives up is exactly two things: jobs firing on a schedule, and
+jobs distributed across machines.
+
+Until 2026-08-06 this skill assumed every team had a scheduler and hardcoded
+`--connect`. That held while it was true; `bibi-lhg` is the first instance
+without one, and a daemon pointed at a scheduler that does not exist fails in
+a way a newcomer cannot diagnose.
 
 Every step below is idempotent — re-running this skill on an already
 configured node is safe, it just confirms the current state instead of
@@ -111,8 +121,20 @@ checks again before deciding whether to (re)start anything.
 
 One question at a time via `AskUserQuestion`, not all at once.
 
-- **Scheduler URL** (`--scheduler-url`) — no safe generic default (team-
-  private). Suggest one, don't guess silently:
+- **First, and it decides the rest: is there a scheduler?** Ask plainly —
+  *"Does your team run a scheduler (an always-on server), or is this a
+  standalone client?"* Don't infer it from a reachable URL; a scheduler that
+  happens to be down would flip the answer. Look for evidence to offer as a
+  default, in this order: a `BIBI_SCHEDULER_URL` already set (step 2), then
+  `vault/TOPOLOGIE.md` — the team repo's own `.claude/CLAUDE.md` names it as
+  the place for exactly this fact, and a repo that documents "no scheduler"
+  should not be asked twice.
+  - **No scheduler** → skip the URL question entirely, no `--connect`
+    anywhere below. Say once what that means: scheduled and distributed jobs
+    are out, everything else works. Then continue with the git remote.
+  - **Scheduler** → ask for the URL as described next.
+- **Scheduler URL** (`--scheduler-url`, only if there is one) — no safe
+  generic default (team-private). Suggest one, don't guess silently:
   - Already set (step 2) → offer it as the default.
   - Otherwise, check whether this team repo has a `vault/TOPOLOGIE.md` (its
     own `.claude/CLAUDE.md` names it as the place for exactly this kind of
@@ -154,12 +176,17 @@ One question at a time via `AskUserQuestion`, not all at once.
 
 ```bash
 <bibi-ctrl> init --non-interactive \
-  --scheduler-url "<answer>" \
+  [--scheduler-url "<answer>"] \
   --role synchronizer,controller \
   --remote "<answer>" \
   [--node-name "<answer>"] \
   [--claude-bin "<answer>"]
 ```
+
+**`--scheduler-url` only when there is a scheduler.** Without one, leave the
+flag off — the engine keeps the field empty, which is the correct state, not
+a gap. `bibi-ctrl init` skips the question for the same reason
+(`init_cmd.py`, m.rau/bibi#61).
 
 Only pass flags for values the interview actually collected — an omitted
 flag keeps the existing value (re-init on an already-configured node) or
@@ -177,7 +204,7 @@ the only way to bake a different port into the unit is the environment
 variable. **Set it per command, never `export` it:**
 
 ```bash
-BIBI_DAEMON_PORT=<free port> <bibi-ctrl> daemon install --connect
+BIBI_DAEMON_PORT=<free port> <bibi-ctrl> daemon install [--connect]
 ```
 
 The written unit then carries the port for good (`Environment=BIBI_DAEMON_PORT=…`
@@ -200,15 +227,18 @@ Already running → skip straight to step 6. Otherwise:
 
 ```bash
 if command -v systemctl >/dev/null 2>&1 || command -v launchctl >/dev/null 2>&1; then
-    <bibi-ctrl> daemon install --connect
+    <bibi-ctrl> daemon install [--connect]
 else
     mkdir -p data
-    setsid <bibi-ctrl> daemon run --connect --host 0.0.0.0 \
+    setsid <bibi-ctrl> daemon run [--connect] --host 0.0.0.0 \
         > data/daemon.out.log 2>&1 < /dev/null &
     disown
 fi
 ```
 
+- **`--connect` only if the interview found a scheduler.** Without one it
+  would point the daemon at nothing — and the failure looks like a broken
+  setup rather than a missing server.
 - No `--role` needed on either branch — both read `BIBI_ROLE` from the
   config file step 4 just wrote.
 - `daemon install` picks the right bind host itself (`0.0.0.0` for
@@ -275,8 +305,8 @@ one the human used to reach this terminal in the first place, not
 
 ```
 ✓ node configured:
-  scheduler:  <url>
-  role:       synchronizer,controller,connect
+  scheduler:  <url — or "none (standalone client)">
+  role:       synchronizer,controller[,connect]
   daemon:     <install|foreground, port>
   dashboard:  <URL, or "shown above" if a browser opened directly>
 ```
