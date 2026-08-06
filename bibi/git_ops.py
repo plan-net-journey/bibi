@@ -57,6 +57,19 @@ _AUTH_MARKERS = (
     "invalid username or password", "terminal prompts disabled",
     "no such device or address",
 )
+# m.rau/bibi#160: git lehnt ab, weil uncommittete Arbeit im Weg steht — der
+# Vorgang ist gar nicht erst angelaufen, es gibt nichts aufzulösen. Vorher fiel
+# das durch auf "conflict" und setzte damit ``sync_conflict``: eine Warnung bei
+# jedem Sitzungsstart, die niemand beenden konnte, weil es keinen Konflikt gab.
+# Die Marker sind am 2026-08-06 gegen echtes git gemessen — zwei Varianten von
+# ``rebase`` (unstaged / Index) und die von ``merge``, wenn der Pull eine dirty
+# Datei überschreiben würde.
+_DIRTY_TREE_MARKERS = (
+    "cannot rebase: you have unstaged changes",
+    "cannot rebase: your index contains uncommitted changes",
+    "cannot pull with rebase: you have unstaged changes",
+    "your local changes to the following files would be overwritten",
+)
 
 
 def _is_unreachable(stderr: str) -> bool:
@@ -68,11 +81,18 @@ def _is_auth_failure(stderr: str) -> bool:
     return any(m in s for m in _AUTH_MARKERS)
 
 
+def _is_dirty_tree(stderr: str) -> bool:
+    s = stderr.lower()
+    return any(m in s for m in _DIRTY_TREE_MARKERS)
+
+
 def _classify_failure(stderr: str) -> str:
     if _is_unreachable(stderr):
         return "unreachable"
     if _is_auth_failure(stderr):
         return "auth"
+    if _is_dirty_tree(stderr):
+        return "dirty"
     return "conflict"
 
 
@@ -550,9 +570,23 @@ def _integrate_impl(branch: str, keep_conflict: bool = False,
             _, behind = _counts()
             return True, None, 0, behind
         ff = _git(["merge", "--ff-only", "FETCH_HEAD"], check=False)
-        return (True, None, None, None) if ff.returncode == 0 else (False, "conflict", None, None)
+        if ff.returncode == 0:
+            return True, None, None, None
+        # Bis m.rau/bibi#160 stand hier hart "conflict". Ein Fast-Forward hat
+        # per Definition keinen Konflikt — scheitert er doch, steht dirty Arbeit
+        # im Weg ("would be overwritten by merge"), und das ist etwas anderes.
+        return False, _classify_failure(ff.stderr.strip()), None, None
 
     if dry_run:
+        # m.rau/bibi#160(c): die Vorschau muss denselben Ausgang vorhersagen,
+        # den ``--apply`` nimmt — die Zusage ihres eigenen Docstrings. Vorher
+        # prüfte sie per ``merge-tree`` nur den *Inhalt* und meldete „geht
+        # sauber durch", während der scharfe Lauf am dirty Tree scheiterte.
+        # ``git rebase`` verlangt einen sauberen Tree, unabhängig davon, welche
+        # Dateien der Pull anfasst — deshalb genügt hier ``is_dirty()``, und
+        # deshalb steht es vor der Inhaltsprüfung: git kommt gar nicht so weit.
+        if strategy == "rebase" and is_dirty():
+            return False, "dirty", None, None
         _, conflicted = _pull_merge_tree(remote)
         if conflicted:
             return False, "conflict", None, None
@@ -585,7 +619,14 @@ def integrate(branch: str, keep_conflict: bool = False,
     """Origin minimal integrieren: fetch + ff/rebase|merge (kein Push).
 
     Gibt (ok, kind) zurück. kind ist None bei Erfolg, sonst
-    ``"unreachable"``/``"auth"``/``"conflict"``/``"live_edit"``.
+    ``"unreachable"``/``"auth"``/``"conflict"``/``"live_edit"``/``"dirty"``.
+
+    ``"dirty"`` (m.rau/bibi#160) heißt: git hat den Vorgang gar nicht erst
+    begonnen, weil uncommittete Arbeit im Weg steht. Das ist **kein** Konflikt —
+    es gibt nichts aufzulösen, und ``sync_conflict`` darf dafür nicht gesetzt
+    werden. Der Unterschied zu ``"live_edit"``: dort fasst der Pull *genau die*
+    dirty Dateien an (bibi-eigener Guard), hier blockiert der Working Tree als
+    Ganzes (git-eigene Regel für Rebase).
 
     ``keep_conflict=False`` (Default, für save/close/done/hook-stop): bricht
     einen Konflikt sauber ab. ``keep_conflict=True`` (für interaktives
