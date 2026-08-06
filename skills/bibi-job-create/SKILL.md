@@ -153,7 +153,7 @@ Tips for the user:
 Ask explicitly: "Use defaults or customise?"
 
 - **Defaults** (most common, matches the parser's own bibi4 defaults —
-  don't hardcode a different set): `attempts: 1, backoff: fixed`, no
+  don't hardcode a different set): `attempts: 0, backoff: fixed`, no
   `wall_time` override (unset means no wall-clock limit at all — apps and
   long-running jobs rely on the zombie check instead, not wall_time; only
   set it for a job that should hard-fail past a fixed duration),
@@ -162,7 +162,11 @@ Ask explicitly: "Use defaults or customise?"
   specific reason).
 - **Customise** → ask only for the fields the user wants to change (most
   commonly `wall_time` for a job that legitimately runs long; `attempts` for
-  "no retry, one shot only" — explicit `attempts: 1` already is that).
+  retries). **`attempts` counts retries *in addition to* the first run, and
+  its default is `0`** — so `attempts: 0` is "one shot, no retry" and
+  `attempts: 1` already means two runs. The field name suggests otherwise;
+  the parser is the authority (`bibi/schedule/parser.py`), and a job written
+  from the wrong reading runs twice where the user asked for once.
 
 Explicit `slug:` — ask only if the user wants to decouple the slug from the
 filename (e.g. so the MD can be renamed later without losing the schedule's

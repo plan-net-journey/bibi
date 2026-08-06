@@ -412,3 +412,214 @@ def test_init_prompts_for_the_url_with_connect(cfg_home: Path, monkeypatch):
     monkeypatch.setattr("builtins.input", _input)
     main(["init"])
     assert any("Scheduler" in p for p in asked)
+
+
+# --- m.rau/bibi#174: Profile als Eingabe, Rollen als Innenleben --------------
+
+
+def test_init_profile_client_derives_the_roles(cfg_home: Path, monkeypatch):
+    _forbid_input(monkeypatch)
+    rc = main(["init", "--non-interactive", "--profile", "client"])
+    assert rc == 0
+    assert config.read_env()["BIBI_ROLE"] == "synchronizer,controller"
+
+
+def test_init_profile_scheduler_has_no_controller(cfg_home: Path, monkeypatch):
+    # Entscheidung m.rau, 2026-08-06: der Scheduler ist Backend.
+    _forbid_input(monkeypatch)
+    assert main(["init", "--non-interactive", "--profile", "scheduler"]) == 0
+    assert config.read_env()["BIBI_ROLE"] == "synchronizer,scheduler"
+
+
+def test_init_with_ui_gives_the_first_node_a_surface(cfg_home: Path, monkeypatch):
+    _forbid_input(monkeypatch)
+    assert main(["init", "--non-interactive", "--profile", "scheduler+worker",
+                 "--with-ui"]) == 0
+    assert config.read_env()["BIBI_ROLE"] == "synchronizer,scheduler,worker,controller"
+
+
+def test_init_profile_and_role_together_are_refused(cfg_home: Path, monkeypatch, capsys):
+    # Zwei Antworten auf dieselbe Frage — welche gilt, wäre geraten.
+    _forbid_input(monkeypatch)
+    rc = main(["init", "--non-interactive", "--profile", "client",
+               "--role", "synchronizer,worker"])
+    assert rc == 2
+    assert "--profile" in capsys.readouterr().err
+
+
+def test_init_unknown_profile_names_the_known_ones(cfg_home: Path, monkeypatch, capsys):
+    _forbid_input(monkeypatch)
+    rc = main(["init", "--non-interactive", "--profile", "host"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "host" in err and "scheduler+worker" in err
+
+
+def test_init_worker_without_a_scheduler_is_refused(cfg_home: Path, monkeypatch, capsys):
+    # Ein Worker ohne Scheduler hat niemanden, der ihm Aufträge gibt: er
+    # startet, meldet sich gesund und empfängt nie etwas.
+    _forbid_input(monkeypatch)
+    rc = main(["init", "--non-interactive", "--profile", "worker"])
+    assert rc == 2
+    assert "scheduler" in capsys.readouterr().err.lower()
+
+
+def test_init_worker_with_an_existing_url_is_fine(cfg_home: Path, monkeypatch):
+    # Geprüft wird der wirksame Wert, nicht ob das Flag mitkam.
+    config.write_env({"BIBI_SCHEDULER_URL": "http://sarasate:8780"})
+    _forbid_input(monkeypatch)
+    assert main(["init", "--non-interactive", "--profile", "worker"]) == 0
+    assert config.read_env()["BIBI_ROLE"] == "synchronizer,worker"
+
+
+def test_init_asks_for_the_node_kind_first(cfg_home: Path, monkeypatch):
+    asked: list[str] = []
+
+    def _input(prompt: str = "") -> str:
+        asked.append(prompt)
+        return "client" if "Knotenart" in prompt else ""
+
+    monkeypatch.setattr("builtins.input", _input)
+    main(["init"])
+    assert "Knotenart" in asked[0]                      # zuerst, nicht irgendwo
+    assert config.read_env()["BIBI_ROLE"] == "synchronizer,controller"
+
+
+def test_init_still_accepts_a_role_list_as_the_expert_path(cfg_home: Path, monkeypatch):
+    # #174 verlangt ausdrücklich, dass die Rollenliste nicht verschwindet —
+    # sie ist nur nicht mehr die erste Frage.
+    def _input(prompt: str = "") -> str:
+        return "synchronizer,worker,controller" if "Knotenart" in prompt else ""
+
+    monkeypatch.setattr("builtins.input", _input)
+    main(["init"])
+    assert config.read_env()["BIBI_ROLE"] == "synchronizer,worker,controller"
+
+
+def test_a_client_profile_gets_asked_for_the_scheduler_url(cfg_home: Path, monkeypatch):
+    # Die Lücke, die das Profil schließt: bisher entschied das Wort "connect"
+    # im Rollen-String darüber, ob nach der URL gefragt wird — ein Token, das
+    # gar keine Rolle ist und das parse_role_env danach wegwirft. Wer "client"
+    # eingab, wurde nie gefragt und hatte hinterher keinen Scheduler.
+    asked: list[str] = []
+
+    def _input(prompt: str = "") -> str:
+        asked.append(prompt)
+        return "client" if "Knotenart" in prompt else ""
+
+    monkeypatch.setattr("builtins.input", _input)
+    main(["init"])
+    assert any("Scheduler" in p for p in asked)
+
+
+# --- m.rau/bibi#177: der Startschlüssel nur, wenn er etwas bedeutet ----------
+
+
+def _prompts_for(monkeypatch: pytest.MonkeyPatch, answers: dict[str, str]) -> list[str]:
+    """Interaktiv durchlaufen und **alle** Prompt-Texte einsammeln."""
+    asked: list[str] = []
+
+    def _input(prompt: str = "") -> str:
+        asked.append(prompt)
+        for needle, value in answers.items():
+            if needle in prompt:
+                return value
+        return ""
+
+    monkeypatch.setattr("builtins.input", _input)
+    main(["init"])
+    return asked
+
+
+def test_no_bootstrap_token_question_without_a_scheduler(cfg_home: Path, monkeypatch):
+    # Ein hostloser Client hat niemanden, bei dem er sich anmelden könnte —
+    # der Startschlüssel ist dort ein Feld ohne Bedeutung.
+    asked = _prompts_for(monkeypatch, {"Knotenart": "client"})
+    assert not any("chlüssel" in p or "BOOTSTRAP" in p for p in asked)
+
+
+def test_bootstrap_token_is_asked_when_there_is_a_scheduler(cfg_home: Path, monkeypatch):
+    asked = _prompts_for(monkeypatch, {"Knotenart": "client",
+                                       "Scheduler": "http://sarasate:8780"})
+    assert any("chlüssel" in p for p in asked)
+
+
+def test_bootstrap_prompt_explains_instead_of_naming_the_variable(cfg_home: Path,
+                                                                  monkeypatch):
+    # #177s zweite Hälfte: der rohe Variablenname sagt einem neuen Menschen
+    # nichts. Er soll lesen, was der Wert tut und was ein leerer bedeutet.
+    asked = _prompts_for(monkeypatch, {"Knotenart": "client",
+                                       "Scheduler": "http://sarasate:8780"})
+    prompt = next(p for p in asked if "chlüssel" in p)
+    assert "BIBI_BOOTSTRAP_TOKEN" not in prompt
+    assert "leer" in prompt.lower()          # sagt, was ein leerer Wert heißt
+
+
+def test_bootstrap_token_still_settable_by_flag_without_connect(cfg_home: Path,
+                                                               monkeypatch):
+    # Nicht fragen heißt nicht verbieten: ein ausdrückliches Flag ist eine
+    # Ansage und wird nicht wegoptimiert — dieselbe Regel wie bei der
+    # Scheduler-URL seit #61.
+    _forbid_input(monkeypatch)
+    assert main(["init", "--non-interactive", "--profile", "client",
+                 "--token", "abc123"]) == 0
+    assert config.read_env()["BIBI_BOOTSTRAP_TOKEN"] == "abc123"
+
+
+# --- m.rau/bibi#173: eine fremde Konfiguration wird nicht stillschweigend
+#     ueberschrieben -------------------------------------------------------
+
+
+def _backups(cfg_home: Path) -> list[Path]:
+    return sorted((cfg_home / "bibi").glob("env.bak-*"))
+
+
+def test_init_backs_up_a_foreign_config_before_overwriting(cfg_home: Path,
+                                                           monkeypatch, capsys):
+    # Der Live-Fall vom 2026-08-06: der Rechner betreibt schon eine Instanz,
+    # ein init nach Anleitung haette deren BIBI_NODE_ID und die verteilten
+    # BIBI_JOB_ENV_*-Werte ersatzlos ueberschrieben.
+    config.write_env({"BIBI_REMOTE": "https://github.com/org/erste.git",
+                      "BIBI_NODE_ID": "a" * 32,
+                      "BIBI_ROLE": "synchronizer,worker"})
+    _forbid_input(monkeypatch)
+    rc = main(["init", "--non-interactive", "--profile", "client",
+               "--remote", "https://github.com/org/zweite.git"])
+    assert rc == 0
+    saved = _backups(cfg_home)
+    assert len(saved) == 1, "genau eine Sicherung"
+    alt = config.read_env(saved[0])
+    assert alt["BIBI_NODE_ID"] == "a" * 32        # die Identitaet ist gerettet
+    assert alt["BIBI_REMOTE"] == "https://github.com/org/erste.git"
+    assert saved[0].name in capsys.readouterr().out   # und es wird gesagt
+
+
+def test_init_does_not_back_up_a_rerun_on_the_same_repo(cfg_home: Path, monkeypatch):
+    # Idempotenz bleibt idempotent: derselbe Knoten, zweimal eingerichtet,
+    # soll keine Sicherungskopien anhaeufen.
+    config.write_env({"BIBI_REMOTE": "https://github.com/org/erste.git",
+                      "BIBI_NODE_ID": "a" * 32})
+    _forbid_input(monkeypatch)
+    assert main(["init", "--non-interactive", "--profile", "client",
+                 "--remote", "https://github.com/org/erste.git"]) == 0
+    assert _backups(cfg_home) == []
+
+
+def test_init_does_not_back_up_when_there_is_nothing_to_lose(cfg_home: Path,
+                                                             monkeypatch):
+    _forbid_input(monkeypatch)
+    assert main(["init", "--non-interactive", "--profile", "client"]) == 0
+    assert _backups(cfg_home) == []
+
+
+def test_the_node_id_survives_a_foreign_overwrite(cfg_home: Path, monkeypatch):
+    # Der teuerste Einzelverlust aus dem Ticket: ohne BIBI_NODE_ID verliert der
+    # Knoten seine Identitaet und seine Freigabe am Scheduler. Die neue Datei
+    # bekommt eine neue — aber die alte ist wiederherstellbar.
+    config.write_env({"BIBI_REMOTE": "https://github.com/org/erste.git",
+                      "BIBI_NODE_ID": "a" * 32})
+    _forbid_input(monkeypatch)
+    main(["init", "--non-interactive", "--profile", "client",
+          "--remote", "https://github.com/org/zweite.git"])
+    assert config.read_env()["BIBI_NODE_ID"] != "a" * 32
+    assert config.read_env(_backups(cfg_home)[0])["BIBI_NODE_ID"] == "a" * 32

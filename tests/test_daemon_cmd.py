@@ -81,6 +81,26 @@ def test_resolve_role_from_env(env_iso, monkeypatch: pytest.MonkeyPatch):
     assert r.synchronizer is True and errs == []
 
 
+def test_role_falls_back_to_the_documented_default(env_iso):
+    # Ohne env-Datei stand hier bisher der leere String: ``read_env()`` wendet
+    # keine Defaults an, und ``config.KEYS["BIBI_ROLE"] = "synchronizer"`` galt
+    # nur, wenn ``init`` ihn geschrieben hatte. Aufgefallen beim Schärfen von
+    # #163 — die Analyse dort sagt, die Invariante werde „allein vom Default"
+    # getragen; das stimmte nur für Knoten, die durch ``init`` gegangen sind.
+    r, errs = daemon_cmd.resolve_from_args(_args())
+    assert r.synchronizer is True
+    assert errs == []
+
+
+def test_explicitly_set_role_without_synchronizer_is_rejected(env_iso):
+    # Die Unterscheidung, um die es #163 geht: kein Wert = Default greift;
+    # ausdrücklich gesetzter Wert ohne synchronizer = Fehlkonfiguration.
+    from bibi import config
+    config.write_env({"BIBI_ROLE": "worker"})
+    _r, errs = daemon_cmd.resolve_from_args(_args())
+    assert any("synchronizer" in e.lower() for e in errs)
+
+
 # --- _apply_auto_sync_default (User-Fund 2026-07-07, scheduler-Default) --------
 
 
@@ -471,3 +491,32 @@ def test_status_unreachable_returns_1(env_iso):
 
 def test_daemon_no_subcommand_prints_help(env_iso):
     assert main(["daemon"]) == 1
+
+
+# --- m.rau/bibi#176: der Signalweg schliesst die Stroeme, bevor die Frist laeuft
+
+
+def test_handle_exit_closes_the_streams_before_uvicorns_deadline(env_iso):
+    """Das Signal erreicht zuerst den Bus, dann uvicorn.
+
+    Die Reihenfolge ist der ganze Punkt: uvicorns Frist beginnt mit
+    ``handle_exit``, und wer die Stroeme erst danach schliesst, hat sie schon
+    hineinlaufen lassen. ``should_exit`` belegt, dass der regulaere Weg
+    unveraendert weiterlaeuft — die Frist wird nicht ersetzt, nur entlastet.
+    """
+    import signal
+
+    import uvicorn
+
+    from bibi.daemon import roles as R
+    from bibi.daemon.app import create_app
+
+    app = create_app(R.resolve({"synchronizer"}))
+    bus = app.state.bus
+    assert bus is not None, "der Bus der App ist von aussen nicht erreichbar"
+
+    server = daemon_cmd._stream_closing_server(uvicorn.Config(app), bus)
+    assert not bus.closing
+    server.handle_exit(signal.SIGTERM, None)
+    assert bus.closing, "die Stroeme wurden nicht geschlossen"
+    assert server.should_exit, "uvicorns eigener Shutdown muss trotzdem laufen"

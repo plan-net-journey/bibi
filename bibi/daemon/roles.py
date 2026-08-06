@@ -22,6 +22,67 @@ KNOWN_ROLES = frozenset({"synchronizer", "scheduler", "worker", "controller"})
 # Stufe 3.6) ist seit jeher per Invariante an ``worker`` gebunden (scheduler⊥connect).
 STARTABLE = frozenset({"synchronizer", "scheduler", "worker", "controller", "connect"})
 
+#: Kanonische Reihenfolge jeder ausgegebenen Rollenmenge. Eine Menge hat keine,
+#: und eine wechselnde Reihenfolge in ``BIBI_ROLE`` erzeugt Diffs, die nichts
+#: bedeuten.
+ROLE_ORDER = ("synchronizer", "scheduler", "worker", "controller")
+
+# ── Profile (m.rau/bibi#174) ────────────────────────────────────────────────
+#
+# Rechnerisch gibt es 32 Kombinationen aus vier Rollen und einem Modifikator,
+# sinnvoll sind vier. Zwei der fünf Bits sind nämlich gar keine Wahl:
+# ``synchronizer`` gehört auf **jeden** Knoten (Entscheidung m.rau 2026-08-05,
+# #163 — seit dem 2026-08-06 in ``validate()`` und nicht mehr nur im Default),
+# und ``connect`` folgt aus der Frage, ob es einen Scheduler gibt.
+#
+# Übrig bleiben zwei echte Fragen: Hält dieser Knoten die Job-Datenbank? Zeigt
+# er eine Oberfläche? Genau die beantwortet ein Profil. Es ist die Eingabe für
+# einen Menschen; die Rollenliste bleibt das Innenleben und der Expertenweg.
+PROFILES: dict[str, frozenset[str]] = {
+    "client":           frozenset({"synchronizer", "controller"}),
+    "worker":           frozenset({"synchronizer", "worker"}),
+    # **Ohne** ``controller``: der Scheduler ist Backend (Entscheidung m.rau,
+    # 2026-08-06, bei der Abnahme des v0.7.2-Plans). sarasate hat die Rolle am
+    # 2026-08-04 aus demselben Grund abgegeben — „der Scheduler alleine soll
+    # eigentlich nur Backend sein". Für den Erstknoten eines Teams, der noch
+    # keinen Client neben sich hat, gibt es ``with_ui``.
+    "scheduler":        frozenset({"synchronizer", "scheduler"}),
+    "scheduler+worker": frozenset({"synchronizer", "scheduler", "worker"}),
+}
+
+#: Was ``connect`` für ein Profil bedeutet — keine Vorliebe, sondern eine Folge
+#: der Knotenart. ``never`` ist bei den Scheduler-Profilen die harte Invariante
+#: aus ``validate()``; ``required`` beim Worker heißt: ohne Scheduler hat er
+#: niemanden, der ihm Aufträge gibt, und ein solcher Knoten startet, meldet sich
+#: gesund und empfängt nie etwas.
+PROFILE_CONNECT: dict[str, str] = {
+    "client":           "optional",
+    "worker":           "required",
+    "scheduler":        "never",
+    "scheduler+worker": "never",
+}
+
+
+def profile_roles(name: str, *, with_ui: bool = False) -> str:
+    """Profilname → ``BIBI_ROLE``-Zeichenkette in kanonischer Reihenfolge.
+
+    ``with_ui`` hängt ``controller`` an — gedacht für den **ersten** Knoten
+    eines Teams, der noch keinen Client neben sich hat und sonst nichts
+    anzuzeigen hätte. Auf einem Profil, das ``controller`` ohnehin trägt, ist
+    das Flag wirkungslos statt ein Fehler: wer es aus Gewohnheit mitgibt, soll
+    keinen Abbruch bekommen.
+    """
+    try:
+        active = set(PROFILES[name])
+    except KeyError:
+        raise ValueError(
+            f"unbekanntes Profil {name!r} — bekannt sind: "
+            f"{', '.join(sorted(PROFILES))}"
+        ) from None
+    if with_ui:
+        active.add("controller")
+    return ",".join(r for r in ROLE_ORDER if r in active)
+
 
 @dataclass(frozen=True)
 class Roles:
@@ -88,6 +149,21 @@ def validate(r: Roles) -> list[str]:
         errs.append(
             "`--scheduler` und `--connect` schließen sich aus: der Scheduler "
             "ist das Verbindungsziel, er verbindet sich nicht zu sich selbst (§4.2)."
+        )
+    # m.rau/bibi#163, Entscheidung m.rau 2026-08-05: „Es dürfte keinen Node
+    # jemals geben, der nicht die Synchronizer-Rolle hat." Getragen wurde die
+    # Regel bis hierher allein vom Default ``BIBI_ROLE=synchronizer``
+    # (``config.KEYS``) — das genügt für den Normalfall und für niemanden, der
+    # den Wert ausdrücklich setzt. Ohne diese Rolle gleicht ein Knoten das Repo
+    # nicht ab: er arbeitet auf einem Stand, den niemand mehr bewegt, und meldet
+    # dabei nichts. Ein leerer Rollensatz fällt hier ebenfalls durch — er war
+    # bis zum 2026-08-06 als „gültig, aber im Leerlauf" getestet, und genau
+    # dieses Modell hat die Entscheidung abgelöst.
+    if not r.synchronizer:
+        errs.append(
+            "`synchronizer` fehlt: jeder Knoten gleicht das Repo ab (#163). "
+            "Ohne diese Rolle arbeitet er auf einem Stand, den niemand bewegt. "
+            "Profile setzen sie von selbst — `bibi-ctrl init --profile <name>`."
         )
     return errs
 

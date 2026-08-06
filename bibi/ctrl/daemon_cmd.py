@@ -27,7 +27,16 @@ def resolve_from_args(args: argparse.Namespace) -> tuple[R.Roles, list[str]]:
     Gibt (Roles, Fehler) zurück. Fehler = harte Invarianten (§4.2) plus die
     noch nicht startbaren Rollen/Modifikatoren (ab Stufe 3.0 nur ``connect``).
     """
-    active = R.parse_role_env(config.read_env().get("BIBI_ROLE", ""))
+    # ``or config.KEYS[...]`` statt ``.get(key, default)``: ``read_env()``
+    # wendet keine Defaults an, und ein leerer Wert in der Datei soll dasselbe
+    # bedeuten wie eine fehlende Zeile. Ohne diesen Rückfall galt der
+    # dokumentierte Default ``BIBI_ROLE=synchronizer`` nur für Knoten, die
+    # durch ``init`` gegangen sind — ein frischer ``daemon run`` löste zu
+    # *keiner* Rolle auf und startete einen Daemon, der nichts tut. Aufgefallen
+    # beim Schärfen von m.rau/bibi#163, dessen Analyse die Invariante
+    # ausdrücklich dem Default zuschreibt; sie tat es nur nicht überall.
+    active = R.parse_role_env(
+        config.read_env().get("BIBI_ROLE") or config.KEYS["BIBI_ROLE"])
     for name in ("synchronizer", "scheduler", "worker", "controller"):
         if getattr(args, name, False):
             active.add(name)
@@ -386,8 +395,10 @@ def run(args: argparse.Namespace) -> int:
     # (``uvicorn.run`` baut genau diese beiden, plus Reload/Worker-Zweige, die
     # hier nie greifen) — nur nimmt ``Server.run()`` einen vorgebundenen Socket
     # entgegen, und den braucht die Port-Automatik oben.
-    server = uvicorn.Server(uvicorn.Config(
-        app, host=args.host, port=port, timeout_graceful_shutdown=grace))
+    server = _stream_closing_server(
+        uvicorn.Config(app, host=args.host, port=port,
+                       timeout_graceful_shutdown=grace),
+        getattr(app.state, "bus", None))
     try:
         server.run(sockets=[sock] if sock is not None else None)
     finally:
@@ -401,6 +412,35 @@ def run(args: argparse.Namespace) -> int:
         portfile.clear()
         _release_run_lock(run_lock)
     return 0
+
+
+def _stream_closing_server(config, bus):
+    """``uvicorn.Server``, der beim Signal zuerst die SSE-Ströme schließt (#176).
+
+    **Die Reihenfolge ist der ganze Punkt.** uvicorns Frist für offene
+    Verbindungen beginnt mit ``handle_exit``; wer die Ströme erst danach
+    schließt, hat sie schon hineinlaufen lassen. Am Ende der Frist bricht
+    uvicorn die Task ab und protokolliert den Abbruch als *„Exception in ASGI
+    application"* — rund fünfzig Zeilen Stacktrace für einen geplanten Vorgang.
+
+    Was hier **nicht** passiert: die Frist abschaffen. Sie bleibt unverändert
+    und deckt weiterhin alles, was sich nicht von selbst schließt; ``super()``
+    läuft unangetastet weiter. Entlastet wird sie nur um den einen Strom, von
+    dem wir wissen, dass er nie von selbst endet.
+
+    Eine Fabrik statt einer Modulklasse, weil ``uvicorn`` in diesem Modul
+    bewusst spät importiert wird — ein ``bibi-ctrl status`` soll den ASGI-Stack
+    nicht laden müssen.
+    """
+    import uvicorn
+
+    class _StreamClosingServer(uvicorn.Server):
+        def handle_exit(self, sig, frame):  # noqa: D102 — Vertrag von uvicorn
+            if bus is not None:
+                bus.begin_shutdown()
+            super().handle_exit(sig, frame)
+
+    return _StreamClosingServer(config)
 
 
 def install_cmd(args: argparse.Namespace) -> int:
