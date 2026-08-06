@@ -146,6 +146,13 @@ def run(args: argparse.Namespace) -> int:
         "BIBI_NODE_NAME": "Knoten-Name (leer = Hostname)",
         "BIBI_PUBLIC_HOST": "Von außen erreichbarer Hostname (leer = localhost, "
                             "falsch für Remote-Zugriff und App-Links)",
+        # m.rau/bibi#177: ohne Label druckte die Schleife den rohen
+        # Variablennamen — für jemanden, der ihn zum ersten Mal sieht, eine
+        # Frage ohne Frage. Der Text sagt, was der Wert tut **und** was ein
+        # leerer bedeutet; das zweite ist hier das wichtigere, weil Leerlassen
+        # der Normalfall ist.
+        "BIBI_BOOTSTRAP_TOKEN": "Startschlüssel vom Scheduler "
+                                "(leer = der Knoten wartet auf manuelle Freigabe)",
     }
     flag_values = {key: getattr(args, flag, None) for flag, key in _FLAG_TO_KEY.items()}
 
@@ -160,6 +167,19 @@ def run(args: argparse.Namespace) -> int:
     #: den Expertenweg (rohe Rollenliste). Sie entscheidet unten über die
     #: Scheduler-Frage, und zwar besser als der bisherige Textvergleich.
     _profile = profile
+
+    def _talks_to_a_scheduler() -> bool:
+        """Spricht dieser Knoten überhaupt mit einem Scheduler?
+
+        **Eine** Regel für zwei Felder: die Scheduler-URL (m.rau/bibi#61) und
+        den Startschlüssel (m.rau/bibi#177) existieren aus demselben Grund und
+        sollen deshalb nicht zwei Bedingungen haben, die auseinanderlaufen
+        können. Liest ``_profile``/``_role_value`` bei jedem Aufruf neu — im
+        interaktiven Lauf stehen sie erst fest, nachdem die Knotenart
+        beantwortet ist.
+        """
+        mode = R.PROFILE_CONNECT.get(_profile) if _profile else None
+        return (mode != "never") if mode else ("connect" in _role_value)
 
     # ``BIBI_ROLE`` nach vorn: es entscheidet über die Scheduler-URL, steht in
     # ``config.KEYS`` aber dahinter. Für den Menschen ist das ohnehin die
@@ -201,9 +221,23 @@ def run(args: argparse.Namespace) -> int:
         # ihm das jemand sagte. Für den Expertenweg ohne Profil bleibt der alte
         # Vergleich bestehen: dort ist das Merkwort die einzige Angabe, die es
         # gibt.
+        # Der Startschlüssel gilt gegenüber einem Scheduler — ohne einen ist er
+        # ein Feld ohne Bedeutung (m.rau/bibi#177), genau wie die URL selbst.
+        # Geprüft wird zusätzlich, ob am Ende wirklich eine Adresse dasteht:
+        # ein Client **darf** einen Scheduler haben, muss aber nicht, und wer
+        # die URL leer lässt, soll nicht danach noch nach einem Schlüssel für
+        # niemanden gefragt werden. ``BIBI_SCHEDULER_URL`` steht in
+        # ``config.KEYS`` vor diesem Feld, der Wert ist hier also schon da.
+        if key == "BIBI_BOOTSTRAP_TOKEN":
+            if not (_talks_to_a_scheduler() and values.get("BIBI_SCHEDULER_URL", "").strip()):
+                # Nicht fragen heißt nicht verbieten: ein ausdrückliches Flag
+                # ist eine Ansage und bleibt stehen — dieselbe Regel wie bei
+                # der Scheduler-URL seit #61.
+                values[key] = explicit if explicit is not None else existing.get(key, "")
+                continue
+
         if key == "BIBI_SCHEDULER_URL":
-            _mode = R.PROFILE_CONNECT.get(_profile) if _profile else None
-            _wants_url = (_mode != "never") if _mode else ("connect" in _role_value)
+            _wants_url = _talks_to_a_scheduler()
             if not _wants_url:
                 if explicit is not None:
                     values[key] = explicit

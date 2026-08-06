@@ -510,3 +510,57 @@ def test_a_client_profile_gets_asked_for_the_scheduler_url(cfg_home: Path, monke
     monkeypatch.setattr("builtins.input", _input)
     main(["init"])
     assert any("Scheduler" in p for p in asked)
+
+
+# --- m.rau/bibi#177: der Startschlüssel nur, wenn er etwas bedeutet ----------
+
+
+def _prompts_for(monkeypatch: pytest.MonkeyPatch, answers: dict[str, str]) -> list[str]:
+    """Interaktiv durchlaufen und **alle** Prompt-Texte einsammeln."""
+    asked: list[str] = []
+
+    def _input(prompt: str = "") -> str:
+        asked.append(prompt)
+        for needle, value in answers.items():
+            if needle in prompt:
+                return value
+        return ""
+
+    monkeypatch.setattr("builtins.input", _input)
+    main(["init"])
+    return asked
+
+
+def test_no_bootstrap_token_question_without_a_scheduler(cfg_home: Path, monkeypatch):
+    # Ein hostloser Client hat niemanden, bei dem er sich anmelden könnte —
+    # der Startschlüssel ist dort ein Feld ohne Bedeutung.
+    asked = _prompts_for(monkeypatch, {"Knotenart": "client"})
+    assert not any("chlüssel" in p or "BOOTSTRAP" in p for p in asked)
+
+
+def test_bootstrap_token_is_asked_when_there_is_a_scheduler(cfg_home: Path, monkeypatch):
+    asked = _prompts_for(monkeypatch, {"Knotenart": "client",
+                                       "Scheduler": "http://sarasate:8780"})
+    assert any("chlüssel" in p for p in asked)
+
+
+def test_bootstrap_prompt_explains_instead_of_naming_the_variable(cfg_home: Path,
+                                                                  monkeypatch):
+    # #177s zweite Hälfte: der rohe Variablenname sagt einem neuen Menschen
+    # nichts. Er soll lesen, was der Wert tut und was ein leerer bedeutet.
+    asked = _prompts_for(monkeypatch, {"Knotenart": "client",
+                                       "Scheduler": "http://sarasate:8780"})
+    prompt = next(p for p in asked if "chlüssel" in p)
+    assert "BIBI_BOOTSTRAP_TOKEN" not in prompt
+    assert "leer" in prompt.lower()          # sagt, was ein leerer Wert heißt
+
+
+def test_bootstrap_token_still_settable_by_flag_without_connect(cfg_home: Path,
+                                                               monkeypatch):
+    # Nicht fragen heißt nicht verbieten: ein ausdrückliches Flag ist eine
+    # Ansage und wird nicht wegoptimiert — dieselbe Regel wie bei der
+    # Scheduler-URL seit #61.
+    _forbid_input(monkeypatch)
+    assert main(["init", "--non-interactive", "--profile", "client",
+                 "--token", "abc123"]) == 0
+    assert config.read_env()["BIBI_BOOTSTRAP_TOKEN"] == "abc123"
