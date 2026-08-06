@@ -140,6 +140,13 @@ def foreign_parks() -> dict[str, int]:
     existiert, zählt nicht — dieselbe Vorsicht wie in ``_path_from_park()``.
     """
     own = park_file()
+    # m.rau/bibi#139, zweite Hälfte: der Case, in dem gerade gearbeitet wird,
+    # ist keine fremde Warnung — die Marken darauf sind die Spur der eigenen
+    # Vorgänger, die jede Wiederverbindung hinterlässt. Sie mitzuzählen erzeugt
+    # ein Rauschen, in dem die eine echte Meldung untergeht, für die #97 diese
+    # Funktion überhaupt gebaut hat. Der Ausschluss greift unabhängig davon, ob
+    # der aktive Case aus dem cwd oder aus der eigenen Marke kommt.
+    aktiv = get_path()
     try:
         entries = sorted((repo.data() / "park").iterdir())
     except OSError:
@@ -152,7 +159,7 @@ def foreign_parks() -> dict[str, int]:
             rel = p.read_text(encoding="utf-8").strip()
         except OSError:
             continue
-        if not rel or not (repo.vault() / rel).is_dir():
+        if not rel or rel == aktiv or not (repo.vault() / rel).is_dir():
             continue
         out[rel] = out.get(rel, 0) + 1
     return out
@@ -212,7 +219,7 @@ def path_source() -> str | None:
     return "session" if _path_from_park() else None
 
 
-def set_path(value: str | None) -> None:
+def set_path(value: str | None) -> bool:
     """Aktiven Case dieser Session setzen; ``None`` un-parkt sie.
 
     Schreibt die **Park-Marke** ``data/park/<session_id>`` — die einzige Quelle
@@ -222,6 +229,14 @@ def set_path(value: str | None) -> None:
     zuletzt einen einzigen Leser — die Statusleiste ohne ``session_id``, ein
     Fall, der im Betrieb nie eintritt — und beantwortete als **geteilte** Datei
     die Frage nach dem Case einer Session mit dem einer beliebigen anderen.
+
+    Gibt ``True`` zurück, wenn die Marke tatsächlich geschrieben bzw. entfernt
+    wurde, und ``False``, wenn es keine Session-ID gab (m.rau/bibi#139). Bis
+    dahin war der Ausgang stumm: der Aufrufer meldete „reaktiviert: …" und
+    beendete mit 0, während der Case in Wahrheit nur am cwd hing — und dass der
+    cwd sich in einer Sitzung mehrfach von selbst zurücksetzt, ist in diesem
+    Repo belegt. **Ein Fehler meldet sich, eine ausgebliebene Wirkung nicht;**
+    deshalb ist der Rückgabewert kein Komfort, sondern die eigentliche Behebung.
     """
     # Welcher Case gerade verlassen wird, muss VOR dem Schreiben feststehen —
     # danach ist die Marke nicht mehr da (m.rau/bibi#97).
@@ -232,12 +247,13 @@ def set_path(value: str | None) -> None:
             pf.unlink(missing_ok=True)
         if leaving:
             _forget_case_markers(leaving)
-        return
+        return pf is not None
     if pf is None:
-        return
+        return False
     pf.parent.mkdir(parents=True, exist_ok=True)
     pf.write_text(value, encoding="utf-8")
     _prune_park(pf)
+    return True
 
 
 def _prune_park(keep: Path) -> None:
