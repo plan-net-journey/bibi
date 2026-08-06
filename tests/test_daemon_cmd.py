@@ -81,6 +81,26 @@ def test_resolve_role_from_env(env_iso, monkeypatch: pytest.MonkeyPatch):
     assert r.synchronizer is True and errs == []
 
 
+def test_role_falls_back_to_the_documented_default(env_iso):
+    # Ohne env-Datei stand hier bisher der leere String: ``read_env()`` wendet
+    # keine Defaults an, und ``config.KEYS["BIBI_ROLE"] = "synchronizer"`` galt
+    # nur, wenn ``init`` ihn geschrieben hatte. Aufgefallen beim Schärfen von
+    # #163 — die Analyse dort sagt, die Invariante werde „allein vom Default"
+    # getragen; das stimmte nur für Knoten, die durch ``init`` gegangen sind.
+    r, errs = daemon_cmd.resolve_from_args(_args())
+    assert r.synchronizer is True
+    assert errs == []
+
+
+def test_explicitly_set_role_without_synchronizer_is_rejected(env_iso):
+    # Die Unterscheidung, um die es #163 geht: kein Wert = Default greift;
+    # ausdrücklich gesetzter Wert ohne synchronizer = Fehlkonfiguration.
+    from bibi import config
+    config.write_env({"BIBI_ROLE": "worker"})
+    _r, errs = daemon_cmd.resolve_from_args(_args())
+    assert any("synchronizer" in e.lower() for e in errs)
+
+
 # --- _apply_auto_sync_default (User-Fund 2026-07-07, scheduler-Default) --------
 
 

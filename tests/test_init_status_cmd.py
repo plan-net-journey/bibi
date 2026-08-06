@@ -412,3 +412,101 @@ def test_init_prompts_for_the_url_with_connect(cfg_home: Path, monkeypatch):
     monkeypatch.setattr("builtins.input", _input)
     main(["init"])
     assert any("Scheduler" in p for p in asked)
+
+
+# --- m.rau/bibi#174: Profile als Eingabe, Rollen als Innenleben --------------
+
+
+def test_init_profile_client_derives_the_roles(cfg_home: Path, monkeypatch):
+    _forbid_input(monkeypatch)
+    rc = main(["init", "--non-interactive", "--profile", "client"])
+    assert rc == 0
+    assert config.read_env()["BIBI_ROLE"] == "synchronizer,controller"
+
+
+def test_init_profile_scheduler_has_no_controller(cfg_home: Path, monkeypatch):
+    # Entscheidung m.rau, 2026-08-06: der Scheduler ist Backend.
+    _forbid_input(monkeypatch)
+    assert main(["init", "--non-interactive", "--profile", "scheduler"]) == 0
+    assert config.read_env()["BIBI_ROLE"] == "synchronizer,scheduler"
+
+
+def test_init_with_ui_gives_the_first_node_a_surface(cfg_home: Path, monkeypatch):
+    _forbid_input(monkeypatch)
+    assert main(["init", "--non-interactive", "--profile", "scheduler+worker",
+                 "--with-ui"]) == 0
+    assert config.read_env()["BIBI_ROLE"] == "synchronizer,scheduler,worker,controller"
+
+
+def test_init_profile_and_role_together_are_refused(cfg_home: Path, monkeypatch, capsys):
+    # Zwei Antworten auf dieselbe Frage — welche gilt, wäre geraten.
+    _forbid_input(monkeypatch)
+    rc = main(["init", "--non-interactive", "--profile", "client",
+               "--role", "synchronizer,worker"])
+    assert rc == 2
+    assert "--profile" in capsys.readouterr().err
+
+
+def test_init_unknown_profile_names_the_known_ones(cfg_home: Path, monkeypatch, capsys):
+    _forbid_input(monkeypatch)
+    rc = main(["init", "--non-interactive", "--profile", "host"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "host" in err and "scheduler+worker" in err
+
+
+def test_init_worker_without_a_scheduler_is_refused(cfg_home: Path, monkeypatch, capsys):
+    # Ein Worker ohne Scheduler hat niemanden, der ihm Aufträge gibt: er
+    # startet, meldet sich gesund und empfängt nie etwas.
+    _forbid_input(monkeypatch)
+    rc = main(["init", "--non-interactive", "--profile", "worker"])
+    assert rc == 2
+    assert "scheduler" in capsys.readouterr().err.lower()
+
+
+def test_init_worker_with_an_existing_url_is_fine(cfg_home: Path, monkeypatch):
+    # Geprüft wird der wirksame Wert, nicht ob das Flag mitkam.
+    config.write_env({"BIBI_SCHEDULER_URL": "http://sarasate:8780"})
+    _forbid_input(monkeypatch)
+    assert main(["init", "--non-interactive", "--profile", "worker"]) == 0
+    assert config.read_env()["BIBI_ROLE"] == "synchronizer,worker"
+
+
+def test_init_asks_for_the_node_kind_first(cfg_home: Path, monkeypatch):
+    asked: list[str] = []
+
+    def _input(prompt: str = "") -> str:
+        asked.append(prompt)
+        return "client" if "Knotenart" in prompt else ""
+
+    monkeypatch.setattr("builtins.input", _input)
+    main(["init"])
+    assert "Knotenart" in asked[0]                      # zuerst, nicht irgendwo
+    assert config.read_env()["BIBI_ROLE"] == "synchronizer,controller"
+
+
+def test_init_still_accepts_a_role_list_as_the_expert_path(cfg_home: Path, monkeypatch):
+    # #174 verlangt ausdrücklich, dass die Rollenliste nicht verschwindet —
+    # sie ist nur nicht mehr die erste Frage.
+    def _input(prompt: str = "") -> str:
+        return "synchronizer,worker,controller" if "Knotenart" in prompt else ""
+
+    monkeypatch.setattr("builtins.input", _input)
+    main(["init"])
+    assert config.read_env()["BIBI_ROLE"] == "synchronizer,worker,controller"
+
+
+def test_a_client_profile_gets_asked_for_the_scheduler_url(cfg_home: Path, monkeypatch):
+    # Die Lücke, die das Profil schließt: bisher entschied das Wort "connect"
+    # im Rollen-String darüber, ob nach der URL gefragt wird — ein Token, das
+    # gar keine Rolle ist und das parse_role_env danach wegwirft. Wer "client"
+    # eingab, wurde nie gefragt und hatte hinterher keinen Scheduler.
+    asked: list[str] = []
+
+    def _input(prompt: str = "") -> str:
+        asked.append(prompt)
+        return "client" if "Knotenart" in prompt else ""
+
+    monkeypatch.setattr("builtins.input", _input)
+    main(["init"])
+    assert any("Scheduler" in p for p in asked)

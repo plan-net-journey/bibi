@@ -27,7 +27,16 @@ def resolve_from_args(args: argparse.Namespace) -> tuple[R.Roles, list[str]]:
     Gibt (Roles, Fehler) zurück. Fehler = harte Invarianten (§4.2) plus die
     noch nicht startbaren Rollen/Modifikatoren (ab Stufe 3.0 nur ``connect``).
     """
-    active = R.parse_role_env(config.read_env().get("BIBI_ROLE", ""))
+    # ``or config.KEYS[...]`` statt ``.get(key, default)``: ``read_env()``
+    # wendet keine Defaults an, und ein leerer Wert in der Datei soll dasselbe
+    # bedeuten wie eine fehlende Zeile. Ohne diesen Rückfall galt der
+    # dokumentierte Default ``BIBI_ROLE=synchronizer`` nur für Knoten, die
+    # durch ``init`` gegangen sind — ein frischer ``daemon run`` löste zu
+    # *keiner* Rolle auf und startete einen Daemon, der nichts tut. Aufgefallen
+    # beim Schärfen von m.rau/bibi#163, dessen Analyse die Invariante
+    # ausdrücklich dem Default zuschreibt; sie tat es nur nicht überall.
+    active = R.parse_role_env(
+        config.read_env().get("BIBI_ROLE") or config.KEYS["BIBI_ROLE"])
     for name in ("synchronizer", "scheduler", "worker", "controller"):
         if getattr(args, name, False):
             active.add(name)
