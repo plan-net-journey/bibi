@@ -28,7 +28,8 @@ def test_log_page_has_nav_and_clock():
 
 def test_log_page_includes_feed_status_header():
     # PLAN-27 Befund 2, User-Fund: denselben Host/Mode/Git/Job-Status-Kopf
-    # wie auf /-/ und /-/ui/schedules auch im Live-Log zeigen.
+    # wie auf /-/ auch im Live-Log zeigen (der zweite Ort war damals
+    # /-/ui/schedules — der Screen ist seit dem bibi5-Umbau gestrichen).
     html = render.log_page(
         daemon_status={"job_stats": {"counts": {"running": 1}, "complete_since_uptime": 3,
                                      "next_due_at": None}},

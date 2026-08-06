@@ -127,15 +127,23 @@ def _kill(args: argparse.Namespace) -> int:
     return 0
 
 
-def _restart(args: argparse.Namespace) -> int:
-    # restart = reset (Terminalzustand → pending, neu eingeplant, §5.6)
+def _reset(args: argparse.Namespace) -> int:
+    """``Verb.RESET`` (Zustandsmodell §4): Terminalzustand → pending, neu
+    eingeplant (§5.6).
+
+    Hieß bis m.rau/bibi#164 ``restart`` — ein Verb, das es im Modell nicht
+    gibt. Die Route hieß immer schon ``/-/job/{id}/reset``; nur die CLI erfand
+    ein eigenes Wort. Der Schaden war keine Fehlfunktion, sondern eine falsche
+    Aussage: wer ``restart`` benutzte und feststellte, dass es nur neu einplant,
+    schloss daraus, es gebe keinen Weg, einen Job *sofort* fällig zu machen —
+    den gibt es, er heißt ``start``."""
     code, body = _req(f"{_base(args)}/-/job/{args.id}/reset", method="POST")
     if code == 404:
         print(f"kein Job mit id {args.id}", file=sys.stderr); return 1
     if code == 409:
         print(f"Job {args.id} ist nicht in einem Terminalzustand", file=sys.stderr); return 1
     if code != 200:
-        return _fail(code, body, "job restart")
+        return _fail(code, body, "job reset")
     print(f"{args.id} → pending")
     return 0
 
@@ -174,9 +182,11 @@ def register(sub: argparse._SubParsersAction) -> None:
     pk.add_argument("id")
     pk.set_defaults(func=_kill)
 
-    pr = jsub.add_parser("restart", help="Terminal-Job neu einplanen (reset)")
+    # m.rau/bibi#164: hieß bis v0.7.1 `restart` — ersatzlos umbenannt, kein
+    # Alias. Ein Alias hielte genau die Verwechslung am Leben, um die es geht.
+    pr = jsub.add_parser("reset", help="Terminal-Job neu einplanen (§5.6)")
     pr.add_argument("id")
-    pr.set_defaults(func=_restart)
+    pr.set_defaults(func=_reset)
 
     jsub.add_parser("rescan", help="Vault neu scannen").set_defaults(func=rescan)
     p.set_defaults(func=lambda _a: (p.print_help() or 1))

@@ -10,9 +10,12 @@ PLAN-4 §2.1 — die App-Wurzel *ist* ``/-/`` (kein ``/-/overview``):
 
 Home = Feed (PLAN-18 Stufe 18.3, 2026-07-06) — löst die 2026-07-04-Entscheidung
 „Home = Schedules" bewusst ab (Client-Umbau, ``Client Requirements.md``).
-Schedules bleibt unter ``/-/ui/schedules`` vollständig erreichbar, ist nur
-nicht mehr die Root selbst. Fragment-Routen liegen unter ``/-/ui/``
-(App-Namensraum, kollidiert nicht mit der gefrorenen Daten-API ``/-/<noun>``).
+Der Schedules-Screen ist mit dem bibi5-Umbau **gestrichen**, sein Apparat mit
+m.rau/bibi#159 zurückgebaut. Hier stand bis dahin, er bleibe „unter
+``/-/ui/schedules`` vollständig erreichbar" — diese Route gibt es nicht, es
+gibt nur die Detailseite ``/-/ui/schedule/{slug}`` im Singular.
+Fragment-Routen liegen unter ``/-/ui/`` (App-Namensraum, kollidiert nicht mit
+der gefrorenen Daten-API ``/-/<noun>``).
 """
 
 from __future__ import annotations
@@ -376,8 +379,9 @@ def add_controller_routes(
         _sched = _scheduler_status()
         # Home = Feed (PLAN-18 Stufe 18.3, löst 2026-07-04 "Home = Schedules"
         # bewusst ab). Browser → Feed-Screen; Nicht-Browser → JSON-Deskriptor
-        # (§1.1 bleibt an der Wurzel gewahrt). Schedules bleibt unter
-        # /-/ui/schedules erreichbar, unverändert.
+        # (§1.1 bleibt an der Wurzel gewahrt). Der Schedules-Screen ist
+        # seit dem bibi5-Umbau gestrichen (m.rau/bibi#159) — hier stand,
+        # er bleibe unter /-/ui/schedules erreichbar; die Route gibt es nicht.
         if _wants_html(request):
             from bibi import config
             eff_days = _effective_days(days)

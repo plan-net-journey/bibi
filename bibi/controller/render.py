@@ -1186,20 +1186,6 @@ _RESOLUTION_LABEL = {1440: "24h/1m", 480: "8h/1w", 180: "3h/3d", 120: "2h/2d",
 
 
 
-#: Filter-Optionen. „problem" ist eine **Gruppe** (Abweichungen als Filter statt
-#: eigenem Block): failed/error/killed/zombie + überfällig (pending, fällig verpasst).
-_SCHED_TYPES = ("job", "claude")
-_SCHED_STATUSES = ("starting", "running", "pending", "complete", "failed", "deferred", "problem")
-_SCHED_PROBLEM = {"failed", "error", "killed", "zombie"}
-
-
-def _sched_is_problem(s: dict, now: float) -> bool:
-    if s.get("last_status") in _SCHED_PROBLEM:
-        return True
-    nf = s.get("next_fire_at")  # überfällig: pending, dessen Trigger in der Vergangenheit liegt
-    return s.get("row_status") == "pending" and nf is not None and nf < now
-
-
 def _effective_sched_type(s: dict) -> str:
     """Anzeige-/Filter-Typ ableiten — ``kind`` ist seit PLAN-10 (Unified Job
     Model) immer ``"job"`` und trägt keine Information mehr (§5.3). Delegiert an
@@ -1309,79 +1295,6 @@ def client_row_status(row: dict, local_runs: dict[str, dict]) -> str | None:
         return live.get("status") or "running"
     lr = local_runs.get(row.get("slug"))
     return lr.get("status") if lr else None
-
-
-def enrich_client_rows(rows: list[dict], local_runs: dict[str, dict]) -> list[dict]:
-    """Client-Zeilen um ``last_status`` ergänzen, damit ``filter_schedules()``
-    unverändert auf ihnen arbeitet (m.rau/bibi#65).
-
-    Die Host-Zeile trägt diesen Schlüssel aus der Scheduler-DB; die Client-Zeile
-    kommt aus der lokalen MD-Discovery und trägt ihn nicht. Ohne die Angleichung
-    liesse sich der gemeinsame Filter zwar aufrufen, er griffe aber nie — ein
-    Bedienelement, das sichtbar da ist und nichts tut.
-
-    Die Alternative wäre eine zweite Filterfunktion für die Client-Seite
-    gewesen. Dagegen spricht, dass die Statuswerte dieselben sind und sich nur
-    ihr Ablageort unterscheidet: das ist kein fachlicher Grund für zwei
-    Wahrheiten, die auseinanderlaufen können.
-    """
-    out = []
-    for row in rows:
-        st = client_row_status(row, local_runs)
-        out.append({**row, "last_status": st} if st else dict(row))
-    return out
-
-
-def filter_schedules(schedules: list[dict], *, typ: str | None = None,
-                     status: str | None = None, now: float | None = None) -> list[dict]:
-    """Schedules nach Typ und Status filtern (rein). ``alle``/leer = kein Filter;
-    ``status='problem'`` matcht die Abweichungs-Gruppe (inkl. überfällig)."""
-    now = time.time() if now is None else now
-    out = list(schedules)
-    if typ and typ != "alle":
-        out = [s for s in out if _effective_sched_type(s) == typ]
-    if status and status != "alle":
-        if status == "problem":
-            out = [s for s in out if _sched_is_problem(s, now)]
-        else:
-            out = [s for s in out if s.get("last_status") == status]
-    return out
-
-
-def _cookie_filter_value(cookie: str | None, valid: tuple[str, ...]) -> str | None:
-    """Persistenter Filter-Wert aus Cookie (User-Fund: "die ausgewählte
-    Auswahl in /-/ui/schedules sollte erhalten bleiben"). Nur übernehmen,
-    wenn der Wert noch zu den aktuell gültigen Optionen gehört (oder der
-    ``alle``-Sentinel ist) — schützt gegen veraltete Cookies nach
-    Options-Änderungen (z. B. den entfernten ``app``-Typ, PLAN-25 Befund 7)."""
-    if cookie and (cookie == "alle" or cookie in valid):
-        return cookie
-    return None
-
-
-def _filter_bar(typ: str | None, status: str | None, *,
-                url: str = "/-/ui/schedules/list",
-                target: str = "#schedules") -> str:
-    def _opts(values: tuple, cur: str | None) -> str:
-        cur = cur or "alle"
-        # value bleibt "alle" (interner Sentinel, s. filter_schedules()), nur
-        # der sichtbare Text ist englisch (User-Fund 2026-07-08, 5. Runde).
-        parts = [f'<option value="alle"{" selected" if cur == "alle" else ""}>all</option>']
-        for v in values:
-            parts.append(f'<option value="{v}"{" selected" if cur == v else ""}>{v}</option>')
-        return "".join(parts)
-
-    # Ziel und Target sind Parameter, seit die Leiste auch auf der Client-Seite
-    # steht (m.rau/bibi#65). Fest verdrahtet wuerde ein Klick dort ein Fragment
-    # austauschen, das es auf dem Client gar nicht gibt.
-    common = (f'hx-get="{url}" hx-target="{target}" hx-swap="outerHTML" '
-              'hx-include="[name=\'typ\'],[name=\'status\']"')
-    return (
-        '<div class="logbar">'
-        f'<label>Type <select name="typ" {common}>{_opts(_SCHED_TYPES, typ)}</select></label>'
-        f'<label>Status <select name="status" {common}>{_opts(_SCHED_STATUSES, status)}</select></label>'
-        '</div>'
-    )
 
 
 #: Die fünf Screens, in der Reihenfolge der App-Bar. Feed und Jobs sind die
@@ -1835,7 +1748,7 @@ def log_page(daemon_status: dict | None = None, *, git_status: dict | None = Non
     ``_LOG_JS``) — der globale FOLLOW-Toggle ist seit PLAN-36 Stufe 36.3
     entfernt (E8). Status-Kacheln (Host/Mode/Git/Job-Status,
     PLAN-27 Befund 2, User-Fund: "diesen Header auch im Live-Log anzeigen")
-    seit demselben `feed_status_fragment()` wie auf ``/-/``/``/-/ui/schedules``
+    seit demselben `feed_status_fragment()` wie auf ``/-/``
     — braucht dafür jetzt auch das htmx-Script-Tag (vorher unnötig, da der
     Log-Stream reines SSE/Plain-JS ist)."""
     now = time.time() if now is None else now
