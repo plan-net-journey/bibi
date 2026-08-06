@@ -78,7 +78,7 @@ that the user runs themselves:
 - **invalid-schedule** → fix the frontmatter at the reported path.
 - **Stuck merge branch** → `/sync` (resolves or shows why it's still stuck).
 - **Zombie/error job** → usually self-explanatory from `bibi-ctrl job show
-  <id>`; restart via `bibi-ctrl job restart <id>` once the underlying cause
+  <id>`; reset via `bibi-ctrl job reset <id>` once the underlying cause
   is addressed.
 
 Auto-applying any of these without the user looking at it first was
