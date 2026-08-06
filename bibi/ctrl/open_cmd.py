@@ -42,14 +42,32 @@ def run(args: argparse.Namespace) -> int:
             return 2
         case_store.set_status(m.folder, "open")
         rel = f"{case_name}/{m.folder_name}"
-        state.set_path(rel)  # parkt die Session auf den Case
+        geparkt = state.set_path(rel)  # parkt die Session auf den Case
         print(f"reaktiviert: {rel} (status: open)")
         print(f"cd: {m.folder.resolve()}")
+        _warn_unparked(geparkt, m.folder)
         return 0
 
     folder = case_store.create_case(topic)
     rel = f"{case_name}/{folder.name}"
-    state.set_path(rel)  # parkt die Session auf den Case
+    geparkt = state.set_path(rel)  # parkt die Session auf den Case
     print(f"erstellt: {rel}")
     print(f"cd: {folder.resolve()}")
+    _warn_unparked(geparkt, folder)
     return 0
+
+
+def _warn_unparked(geparkt: bool, folder) -> None:
+    """m.rau/bibi#139: eine Marke, die nicht entsteht, sagt es.
+
+    Exit bleibt 0 — der Case *ist* offen, nur nicht geparkt, und das ist kein
+    Fehlschlag. Es ist aber auch nichts, was still bleiben darf: ohne Marke
+    hängt der aktive Case allein am cwd, und dass der sich in einer Sitzung
+    mehrfach von selbst zurücksetzt, ist in diesem Repo belegt. Der Ausfall
+    blieb am 2026-08-05 acht Stunden lang unbemerkt."""
+    if geparkt:
+        return
+    print("⚠ nicht geparkt — keine Session-ID (weder BIBI_SESSION_ID noch "
+          "CLAUDE_CODE_SESSION_ID).", file=sys.stderr)
+    print(f"  Der Case ist offen, aber nur das cwd hält ihn: cd {folder.resolve()}",
+          file=sys.stderr)

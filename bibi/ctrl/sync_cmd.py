@@ -331,6 +331,16 @@ def _run_sync_apply() -> int:
             print("Pull übersprungen — der Pull fasst Dateien mit unfertigen "
                   "Änderungen an, dort erst `/save`:", file=sys.stderr)
             _print_live_paths(stream=sys.stderr)
+        elif kind == "dirty":
+            # m.rau/bibi#160: eigener, benannter Ausgang. Anders als
+            # ``live_edit`` (der Pull fasst GENAU diese Dateien an) blockiert
+            # hier der Working Tree als Ganzes — git verlangt für einen Rebase
+            # einen sauberen Tree, egal welche Dateien der Pull berührt.
+            # Kein ``sync_conflict``: es gibt nichts aufzulösen.
+            print("Pull übersprungen — uncommittete Änderungen blockieren den "
+                  "Rebase. Erst `/save`, dann erneut `/sync`:", file=sys.stderr)
+            for p in git_ops.dirty_paths():
+                print(f"  {p}", file=sys.stderr)
         else:
             print(f"Abgleich fehlgeschlagen: {kind}", file=sys.stderr)
         return 1
@@ -411,15 +421,26 @@ def run_continue(_: argparse.Namespace) -> int:
 
 def run_abort(_: argparse.Namespace) -> int:
     """PLAN-30 Ebene 3: erkennt selbst, welche Konfliktart offen ist (s.
-    ``run_continue()``)."""
+    ``run_continue()``).
+
+    Löscht in **jedem** Fall ``sync_conflict`` (m.rau/bibi#161) — auch wenn gar
+    kein Vorgang offen war. Das Flag wird an sieben Stellen gesetzt und an drei
+    gelöscht, und alle drei setzten bisher einen *erfolgreichen* Vorgang voraus.
+    Wer abbricht, hat aber genau keinen; ohne diesen Ausgang blieb die Warnung
+    für immer stehen. Der Fall „Flag steht, Vorgang nicht" ist nicht theoretisch
+    — er ist der Normalfall nach #160, wo ein dirty Tree das Flag ohne jeden
+    Rebase gesetzt hat."""
     if git_ops.is_merge_in_progress():
         git_ops.abort_merge()
+        state.set_sync_conflict(False)
         print("merge abgebrochen.")
         return 0
     if not git_ops.is_rebase_in_progress():
+        state.set_sync_conflict(False)
         print("kein Rebase/Merge im Gange.")
         return 0
     git_ops.abort_rebase()
+    state.set_sync_conflict(False)
     print("rebase abgebrochen.")
     return 0
 

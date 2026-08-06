@@ -2,8 +2,8 @@
 
 Quick-Spalten slug/status/last/next. Die frühere Archiv-Klapp-Logik für
 abgelaufene One-shots ist mit PLAN-14 Stufe 14.6 vollständig durch das
-Registrierungs-Drei-Gruppen-Modell ersetzt (Aktiv/Archive/Journal, siehe
-test_controller_schedules.py). PLAN-23 Befund 2 verfeinert das nochmal: ein
+Registrierungs-Drei-Gruppen-Modell ersetzt (Aktiv/Archive/Journal).
+PLAN-23 Befund 2 verfeinert das nochmal: ein
 abgeschlossener oneshot (`at:`) mit noch vorhandener MD landet jetzt NICHT
 mehr in „Aktiv", sondern im Archive (nicht mehr erneut startbar, s. Befund
 3) — anders als PLAN-14 14.6 das ursprünglich vorsah."""

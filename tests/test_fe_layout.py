@@ -99,39 +99,5 @@ def test_client_live_without_status_reads_as_running():
     assert render.client_row_status({"slug": "a", "live": {}}, {}) is None
 
 
-def test_client_rows_are_enriched_for_the_shared_filter():
-    """Die Anreicherung ist der ganze Trick: danach trägt `filter_schedules()`
-    unverändert, und es gibt weiterhin **eine** Filterfunktion statt zweier,
-    die auseinanderlaufen können."""
-    rows = [{"slug": "a", "kind": "job", "job": "x"},
-            {"slug": "b", "kind": "job", "job": "y", "live": {"status": "running"}}]
-    local_runs = {"a": {"status": "failed"}}
-    enriched = render.enrich_client_rows(rows, local_runs)
-    assert [r["last_status"] for r in enriched] == ["failed", "running"]
-    assert render.filter_schedules(enriched, status="failed") == [enriched[0]]
 
 
-def test_client_filter_bar_targets_the_client_board():
-    """Die Leiste ist dieselbe Funktion, aber sie darf nicht auf die Host-Route
-    zeigen — sonst tauscht ein Klick auf der Client-Seite ein Fragment aus, das
-    es dort gar nicht gibt."""
-    bar = render._filter_bar(None, None, url="/-/ui/jobs/board", target="#jobsboard")
-    assert "/-/ui/jobs/board" in bar and "#jobsboard" in bar
-    assert "/-/ui/schedules/list" not in bar
-
-
-
-def test_client_type_filter_reads_the_same_field_as_the_host():
-    """Der Typ-Filter arbeitet auf ``payload`` — und genau dieses Feld liefert
-    ``_local_schedules()`` auch für die Client-Seite.
-
-    Festgehalten, weil die Frage beim Bauen zweimal aufkam: ein Ad-hoc-Versuch
-    mit ``job:`` statt ``payload:`` lieferte eine leere Trefferliste und sah
-    einen Moment lang wie ein Fehler in der Filterung aus. Er war keiner — die
-    Zeile war falsch gebaut. Dieser Test hält fest, welches Feld gilt.
-    """
-    rows = [{"slug": "a", "kind": "job", "payload": "echo x"},
-            {"slug": "b", "kind": "job", "payload": "claude: fasse zusammen"}]
-    e = render.enrich_client_rows(rows, {})
-    assert [r["slug"] for r in render.filter_schedules(e, typ="claude")] == ["b"]
-    assert [r["slug"] for r in render.filter_schedules(e, typ="job")] == ["a"]

@@ -39,6 +39,15 @@ def run(args: argparse.Namespace) -> int:
     # Unterschied erklärt, warum ein `cd` woanders hin nichts kaputt macht.
     src = state.path_source()
     print(f"path: {case_path or '(none)'}" + (f" ({src})" if src else ""))
+    # m.rau/bibi#139: die fehlende Session-ID bekommt eine eigene, benannte
+    # Zeile — nicht bloß das Fehlen von „(session)" hinter dem Pfad. Ein
+    # fehlendes Wort sieht aus wie „geparkt, aber über cwd", und genau daran
+    # ist der Ausfall am 2026-08-05 acht Stunden lang vorbeigelesen worden.
+    # Nur bei Abwesenheit gezeigt: der Normalfall bleibt still, sonst gewöhnt
+    # man sich die Zeile ab — dieselbe Erwägung wie bei ``park_foreign`` unten.
+    if state.session_id() is None:
+        print("session_id: (keine) — diese Sitzung kann nicht parken, "
+              "der aktive Case hängt allein am cwd")
     # m.rau/bibi#97: „(none)" allein deckt zwei grundverschiedene Lagen zu — nie
     # geparkt (Repo-Scope ist richtig) und geparkt unter einer Session-ID, die es
     # nicht mehr gibt (ein Case ist gemeint). Nur die zweite bekommt eine Zeile;

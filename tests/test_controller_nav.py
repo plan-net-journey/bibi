@@ -4,8 +4,10 @@ THEME-Toggle + Ops-Handles (RESCAN/MAINT) auf jedem Screen — inkl. Live-Log
 Navigationsleiste mit FOLLOW on/off"). Der Feed-Screen war zwischenzeitlich
 entfernt (2026-07-04: "entferne den Feed, den will ich nicht mehr sehen"),
 kam aber mit PLAN-18 (2026-07-06, Client-Umbau) als **Home-Screen** zurück —
-Schedules bleibt unter ``/-/ui/schedules`` erreichbar, ist nur nicht mehr
-``/-/`` selbst."""
+Der Schedules-Screen ist seit dem bibi5-Umbau gestrichen, sein Apparat mit
+m.rau/bibi#159 zurückgebaut; hier stand, er bleibe unter
+``/-/ui/schedules`` erreichbar — die Route antwortet 404
+(``tests/test_jobs_screen.py`` hält das fest)."""
 
 from __future__ import annotations
 
