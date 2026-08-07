@@ -193,6 +193,34 @@ def _plist_path(label: str) -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
 
 
+def installed_unit(root: Path | None = None) -> str | None:
+    """Name der installierten Autostart-Unit dieses Repos, sonst ``None``.
+
+    Beantwortet „hat dieser Knoten einen Supervisor" durch Nachsehen statt durch
+    Schließen (m.rau/bibi#55). Vorher leitete ``bibi-ctrl status`` die Antwort
+    aus der Portdatei ab — ``session=False`` hieß dort „Unit". Das ist ein
+    binärer Schalter für drei Fälle: Sitzung, Unit, und ein von Hand gestarteter
+    Daemon, der keins von beidem ist und trotzdem als Unit gemeldet wurde.
+
+    Warum das mehr als Kosmetik ist: diese Angabe ist der Weg, auf dem sich
+    m.rau/bibi#180 nachprüfen lässt — bekommt ein Client einen Dienst? Wer dafür
+    ``status`` liest statt ``launchctl``, bekam das Gegenteil der Wahrheit.
+
+    Bewusst nur ein Blick ins Dateisystem, kein ``launchctl list``/``systemctl``:
+    gefragt ist, ob eine Unit **installiert** ist, nicht ob sie gerade läuft —
+    und ein Unterprozess je ``status``-Aufruf wäre für eine Zeile zu teuer.
+    """
+    root = root or repo.root_or_none()
+    if root is None:
+        return None
+    if sys.platform == "darwin":
+        label = _label(root)
+        return label if _plist_path(label).exists() else None
+    if sys.platform.startswith("linux"):
+        return _systemd_unit_name(root) if _systemd_unit_path(root).exists() else None
+    return None
+
+
 def install(role: str | None = None, connect: bool = False,
             port: int | None = None) -> str:
     """Autostart-Unit schreiben.

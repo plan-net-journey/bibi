@@ -115,6 +115,16 @@ class JsonlFormatter(logging.Formatter):
         for k, v in (b.get("fields") or {}).items():
             if k not in _KNOWN:
                 obj[k] = v
+        # m.rau/bibi#57: ``logging.Formatter`` hängt ``exc_info`` von selbst an —
+        # diese Klasse überschreibt ``format()`` aber vollständig und baut ihre
+        # Zeile selbst, womit der Traceback stillschweigend wegfiel. Ein
+        # ``log.exception()`` meldete damit einen Fehler ohne seine Ursache.
+        #
+        # Als eigenes Feld statt in ``msg``: die Zeile bleibt maschinenlesbar,
+        # und ``emit()`` zwingt ``msg`` durch ``_oneline()`` — ein Traceback
+        # käme dort als unlesbare Wurst an.
+        if record.exc_info:
+            obj["exc"] = self.formatException(record.exc_info)
         return json.dumps(obj, ensure_ascii=False)
 
 
@@ -124,11 +134,18 @@ class HumanFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         b = _payload(record)
         ts = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
-        return human_line(
+        line = human_line(
             ts=ts, level=record.levelname, role=_role(record, b),
             event=b.get("event") or "", msg=record.getMessage(),
             slug=b.get("slug"), run_id=b.get("run_id"), fields=b.get("fields"),
         )
+        # Auch hier (m.rau/bibi#57), und hier unter dem Vorbehalt der
+        # Ein-Zeilen-Konvention: der Traceback kommt **unter** die Ereigniszeile,
+        # nicht hinein. Wer den Strom zeilenweise liest, behält seine eine Zeile
+        # je Ereignis; wer die Ursache sucht, findet sie direkt darunter.
+        if record.exc_info:
+            line = f"{line}\n{self.formatException(record.exc_info)}"
+        return line
 
 
 def render_jsonl_line(line: str) -> str:

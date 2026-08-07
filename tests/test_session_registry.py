@@ -180,17 +180,33 @@ def test_sweeper_ignores_sessions_when_not_session_scoped(team_repo: Path):
     assert calls == []
 
 
-def test_sweeper_respects_the_check_interval(team_repo: Path):
-    # Im 2-Sekunden-Takt des Sweepers wäre die Zählung Verschwendung — sie läuft
-    # im groben 45-s-Takt der PID-Prüfung aus #38.
+def test_sweeper_throttles_the_counting_not_the_event(team_repo: Path, monkeypatch):
+    """Hieß bis m.rau/bibi#50 ``test_sweeper_respects_the_check_interval`` und
+    hielt fest, dass ein ``unregister()`` bis zu 45 s wirkungslos bleibt.
+
+    **Das war der Bug, nicht die Zusage.** Genau in dieser Spanne lebte ein
+    Daemon weiter, dessen letzte Sitzung schon gegangen war — und ein sofort
+    nachgestartetes ``bibi`` hängte sich an ihn, samt altem Code. Der Test
+    beschrieb das Verhalten korrekt und machte es dadurch haltbar.
+
+    Sein berechtigter Kern bleibt und wird hier schärfer geprüft: gedrosselt
+    gehört die **Zählung** (``live_pids()`` prüft jede PID einzeln), nicht das
+    Ereignis. Solange sich im Registry-Verzeichnis nichts rührt, wird nicht
+    gezählt.
+    """
+    aufrufe: list[int] = []
+    echt = session_registry.count
+    monkeypatch.setattr(session_registry, "count",
+                        lambda *a, **k: (aufrufe.append(1), echt(*a, **k))[1])
     s = _sweeper()
     session_registry.register()
-    s.tick_once(now=_t(100))
-    session_registry.unregister()
-    s.tick_once(now=_t(110))         # zu früh, wird übersprungen
-    assert s.shutdowns == []
-    s.tick_once(now=_t(200))
-    assert s.shutdowns == [1]
+
+    s.tick_once(now=_t(100))          # Änderung (register) -> es wird gezählt
+    assert len(aufrufe) == 1
+    s.tick_once(now=_t(110))          # nichts geändert, zu früh -> übersprungen
+    assert len(aufrufe) == 1, "ohne Änderung bleibt die Drosselung in Kraft"
+    s.tick_once(now=_t(200))          # Intervall um -> turnusmäßig wieder
+    assert len(aufrufe) == 2
 
 
 def test_default_shutdown_uses_sigterm(monkeypatch: pytest.MonkeyPatch):
@@ -242,3 +258,31 @@ def test_run_passes_session_scoped_to_create_app(env_iso_for_session, monkeypatc
 def env_iso_for_session(team_repo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
     return team_repo
+
+
+# ── m.rau/bibi#50: das Sitzungsende wird bemerkt, nicht entdeckt ─────────────
+#
+# Bis hierher war ``_check_sessions`` auf ``pid_check_interval`` (45 s) gedrosselt
+# — die Drosselung gilt dem teuren ``live_pids()``, das jede PID einzeln prüft.
+# Die Folge war ein Rennen, das die Engine gegen sich selbst verlor: nach dem
+# letzten ``exit`` lebte der Daemon bis zu 45 Sekunden weiter, und ein sofort
+# nachgestartetes ``bibi`` fand seine Portdatei und hängte sich an. Wer der
+# Upgrade-Aufforderung „exit, dann bibi" wörtlich folgte, landete zuverlässig
+# wieder auf dem alten Stand — mit derselben Meldung.
+#
+# Das Sitzungsende ist aber ein **bekannter** Zeitpunkt, kein zu entdeckender:
+# ``unregister()`` schreibt ins Registry-Verzeichnis, und dessen mtime ist billig
+# zu lesen. Die Drosselung bleibt für den Normalfall; eine Änderung hebt sie auf.
+
+
+def test_a_session_ending_is_noticed_within_one_tick(team_repo: Path):
+    """Der Fall aus dem Ticket: kein Warten auf den nächsten 45-s-Takt."""
+    s = _sweeper(pid_check_interval=45.0)
+    session_registry.register()
+    s.tick_once(now=_t(1))
+    assert s.shutdowns == []
+
+    session_registry.unregister()
+    # Nur eine Sekunde später — weit innerhalb der Drosselung.
+    s.tick_once(now=_t(2))
+    assert s.shutdowns == [1], "das Ende der letzten Sitzung darf nicht warten"

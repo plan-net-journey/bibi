@@ -107,6 +107,36 @@ def _fe_url(entry: dict) -> str:
     return f"http://{shown}:{entry['port']}/-/"
 
 
+def _origin(entry: dict) -> str:
+    """Woher der laufende Daemon stammt — Sitzung, Unit oder Handstart.
+
+    **Drei Fälle, nicht zwei** (m.rau/bibi#55). Hier stand ein binärer Schalter
+    ``{True: "Sitzung", False: "Unit"}``; ein von Hand gestarteter Daemon
+    schreibt aber ebenfalls ``session=False`` und wurde damit als ``Unit``
+    gemeldet, auch wenn nachweislich keine existierte.
+
+    Die Portdatei kann die beiden hinteren Fälle nicht unterscheiden — sie hält
+    fest, was der startende Prozess wusste, und der weiß nicht, ob ihn ein
+    Supervisor gestartet hat. Also wird nachgesehen: ``install.installed_unit()``
+    beantwortet die Frage am Dateisystem.
+
+    Die Unterscheidung ist der Grund, warum diese Zeile existiert. Ein Client mit
+    ``Sitzung (61874)`` und ein Scheduler mit ``Unit bibi-notes-daemon (8780)``
+    geben zwei verschiedene Zusagen darüber, was passiert, wenn der Mensch
+    weggeht — und ein Handstart gibt eine dritte: gar keine.
+    """
+    if entry.get("session") is True:
+        return "Sitzung"
+    if entry.get("session") is None:
+        return "unbekannt (Daemon startete vor #59)"
+    try:
+        from bibi.daemon import install
+        unit = install.installed_unit()
+    except Exception:
+        unit = None
+    return f"Unit {unit}" if unit else "von Hand (kein Supervisor)"
+
+
 def _print_daemon() -> None:
     """Der dritte Block. Bewusst auch dann eine Zeile, wenn nichts läuft — die
     Abwesenheit einer Auskunft ist hier selbst die Auskunft, und ein stiller
@@ -122,7 +152,5 @@ def _print_daemon() -> None:
     print("Daemon:")
     print(f"  FE:               {_fe_url(entry)}")
     print(f"  Port:             {entry['port']}")
-    origin = {True: "Sitzung", False: "Unit"}.get(
-        entry.get("session"), "unbekannt (Daemon startete vor #59)")
-    print(f"  Herkunft:         {origin} (PID {entry.get('pid')})")
+    print(f"  Herkunft:         {_origin(entry)} (PID {entry.get('pid')})")
     print(f"  Rollen (laufend): {entry.get('roles') or '—'}")

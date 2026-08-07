@@ -283,17 +283,32 @@ def test_status_shows_running_daemon_with_port_and_url(team_repo: Path, cfg_home
     assert "63913" in out
 
 
-def test_status_names_the_daemons_origin(team_repo: Path, cfg_home: Path, capsys):
-    """Sitzung oder Unit — der Unterschied entscheidet, ob ein Neustart von
-    außen den Daemon zurückbringt oder eine Sitzung ohne Dashboard hinterlässt."""
-    from bibi.daemon import portfile
+def test_status_names_the_daemons_origin(team_repo: Path, cfg_home: Path, capsys,
+                                         monkeypatch):
+    """Sitzung, Unit oder Handstart — der Unterschied entscheidet, ob ein
+    Neustart von außen den Daemon zurückbringt, eine Sitzung ohne Dashboard
+    hinterlässt, oder gar nichts passiert.
+
+    Prüfte bis m.rau/bibi#55 nur zwei Fälle, weil der Code nur zwei kannte:
+    ``session=False`` hieß „Unit", ungeprüft. Ein von Hand gestarteter Daemon
+    schreibt aber denselben Wert und wurde damit als Dienst ausgegeben, den es
+    nicht gab.
+    """
+    from bibi.daemon import install, portfile
     portfile.write(8769, host="127.0.0.1", roles="worker", session=True)
     main(["status"])
     assert "Sitzung" in capsys.readouterr().out
 
+    # Kein Supervisor installiert -> weder Sitzung noch Unit.
     portfile.write(8769, host="127.0.0.1", roles="worker", session=False)
     main(["status"])
-    assert "Unit" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "von Hand" in out and "Unit" not in out
+
+    # Mit installierter Unit -> sie wird beim Namen genannt.
+    monkeypatch.setattr(install, "installed_unit", lambda *a, **k: "bibi-team-daemon")
+    main(["status"])
+    assert "Unit bibi-team-daemon" in capsys.readouterr().out
 
 
 def test_status_says_when_no_daemon_runs(team_repo: Path, cfg_home: Path, capsys):
@@ -641,3 +656,38 @@ def test_init_carries_credentials_over(cfg_home: Path, monkeypatch):
     _forbid_input(monkeypatch)
     assert main(["init", "--non-interactive", "--profile", "client"]) == 0
     assert config.read_env()["BIBI_JOB_ENV_TOKEN"] == "geheim"
+
+
+# ── m.rau/bibi#55: status behauptet keine Herkunft, die es nicht gibt ────────
+#
+# Die Zeile trug bis zum 2026-08-07 einen binären Schalter für drei Fälle:
+# ``{True: "Sitzung", False: "Unit"}``. Ein von Hand gestarteter Daemon schreibt
+# ``session=False`` und wurde damit als ``Unit`` gemeldet — auch dann, wenn
+# nachweislich keine existierte.
+#
+# Das ist mehr als ein Schönheitsfehler: die Angabe ist der Weg, auf dem man
+# m.rau/bibi#180 nachprüft („hat dieser Client einen Dienst bekommen?"), und der
+# bibi-setup-Skill stützt seine Abschluss-Zusammenfassung ausdrücklich darauf —
+# *„a client that says `session (61874)` and a scheduler that says `unit …` are
+# making two different promises"*. Wer `status` liest statt `launchctl`, bekam
+# hier das Gegenteil der Wahrheit. Beim D2-Lauf hat genau diese Zeile kurz so
+# ausgesehen, als sei der Vorfall vom 2026-08-06 wieder passiert.
+
+
+def test_status_does_not_claim_a_unit_that_does_not_exist(team_repo: Path, capsys):
+    from bibi.daemon import portfile
+    portfile.write(51234, host="127.0.0.1", roles="synchronizer,controller",
+                   session=False)
+    main(["status"])
+    out = capsys.readouterr().out
+    assert "Herkunft" in out
+    assert "Unit" not in out, "ohne installierte Unit darf keine behauptet werden"
+
+
+def test_status_still_names_a_session_daemon(team_repo: Path, capsys):
+    """Der Fall, der schon richtig war, bleibt richtig."""
+    from bibi.daemon import portfile
+    portfile.write(51234, host="127.0.0.1", roles="synchronizer,controller",
+                   session=True)
+    main(["status"])
+    assert "Sitzung" in capsys.readouterr().out
