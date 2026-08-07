@@ -188,19 +188,36 @@ checks again before deciding whether to (re)start anything.
 
 **Second instance on this machine? Settle `BIBI_CONFIG_PATH` here, before
 `init` runs — not in a footnote afterwards (m.rau/bibi#173).** `bibi-ctrl
-init` writes `~/.config/bibi/env` and takes **no backup**. Run on a machine
-that already carries a node, it destroys the first one's configuration:
+init` rewrites `~/.config/bibi/env` from scratch. Run on a machine that
+already carries a node, it takes the first one's configuration with it:
 `BIBI_NODE_ID` (the node loses its identity and its `approved` status at the
-scheduler), every `BIBI_JOB_ENV_*` value the distribution path delivered,
-tuned poll intervals, `BIBI_PUBLIC_HOST`.
+scheduler), `BIBI_PUBLIC_HOST`, and every `BIBI_JOB_ENV_*` line the file
+carries.
+
+Since v0.7.2 that is cushioned in **one** direction only: when the existing
+file belongs to a *different* team repo (`BIBI_REMOTE` differs), `init`
+copies it to `env.bak-<timestamp>`, says so, and gives this instance its own
+`BIBI_NODE_ID` instead of letting it inherit the first one's.
 
 ```bash
 test -f ~/.config/bibi/env && grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' ~/.config/bibi/env | tr -d '='
 ```
 
 That prints the variable names without their values — enough to see whether
-a node lives there already. If one does and it is **not** this checkout, give
-this instance its own file and use it for every `bibi-ctrl` call below:
+a node lives there already. Two cases follow, and **both** need a decision:
+
+- **It belongs to a different checkout** → give this instance its own file
+  (below). The first node keeps its identity and its credentials, and the
+  backup above is the safety net if you get it wrong.
+- **It belongs to *this* checkout** → the backup does **not** apply, and
+  `write_env()` keeps only the keys in `config.KEYS`. Every
+  `BIBI_JOB_ENV_*` line the listing just showed you is gone after `init`,
+  silently (m.rau/bibi#183). Copy the file aside by hand first — on a
+  scheduler host those lines *are* the credentials it distributes to every
+  client.
+
+For the different-checkout case, use the own file for every `bibi-ctrl` call
+below:
 
 ```bash
 export BIBI_CONFIG_PATH="$PWD/data/bibi-env"
