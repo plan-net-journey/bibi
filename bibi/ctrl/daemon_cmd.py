@@ -5,6 +5,7 @@
 - ``install``   — Autostart-Unit/Plist schreiben (systemd/launchd).
 - ``uninstall`` — Unit/Plist entfernen.
 - ``status``    — laufenden Daemon über ``/-/health`` abfragen.
+- ``stop``      — laufenden Daemon beenden (SIGTERM, m.rau/bibi#58).
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import argparse
 import json
 import logging
 import os
+import signal
 import sys
 import urllib.request
 
@@ -457,7 +459,23 @@ def uninstall_cmd(_: argparse.Namespace) -> int:
 
 
 def status(args: argparse.Namespace) -> int:
-    port = args.port or config.daemon_port()
+    # m.rau/bibi#58: ohne ``--port`` und ohne laufenden Daemon fiel
+    # ``config.daemon_port()`` auf den Default 8769 zurück, und die
+    # Fehlermeldung nannte ihn — als sei dort geprüft worden. Auf einem Client
+    # mit ``--port auto`` ist 8769 nie der Port. Fehlt die Portdatei, lautet die
+    # Auskunft „kein Daemon", nicht „nicht erreichbar unter einer Adresse, die
+    # nie eine war".
+    if args.port:
+        port = args.port
+    else:
+        from bibi.daemon import portfile
+        entry = portfile.read()
+        if entry is None:
+            print("kein laufender Daemon in diesem Repo (keine Portdatei unter "
+                  "data/). Eine bestimmte Adresse lässt sich mit --port abfragen.",
+                  file=sys.stderr)
+            return 1
+        port = entry["port"]
     url = f"http://127.0.0.1:{port}/-/health"
     try:
         with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310 (localhost)
@@ -466,6 +484,43 @@ def status(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"daemon nicht erreichbar auf {url}: {e}", file=sys.stderr)
         return 1
+
+
+def stop(args: argparse.Namespace) -> int:
+    """Den Daemon dieses Repos beenden (m.rau/bibi#58).
+
+    ``daemon`` kannte ``run``, ``install``, ``uninstall``, ``status`` und
+    ``logs``. Wer die Vordergrund-Variante gestartet hatte — die der
+    ``bibi-setup``-Skill für Container und für Knoten ohne Init-System vorsieht —
+    hatte danach einen Prozess, den er nur über ``kill <pid>`` wieder loswurde;
+    ``uninstall`` half nicht, weil es keine Unit gab.
+
+    Über SIGTERM, aus demselben Grund wie beim Sitzungsende und beim
+    Restart-Endpunkt: nur so greifen uvicorns ``timeout_graceful_shutdown`` und
+    der Job-Drain im ``lifespan``-Finally. Ein ``kill -9`` nähme beide Zusagen.
+    """
+    from bibi.daemon import portfile
+    entry = portfile.read()
+    if entry is None:
+        print("kein laufender Daemon in diesem Repo.", file=sys.stderr)
+        return 1
+    pid = entry.get("pid")
+    if not pid:
+        print("Portdatei ohne PID — von Hand nachsehen (data/daemon-port.json).",
+              file=sys.stderr)
+        return 1
+    try:
+        os.kill(int(pid), signal.SIGTERM)
+    except ProcessLookupError:
+        print(f"PID {pid} läuft nicht mehr — die Portdatei war veraltet.",
+              file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"konnte PID {pid} nicht beenden: {e}", file=sys.stderr)
+        return 1
+    print(f"SIGTERM an PID {pid} (Port {entry['port']}) — der Daemon fährt "
+          "herunter und lässt laufende Jobs auslaufen.")
+    return 0
 
 
 def logs(args: argparse.Namespace) -> int:
@@ -527,6 +582,13 @@ def register(sub: argparse._SubParsersAction) -> None:
     pi.set_defaults(func=install_cmd)
 
     dsub.add_parser("uninstall", help="Autostart entfernen").set_defaults(func=uninstall_cmd)
+
+    # m.rau/bibi#58: das Gegenstück zu ``run``. ``uninstall`` entfernt die Unit
+    # und half einem von Hand gestarteten Daemon deshalb nicht — den wurde man
+    # bis dahin nur per ``kill`` los.
+    dsub.add_parser(
+        "stop", help="laufenden Daemon dieses Repos beenden (SIGTERM)"
+    ).set_defaults(func=stop)
 
     ps = dsub.add_parser("status", help="laufenden Daemon abfragen (/-/health)")
     ps.add_argument("--port", type=int, default=0)

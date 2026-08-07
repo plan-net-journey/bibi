@@ -217,3 +217,50 @@ def test_emit_collapses_multiline_fields_to_one_line():
     assert "\n" not in jsonl and "\n" not in human   # je genau eine Zeile
     assert "error: local changes Witz.md Aborting" in jsonl
     assert "Merge-back-Fehler zweite Zeile" in human
+
+
+# ── m.rau/bibi#57: log.exception() verliert seinen Traceback nicht ───────────
+#
+# Beide Formatter überschreiben ``format()`` vollständig und bauen ihre Zeile
+# selbst. Damit fiel weg, was ``logging.Formatter`` sonst anhängt: ``exc_info``.
+#
+# Sichtbar wurde es an der ersten ERROR-Zeile, die ein frisch eingerichteter
+# Client überhaupt produziert — eine Sekunde nach dem Start, auf einem Knoten,
+# der noch nichts tut:
+#
+#   {"level": "ERROR", "event": "", "msg": "Collector-Tick fehlgeschlagen"}
+#
+# ``bus.py:611`` ruft dort ``log.exception(...)``, will den Traceback also
+# ausdrücklich mitschreiben. Die Absicht stand im Code, das Ergebnis fehlte —
+# wer die Ursache suchte, fand sie nirgends.
+
+
+def _record_with_exception(msg: str = "Collector-Tick fehlgeschlagen"):
+    try:
+        raise ValueError("etwas ging schief")
+    except ValueError:
+        import sys
+        rec = logging.LogRecord("bibi.daemon", logging.ERROR, __file__, 1,
+                                msg, None, sys.exc_info())
+        rec.bibi = {"event": "", "role": "daemon", "fields": {}}
+        return rec
+
+
+def test_jsonl_formatter_keeps_the_traceback():
+    obj = json.loads(activity.JsonlFormatter().format(_record_with_exception()))
+    assert obj["msg"] == "Collector-Tick fehlgeschlagen"
+    assert "ValueError" in obj.get("exc", "")
+    assert "etwas ging schief" in obj["exc"]
+
+
+def test_human_formatter_keeps_the_traceback():
+    out = activity.HumanFormatter().format(_record_with_exception())
+    assert "Collector-Tick fehlgeschlagen" in out
+    assert "ValueError" in out
+
+
+def test_a_record_without_exception_stays_lean():
+    """Kein leeres ``exc``-Feld an jeder gewöhnlichen Zeile."""
+    obj = json.loads(activity.JsonlFormatter().format(
+        _record(msg="picked", event="worker.pickup", role="worker", fields={})))
+    assert "exc" not in obj

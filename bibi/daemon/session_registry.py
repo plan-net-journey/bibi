@@ -49,6 +49,36 @@ def _entry_path(pid: int, root: Path | None = None) -> Path | None:
     return None if d is None else d / f"{pid}.json"
 
 
+def revision(root: Path | None = None) -> float:
+    """Billiger Änderungsanzeiger für das Registry-Verzeichnis (m.rau/bibi#50).
+
+    Ein einzelner ``stat``: die mtime des Verzeichnisses springt bei jedem
+    :func:`register` und :func:`unregister`, weil beide einen Eintrag anlegen
+    oder löschen. ``0.0``, wenn es (noch) keins gibt.
+
+    **Wofür das da ist.** Der Sweeper drosselt seine Sitzungszählung auf
+    ``pid_check_interval`` — zu Recht, denn :func:`live_pids` prüft jede PID
+    einzeln und liefe sonst bei jedem Tick. Die Drosselung kostete aber genau
+    das, was sie sparen sollte: nach dem letzten ``exit`` lebte der Daemon bis
+    zu 45 Sekunden weiter, und ein sofort nachgestartetes ``bibi`` fand seine
+    Portdatei und hängte sich an. Der alte Code blieb im Speicher, und die
+    Upgrade-Aufforderung erschien beim nächsten Start unverändert — wer ihrem
+    Rat *„exit, dann bibi"* folgte, kam zuverlässig dort an, wo er losging.
+
+    Das Sitzungsende ist ein **bekannter** Zeitpunkt, kein zu entdeckender.
+    Diese Funktion macht ihn sichtbar, ohne die teure Zählung vorzuziehen: der
+    Sweeper hebt seine Drosselung auf, wenn sich hier etwas gerührt hat, und
+    behält sie sonst.
+    """
+    d = sessions_dir(root)
+    if d is None:
+        return 0.0
+    try:
+        return d.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def register(pid: int | None = None, *, label: str | None = None,
              root: Path | None = None) -> Path | None:
     """Diese Sitzung anmelden. ``None``, wenn kein Repo da ist.

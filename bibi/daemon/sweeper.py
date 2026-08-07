@@ -33,6 +33,18 @@ def _shutdown_self() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
 
 
+
+def _session_revision() -> float:
+    """Lazy-Wrapper um ``session_registry.revision()`` (m.rau/bibi#50).
+
+    Der Import liegt bewusst in der Funktion: ``session_registry`` zieht
+    ``bibi.repo`` und damit git nach, und der Sweeper wird auch dort gebaut,
+    wo es um Sitzungen gar nicht geht.
+    """
+    from bibi.daemon import session_registry
+    return session_registry.revision()
+
+
 class Sweeper:
     def __init__(self, *, db_path: Path | None = None, interval: float = 2.0,
                  autorun: bool = True, registry=None,
@@ -93,6 +105,13 @@ class Sweeper:
         # sagt „ich gehöre Sitzungen" — sind keine da, ist das die richtige
         # Antwort und keine Überraschung.
         self._last_session_check = time.time()
+        # Stand des Registry-Verzeichnisses bei der letzten Zählung
+        # (m.rau/bibi#50). Beim Bau der **aktuelle** Wert, nicht ``None``: sonst
+        # gälte der erste Tick als Änderung und nähme dem Daemon die Gnadenfrist
+        # eine Zeile höher. Verschluckt wird dadurch nichts — meldet sich
+        # zwischen Bau und erstem Tick eine Sitzung an oder ab, springt die
+        # mtime, und genau das ist das Signal.
+        self._last_session_revision = _session_revision()
         self._task: asyncio.Task | None = None
         self._running = False
 
@@ -141,13 +160,28 @@ class Sweeper:
         Getrennt von ``tick_once()``s Job-Aufräumen gehalten: das eine ist
         Datenpflege, das andere beendet den Prozess — die beiden sollen sich
         beim Lesen nicht vermischen.
+
+        **Die Drosselung gilt der Zählung, nicht dem Ereignis** (m.rau/bibi#50).
+        ``live_pids()`` prüft jede PID einzeln; sie bei jedem Tick laufen zu
+        lassen wäre verschwendet, solange sich nichts geändert hat. Nur war
+        „nichts geändert" bisher eine Annahme statt einer Feststellung — und
+        genau in den bis zu 45 Sekunden danach lebte ein Daemon weiter, dessen
+        letzte Sitzung schon gegangen war. Ein sofort nachgestartetes ``bibi``
+        fand seine Portdatei und hängte sich an, samt altem Code.
+
+        ``session_registry.revision()`` ist ein einzelner ``stat`` und beantwortet
+        die Frage direkt. Ändert sie sich, wird gezählt; sonst bleibt die
+        Drosselung, für die es gute Gründe gibt.
         """
         if not self.session_scoped:
             return
-        if now - self._last_session_check < self.pid_check_interval:
+        from bibi.daemon import session_registry
+        rev = _session_revision()
+        if (rev == self._last_session_revision
+                and now - self._last_session_check < self.pid_check_interval):
             return
         self._last_session_check = now
-        from bibi.daemon import session_registry
+        self._last_session_revision = rev
         if session_registry.count():
             return
         activity.emit(log, logging.INFO, "daemon.session_end",

@@ -113,7 +113,9 @@ Entwicklungszweig ist `dev`, Releases entstehen auf `master` und tragen einen Ta
 
 ## Issue-Tracking
 
-Bugs und Change Requests laufen gebündelt für Engine, Blueprint und Instanzen. Welchem Repo eine Änderung gehört, ist ein **Label** (`repo:engine`, `repo:team`, `repo:notes`), kein Ablageort — die Zuordnung ergibt sich oft erst aus der Analyse und darf offen bleiben oder mehrfach gesetzt werden.
+Bugs und Change Requests gehören in [dieses Board](https://github.com/plan-net-journey/bibi/issues) — auch die zum Blueprint `bibi-team` und zu einzelnen Instanzen. Welchem Repo eine Änderung gehört, ist ein **Label** (`repo:engine`, `repo:team`, `repo:notes`), kein Ablageort: die Zuordnung ergibt sich oft erst aus der Analyse und darf offen bleiben oder mehrfach gesetzt werden.
+
+Das Board ist am **2026-08-07** hierher gezogen. Wer in älteren Texten eine Nummer findet, die nicht passt: sie stammt aus dem Vorgänger-Board und ist nicht dieselbe — jeder umgezogene Vorgang nennt seine Herkunft in der ersten Zeile.
 
 Auf der Dringlichkeitsachse gilt eine Regel: Wer ein `P` trägt, ist triagiert; wer keins trägt, wartet auf Triage. `P1` heißt *wichtig*, nicht *als nächstes* — die Reihenfolge steht im Umsetzungsplan, nicht in der Priorität.
 

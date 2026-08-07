@@ -38,19 +38,43 @@ def _hermetic_env(tmp_path_factory, monkeypatch: pytest.MonkeyPatch):
        wörtlich, ``BIBI_DAEMON_PORT`` sei „in der Test-Umgebung nicht gesetzt";
        auf einem Knoten mit Unit stimmte das nie.
 
-    2. **Die echte Knoten-Konfiguration.** ``config.env_path()`` fällt ohne
-       ``XDG_CONFIG_HOME`` auf ``~/.config/bibi/env`` zurück — die Datei des
+    2. **Die echte Knoten-Konfiguration.** Sie kam früher über
+       ``XDG_CONFIG_HOME`` bzw. ``~/.config/bibi/env`` herein — die Datei des
        ausführenden Nutzers, samt Credentials. Die ``doctor``/``hygiene``-Tests
        lasen sie und meldeten Befunde, die vom Rechner stammten, nicht vom Code.
+
+       **Seit m.rau/bibi#52 ist der Kanal ein anderer, und er ist gefährlicher:**
+       ``env_path()`` ist ``<repo>/data/env``, und die Suite läuft im
+       Engine-Checkout — der *ist* ein Repo. Ein Test, der ``write_env()`` ruft,
+       ohne sich ein eigenes Repo zu nehmen, schriebe also in
+       ``~/Project/bibi/data/env``.
+
+       Deshalb parkt dieses Fixture das cwd in ein **eigenes, leeres Repo pro
+       Test**.
+
+       Zwei Versuche davor, beide lehrreich: erst ein Verzeichnis *ohne* Repo —
+       da wirft ``env_path()``, und rund hundert Tests fielen mit
+       ``KeinRepoError``, die nur beiläufig ``node_id()`` oder einen Heartbeat
+       anfassen. Dann ein Verzeichnis mit leerem ``.git``, was für
+       ``root_or_none()`` reicht (es sucht nur, ob es existiert) — aber nicht
+       für ``root()``, das ``git rev-parse`` ruft und sonst mit ``SystemExit(2)``
+       abbricht. Beides sind Isolationsfehler, keine Codefehler: die Suite hatte
+       den Tests den Boden entzogen, auf dem sie vorher standen (dem
+       Engine-Checkout selbst).
 
     Autouse und function-scoped: ein Test, der eine dieser Variablen braucht,
     setzt sie selbst — dann steht sie im Test und nicht in der Umgebung dessen,
     der ihn startet. Explizit angeforderte Fixtures (``cfg_home``, ``team_repo``)
-    laufen nach dieser und dürfen ``XDG_CONFIG_HOME`` weiter überschreiben.
+    laufen nach dieser und parken das cwd anschließend in ihr eigenes Repo. Wer
+    ausdrücklich *keins* will (``test_tree_status_na_outside_git_repo``), parkt
+    selbst um.
     """
     for key in [k for k in os.environ if k.startswith(_ENV_PREFIX)]:
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("cfg")))
+    leeres_repo = tmp_path_factory.mktemp("knoten")
+    subprocess.run(["git", "init", "-q"], cwd=leeres_repo, check=True)
+    monkeypatch.chdir(leeres_repo)
+    repo._root_of.cache_clear()
 
 
 def pytest_addoption(parser):
@@ -216,6 +240,24 @@ def seed_journal_row():
             },
         )
     return _seed
+
+
+@pytest.fixture
+def cfg_home(team_repo: Path) -> Path:
+    """Ein Knoten mit eigener Konfiguration — seit m.rau/bibi#52 ein Team-Repo.
+
+    Hieß so, als die Konfiguration noch unter ``XDG_CONFIG_HOME`` lag, und behält
+    den Namen: die Tests, die sie anfordern, prüfen dieselbe Sache an ihrem neuen
+    Ort (``<repo>/data/env``).
+
+    **Zentral, weil sie es vorher nicht war.** Drei Testdateien trugen je eine
+    eigene Fassung mit ``monkeypatch.setenv("XDG_CONFIG_HOME", …)``, weitere
+    setzten die Variable direkt. Als die Auflösung repo-lokal wurde, waren alle
+    davon auf einen Schlag wirkungslos — 47 Tests fielen mit ``KeinRepoError``.
+    Eine Fixture an einer Stelle kann der nächsten Änderung folgen; sieben
+    Kopien können es nicht.
+    """
+    return team_repo
 
 
 @pytest.fixture

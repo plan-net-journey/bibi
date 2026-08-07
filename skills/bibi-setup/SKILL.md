@@ -1,7 +1,7 @@
 ---
 name: bibi-setup
 description: Interview-guided node onboarding for all four node kinds (Client, Worker, Scheduler, Scheduler+Worker) — asks which one this is, installs bibi if needed, configures it non-interactively, brings up the right kind of daemon (session daemon for a client, supervisor for a server) and opens the web UI. Wraps `bibi-ctrl init --non-interactive` + `bibi-ctrl daemon install/run`.
-argument-hint:
+argument-hint: "[Pfad zum Team-Repo, Vorgabe: das aktuelle Verzeichnis]"
 allowed-tools:
   - Bash
   - Read
@@ -78,6 +78,18 @@ redoing work.
 
 ## 0. The repo you were handed
 
+**If an argument was given, go there first** (m.rau/bibi#58). Every step below
+works against `$PWD`, and the second instance on a machine is set up from a
+session of the first — so the working directory is usually the wrong one:
+
+```bash
+cd "<argument>" || { echo "kein solches Verzeichnis"; exit 1; }
+pwd
+```
+
+Without an argument, the current directory is the target. Say which one it is
+before doing anything to it.
+
 ### 0a. Per-user git prerequisites
 
 A freshly created OS user has no `~/.gitconfig`, and therefore no LFS filters
@@ -135,20 +147,39 @@ once it was noticed.
 
 ## 1. Resolve `bibi-ctrl`
 
-```bash
-command -v bibi-ctrl
-test -x .venv/bin/bibi-ctrl && echo ".venv/bin/bibi-ctrl"
-```
-
-If neither resolves, bibi itself isn't installed yet:
+**Only one question decides whether to install, and it is about *this* repo**
+(m.rau/bibi#53):
 
 ```bash
-uv venv
-uv pip install .
+test -x .venv/bin/bibi-ctrl && echo "installed" || echo "not installed"
 ```
 
-(Already done automatically during a ttyd-container onboarding — this step
-then just no-ops, `.venv/bin/bibi-ctrl` already exists.)
+`command -v bibi-ctrl` deliberately does **not** appear here. On a machine that
+already runs a bibi instance it resolves — to the *other* one. This skill used
+it as the first check, and on the 2026-08-07 run it answered
+`/Users/…/bibi-notes/.venv/bin/bibi-ctrl` for a repo that had no venv at all.
+Following the instruction would have skipped the installation and driven every
+step below, `init` included, through a foreign checkout.
+
+If it is not installed:
+
+```bash
+env -u VIRTUAL_ENV uv venv
+env -u VIRTUAL_ENV uv pip install .
+```
+
+**`env -u VIRTUAL_ENV` is not optional, and this is the same trap one layer
+down.** `uv` follows `VIRTUAL_ENV`, and a setup for a second repo is normally
+run from a session of the first — so that variable points elsewhere. Measured
+on 2026-08-07, immediately after `uv venv` had created a local one:
+
+```
+$ uv pip install --dry-run .
+Using Python 3.14.5 environment at: /Users/…/bibi-notes/.venv
+ + bibi-lhg @ file:///Users/…/bibi-lhg
+```
+
+The second repo would have been installed into the first repo's venv.
 
 **Then put `bibi-ctrl` on `PATH`, even though every step below uses the
 resolved path.** Claude Code's own hooks and statusline from this repo's
@@ -158,10 +189,17 @@ carefully the steps below qualify the command:
 
 ```bash
 mkdir -p ~/.local/bin
+ls -l ~/.local/bin/bibi-ctrl 2>/dev/null   # zeigt es schon woandershin?
 ln -sf "$PWD/.venv/bin/bibi-ctrl" ~/.local/bin/bibi-ctrl
 ```
 
-Skip only if `command -v bibi-ctrl` already resolved in the check above.
+**Look before you overwrite.** That symlink is global and single-valued: on a
+machine with two instances it can only point at one of them, and `ln -sf`
+silently redirects it to whichever was set up last. The run on 2026-08-07 found
+it already aimed at the *other* repo — set there by this very skill, days
+earlier. If it points elsewhere, say so and let the human decide; a `PATH` entry
+that quietly changes meaning is worse than one that is missing.
+
 The ttyd-container onboarding has always done this (PLAN-33 stages
 33.0–33.2); the native-host path lost it in translation, which is why a
 successful setup still ended every Claude session with two
@@ -181,47 +219,29 @@ container, where nothing puts `.venv/bin` on `PATH`) or plain `bibi-ctrl`
 <bibi-ctrl> status
 ```
 
-Shows the current `Scheduler-URL`/`Rollen` if `~/.config/bibi/env` already
-exists — use these as the pre-filled defaults in the interview below rather
-than asking blind. If this also shows an active daemon, mention it; step 5
-checks again before deciding whether to (re)start anything.
+Shows this node's `Scheduler-URL`/`Rollen` if it has been configured before —
+use these as the pre-filled defaults in the interview below rather than asking
+blind. If it also shows an active daemon, mention it; step 5 checks again before
+deciding whether to (re)start anything.
 
-**Second instance on this machine? Settle `BIBI_CONFIG_PATH` here, before
-`init` runs — not in a footnote afterwards (m.rau/bibi#173).** `bibi-ctrl
-init` writes `~/.config/bibi/env` and takes **no backup**. Run on a machine
-that already carries a node, it destroys the first one's configuration:
-`BIBI_NODE_ID` (the node loses its identity and its `approved` status at the
-scheduler), every `BIBI_JOB_ENV_*` value the distribution path delivered,
-tuned poll intervals, `BIBI_PUBLIC_HOST`.
+**A second instance on this machine needs nothing from you** (m.rau/bibi#52).
+The configuration lives in `<repo>/data/env`, so two instances are two repos and
+two files that cannot see each other. `status` in this repo shows this repo's
+node, and `init` below writes this repo's node.
 
-```bash
-test -f ~/.config/bibi/env && grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' ~/.config/bibi/env | tr -d '='
-```
+Three paragraphs stood here until `v0.7.3`, and what they explained is worth
+knowing because the shape of the mistake recurs: `init` wrote to
+`~/.config/bibi/env`, one file per *user* — while the node registry keys per
+*repo*. Setting up a second instance therefore overwrote the first one's
+identity and its `BIBI_JOB_ENV_*` credentials. m.rau/bibi#173 cushioned that with
+a backup, and this skill explained an environment variable (`BIBI_CONFIG_PATH`)
+that was supposed to keep the two apart.
 
-That prints the variable names without their values — enough to see whether
-a node lives there already. If one does and it is **not** this checkout, give
-this instance its own file and use it for every `bibi-ctrl` call below:
-
-```bash
-export BIBI_CONFIG_PATH="$PWD/data/bibi-env"
-```
-
-`config.py` resolves it ahead of `XDG_CONFIG_HOME`, and the sarasate host and
-its client have run exactly this way since 2026-07-11 — the capability is
-proven, only its mention was missing.
-
-Two follow-ups that decide whether it actually holds:
-
-- **The variable belongs in the unit too**, if step 5 installs one
-  (`Environment=BIBI_CONFIG_PATH=…`). `daemon install` does not carry it
-  over by itself, so without this the daemon reads the shared file again on
-  its next start — the same trap has already sprung in another instance.
-- **`BIBI_WORKER_NAME` goes with it.** Without it the second instance
-  registers under `socket.gethostname()` and collides with the first in the
-  team registry — same dict key, one entry.
-
-Keep the `export` to the shell doing this setup. A shell that also touches
-the *other* instance would carry the wrong config file into it.
+**The variable had no carrier for the most common kind of node.** Its intended
+home was the systemd unit — and a client gets none, by the decision in
+m.rau/bibi#180. So the second instance could be configured but not run: the
+daemon read the first one's file at startup. Both the variable and the backup are
+gone; what remains is one rule with no exception.
 
 ## 3. Interview
 
@@ -286,10 +306,9 @@ One question at a time via `AskUserQuestion`, not all at once.
   - If the suggested URL doesn't actually respond and this looks like it
     might be a container running on the *same* host as the scheduler, also
     try `http://host.docker.internal:<port>` as a fallback candidate before
-    asking the human to type one — the same Docker host-gateway pattern
-    `ttyd-onboarding.py`'s `_resolve_gitea_host()` already relies on for an
-    identical problem (reaching a locally-hosted service by name from inside
-    a container).
+    asking the human to type one — the usual Docker host-gateway
+    pattern for reaching a locally-hosted service by name from inside a
+    container.
 - **Git remote** (`--remote`) — auto-suggest, don't ask blind:
   ```bash
   git remote get-url origin
@@ -336,8 +355,8 @@ they answer the same question.
 client it is a no-op, not an error, so passing it out of habit costs nothing.
 
 **Read the roles back, never assume them.** `bibi-ctrl daemon run` resolves
-roles from the config file (`BIBI_CONFIG_PATH` > `XDG_CONFIG_HOME` >
-`~/.config/bibi/env`), **not** from any `Environment=BIBI_ROLE=…` a unit
+roles from the config file (`<repo>/data/env`, m.rau/bibi#52), **not** from
+any `Environment=BIBI_ROLE=…` a unit
 might carry — `daemon install --role` writes that line and nothing reads it.
 So the file this step just wrote is the single source of truth for step 5,
 and `<bibi-ctrl> status` is how you check what it says.
@@ -393,6 +412,27 @@ So on a client there is usually **nothing to start here**:
   again (`bibi/daemon/sweeper.py`, `_check_sessions`). It looks exactly like
   a start that silently failed.
 
+  **This branch is where a client setup normally ends, and it ends here**
+  (m.rau/bibi#56). Step 6 needs a port to open a dashboard and step 7 wants to
+  name a running daemon — neither exists yet, and that is correct, not a
+  shortfall. A setup practically never runs from inside a `bibi` session of the
+  repo it is setting up: at that point the repo is neither installed nor
+  configured. Skip step 6, and close with step 7 in this form:
+
+  ```
+  ✓ node configured:
+    kind:       Client
+    scheduler:  <url — or "none (standalone client)">
+    role:       <the resolved list, as `bibi-ctrl status` reports it>
+    daemon:     comes with the first `bibi` session (--port auto)
+    dashboard:  the address `bibi-ctrl status` prints once it runs
+  ```
+
+  Say that this is the finish line, not an interruption. Until `v0.7.3` the
+  skill simply stopped talking here, and the two steps that followed asked for
+  things that could not exist — which reads like a setup that fell over at the
+  last moment.
+
 **If a client already carries a unit, offer to remove it:**
 
 ```bash
@@ -415,13 +455,17 @@ without `--session`, bound to `0.0.0.0`:
 
 ```bash
 mkdir -p data
-setsid <bibi-ctrl> daemon run [--connect] --host 0.0.0.0 --port auto \
+nohup <bibi-ctrl> daemon run [--connect] --host 0.0.0.0 --port auto \
     > data/daemon.out.log 2>&1 < /dev/null &
 disown
 ```
 
 It still gets no supervisor. Its lifetime is the container's, which is the
 same promise the session daemon makes on a workstation.
+
+**The way back is `<bibi-ctrl> daemon stop`** (m.rau/bibi#58) — `uninstall` does
+not help here, there is no unit. It sends SIGTERM, so uvicorn's shutdown timeout
+and the job drain still apply; a `kill -9` would take both.
 
 ### 5b. Worker, Scheduler, Scheduler+Worker — supervisor
 
@@ -457,7 +501,7 @@ if command -v systemctl >/dev/null 2>&1 || command -v launchctl >/dev/null 2>&1;
     <bibi-ctrl> daemon install [--connect]
 else
     mkdir -p data
-    setsid <bibi-ctrl> daemon run [--connect] --host 0.0.0.0 \
+    nohup <bibi-ctrl> daemon run [--connect] --host 0.0.0.0 \
         > data/daemon.out.log 2>&1 < /dev/null &
     disown
 fi
@@ -474,11 +518,13 @@ fi
   jobs stop overnight without a message.
 - No `--role` needed on either branch — both read `BIBI_ROLE` from the
   config file step 4 just wrote.
-- **`BIBI_CONFIG_PATH` belongs in the unit** if step 2 introduced one
-  (`Environment=BIBI_CONFIG_PATH=…`, alongside `BIBI_WORKER_NAME`).
-  `daemon install` does not carry it over, so a unit written without it
-  sends the daemon back to the shared config file on its next start
-  (m.rau/bibi#173).
+- **Nothing about the config file belongs in the unit** since m.rau/bibi#52.
+  It lives in `<repo>/data/env`, and the unit's `WorkingDirectory` already says
+  which repo this is. Two entries stood here until `v0.7.3`:
+  `BIBI_CONFIG_PATH`, which no longer exists, and `BIBI_WORKER_NAME`, which was
+  renamed to `BIBI_NODE_NAME` in PLAN-34 — `bibi-ctrl doctor` reports the old
+  spelling as `legacy-node-name`. Set the node name through `init`'s
+  `--node-name` instead; it lands in the right key by itself.
 - `daemon install` picks the right bind host itself (`0.0.0.0` for
   systemd/Linux, `127.0.0.1` for launchd/Mac) — nothing to decide here.
 - The foreground branch (no init system found — most commonly a container)
@@ -489,10 +535,11 @@ fi
 - The foreground branch must run fully **detached**, not merely
   backgrounded in the current shell — a `tmux` session here is the human's
   interactive `claude` UI, nothing else should show up in it or be
-  reachable by switching windows. `setsid` (the same detachment `bibi`'s
-  own job wrapper already relies on, `bibi/daemon/worker.py`'s
-  `start_new_session=True`) starts it in its own session, immune to this
-  shell's own lifecycle; `disown` additionally drops it from this shell's
+  reachable by switching windows. `nohup` detaches it from this
+  shell's lifecycle. (`setsid` would be the closer match to what `bibi`'s own
+  job wrapper does — `start_new_session=True` in `bibi/daemon/worker.py` — but
+  it does not exist on macOS, and this branch is not Linux-only;
+  m.rau/bibi#58.) `disown` additionally drops it from this shell's
   job table so it won't print a stray "Done" later. Don't use a `tmux`
   window for this — that's still one keystroke away from the human
   stumbling into raw daemon output; don't run it as a plain foregrounded
@@ -502,7 +549,7 @@ fi
   human there if they ever want to look, but by default they shouldn't
   need to.
 - Confirm it actually started (`<bibi-ctrl> daemon status`, same as step 6
-  below) before reporting success — `setsid …&` returns immediately
+  below) before reporting success — `nohup …&` returns immediately
   regardless of whether the daemon itself then failed to bind.
 - If `daemon install` reports `install FAILED: …` (missing `systemctl`
   despite the check above, a permission error, …) — don't silently fall
@@ -522,7 +569,8 @@ does, a scheduler only if step 3 said so. On a node without it, `/-/` is a
 
 Confirms the daemon actually bound its port. On a client that port is
 dynamic (`--port auto`), so read it from the output instead of assuming
-`8769` — on a supervised node it is `BIBI_DAEMON_PORT` env >
+`8769` — since `v0.7.3` the command says „kein laufender Daemon" instead of
+naming a default port nothing ever listened on (m.rau/bibi#58) — on a supervised node it is `BIBI_DAEMON_PORT` env >
 `BIBI_SCHEDULER_URL`-derived > default `8769`. Then:
 
 ```bash

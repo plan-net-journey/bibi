@@ -35,8 +35,8 @@ def _live_foreign_pid():
 
 @pytest.fixture
 def env_iso(team_repo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    # ~/.config/bibi/env isolieren, damit kein echtes BIBI_ROLE durchsickert.
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    # Isolation kommt seit m.rau/bibi#52 aus ``team_repo``: die Konfiguration
+    # liegt repo-lokal, also kann kein echtes BIBI_ROLE durchsickern.
     monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
     monkeypatch.delenv("BIBI_NODE_NAME", raising=False)
     monkeypatch.delenv("BIBI_WORKER_NAME", raising=False)
@@ -520,3 +520,50 @@ def test_handle_exit_closes_the_streams_before_uvicorns_deadline(env_iso):
     server.handle_exit(signal.SIGTERM, None)
     assert bus.closing, "die Stroeme wurden nicht geschlossen"
     assert server.should_exit, "uvicorns eigener Shutdown muss trotzdem laufen"
+
+
+# ── m.rau/bibi#58: zwei kleine Ungenauigkeiten aus dem D2-Lauf ───────────────
+
+
+def test_daemon_status_says_no_daemon_instead_of_naming_a_default_port(
+        team_repo, capsys, monkeypatch):
+    """Die Meldung nannte einen Port, an dem nie etwas lauschte.
+
+    ``daemon nicht erreichbar auf http://127.0.0.1:8769/-/health`` liest sich,
+    als sei ein bestimmter Port geprüft worden. Auf einem Client mit
+    ``--port auto`` ist 8769 aber nie der Port — er ist der Default, auf den
+    ``config.daemon_port()`` fällt, wenn es *keinen* laufenden Daemon findet.
+    Schritt 6 des bibi-setup-Skills warnt selbst davor, ihn anzunehmen.
+
+    Gemeint ist „kein Daemon registriert", und das soll dastehen.
+    """
+    import argparse
+    from bibi.ctrl import daemon_cmd
+    rc = daemon_cmd.status(argparse.Namespace(port=None))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "kein laufender Daemon" in err
+    assert "8769" not in err, "kein Port, an dem nie etwas lauschte"
+
+
+def test_daemon_status_still_names_the_port_it_actually_probed(
+        team_repo, capsys):
+    """Mit ``--port`` ist der Port eine Ansage — dann gehört er in die Meldung."""
+    import argparse
+    from bibi.ctrl import daemon_cmd
+    rc = daemon_cmd.status(argparse.Namespace(port=61999))
+    assert rc == 1
+    assert "61999" in capsys.readouterr().err
+
+
+def test_daemon_has_a_stop_verb(team_repo):
+    """Die Fallback-Variante des Skills startet einen Daemon ohne Supervisor.
+
+    ``daemon`` kannte ``run``, ``install``, ``uninstall``, ``status``, ``logs`` —
+    wer so einen Daemon wieder loswerden wollte, brauchte ``kill <pid>``, und
+    ``uninstall`` half nicht, weil es keine Unit gab.
+    """
+    from bibi.ctrl import main
+    with pytest.raises(SystemExit) as exc:
+        main(["daemon", "stop", "--help"])
+    assert exc.value.code == 0
