@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -35,6 +36,82 @@ def test_wal_mode(conn):
 def test_tables_exist(conn):
     names = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"jobs", "journal", "transitions"} <= names
+
+
+# ── #60 — der WAL-Umschalter beim ersten Start eines frischen Knotens ────────
+#
+# Beide Tests haengen an derselben Vorbedingung: die Datei muss **frisch** sein.
+# Gegen eine Datenbank, die schon auf ``wal`` steht, ist das PRAGMA ein No-op
+# ohne Lock — der Test waere dann gruen, ohne etwas zu pruefen. Genau in diese
+# Falle lief der Reproduktionsversuch am 2026-08-07, deshalb sichern beide
+# Tests die Vorbedingung selbst ab, statt sie vorauszusetzen.
+
+
+def test_connect_waits_out_a_busy_wal_switch(tmp_path: Path):
+    """Ein fremder Schreiber auf der frischen Datei darf ``connect()`` nicht kippen.
+
+    Der Halter belegt die Datei mit einer Schreibtransaktion und gibt sie nach
+    kurzer Zeit frei. ``PRAGMA journal_mode = WAL`` meldet in dieser Lage sofort
+    ``database is locked`` — der busy handler wird beim Wechsel des Journal-Modus
+    nicht bemueht, ein ``busy_timeout`` traegt hier also nichts bei.
+    """
+    p = tmp_path / "jobs.sqlite"
+
+    # check_same_thread=False, weil der Freigabe-Thread unten committen muss
+    halter = sqlite3.connect(p, check_same_thread=False, isolation_level=None)
+    halter.execute("CREATE TABLE platzhalter (x)")
+    # Vorbedingung, ohne die der Test wertlos waere
+    assert halter.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal"
+    halter.execute("BEGIN IMMEDIATE")
+    halter.execute("INSERT INTO platzhalter VALUES (1)")
+
+    freigegeben = threading.Event()
+
+    def freigeben():
+        time.sleep(0.3)
+        halter.execute("COMMIT")
+        freigegeben.set()
+
+    threading.Thread(target=freigeben, daemon=True).start()
+    try:
+        c = job_db.connect(p)
+    finally:
+        halter.close()
+
+    # Beleg, dass der Prüfling wirklich gewartet hat und nicht am Halter vorbeikam
+    assert freigegeben.is_set(), "connect() kam durch, bevor der Halter freigab"
+    assert c.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    c.close()
+
+
+def test_concurrent_first_connects_on_a_fresh_db(tmp_path: Path):
+    """Der Live-Fall: mehrere Pfade oeffnen die frisch angelegte Datei gleichzeitig.
+
+    Beim ersten Start eines Knotens rufen ``daemon/app.py`` und
+    ``controller/__init__.py`` ``connect()`` an ueber einem Dutzend Stellen an.
+    Treffen zwei WAL-Umschalter aufeinander, meldet einer ``database is locked``.
+    """
+    fehler: list[BaseException] = []
+
+    for runde in range(8):
+        p = tmp_path / f"runde{runde}" / "jobs.sqlite"
+        assert not p.exists(), "die Datenbank muss je Runde frisch sein"
+        start = threading.Barrier(8)
+
+        def oeffnen(p=p, start=start):
+            start.wait()
+            try:
+                job_db.connect(p).close()
+            except sqlite3.OperationalError as e:
+                fehler.append(e)
+
+        threads = [threading.Thread(target=oeffnen) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    assert not fehler, f"{len(fehler)} Verbindungen scheiterten am WAL-Umschalter: {fehler[:3]}"
 
 
 def test_connect_idempotent(tmp_path: Path):
