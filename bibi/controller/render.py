@@ -2763,11 +2763,38 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
     quelle = scheduler if scheduler is not None else (status if ist_host else None)
     maint = bool((quelle or {}).get("maintenance"))
 
-    # Verbunden? Der Host ist es mit sich selbst — dort gibt es keinen
-    # Heartbeat, und ein roter Punkt waere schlicht falsch.
-    verbunden = True if ist_host else ((status or {}).get("connect") or {}).get("ok") is not False
+    # Verbunden? Drei Faelle, nicht zwei (#70). Der Punkt kannte bis v0.7.5 nur
+    # "verbunden" und "ausdruecklich getrennt" — geschrieben als „nur ein
+    # ausdrueckliches ``False`` heisst getrennt":
+    #
+    #     ((status or {}).get("connect") or {}).get("ok") is not False
+    #
+    # Der dritte Fall fiel damit auf die *gruene* Seite: ein Knoten ohne
+    # Scheduler-URL hat gar kein ``connect``-Dict (``app.py`` setzt es nur
+    # ``if heartbeat is not None``), ``{}.get("ok")`` ist ``None``, und
+    # ``None is not False`` ist ``True``. Befund m.rau, 2026-08-07: „wie kann
+    # bei *disconnected* das Signal im Tab rechts **gruen** sein?"
+    #
+    # ``_host_card()`` unterscheidet dieselben drei Faelle laengst ueber
+    # ``conn is None`` — hier fehlte nur der Gleichklang.
+    conn = (status or {}).get("connect")
+    if ist_host:
+        # Der Host ist mit sich selbst verbunden — dort gibt es keinen
+        # Heartbeat, und ein roter Punkt waere schlicht falsch. Ihm fehlt
+        # ``connect`` aus demselben Grund wie dem Client ohne Scheduler,
+        # deshalb steht diese Abfrage *vor* der auf ``None``.
+        verbunden, ohne_gegenueber = True, False
+    elif conn is None:
+        verbunden, ohne_gegenueber = False, True
+    else:
+        verbunden, ohne_gegenueber = conn.get("ok") is not False, False
 
-    if not verbunden:
+    if ohne_gegenueber:
+        # „disconnected" waere hier irrefuehrend: es gab nie eine Verbindung,
+        # die abreissen konnte. Wer das liest, sucht den Fehler sonst beim
+        # Scheduler statt in der eigenen Konfiguration.
+        dot_cls, dot_titel = "bad", "no scheduler configured — nothing to connect to"
+    elif not verbunden:
         # Getrennt schlaegt Maintenance: wer nicht verbunden ist, weiss ueber
         # den Modus des Hosts ohnehin nichts Aktuelles.
         dot_cls, dot_titel = "bad", "disconnected"
@@ -2776,13 +2803,30 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
     else:
         dot_cls, dot_titel = "ok", "connected"
 
-    if ist_host:
+    # Wer den Schalter erreicht (#69). Die Bedingung fragte bis v0.7.5 „bin ich
+    # der Scheduler" — und sperrte damit genau die Knoten, die eine Oberflaeche
+    # haben. Seit dem 2026-08-06 traegt das Profil ``scheduler`` ausdruecklich
+    # **kein** ``controller`` mehr (``roles.py``: „der Scheduler ist Backend");
+    # es gab danach keinen Knoten, auf dem beides zugleich wahr war. Maintenance
+    # war eine vollstaendig gebaute Funktion, die niemand ausloesen konnte.
+    # Befund m.rau, 2026-08-07: „es **muss** vom Client aus schaltbar sein."
+    #
+    # Die richtige Frage ist die, die ``_ops_ziel()`` im Controller laengst
+    # beantwortet: **habe ich einen Scheduler** — konfiguriert, oder als der ich
+    # selbst laufe. Genau die Frage steht schon oben, nur unter anderem Namen:
+    # ``ohne_gegenueber``. Ein Knoten ohne Scheduler behaelt die Sperre, und
+    # dort ist sie richtig — es gibt nichts zu schalten.
+    #
+    # Der Bootstrap-Fall bleibt damit heil: ``init --profile scheduler
+    # --with-ui`` haengt einem Scheduler doch einen ``controller`` an, und
+    # ``ist_host`` traegt ihn ueber den lokalen Zweig von ``_ops_ziel()``.
+    if not ohne_gegenueber:
         mcls = "toggle warn" if maint else "toggle"
         mtitle = "maintenance: on" if maint else "maintenance: off"
         maint_btn = f'<button id="maint" class="{mcls}" title="{mtitle}">◐</button>'
     else:
         maint_btn = ('<button id="maint" class="toggle" disabled '
-                    'title="maintenance: host only">◐</button>')
+                    'title="maintenance: no scheduler to switch">◐</button>')
     return (
         '<nav class="handles">'
         '<button id="rescan" class="toggle" title="rescan the vault">⟳</button>'
@@ -4305,6 +4349,52 @@ _JOB_DETAIL_JS = """
       if (r.ok && !show.dataset.slot) feld.dataset.geladen = '1';
     } catch (e) { feld.textContent = 'output unavailable'; }
   });
+  // Der Faltzustand ueberlebt einen Bus-Refetch (#44).
+  //
+  // Er lebt ausschliesslich im DOM: `hidden` an der Ausklappzeile, der
+  // Knopftext und der geladene Text im `.out-body`. Ein Refetch tauscht
+  // `#runs` komplett aus — und damit klappt der Bereich genau dann zu, wenn
+  // jemand einem laufenden Job zusieht. Solange die Liste selten neu lud, war
+  // das ein Aergernis; mit #43 refetcht sie bei jedem Slot-Zustandswechsel,
+  // und daraus wird ein Ausschlusskriterium. Deshalb gehoeren beide zusammen.
+  //
+  // Dasselbe Muster wie `_SCROLL_JS` fuer die Scroll-Position: sichern auf
+  // `htmx:beforeSwap`, wiederherstellen auf `htmx:afterSettle`.
+  //
+  // Gemerkt wird nach `run_id`, **nicht** nach Zeilenposition — nach einem
+  // Refetch kann oben ein neuer Lauf stehen. Es ist derselbe Bezug, aus dem
+  // schon der Deep-Link unten die Archivierung ueberlebt.
+  const istRuns = (t) => t && t.id === 'runs';
+  let offen = null;
+  document.body.addEventListener('htmx:beforeSwap', (ev) => {
+    const t = ev.detail && ev.detail.target;
+    if (!istRuns(t)) return;      // nicht bei jedem Swap irgendwo aufklappen
+    offen = [];
+    t.querySelectorAll('tr.out:not([hidden])').forEach((z) => {
+      const feld = z.querySelector('.out-body');
+      offen.push({run: z.id.slice(4),
+                  text: feld ? feld.textContent : '',
+                  geladen: !!(feld && feld.dataset.geladen)});
+    });
+  });
+  document.body.addEventListener('htmx:afterSettle', () => {
+    if (!offen) return;
+    for (const s of offen) {
+      const z = document.getElementById('run-' + s.run);
+      if (!z) continue;           // der Lauf ist aus dem Zeitfenster gefallen
+      z.hidden = false;
+      const feld = z.querySelector('.out-body');
+      if (feld) {
+        // Den Text mitretten statt neu zu holen: er ist schon da, und ein
+        // Roundtrip je Refetch waere bei einem laufenden Job der Sekundentakt.
+        feld.textContent = s.text;
+        if (s.geladen) feld.dataset.geladen = '1';
+      }
+      const b = document.querySelector('.run-show[data-run="' + s.run + '"]');
+      if (b) b.textContent = '[hide]';
+    }
+    offen = null;
+  });
   // Deep-Link: `#run=<run_id>` oeffnet genau diese Zeile. Er ueberlebt die
   // Archivierung, weil der Bereich am Lauf haengt und nicht an der Position.
   const m = location.hash.match(/^#run=(.+)$/);
@@ -4510,7 +4600,8 @@ def job_tiles_fragment(tiles: list, *, now: float, slug: str,
             f'data-bus-refetch="/-/jobs/{_e(job_uid)}/tiles">{innen}</div>')
 
 
-def job_runs_fragment(liste, *, now: float, job_uid: str | None = None,
+def job_runs_fragment(liste, *, now: float, slug: str | None = None,
+                      job_uid: str | None = None,
                       days: int | None = None, reach: dict | None = None,
                       aktiv: dict | None = None, weiter: int | None = None) -> str:
     """Die **eine** Lauf-Liste über beide Quellen (FE §5.3, m.rau/bibi#131).
@@ -4530,15 +4621,36 @@ def job_runs_fragment(liste, *, now: float, job_uid: str | None = None,
     basis = f"/-/jobs/{job_uid}" if job_uid else ""
 
     def _region(inneres: str) -> str:
-        """Der `archived`-Wrapper — im Fragment, nicht nur in der Seite.
+        """Der Bus-Wrapper — im Fragment, nicht nur in der Seite.
 
         Dieselbe Lücke wie bei der Jobs-Liste in #151, hier nur nie
         aufgefallen: solange die Detail-Seite überhaupt keinen Bus-Client
         auslieferte (#153), fand nie ein Swap statt, der die Region hätte
         abmelden können. **Ein Fehler hat wieder den anderen verdeckt.**
+
+        **Das Ziel ist ``journal:<slug>``, nicht mehr ``archived`` (#43).**
+        ``archived`` wird an genau einer Stelle publiziert: beim
+        Journal-INSERT. Ein Slot, der von ``starting`` auf ``running`` geht,
+        archiviert nichts — die Kachel sprang also auf den neuen Zustand,
+        während die Zeile darunter den alten weiterzeigte. ``journal:<slug>``
+        feuert auf **beiden** Wegen: bei jedem Slot-Zustandswechsel
+        (``bus.py``, "Journal bei JEDEM Statuswechsel mit-dirty") und bei
+        jedem Journal-INSERT. Damit deckt das Ziel genau das ab, was diese
+        Liste zeigt — beide Quellen —, und es brauchte dafür keinen einzigen
+        neuen ``publish_state()``-Aufruf.
+
+        Entscheidung m.rau, 2026-08-07, gegen die beiden Wege aus dem Ticket:
+        ``archived`` zusätzlich aus ``_publish_live()`` zu senden hiesse, ein
+        Ziel zu feuern, wenn nichts archiviert wurde — genau der Namensverfall,
+        vor dem ``bus.py`` an der ``archived``-Stelle selbst warnt.
+
+        **Ohne ``slug`` bleibt die Region stumm** statt sich am falschen Ziel
+        anzumelden: ein Fragment ohne Job-Bezug hat keinen Lauf, dessen
+        Journal es beobachten könnte.
         """
         nachlader = f' data-bus-refetch="{basis}/runs"' if basis else ""
-        return f'<div id="runs" data-bus="archived"{nachlader}>{inneres}</div>'
+        ziel = f' data-bus="journal:{_e(slug)}"' if slug else ""
+        return f'<div id="runs"{ziel}{nachlader}>{inneres}</div>'
 
     if not liste.tiles and not liste.runs:
         # Kein Verweis mehr auf den Archive-Screen (m.rau/bibi#130): der ist
@@ -4766,13 +4878,19 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
         # Zustand, eine Leiste im alten Stand boete START zu einem laufenden
         # Job an.
         #
-        # `archived` traegt die Lauf-Liste — ein Lauf ist ins Journal gewandert
-        # (m.rau/bibi#108). Nachgeladen wird die Liste, nicht die Seite: sonst
-        # ginge bei jedem Lauf Scroll-Position und Faltzustand verloren.
+        # `journal:<slug>` traegt die Lauf-Liste (#43). Es hiess bis v0.7.5
+        # `archived` und feuerte damit nur beim Journal-INSERT — ein Slot, der
+        # von `starting` auf `running` ging, archivierte nichts, und die Zeile
+        # widersprach der Kachel ueber ihr. Nachgeladen wird die Liste, nicht
+        # die Seite: sonst ginge bei jedem Lauf Scroll-Position und
+        # Faltzustand verloren. Den Faltzustand rettet seit #44 zusaetzlich
+        # `_JOB_DETAIL_JS` ueber den Swap — der Refetch ist jetzt haeufig
+        # genug, dass er sonst waehrend des Mitlesens zuklappte.
         f'{job_tiles_fragment(getattr(liste, "tiles", []), now=now, slug=slug, job_uid=_uid(slug))}'
-        f'{job_runs_fragment(liste, now=now, job_uid=_uid(slug), days=days, reach=reach, aktiv=aktiv, weiter=weiter) if liste is not None else ""}'
+        f'{job_runs_fragment(liste, now=now, slug=slug, job_uid=_uid(slug), days=days, reach=reach, aktiv=aktiv, weiter=weiter) if liste is not None else ""}'
         # Wie auf der Jobs-Seite (m.rau/bibi#153): ohne `_EVENTS_JS` gibt es
-        # keinen Strom, an dem sich `data-bus="archived"` anmelden koennte.
+        # keinen Strom, an dem sich die Regionen anmelden koennten — `#tiles`
+        # an `live:<slug>`, `#runs` seit #43 an `journal:<slug>`.
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"

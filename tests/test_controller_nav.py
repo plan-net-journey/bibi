@@ -116,15 +116,40 @@ def test_ops_handles_has_no_maintenance_banner():
     assert 'id="maint" class="toggle warn"' in html  # Toggle bleibt die einzige Anzeige
 
 
-# --- MAINT: disabled statt ausgeblendet ohne scheduler-Rolle (Bibi4-Iteration,
-# --- User-Fund "eine App", revidiert PLAN-25 Befund 1) -------------------------
+# --- MAINT: disabled statt ausgeblendet, wenn es nichts zu schalten gibt
+# --- (Bibi4-Iteration, User-Fund "eine App", revidiert PLAN-25 Befund 1;
+# --- Bedingung umgestellt mit #69) --------------------------------------------
+#
+# Hier stand bis v0.7.5 `test_ops_handles_disables_maint_without_scheduler_role`
+# und prüfte das Gegenteil: ein Client mit `connect`-Rolle bekam den Knopf
+# **gesperrt**, „MAINT bleibt funktional dem Scheduler vorbehalten". Das war
+# richtig, solange das Profil `scheduler` ein `controller` trug. Seit dem
+# 2026-08-06 tut es das ausdrücklich nicht mehr — und damit sperrte die Regel
+# genau die Knoten, die eine Oberfläche haben (#69).
+#
+# ⚠ Der alte Test hätte den Fix überlebt, ohne ihn zu bemerken: sein Payload
+# trug die `connect`-**Rolle**, aber kein `connect`-**Dict**. Diesen Zustand
+# erzeugt die Engine nie — `app.py` legt das Dict genau dann an, wenn es den
+# Heartbeat gibt, und den gibt es genau bei aktiver `connect`-Rolle
+# (`daemon_cmd.py`). Ein Test gegen einen unmöglichen Zustand kann grün werden,
+# ohne etwas zu belegen; deshalb steht unten ein vollständiger Payload.
 
 
-def test_ops_handles_disables_maint_without_scheduler_role():
-    # User-Fund: der Client kennt gar keinen Maintenance-Mode, MAINT bleibt
-    # funktional dem Scheduler vorbehalten — aber "eine App" heißt: sichtbar
-    # bleiben, nur disabled, statt ganz zu verschwinden. RESCAN bleibt aktiv.
-    html = render._ops_handles({"maintenance": True, "roles": ["controller", "connect"]})
+def test_ops_handles_enables_maint_on_a_client_with_a_scheduler():
+    """#69: wer einen Scheduler hat, muss ihn auch schalten können."""
+    html = render._ops_handles({
+        "roles": ["synchronizer", "controller", "connect"],
+        "connect": {"ok": True, "last_at": 1.0},
+    })
+    assert 'id="maint"' in html and "disabled" not in html
+    assert 'id="rescan"' in html and html.index('id="rescan"') < html.index('id="maint"')
+
+
+def test_ops_handles_disables_maint_without_any_scheduler():
+    """Sichtbar bleiben, nur gesperrt — „eine App" heißt: nicht verfügbare
+    Funktionen ausgegraut statt ausgeblendet. Ohne Scheduler gibt es hier
+    tatsächlich nichts zu schalten."""
+    html = render._ops_handles({"roles": ["synchronizer", "controller"]})
     assert 'id="maint"' in html and "disabled" in html
     assert 'id="rescan"' in html and html.index('id="rescan"') < html.index('id="maint"')
 
