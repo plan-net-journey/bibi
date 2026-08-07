@@ -283,6 +283,37 @@ def db_path(path: Path | None = None) -> Path:
     return path or (repo.data() / "jobs.sqlite")
 
 
+def _wal_aktivieren(conn: sqlite3.Connection, versuche: int = 20, pause: float = 0.05) -> None:
+    """Schaltet die Datenbank auf WAL um — der einzige Schritt, der einen Lock braucht.
+
+    Der Wechsel des Journal-Modus verlangt einen exklusiven Lock, und SQLite meldet
+    dabei sofort ``SQLITE_BUSY``, wenn ein anderer Verbinder gerade schreibt: **der
+    busy handler wird für diesen Übergang nicht bemüht.** Ein ``busy_timeout`` trägt
+    hier also nichts bei, gleich an welcher Stelle es gesetzt wird — wiederholen ist
+    das einzige Mittel (#60).
+
+    Steht die Datenbank erst einmal auf ``wal``, ist das PRAGMA ein No-op ohne Lock.
+    Die Schleife kostet deshalb nur beim allerersten Start eines frisch eingerichteten
+    Knotens etwas, und genau dort öffnen mehrere Pfade die neue Datei gleichzeitig.
+    """
+    for rest in range(versuche - 1, -1, -1):
+        try:
+            zeile = conn.execute("PRAGMA journal_mode = WAL").fetchone()
+        except sqlite3.OperationalError:
+            if not rest:
+                raise
+        else:
+            # SQLite meldet den Misserfolg je nach Übergang als Fehler oder als
+            # zurückgegebener alter Modus — beide Wege müssen hier ankommen.
+            if zeile is not None and str(zeile[0]).lower() == "wal":
+                return
+            if not rest:
+                raise sqlite3.OperationalError(
+                    f"Journal-Modus blieb nach {versuche} Versuchen auf {zeile[0]!r} statt 'wal'"
+                )
+        time.sleep(pause)
+
+
 def connect(path: Path | None = None) -> sqlite3.Connection:
     """Frische Connection zur Job-DB; stellt Schema + Migrationen sicher (idempotent).
 
@@ -294,8 +325,11 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     p.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(p, check_same_thread=False, isolation_level=None)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
+    # Nur der Vollständigkeit halber gesetzt: Pythons ``sqlite3.connect()`` bringt
+    # ``timeout=5.0`` als Default mit, das PRAGMA schreibt 5000 auf 5000. Es schützt
+    # deshalb *nicht* den WAL-Umschalter darunter — siehe :func:`_wal_aktivieren`.
     conn.execute("PRAGMA busy_timeout = 5000")
+    _wal_aktivieren(conn)
     conn.execute("PRAGMA foreign_keys = ON")
     _ensure_schema(conn)
     return conn
