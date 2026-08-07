@@ -240,6 +240,5 @@ def test_run_passes_session_scoped_to_create_app(env_iso_for_session, monkeypatc
 
 @pytest.fixture
 def env_iso_for_session(team_repo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
     return team_repo

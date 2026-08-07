@@ -6,38 +6,68 @@ from pathlib import Path
 
 import pytest
 
-from bibi import config
+from bibi import config, repo
 
 
-@pytest.fixture
-def cfg_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
-    return tmp_path
+# ── m.rau/bibi#52: eine Konfiguration gehört zu einem Repo ──────────────────
+#
+# Vorher: ``BIBI_CONFIG_PATH`` > ``XDG_CONFIG_HOME`` > ``~/.config``. Drei Stufen,
+# von denen die erste für die häufigste Knotenart keinen Träger hatte — ein
+# Client bekommt per m.rau/bibi#180 keine Unit, in der die Variable stehen könnte.
+# Ein zweites Team-Repo auf derselben Maschine ließ sich damit konfigurieren,
+# aber nicht betreiben: der Daemon las beim Start die Konfiguration des ersten.
 
 
-def test_env_path_respects_xdg(cfg_home: Path):
-    assert config.env_path() == cfg_home / "bibi" / "env"
+def test_env_path_is_repo_local(cfg_home: Path):
+    assert config.env_path() == cfg_home / "data" / "env"
 
 
-def test_env_path_respects_explicit_override(cfg_home: Path, monkeypatch: pytest.MonkeyPatch):
-    explicit = cfg_home / "client" / "bibi-env"
-    monkeypatch.setenv("BIBI_CONFIG_PATH", str(explicit))
-    assert config.env_path() == explicit
+def test_env_path_ignores_xdg(cfg_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """``XDG_CONFIG_HOME`` ist keine Stufe mehr, auch nicht als Fallback."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/woanders")
+    assert config.env_path() == cfg_home / "data" / "env"
 
 
-def test_env_path_explicit_override_takes_precedence_over_xdg(
-    cfg_home: Path, monkeypatch: pytest.MonkeyPatch
-):
-    explicit = cfg_home / "client" / "bibi-env"
-    monkeypatch.setenv("BIBI_CONFIG_PATH", str(explicit))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_home / "other"))
-    assert config.env_path() == explicit
+def test_env_path_ignores_legacy_override(cfg_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """``BIBI_CONFIG_PATH`` ist ersatzlos entfallen und darf nicht nachwirken.
+
+    Eine Variable, die irgendwo noch in einer Unit oder einem Profil steht, würde
+    den Knoten sonst still an seiner eigenen Konfiguration vorbeilenken — genau
+    die Klasse Fehler, gegen die diese Änderung angetreten ist.
+    """
+    monkeypatch.setenv("BIBI_CONFIG_PATH", "/woanders/env")
+    assert config.env_path() == cfg_home / "data" / "env"
 
 
-def test_env_path_blank_override_falls_back_to_xdg(cfg_home: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("BIBI_CONFIG_PATH", "  ")
-    assert config.env_path() == cfg_home / "bibi" / "env"
+def test_distributed_env_path_follows(cfg_home: Path):
+    """Das Host-Bundle wohnt neben der Konfiguration desselben Knotens."""
+    assert config.distributed_env_path() == cfg_home / "data" / "distributed-env"
+
+
+def test_read_env_outside_repo_is_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Ohne Repo gibt es keinen Knoten — und damit keine Konfiguration.
+
+    Für einen *Leser* ist das kein Fehler, sondern dieselbe Lage wie eine noch
+    nicht angelegte Datei: leeres Dict, Defaults greifen. Vorher fiel er hier auf
+    ``~/.config/bibi/env`` zurück und las die Datei des ausführenden Nutzers
+    samt Credentials — der Grund, aus dem die Testsuite ein autouse-Fixture
+    dagegen brauchte.
+    """
+    monkeypatch.chdir(tmp_path)
+    repo._root_of.cache_clear()
+    assert config.read_env() == {}
+
+
+def test_write_env_outside_repo_refuses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Für einen *Schreiber* ist dieselbe Lage sehr wohl ein Fehler.
+
+    Ein stiller Schreibversuch irgendwohin wäre schlimmer als ein Abbruch: er
+    legte eine Konfiguration an, die kein Knoten je liest.
+    """
+    monkeypatch.chdir(tmp_path)
+    repo._root_of.cache_clear()
+    with pytest.raises(config.KeinRepoError):
+        config.write_env({"BIBI_ROLE": "synchronizer"})
 
 
 def test_read_env_missing_file(cfg_home: Path):
@@ -84,12 +114,23 @@ def test_node_id_preserves_other_existing_keys(cfg_home: Path):
     assert env["BIBI_NODE_NAME"] == "sarasate-client"
 
 
-def test_write_env_only_known_keys(cfg_home: Path):
-    config.write_env({"BIBI_ROLE": "worker", "GARBAGE": "x"})
+def test_write_env_keeps_unknown_keys(cfg_home: Path):
+    """Hieß bis m.rau/bibi#51 ``test_write_env_only_known_keys`` und prüfte das
+    Gegenteil: dass ein unbekannter Schlüssel verworfen wird.
+
+    Die Umkehrung ist Absicht. Der alte Test hielt ein Implementierungsdetail
+    fest — sein Beispielwert hieß ``GARBAGE``, und die Sorge dahinter war Müll
+    in der Konfiguration. Nur ist ``write_env()`` nicht der Ort, das zu
+    beurteilen: ``CONVENTIONS.md`` erklärt ``BIBI_JOB_ENV_*`` ausdrücklich zum
+    legitimen Inhalt genau dieser Datei und nennt als Weg dorthin ein
+    ``>>``-Append. Was dort steht, hat jemand hingeschrieben; die Engine kann
+    nicht wissen, was ein Team sonst noch anhängt.
+    """
+    config.write_env({"BIBI_ROLE": "worker", "BIBI_JOB_ENV_TOKEN": "x"})
     env = config.read_env()
-    assert "GARBAGE" not in env
+    assert env["BIBI_JOB_ENV_TOKEN"] == "x"
     assert env["BIBI_ROLE"] == "worker"
-    # fehlende bekannte Keys werden leer geschrieben
+    # fehlende bekannte Keys werden weiterhin leer geschrieben
     assert env["BIBI_REMOTE"] == ""
 
 
@@ -162,3 +203,43 @@ def test_write_distributed_env_replaces_not_merges(cfg_home: Path):
     config.write_distributed_env({"BIBI_JOB_ENV_A": "1"}, version="v2")
     env = config.read_distributed_env()
     assert "BIBI_JOB_ENV_B" not in env
+
+
+# ── m.rau/bibi#51: write_env() darf nicht verlieren, was es nicht kennt ──────
+#
+# ``read_env()`` liest jede ``KEY=VALUE``-Zeile, ``write_env()`` schrieb nur
+# ``KEYS`` zurück. Lesen und Schreiben hatten verschiedene Vorstellungen davon,
+# was in dieser Datei stehen darf — wer schrieb, verlor, was er nicht kannte.
+#
+# Betroffen sind die ``BIBI_JOB_ENV_*``-Werte: laut CONVENTIONS.md legitimer
+# Inhalt genau dieser Datei, und der dokumentierte Weg, ein Credential auf einen
+# Host zu bringen, ist ein ``>>``-Append daran.
+
+
+def test_write_env_preserves_unknown_keys(cfg_home: Path):
+    p = config.env_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        "BIBI_ROLE=synchronizer\n"
+        "BIBI_JOB_ENV_GITEA_TOKEN=geheim\n"
+        "BIBI_JOB_ENV_GITEA_USER=wer\n",
+        encoding="utf-8",
+    )
+    config.write_env({"BIBI_ROLE": "synchronizer,controller"})
+    danach = config.read_env()
+    assert danach["BIBI_ROLE"] == "synchronizer,controller"
+    assert danach["BIBI_JOB_ENV_GITEA_TOKEN"] == "geheim"
+    assert danach["BIBI_JOB_ENV_GITEA_USER"] == "wer"
+
+
+def test_node_id_selfheal_preserves_credentials(cfg_home: Path):
+    """Der gefährlichere der zwei Wege: kein ``init``, kein Daemon-Neustart.
+
+    ``node_id()`` soll einem Bestandsknoten das manuelle ``init`` *ersparen* —
+    und richtete dabei denselben Schaden an.
+    """
+    p = config.env_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("BIBI_JOB_ENV_TOKEN=geheim\n", encoding="utf-8")
+    config.node_id()
+    assert config.read_env().get("BIBI_JOB_ENV_TOKEN") == "geheim"

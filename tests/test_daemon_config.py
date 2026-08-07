@@ -9,24 +9,6 @@ import pytest
 from bibi import config, repo, state
 
 
-@pytest.fixture
-def cfg_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    # Isoliert gegen die reale ~/.config/bibi/env + Shell-Env des Test-Hosts —
-    # sonst hängt daemon_port() (seit dem BIBI_SCHEDULER_URL-Fallback) vom
-    # jeweiligen Rechner ab statt deterministisch zu sein.
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("BIBI_DAEMON_PORT", raising=False)
-    monkeypatch.delenv("BIBI_SCHEDULER_URL", raising=False)
-    monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
-    # …und gegen die Portdatei-Stufe (m.rau/bibi#45): hier steht die reine
-    # Konfigurations-Kette auf dem Prüfstand. Ohne die Neutralisierung hinge ihr
-    # Ergebnis davon ab, ob im Entwickler-Checkout gerade ein Daemon läuft —
-    # genau die Rechnerabhängigkeit, die der Kommentar oben schon einmal
-    # beseitigt hat. Die Stufe selbst prüft test_daemon_portfile.py.
-    monkeypatch.setattr(repo, "root_or_none", lambda: None)
-    return tmp_path
-
-
 def test_daemon_port_default(cfg_home: Path):
     assert config.daemon_port() == 8769
 

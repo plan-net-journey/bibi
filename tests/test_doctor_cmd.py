@@ -20,12 +20,19 @@ def _seed_claude_job(repo_root: Path) -> None:
     p.write_text('---\nschedule: now\njob: "claude: x"\n---\n', encoding="utf-8")
 
 
-def _config_path(tmp_path: Path) -> Path:
-    return tmp_path / "cfg" / "env"
+def _config_path(_tmp_path: Path) -> Path:
+    """Die Knoten-Konfiguration des Team-Repos, in dem der Test steht.
+
+    Nahm bis m.rau/bibi#52 einen tmp-Pfad und stellte ihn per
+    ``BIBI_CONFIG_PATH`` zu. Die Variable ist entfallen — die Konfiguration
+    liegt jetzt in ``<repo>/data/env``, und ``team_repo`` parkt das cwd bereits
+    dorthin. Das Argument bleibt für die Aufrufer stehen, wird aber nicht mehr
+    gebraucht.
+    """
+    return config.env_path()
 
 
 def test_claude_auth_missing_without_any_token(team_repo, tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("BIBI_CONFIG_PATH", str(_config_path(tmp_path)))
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     _seed_claude_job(team_repo)
@@ -36,7 +43,6 @@ def test_claude_auth_missing_without_any_token(team_repo, tmp_path, monkeypatch,
 def test_claude_auth_present_via_process_env(team_repo, tmp_path, monkeypatch, capsys):
     # Regressions-Anker: der bisherige, bereits funktionierende Fall darf
     # durch den Fix nicht kaputtgehen.
-    monkeypatch.setenv("BIBI_CONFIG_PATH", str(_config_path(tmp_path)))
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-fake")
     _seed_claude_job(team_repo)
     doctor_cmd.run(argparse.Namespace())
@@ -48,7 +54,6 @@ def test_claude_auth_present_via_bare_name_in_config_file(team_repo, tmp_path, m
     # in ~/.config/bibi/env gesetzt (nicht im Prozess-Environment) — token_present
     # las vorher NUR os.environ, meldete claude-auth-missing trotzdem.
     cfg_path = _config_path(tmp_path)
-    monkeypatch.setenv("BIBI_CONFIG_PATH", str(cfg_path))
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
@@ -63,7 +68,6 @@ def test_claude_auth_present_via_prefixed_name_in_config_file(team_repo, tmp_pat
     # ebenfalls unsichtbar für token_present, obwohl worker.py::_exec_config()
     # sie längst korrekt nutzt.
     cfg_path = _config_path(tmp_path)
-    monkeypatch.setenv("BIBI_CONFIG_PATH", str(cfg_path))
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,7 +81,6 @@ def test_claude_auth_present_via_distributed_env(team_repo, tmp_path, monkeypatc
     # PLAN-32 Stufe 32.2: vom Host verteiltes Bundle — niedrigste Präzedenz,
     # aber genauso real nutzbar für den Job-Exec-Pfad wie ein lokaler Wert.
     cfg_path = _config_path(tmp_path)
-    monkeypatch.setenv("BIBI_CONFIG_PATH", str(cfg_path))
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     config.write_distributed_env(
@@ -90,7 +93,6 @@ def test_claude_auth_present_via_distributed_env(team_repo, tmp_path, monkeypatc
 def test_claude_auth_finding_absent_without_claude_jobs(team_repo, tmp_path, monkeypatch, capsys):
     # check_missing_claude_auth() feuert nur, wenn das Vault claude:-Jobs
     # enthält — reines Host-/App-Setup ohne Claude-Nutzung bleibt still.
-    monkeypatch.setenv("BIBI_CONFIG_PATH", str(_config_path(tmp_path)))
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     doctor_cmd.run(argparse.Namespace())

@@ -1,6 +1,6 @@
 """``bibi-ctrl init`` — interaktiver Bootstrap (DESIGN §4.10).
 
-Fragt die drei Knoten-Parameter ab und schreibt ``~/.config/bibi/env``.
+Fragt die drei Knoten-Parameter ab und schreibt ``<repo>/data/env`` (m.rau/bibi#52).
 Idempotent: existiert die Datei, werden ihre Werte als Defaults vorgeschlagen
 und vor dem Überschreiben wird bestätigt. Reines Python, keine externen Deps.
 
@@ -22,29 +22,11 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
-import subprocess
 import sys
-from datetime import datetime
 
 from .. import config
 from ..daemon import roles as R
 
-
-def _origin_url() -> str:
-    """``origin`` des Checkouts, in dem wir stehen — leer, wenn es keines gibt.
-
-    Nur zur **Erkennung** einer fremden Konfiguration (m.rau/bibi#173), nie als
-    Wert: gesetzt wird ``BIBI_REMOTE`` weiterhin ausschließlich aus Flag oder
-    Antwort. Ein Fehlschlag (kein Repo, kein git, kein ``origin``) ist kein
-    Fehler, sondern nur eine Erkennung weniger.
-    """
-    try:
-        out = subprocess.run(["git", "remote", "get-url", "origin"],
-                             capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return out.stdout.strip() if out.returncode == 0 else ""
 
 #: Flag-``dest`` (argparse: Bindestriche -> Unterstriche) -> ``config.KEYS``-Name.
 #: ``BIBI_NODE_ID`` bewusst nicht enthalten -- kein Flag dafür, s. Moduldoc.
@@ -295,40 +277,25 @@ def run(args: argparse.Namespace) -> int:
                     _profile = None
                 _role_value = values[key]
 
-    # ── Gehört die Datei, die wir gleich überschreiben, überhaupt uns? ──────
+    # ── Die Datei, die wir gleich schreiben, gehört uns ─────────────────────
     #
-    # m.rau/bibi#173, Live-Fall vom 2026-08-06: wer eine **zweite** Instanz auf
-    # demselben Rechner aufsetzt, überschrieb bisher die Konfiguration der
-    # ersten — ohne Sicherung und ohne ein Wort. Verloren gingen die verteilten
-    # ``BIBI_JOB_ENV_*``-Werte, die Poll-Intervalle und ``BIBI_PUBLIC_HOST``.
+    # Bis m.rau/bibi#52 stand hier eine Erkennung fremder Konfigurationen samt
+    # ``env.bak-<stamp>``: ``init`` schrieb nach ``~/.config/bibi/env``, und wer
+    # eine **zweite** Instanz auf demselben Rechner aufsetzte, überschrieb die
+    # Konfiguration der ersten — Ticket m.rau/bibi#173, Live-Fall vom 2026-08-06.
     #
-    # Erkannt wird das an ``BIBI_REMOTE``: eine Konfiguration gehört zu genau
-    # einem Team-Repo. Steht dort ein anderes als das, was dieser Lauf
-    # einträgt, ist die Datei fremd. Fehlt die Angabe in diesem Lauf, zählt das
-    # ``origin`` des Checkouts, in dem wir stehen — sonst bliebe genau der Fall
-    # unentdeckt, in dem jemand ``init`` ohne ``--remote`` in einem zweiten
-    # Klon aufruft.
-    _old_remote = (existing.get("BIBI_REMOTE") or "").strip()
-    _new_remote = (values.get("BIBI_REMOTE") or "").strip() or _origin_url() or ""
-    _foreign = bool(_old_remote and _new_remote and _old_remote != _new_remote)
-
-    if _foreign:
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = path.with_name(f"{path.name}.bak-{stamp}")
-        shutil.copy2(path, backup)
-        print(f"Bestehende Konfiguration gehört zu {_old_remote} — gesichert "
-              f"nach {backup}")
-
-    # ``BIBI_NODE_ID``: übernehmen, wenn es derselbe Knoten ist — sonst neu.
-    # **Das ist die schärfere Hälfte des Fundes.** Bisher wurde der bestehende
-    # Wert bedingungslos übernommen; die zweite Instanz erbte damit die
-    # Identität der ersten, und beide meldeten sich am Scheduler unter
-    # demselben Schlüssel. Das Ticket beschreibt den Verlust der Identität —
-    # tatsächlich war es ihre Verdopplung, und die ist schwerer zu bemerken:
-    # es sieht aus, als liefe ein Knoten, wo zwei laufen.
+    # **Beides ist ersatzlos entfallen, weil der Fall nicht mehr eintreten kann.**
+    # Die Konfiguration liegt in ``<repo>/data/env``; zwei Instanzen sind zwei
+    # Repos und damit zwei Dateien. Ein Backup gegen ein Überschreiben, das es
+    # nicht gibt, wäre ein Mechanismus, den man pflegt, ohne dass er je greift —
+    # und ein Leser müsste sich fragen, wovor er schützt.
+    #
+    # Was vom Fall übrig bleibt, ist harmlos: dasselbe Repo mit geändertem
+    # ``BIBI_REMOTE`` (ein Umzug). Derselbe Knoten, dieselbe Identität — und die
+    # ``BIBI_JOB_ENV_*``-Werte überleben seit m.rau/bibi#51 ohnehin jedes
+    # Schreiben.
     import uuid
-    values["BIBI_NODE_ID"] = ("" if _foreign else existing.get("BIBI_NODE_ID", "")) \
-        or uuid.uuid4().hex
+    values["BIBI_NODE_ID"] = existing.get("BIBI_NODE_ID", "") or uuid.uuid4().hex
 
     # Ein Worker ohne Scheduler ist keine Aufstellung, sondern eine
     # Fehlkonfiguration: er startet, meldet sich gesund und bekommt nie einen

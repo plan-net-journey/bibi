@@ -6,14 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from bibi import case_store, config, frontmatter, state
+from bibi import case_store, config, frontmatter, repo, state
 from bibi.ctrl import main
-
-
-@pytest.fixture
-def cfg_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    return tmp_path
+from tests.conftest import _init_repo
 
 
 def _feed_input(monkeypatch: pytest.MonkeyPatch, answers: dict[str, str]) -> None:
@@ -225,7 +220,7 @@ def test_status_shows_sync_conflict(team_repo: Path, capsys):
 
 def test_status_no_sync_conflict_line_when_false(team_repo: Path, capsys):
     main(["status"])
-    assert "sync_conflict" not in capsys.readouterr().out
+    assert "sync_conflict:" not in capsys.readouterr().out
 
 
 def test_status_shows_protocol_when_case_active(
@@ -262,12 +257,12 @@ def test_status_no_merge_stuck_line_below_threshold(team_repo: Path, capsys):
     from bibi.daemon import merge_quarantine
     merge_quarantine.record_failure(team_repo, "agent/almost", trunk_sha="s1")
     main(["status"])
-    assert "merge_stuck" not in capsys.readouterr().out
+    assert "merge_stuck:" not in capsys.readouterr().out
 
 
 def test_status_no_merge_stuck_line_when_none(team_repo: Path, capsys):
     main(["status"])
-    assert "merge_stuck" not in capsys.readouterr().out
+    assert "merge_stuck:" not in capsys.readouterr().out
 
 
 # --- Dritter Block: der LAUFENDE Daemon (m.rau/bibi#59) -----------------------
@@ -566,60 +561,83 @@ def test_bootstrap_token_still_settable_by_flag_without_connect(cfg_home: Path,
     assert config.read_env()["BIBI_BOOTSTRAP_TOKEN"] == "abc123"
 
 
-# --- m.rau/bibi#173: eine fremde Konfiguration wird nicht stillschweigend
-#     ueberschrieben -------------------------------------------------------
+# --- m.rau/bibi#52: eine fremde Konfiguration kann gar nicht mehr entstehen ---
+#
+# Hier stand bis zum 2026-08-07 ein Block, der den Backup-Mechanismus aus
+# m.rau/bibi#173 prüfte: ``init`` erkannte an ``BIBI_REMOTE``, dass die Datei zu
+# einem anderen Team-Repo gehört, legte ``env.bak-<stamp>`` an und sagte es.
+#
+# **Der Mechanismus ist entfallen, weil sein Anlass entfallen ist.** Die
+# Konfiguration liegt seit #52 in ``<repo>/data/env``; zwei Instanzen auf einer
+# Maschine sind zwei Repos und damit zwei Dateien, die einander nicht sehen. Ein
+# Backup gegen ein Überschreiben, das nicht mehr stattfinden kann, wäre Pflege
+# ohne Gegenwert — und ein Leser müsste raten, wovor es schützt.
+#
+# Was an seine Stelle tritt, ist die Zusage darunter: die Trennung selbst.
 
 
-def _backups(cfg_home: Path) -> list[Path]:
-    return sorted((cfg_home / "bibi").glob("env.bak-*"))
+def test_two_repos_on_one_machine_keep_separate_configs(tmp_path: Path, monkeypatch):
+    """Der Live-Fall vom 2026-08-06, diesmal ohne Schaden.
 
-
-def test_init_backs_up_a_foreign_config_before_overwriting(cfg_home: Path,
-                                                           monkeypatch, capsys):
-    # Der Live-Fall vom 2026-08-06: der Rechner betreibt schon eine Instanz,
-    # ein init nach Anleitung haette deren BIBI_NODE_ID und die verteilten
-    # BIBI_JOB_ENV_*-Werte ersatzlos ueberschrieben.
-    config.write_env({"BIBI_REMOTE": "https://github.com/org/erste.git",
-                      "BIBI_NODE_ID": "a" * 32,
-                      "BIBI_ROLE": "synchronizer,worker"})
+    Der Rechner betreibt eine Instanz; jemand richtet eine zweite ein. Vorher
+    überschrieb das die erste — erst still, ab #173 mit Backup. Jetzt gehen sich
+    beide gar nicht mehr an.
+    """
+    erste, zweite = tmp_path / "erste", tmp_path / "zweite"
+    for r in (erste, zweite):
+        r.mkdir()
+        _init_repo(r)
     _forbid_input(monkeypatch)
-    rc = main(["init", "--non-interactive", "--profile", "client",
-               "--remote", "https://github.com/org/zweite.git"])
-    assert rc == 0
-    saved = _backups(cfg_home)
-    assert len(saved) == 1, "genau eine Sicherung"
-    alt = config.read_env(saved[0])
-    assert alt["BIBI_NODE_ID"] == "a" * 32        # die Identitaet ist gerettet
-    assert alt["BIBI_REMOTE"] == "https://github.com/org/erste.git"
-    assert saved[0].name in capsys.readouterr().out   # und es wird gesagt
+
+    monkeypatch.chdir(erste)
+    repo._root_of.cache_clear()
+    assert main(["init", "--non-interactive", "--profile", "client",
+                 "--remote", "https://github.com/org/erste.git"]) == 0
+    id_erste = config.read_env()["BIBI_NODE_ID"]
+
+    monkeypatch.chdir(zweite)
+    repo._root_of.cache_clear()
+    assert main(["init", "--non-interactive", "--profile", "client",
+                 "--remote", "https://github.com/org/zweite.git"]) == 0
+    id_zweite = config.read_env()["BIBI_NODE_ID"]
+
+    # Zwei Knoten, zwei Identitäten — der Kern von #173, jetzt ohne Sonderweg.
+    assert id_erste != id_zweite
+    assert not list(zweite.glob("data/env.bak-*")), "kein Backup nötig"
+
+    # Und die erste ist unversehrt: eigene Identität, eigenes Remote.
+    monkeypatch.chdir(erste)
+    repo._root_of.cache_clear()
+    env = config.read_env()
+    assert env["BIBI_NODE_ID"] == id_erste
+    assert env["BIBI_REMOTE"] == "https://github.com/org/erste.git"
 
 
-def test_init_does_not_back_up_a_rerun_on_the_same_repo(cfg_home: Path, monkeypatch):
-    # Idempotenz bleibt idempotent: derselbe Knoten, zweimal eingerichtet,
-    # soll keine Sicherungskopien anhaeufen.
-    config.write_env({"BIBI_REMOTE": "https://github.com/org/erste.git",
-                      "BIBI_NODE_ID": "a" * 32})
+def test_rerun_on_the_same_repo_keeps_the_node_identity(cfg_home: Path, monkeypatch):
+    """Idempotenz: derselbe Knoten, zweimal eingerichtet, bleibt derselbe.
+
+    Ein Repo ist ein Knoten. Dass ``init`` ein zweites Mal läuft — etwa nach
+    einem Umzug des Remotes — ändert daran nichts.
+    """
     _forbid_input(monkeypatch)
     assert main(["init", "--non-interactive", "--profile", "client",
                  "--remote", "https://github.com/org/erste.git"]) == 0
-    assert _backups(cfg_home) == []
+    erst = config.read_env()["BIBI_NODE_ID"]
+    assert main(["init", "--non-interactive", "--profile", "client",
+                 "--remote", "https://github.com/org/umgezogen.git"]) == 0
+    assert config.read_env()["BIBI_NODE_ID"] == erst
+    assert config.read_env()["BIBI_REMOTE"] == "https://github.com/org/umgezogen.git"
 
 
-def test_init_does_not_back_up_when_there_is_nothing_to_lose(cfg_home: Path,
-                                                             monkeypatch):
+def test_init_carries_credentials_over(cfg_home: Path, monkeypatch):
+    """``BIBI_JOB_ENV_*`` überlebt ein ``init`` (m.rau/bibi#51).
+
+    Der dokumentierte Weg, ein Credential auf einen Knoten zu bringen, ist ein
+    ``>>``-Append an diese Datei. Ein späteres ``init`` hat es bis zum
+    2026-08-07 verworfen — ohne Sicherung, ohne Meldung, und die Sicherung aus
+    #173 griff hier nicht, weil sie an ``_foreign`` hing.
+    """
+    config.write_env({"BIBI_ROLE": "synchronizer", "BIBI_JOB_ENV_TOKEN": "geheim"})
     _forbid_input(monkeypatch)
     assert main(["init", "--non-interactive", "--profile", "client"]) == 0
-    assert _backups(cfg_home) == []
-
-
-def test_the_node_id_survives_a_foreign_overwrite(cfg_home: Path, monkeypatch):
-    # Der teuerste Einzelverlust aus dem Ticket: ohne BIBI_NODE_ID verliert der
-    # Knoten seine Identitaet und seine Freigabe am Scheduler. Die neue Datei
-    # bekommt eine neue — aber die alte ist wiederherstellbar.
-    config.write_env({"BIBI_REMOTE": "https://github.com/org/erste.git",
-                      "BIBI_NODE_ID": "a" * 32})
-    _forbid_input(monkeypatch)
-    main(["init", "--non-interactive", "--profile", "client",
-          "--remote", "https://github.com/org/zweite.git"])
-    assert config.read_env()["BIBI_NODE_ID"] != "a" * 32
-    assert config.read_env(_backups(cfg_home)[0])["BIBI_NODE_ID"] == "a" * 32
+    assert config.read_env()["BIBI_JOB_ENV_TOKEN"] == "geheim"

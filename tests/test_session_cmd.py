@@ -586,10 +586,13 @@ def test_without_name_the_session_does_not_touch_the_variable(tmp_path, monkeypa
     assert "BIBI_NODE_NAME" not in env
 
 
-def test_name_is_not_written_back_to_the_config_file(tmp_path, monkeypatch):
-    """Der Wert gilt für diese Sitzung, nicht für die Maschine. Schriebe ihn
-    die Sitzung in die ``env``, hiesse der Knoten auch nach ihrem Ende noch so."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+def test_name_is_not_written_back_to_the_config_file(team_repo: Path, tmp_path):
+    """Der Wert gilt für diese Sitzung, nicht für den Knoten. Schriebe ihn
+    die Sitzung in die ``env``, hiesse der Knoten auch nach ihrem Ende noch so.
+
+    Nahm bis m.rau/bibi#52 ``XDG_CONFIG_HOME`` zur Isolation; seither leistet das
+    ``team_repo``, weil die Konfiguration repo-lokal liegt.
+    """
     from bibi import config
     config.write_env({"BIBI_NODE_NAME": "vorher"})
     args, _ = session._parse(["--name", "nachher"])

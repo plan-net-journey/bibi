@@ -200,28 +200,74 @@ def public_host() -> str:
     return "localhost"
 
 
-def env_path() -> Path:
-    """Pfad zu ``env`` — ``BIBI_CONFIG_PATH`` (explizite Datei) > ``XDG_CONFIG_HOME``
-    > ``~/.config``.
+class KeinRepoError(RuntimeError):
+    """Hier ist kein Team-Repo — also gibt es auch keinen Knoten (m.rau/bibi#52).
 
-    ``BIBI_CONFIG_PATH`` erlaubt mehrere Daemon-Instanzen unter demselben
-    Linux-User (z. B. Host + Client auf demselben Knoten) mit getrennten
-    ``BIBI_ROLE``-Dateien, ohne über ``XDG_CONFIG_HOME``-Indirektion zu gehen —
-    ein Pfad, direkt in der jeweiligen systemd-Unit sichtbar.
+    Für einen *Leser* ist das kein Fehler: :func:`read_env` fängt ihn ab und
+    liefert ein leeres Dict, dieselbe Lage wie eine noch nicht angelegte Datei.
+    Für einen *Schreiber* schon — eine Konfiguration irgendwohin zu legen, wo sie
+    kein Knoten je liest, ist schlimmer als ein Abbruch.
     """
-    explicit = os.environ.get("BIBI_CONFIG_PATH", "").strip()
-    if explicit:
-        return Path(explicit)
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "bibi" / "env"
+
+
+def env_path() -> Path:
+    """Pfad zu ``env``: ``<repo>/data/env``. Eine Stufe, kein Fallback.
+
+    **Eine Konfiguration gehört zu einem Repo** (m.rau/bibi#52). Ein Knoten *ist*
+    ein Team-Repo — die Registry schlüsselt ohnehin darauf, und wer zwei Repos
+    auf einer Maschine betreibt, betreibt zwei Knoten.
+
+    Vorher standen hier drei Stufen: ``BIBI_CONFIG_PATH`` > ``XDG_CONFIG_HOME``
+    > ``~/.config``. Sie sind ersatzlos entfallen, und zwar zusammen mit dem
+    Problem, das sie lösen sollten. Der Reihe nach, weil jede ihren eigenen
+    Grund hatte und keiner davon trug:
+
+    * ``BIBI_CONFIG_PATH`` war für **supervisierte** Knoten gedacht — der alte
+      Docstring nannte den Träger selbst, *„ein Pfad, direkt in der jeweiligen
+      systemd-Unit sichtbar"*. Ein Client bekommt per m.rau/bibi#180 keine Unit.
+      Für die häufigste Knotenart gab es damit keinen Ort, an dem die Variable
+      überdauert; ein zweites Team-Repo ließ sich konfigurieren, aber nicht
+      betreiben, weil der Daemon beim Start wieder die Datei des ersten las.
+    * ``XDG_CONFIG_HOME`` und ``~/.config`` legten die Konfiguration **pro
+      Nutzer** ab, während sie pro Repo gilt. Der Release-Plan ``v0.5.0`` hatte
+      genau das am 2026-07-31 notiert — *„``BIBI_NODE_ID`` … ist damit pro Nutzer
+      statt pro Repo, während die Registry darauf schlüsselt"* — und
+      zurückgestellt, weil es „erst mit dem Host scharf" werde. Es wurde sechs
+      Tage später scharf, ohne Host.
+
+    Nebenbei fällt eine Schwäche weg, die niemand als solche geführt hat: der
+    ``~/.config``-Fallback ließ Testläufe die echte Konfiguration des
+    ausführenden Nutzers lesen, samt Credentials — die Suite brauchte dagegen ein
+    autouse-Fixture (``tests/conftest.py``).
+
+    :raises KeinRepoError: wenn das Arbeitsverzeichnis in keinem Repo liegt.
+    """
+    from bibi import repo  # lazy: repo zieht git/subprocess nach
+    root = repo.root_or_none()
+    if root is None:
+        raise KeinRepoError(
+            "hier ist kein Team-Repo — eine Knoten-Konfiguration gehört in eines "
+            "(m.rau/bibi#52). In ein Team-Repo wechseln oder eins anlegen."
+        )
+    return root / "data" / "env"
 
 
 def read_env(path: Path | None = None) -> dict[str, str]:
     """``env`` parsen (``KEY=VALUE`` je Zeile). Fehlt die Datei: leeres Dict.
 
     Robust gegen Kommentare (``#``) und Leerzeilen; Werte werden getrimmt.
+
+    **Ohne Repo leer statt laut** (m.rau/bibi#52): ein Leser, der zufällig
+    außerhalb eines Team-Repos läuft, ist in derselben Lage wie einer, dessen
+    Datei noch nicht angelegt ist — Defaults greifen. Das Gegenstück
+    :func:`write_env` lässt denselben Fall bewusst durch.
     """
-    p = path or env_path()
+    if path is None:
+        try:
+            path = env_path()
+        except KeinRepoError:
+            return {}
+    p = path
     if not p.exists():
         return {}
     out: dict[str, str] = {}
@@ -235,13 +281,37 @@ def read_env(path: Path | None = None) -> dict[str, str]:
 
 
 def write_env(values: dict[str, str], path: Path | None = None) -> Path:
-    """``env`` atomar schreiben (nur bekannte KEYS, in Reihenfolge). Mode 0600."""
+    """``env`` atomar schreiben (KEYS in Reihenfolge, Fremdes erhalten). Mode 0600.
+
+    **Was nicht in ``KEYS`` steht, wird trotzdem bewahrt** (m.rau/bibi#51).
+    ``read_env()`` liest jede ``KEY=VALUE``-Zeile; schriebe diese Funktion nur
+    ``KEYS`` zurück, hätten Lesen und Schreiben verschiedene Vorstellungen davon,
+    was in der Datei stehen darf — und wer schreibt, verlöre, was er nicht kennt.
+
+    Betroffen waren in der Praxis die ``BIBI_JOB_ENV_*``-Werte: laut
+    ``CONVENTIONS.md`` legitimer Inhalt genau dieser Datei, und der dokumentierte
+    Weg, ein Credential auf einen Host zu bringen, ist ein ``>>``-Append daran.
+    Der gefährlichere der beiden Auslöser war nicht ``init``, sondern
+    :func:`node_id` — die self-healing-Funktion, die ein manuelles ``init``
+    ausdrücklich *ersparen* soll und dabei denselben Schaden anrichtete: kein
+    Kommando, kein Neustart, kein Zutun.
+
+    Vorrang hat ``values``: wer einen fremden Schlüssel mitgibt, setzt ihn. Das
+    ist der Weg, auf dem ``init`` Credentials beim Umzug einer Konfiguration
+    mitnimmt (m.rau/bibi#52).
+    """
     p = path or env_path()
     p.parent.mkdir(parents=True, exist_ok=True)
+    fremd = {k: v for k, v in read_env(p).items() if k not in KEYS}
+    fremd.update({k: v for k, v in values.items() if k not in KEYS})
     lines = ["# bibi-Knoten-Konfiguration — von `bibi-ctrl init` erzeugt (DESIGN §4.10).",
              "# Host-/team-privat; nie ins Repo committen.", ""]
     for key in KEYS:
         lines.append(f"{key}={values.get(key, '')}")
+    if fremd:
+        lines += ["", "# Nicht von `init` verwaltet, hier aber zu Hause (CONVENTIONS.md):",
+                  "# BIBI_JOB_ENV_* und was sonst jemand angehängt hat."]
+        lines += [f"{k}={v}" for k, v in fremd.items()]
     tmp = p.with_suffix(p.suffix + ".tmp")
     tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
     tmp.chmod(0o600)

@@ -19,7 +19,6 @@ from bibi.daemon import install, portfile
 
 @pytest.fixture
 def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     monkeypatch.delenv("BIBI_DAEMON_PORT", raising=False)
     monkeypatch.delenv("BIBI_SCHEDULER_URL", raising=False)
     monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)

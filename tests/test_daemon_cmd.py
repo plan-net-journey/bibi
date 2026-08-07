@@ -35,8 +35,8 @@ def _live_foreign_pid():
 
 @pytest.fixture
 def env_iso(team_repo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    # ~/.config/bibi/env isolieren, damit kein echtes BIBI_ROLE durchsickert.
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    # Isolation kommt seit m.rau/bibi#52 aus ``team_repo``: die Konfiguration
+    # liegt repo-lokal, also kann kein echtes BIBI_ROLE durchsickern.
     monkeypatch.delenv("BIBI_CONFIG_PATH", raising=False)
     monkeypatch.delenv("BIBI_NODE_NAME", raising=False)
     monkeypatch.delenv("BIBI_WORKER_NAME", raising=False)
