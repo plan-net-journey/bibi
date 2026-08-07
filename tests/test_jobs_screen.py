@@ -660,8 +660,9 @@ def test_the_tiles_subscribe_to_the_bus():
 
     `_SLOT_JS` lädt nach einem Verb-Klick die Seite neu, die Kachel zeigt also
     `starting` — und bleibt dort. Angemeldet war bisher **nur** die Lauf-Liste
-    (`data-bus="archived"`); die Kacheln standen absichtlich außerhalb, weil
-    ein Swap die Knöpfe unter dem Klick wegnähme.
+    (damals `data-bus="archived"`, seit #43 `journal:<slug>`); die Kacheln
+    standen absichtlich außerhalb, weil ein Swap die Knöpfe unter dem Klick
+    wegnähme.
 
     Der Einwand war berechtigt, der Preis war der gemeldete Fehler. Aufgelöst
     wird er nicht durch Timing, sondern strukturell: die Knöpfe hören seit
@@ -714,19 +715,23 @@ def test_the_detail_page_does_not_nest_the_tiles_wrapper_twice(app_with, team_re
 def test_the_runs_fragment_stays_subscribed(app_with, team_repo: Path):
     """Derselbe Fehler wie in #151, nur auf der Detail-Seite und bisher
     unbemerkt: `/-/jobs/{uid}/runs` lieferte die Liste **ohne** den Wrapper
-    `<div id="runs" data-bus="archived">`, der nur in der Seite stand. Der
-    erste Bus-Swap hätte die Region also abgemeldet.
+    `<div id="runs" data-bus="…">`, der nur in der Seite stand. Der erste
+    Bus-Swap hätte die Region also abgemeldet.
 
     Aufgefallen ist es erst beim Nachziehen der Kacheln — und auch hier hat
     ein Fehler den anderen verdeckt: solange die Seite gar keinen Bus-Client
     auslieferte (#153), fand nie ein Swap statt.
+
+    Das Ziel hieß bis v0.7.5 `archived` und heißt seit #43 `journal:<slug>`.
+    Geprüft wird hier weiterhin, **dass** das Fragment die Anmeldung mitbringt
+    — welches Ziel es ist, prüfen die #43-Tests weiter unten.
     """
     _mit_job_md(team_repo, "laeuft")
     app = app_with({"roles": ["controller"]})
     with TestClient(app) as c:
         frag = c.get(f"/-/jobs/{job_uid('laeuft')}/runs",
                      headers={"accept": "text/html"}).text
-    assert 'data-bus="archived"' in frag
+    assert 'id="runs" data-bus="journal:laeuft"' in frag
 
 
 def test_the_slot_buttons_survive_a_swap():
@@ -1013,3 +1018,110 @@ def test_the_scheduler_block_still_spans_its_four_columns():
     html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
     assert '<th colspan="4" class="grp">SCHEDULER</th>' in html
     assert '<th colspan="1" class="grp">CLIENT</th>' in html
+
+
+# ── Der Faltzustand überlebt einen Bus-Refetch (#44) ───────────────────────
+#
+# **Befund:** ein Bus-Refetch der Lauf-Liste wirft den aufgeklappten Output weg,
+# weil der Faltzustand nur im DOM lebt — `zeile.hidden`, der Knopftext und der
+# geladene Text im `.out-body`. Wird `#runs` getauscht, ist alles davon fort.
+#
+# Das war ein Ärgernis, solange die Liste selten neu geladen wurde. Mit #43
+# refetcht sie bei jedem Slot-Zustandswechsel, und damit klappt der Bereich
+# genau während des Mitlesens eines laufenden Jobs zu — aus dem Ärgernis wird
+# ein Ausschlusskriterium. Deshalb ist die Reihenfolge erzwungen.
+#
+# Das Muster gibt es im Haus bereits: `_SCROLL_JS` rettet die Scroll-Position
+# über `htmx:beforeSwap`/`htmx:afterSettle`. Für den Faltzustand fehlte
+# derselbe Griff.
+
+
+def test_the_expanded_output_survives_a_swap():
+    js = render._JOB_DETAIL_JS
+    assert "htmx:beforeSwap" in js, "der Faltzustand wird vor dem Swap nicht gesichert"
+    assert "htmx:afterSettle" in js, "nach dem Swap wird nichts wiederhergestellt"
+
+
+def test_the_saved_state_is_keyed_by_run_not_by_position():
+    """Der Ausklappbereich gehört zum **Lauf**, nicht zur Zeilenposition — nach
+    einem Refetch kann eine neue Zeile oben dazugekommen sein."""
+    js = render._JOB_DETAIL_JS
+    kopf = js[js.index("htmx:beforeSwap"):]
+    assert "dataset.run" in kopf or "data-run" in kopf or "id.slice" in kopf, kopf[:400]
+
+
+def test_the_restore_only_touches_the_runs_region():
+    """`_SCROLL_JS` prüft aus demselben Grund `ev.detail.target` — ein globaler
+    Handler, der bei jedem Swap irgendwo etwas aufklappt, ist schlimmer als der
+    Fehler, den er behebt."""
+    js = render._JOB_DETAIL_JS
+    kopf = js[js.index("htmx:beforeSwap"):]
+    assert "runs" in kopf, "der Handler unterscheidet die Zielregion nicht"
+
+
+def test_the_reloaded_output_is_not_fetched_again():
+    """Der Text ist schon da; ihn nach jedem Swap neu zu holen ersetzte das
+    Flackern durch einen Roundtrip je Refetch — bei einem laufenden Job also
+    im Sekundentakt."""
+    js = render._JOB_DETAIL_JS
+    kopf = js[js.index("htmx:beforeSwap"):]
+    assert "out-body" in kopf, "der geladene Text wird nicht mitgerettet"
+
+
+# ── Die Lauf-Liste bekommt Slot-Zustandswechsel (#43) ──────────────────────
+#
+# **Befund:** die Kachel springt auf `complete`, die Zeile darunter zeigt weiter
+# `starting`. Die Liste hing an `data-bus="archived"`, und das wird an genau
+# einer Stelle publiziert: beim Journal-INSERT. Ein Slot-Zustandswechsel feuert
+# `live:<slug>` und `journal:<slug>` — aber nicht `archived`.
+#
+# **Entscheidung m.rau, 2026-08-07:** `journal:<slug>`. Es wird bereits auf
+# **beiden** Wegen publiziert — bei jedem Slot-Zustandswechsel und bei jedem
+# Journal-INSERT — und ist damit genau das, was die Liste zeigt: beide Quellen.
+# Kein neuer `publish_state()`-Aufruf nötig.
+#
+# Die beiden anderen Wege aus dem Ticket sind verworfen: `archived` zusätzlich
+# aus `_publish_live()` zu senden hiesse, ein Ziel zu feuern, wenn nichts
+# archiviert wurde — genau der Namensverfall, vor dem `bus.py` warnt. Und
+# `#runs` an `live:<slug>` zu haengen verlangte einen zusaetzlichen publish
+# beim Journal-INSERT.
+
+
+def _leere_liste():
+    """Eine `RunList` ohne Inhalt — fuer diese Tests zaehlt nur der Wrapper."""
+    from bibi.controller.jobs_view import RunList
+    return RunList(tiles=[], runs=[], counts={})
+
+
+def test_the_runs_list_listens_for_this_jobs_journal():
+    html = render.job_runs_fragment(
+        _leere_liste(), now=NOW, slug="laeuft", job_uid="u1")
+    assert 'data-bus="journal:laeuft"' in html, html[:300]
+
+
+def test_the_runs_list_no_longer_waits_for_an_archival():
+    """`archived` feuert nur beim Journal-INSERT — ein Slot, der von `starting`
+    auf `running` geht, archiviert nichts und blieb deshalb unsichtbar."""
+    html = render.job_runs_fragment(
+        _leere_liste(), now=NOW, slug="laeuft", job_uid="u1")
+    assert 'data-bus="archived"' not in html
+
+
+def test_a_slot_state_change_reaches_the_runs_target():
+    """Der Nachweis auf der Bus-Seite: derselbe Tick, der die Kachel dreckig
+    macht, macht auch die Liste dreckig — sonst widersprechen sich beide."""
+    from bibi.daemon.bus import Collector
+
+    class _Bus:
+        def __init__(self):
+            self.published = []
+
+        def publish_state(self, ziel):
+            self.published.append(ziel)
+
+    bus = _Bus()
+    c = Collector(bus, registry=None)
+    c._publish_live("laeuft", None)
+    c._publish_journal("laeuft", None)
+    assert "live:laeuft" in bus.published, "die Kachel bekommt nichts"
+    assert "journal:laeuft" in bus.published, "die Liste bekommt nichts"

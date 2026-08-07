@@ -1886,7 +1886,7 @@ def add_controller_routes(
         liste, reach, weiter = _job_lauf_liste(slug, now=jetzt, days=days,
                                                status=status, src=src)
         return HTMLResponse(render.job_runs_fragment(
-            liste, now=jetzt, job_uid=job_uid, days=days, reach=reach, weiter=weiter,
+            liste, now=jetzt, slug=slug, job_uid=job_uid, days=days, reach=reach, weiter=weiter,
             aktiv={"status": _mehrfach(status), "src": _mehrfach(src), "days": days}))
 
     @app.get("/-/jobs/{job_uid}/tiles", include_in_schema=False)
