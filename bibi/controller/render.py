@@ -2763,11 +2763,38 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
     quelle = scheduler if scheduler is not None else (status if ist_host else None)
     maint = bool((quelle or {}).get("maintenance"))
 
-    # Verbunden? Der Host ist es mit sich selbst — dort gibt es keinen
-    # Heartbeat, und ein roter Punkt waere schlicht falsch.
-    verbunden = True if ist_host else ((status or {}).get("connect") or {}).get("ok") is not False
+    # Verbunden? Drei Faelle, nicht zwei (#70). Der Punkt kannte bis v0.7.5 nur
+    # "verbunden" und "ausdruecklich getrennt" — geschrieben als „nur ein
+    # ausdrueckliches ``False`` heisst getrennt":
+    #
+    #     ((status or {}).get("connect") or {}).get("ok") is not False
+    #
+    # Der dritte Fall fiel damit auf die *gruene* Seite: ein Knoten ohne
+    # Scheduler-URL hat gar kein ``connect``-Dict (``app.py`` setzt es nur
+    # ``if heartbeat is not None``), ``{}.get("ok")`` ist ``None``, und
+    # ``None is not False`` ist ``True``. Befund m.rau, 2026-08-07: „wie kann
+    # bei *disconnected* das Signal im Tab rechts **gruen** sein?"
+    #
+    # ``_host_card()`` unterscheidet dieselben drei Faelle laengst ueber
+    # ``conn is None`` — hier fehlte nur der Gleichklang.
+    conn = (status or {}).get("connect")
+    if ist_host:
+        # Der Host ist mit sich selbst verbunden — dort gibt es keinen
+        # Heartbeat, und ein roter Punkt waere schlicht falsch. Ihm fehlt
+        # ``connect`` aus demselben Grund wie dem Client ohne Scheduler,
+        # deshalb steht diese Abfrage *vor* der auf ``None``.
+        verbunden, ohne_gegenueber = True, False
+    elif conn is None:
+        verbunden, ohne_gegenueber = False, True
+    else:
+        verbunden, ohne_gegenueber = conn.get("ok") is not False, False
 
-    if not verbunden:
+    if ohne_gegenueber:
+        # „disconnected" waere hier irrefuehrend: es gab nie eine Verbindung,
+        # die abreissen konnte. Wer das liest, sucht den Fehler sonst beim
+        # Scheduler statt in der eigenen Konfiguration.
+        dot_cls, dot_titel = "bad", "no scheduler configured — nothing to connect to"
+    elif not verbunden:
         # Getrennt schlaegt Maintenance: wer nicht verbunden ist, weiss ueber
         # den Modus des Hosts ohnehin nichts Aktuelles.
         dot_cls, dot_titel = "bad", "disconnected"
@@ -2776,13 +2803,30 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
     else:
         dot_cls, dot_titel = "ok", "connected"
 
-    if ist_host:
+    # Wer den Schalter erreicht (#69). Die Bedingung fragte bis v0.7.5 „bin ich
+    # der Scheduler" — und sperrte damit genau die Knoten, die eine Oberflaeche
+    # haben. Seit dem 2026-08-06 traegt das Profil ``scheduler`` ausdruecklich
+    # **kein** ``controller`` mehr (``roles.py``: „der Scheduler ist Backend");
+    # es gab danach keinen Knoten, auf dem beides zugleich wahr war. Maintenance
+    # war eine vollstaendig gebaute Funktion, die niemand ausloesen konnte.
+    # Befund m.rau, 2026-08-07: „es **muss** vom Client aus schaltbar sein."
+    #
+    # Die richtige Frage ist die, die ``_ops_ziel()`` im Controller laengst
+    # beantwortet: **habe ich einen Scheduler** — konfiguriert, oder als der ich
+    # selbst laufe. Genau die Frage steht schon oben, nur unter anderem Namen:
+    # ``ohne_gegenueber``. Ein Knoten ohne Scheduler behaelt die Sperre, und
+    # dort ist sie richtig — es gibt nichts zu schalten.
+    #
+    # Der Bootstrap-Fall bleibt damit heil: ``init --profile scheduler
+    # --with-ui`` haengt einem Scheduler doch einen ``controller`` an, und
+    # ``ist_host`` traegt ihn ueber den lokalen Zweig von ``_ops_ziel()``.
+    if not ohne_gegenueber:
         mcls = "toggle warn" if maint else "toggle"
         mtitle = "maintenance: on" if maint else "maintenance: off"
         maint_btn = f'<button id="maint" class="{mcls}" title="{mtitle}">◐</button>'
     else:
         maint_btn = ('<button id="maint" class="toggle" disabled '
-                    'title="maintenance: host only">◐</button>')
+                    'title="maintenance: no scheduler to switch">◐</button>')
     return (
         '<nav class="handles">'
         '<button id="rescan" class="toggle" title="rescan the vault">⟳</button>'

@@ -228,7 +228,12 @@ class Collector:
         #: er ein anderes Ziel bedient — `live:<slug>` statt `feedstatus`.
         self._sched_jobs_snapshot: dict[str, tuple] | None = None
         self._hb_snapshot: tuple | None = None
+        #: Fuenfter "feedstatus"-Fingerabdruck (#72): der git-Arbeitsbaum.
+        #: Eigener Speicher *und* eigene Drossel, weil er eine andere Quelle
+        #: hat als der Scheduler-Poll — denselben Takt, aber keinen Netzaufruf.
+        self._git_snapshot: tuple | None = None
         self._sched_last_fetch: float = 0.0
+        self._git_last_check: float = 0.0
         self._primed = False
         self._task: asyncio.Task | None = None
         self._running = False
@@ -314,6 +319,7 @@ class Collector:
         stats["state"] += self._diff_flags()
         stats["state"] += self._diff_scheduler()
         stats["state"] += self._diff_heartbeat()
+        stats["state"] += self._diff_git()
 
         # Tails: Output-Zuwachs publizieren; Läufe, die nicht mehr aktiv
         # wachsen (Terminal/deferred), nach einem letzten Read entlassen.
@@ -401,6 +407,81 @@ class Collector:
             return 1
         return 0
 
+    def _read_git(self) -> dict | None:
+        """Arbeitsbaum-Zustand dieses Repos, oder ``None`` (kein Git-Repo).
+
+        Eigene Naht, wie sie ``_fetch_scheduler_status()`` fuer den Host ist:
+        dahinter steckt ein Subprozess (``git status --porcelain=v2``), und
+        Tests sollen ihn ersetzen koennen, ohne ein Repo anzulegen.
+
+        Gelesen wird ueber ``git_status.working_tree_status()`` — dieselbe
+        Funktion, aus der auch die Git-Kachel gespeist wird. Zwei Wege zur
+        selben Auskunft koennten auseinanderlaufen, und der Fingerabdruck
+        haette dann recht, waehrend die Kachel etwas anderes zeigt.
+        """
+        try:
+            from bibi import repo
+            from bibi.git_status import working_tree_status
+            st = working_tree_status(self.repo_root or repo.root())
+        except Exception:  # noqa: BLE001 — ein fehlendes Repo ist kein Fehler
+            return None
+        if st is None:
+            return None
+        return {"tree": st.tree, "sync": st.sync, "branch": st.branch,
+                "oid": st.oid, "ahead": st.ahead, "behind": st.behind}
+
+    def _diff_git(self) -> int:
+        """Fuenfter "feedstatus"-Fingerabdruck: der git-Arbeitsbaum (#72).
+
+        **Befund m.rau, 2026-08-07:** zwei Screenshots im Abstand von 15
+        Sekunden, dazwischen ein manueller Reload — der Unterschied war
+        ``clean`` → ``modified``.
+
+        Der Arbeitsbaum stand in keinem der vier bisherigen Fingerabdruecke.
+        Das war keine Nachlaessigkeit, sondern die Kosten-Entscheidung, die
+        vier Methoden weiter unten im Docstring von ``_diff_scheduler()``
+        steht: *„Zu weit gefasst machte er den Header bei jeder Kleinigkeit
+        dreckig — und der haengt an einem git-Aufruf."* Die Git-Karte hing
+        dafuer an einem 30-Sekunden-Poll; der ist mit PLAN-36 Stufe 36.3
+        entfallen, und **ersatzlos**. Seitdem hatte die Zeile gar keinen
+        Ausloeser mehr.
+
+        **Entscheidung m.rau, 2026-08-07:** *„nimm die erste: ueber
+        ``git_status`` im selben Takt wie ``_diff_scheduler()`` (alle paar
+        Sekunden, nicht bei jedem Tick)"*. Die Alternative — ein Mindesttakt
+        fuer ``feedstatus``, wenn seit N Sekunden nichts kam — ist verworfen:
+        sie haette den Header periodisch dreckig gemacht, ohne dass sich etwas
+        geaendert hat, und damit einen Poll wiederhergestellt statt ihn zu
+        ersetzen.
+
+        **Und er ist zugleich die Antwort auf #71.** Die vier bisherigen
+        Auslöser setzen *alle* eine Verbindung voraus: Job-Zustaende wechseln
+        nicht ohne Scheduler, ``_diff_flags()`` sieht nur lokale Flags,
+        ``_diff_heartbeat()`` hat ohne ``connect``-Rolle kein Objekt, und
+        ``_diff_scheduler()`` bekommt ``None``. Auf einem Knoten ohne
+        erreichbaren Scheduler feuerte damit keiner — der Header stand still,
+        bis jemand neu lud. Dieser hier feuert ohne Gegenueber, weil er keins
+        braucht.
+        """
+        jetzt = time.time()
+        # Derselbe Takt wie der Scheduler-Poll, ausdruecklich so entschieden.
+        # Der Collector tickt sekuendlich; ein `git status` je Tick waere genau
+        # der Preis, wegen dem die Zeile ueberhaupt draussen blieb.
+        if jetzt - self._git_last_check < self._SCHED_POLL_S:
+            return 0
+        self._git_last_check = jetzt
+        g = self._read_git()
+        snap: tuple | None = None if g is None else (
+            g.get("tree"), g.get("sync"), g.get("branch"),
+            g.get("oid"), g.get("ahead"), g.get("behind"),
+        )
+        changed = self._primed and snap != self._git_snapshot
+        self._git_snapshot = snap
+        if changed:
+            self.bus.publish_state("feedstatus")
+            return 1
+        return 0
+
     def _fetch_scheduler_status(self) -> dict | None:
         """Status des konfigurierten Schedulers, oder ``None``.
 
@@ -461,11 +542,22 @@ class Collector:
                 s.get("maintenance"),
                 s.get("started_at"),
             )
+        # "Kein Scheduler" bleibt still, weil ``None != None`` falsch ist —
+        # nicht, weil eine Sperre es verhindert. Hier stand bis v0.7.5 ein
+        # zusaetzliches ``war_leer = self._sched_snapshot is None and snap is
+        # None`` samt ``and not war_leer`` in der Bedingung darunter. Es war
+        # wirkungslos: ``war_leer`` ist genau dann wahr, wenn beide Seiten
+        # ``None`` sind — und dann ist ``changed`` bereits falsch.
+        #
+        # Der Zuschnitt von #71 nannte diese Sperre als Grund dafuer, dass der
+        # Header eines Knotens ohne Scheduler nie aktualisiert. Der Befund
+        # stimmte, die Begruendung nicht: es gab hier nichts zu unterdruecken,
+        # weil es nichts zu melden gab. Der fehlende Ausloeser lag woanders,
+        # und er heisst jetzt ``_diff_git()``.
         changed = self._primed and snap != self._sched_snapshot
-        war_leer = self._sched_snapshot is None and snap is None
         self._sched_snapshot = snap
         n = 0
-        if changed and not war_leer:
+        if changed:
             self.bus.publish_state("feedstatus")
             n = 1
         # Zweiter, feiner Fingerabdruck im selben Takt (m.rau/bibi#143) — er
