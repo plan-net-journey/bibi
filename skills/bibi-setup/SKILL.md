@@ -83,9 +83,23 @@ works against `$PWD`, and the second instance on a machine is set up from a
 session of the first — so the working directory is usually the wrong one:
 
 ```bash
-cd "<argument>" || { echo "kein solches Verzeichnis"; exit 1; }
+ziel="<argument>"
+case "$ziel" in
+  "~")   ziel="$HOME" ;;
+  "~/"*) ziel="$HOME/${ziel#\~/}" ;;
+esac
+cd "$ziel" || { echo "kein Verzeichnis: $ziel"; exit 1; }
 pwd
 ```
+
+**The `case` block is not decoration** (m.rau/bibi#61). A quoted `cd "~/…"`
+does not expand the tilde — POSIX expands `~` only unquoted at the start of a
+word — so the skill used to end at its very first command, claiming a
+directory that exists does not. The quotes still have to stay for paths with
+spaces, which is why the expansion is spelled out instead of dropped. The
+error message names the **expanded** path, so it can no longer assert
+something untrue. `~otheruser/…` is deliberately not handled: it needs `eval`,
+and nobody has ever passed one.
 
 Without an argument, the current directory is the target. Say which one it is
 before doing anything to it.
@@ -189,8 +203,17 @@ carefully the steps below qualify the command:
 
 ```bash
 mkdir -p ~/.local/bin
-ls -l ~/.local/bin/bibi-ctrl 2>/dev/null   # zeigt es schon woandershin?
-ln -sf "$PWD/.venv/bin/bibi-ctrl" ~/.local/bin/bibi-ctrl
+link=~/.local/bin/bibi-ctrl
+if [ -L "$link" ]; then
+  alt=$(readlink "$link")
+  if [ ! -e "$link" ]; then    echo "TOT:   zeigt auf $alt — dieses Ziel gibt es nicht mehr"
+  elif [ "$alt" != "$PWD/.venv/bin/bibi-ctrl" ]; then
+                               echo "FREMD: zeigt auf $alt"
+  else                         echo "OK:    zeigt schon hierher"
+  fi
+elif [ -e "$link" ]; then      echo "FREMD: $link ist kein Symlink, sondern eine echte Datei"
+fi
+ln -sf "$PWD/.venv/bin/bibi-ctrl" "$link"
 ```
 
 **Look before you overwrite.** That symlink is global and single-valued: on a
@@ -199,6 +222,16 @@ silently redirects it to whichever was set up last. The run on 2026-08-07 found
 it already aimed at the *other* repo — set there by this very skill, days
 earlier. If it points elsewhere, say so and let the human decide; a `PATH` entry
 that quietly changes meaning is worse than one that is missing.
+
+**The three answers are not the same answer** (m.rau/bibi#62). This check used
+to ask only *"does it point somewhere else?"*, never *"does it point anywhere
+at all?"* — so a **dangling** link was healed in silence. It is worth saying
+out loud because it is evidence about the reset that preceded the run: the
+link lives outside both repos, so a repo-shaped reset cannot reach it, and in
+the 2026-08-07 run it had been left aimed at a deleted `.venv`. Handle the
+three cases differently: **dangling** → name it and heal it, nothing is lost.
+**Foreign** → name it and let the human decide. **Already ours** → say so and
+move on.
 
 The ttyd-container onboarding has always done this (PLAN-33 stages
 33.0–33.2); the native-host path lost it in translation, which is why a
