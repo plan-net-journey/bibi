@@ -94,6 +94,15 @@ class _SchedulerStub:
         self.server.server_close()
 
 
+def _warte_auf(bedingung, frist: float = 5.0) -> bool:
+    ende = time.time() + frist
+    while time.time() < ende:
+        if bedingung():
+            return True
+        time.sleep(0.02)
+    return False
+
+
 @pytest.fixture
 def scheduler():
     s = _SchedulerStub()
@@ -263,3 +272,41 @@ def test_read_timeouts_outlast_the_servers_ping():
     assert _PROXY_READ_TICK_S > 15, (
         "der Durchreicher wirft die Verbindung weg, bevor der Output-Strom pingt "
         "(_formatted_sse sendet ': ping' bei >=15 s Sendepause)")
+
+
+# ── #82: der Strom stirbt mit seiner Box ────────────────────────────────────
+
+
+def test_the_frontend_closes_the_stream_when_its_box_is_replaced():
+    """Gefunden von m.rau bei der Abnahme von v0.7.7.
+
+    `attachRemote()` schützt gegen doppeltes Anhängen an **dieselbe** Box —
+    nicht gegen den Fall, der im Betrieb eintritt: ein Bus-Refetch **ersetzt**
+    die Box per htmx-`outerHTML`-Swap. Die neue ist ein neues Element ohne
+    `_bibiRemote` und bekommt eine eigene `EventSource`; die alte ist aus dem
+    DOM, ihre Verbindung läuft weiter und wird nie geschlossen.
+
+    Jeder Refetch hinterlässt damit eine Leiche. Nach `_MAX_OUTPUT_PROXIES`
+    antwortet der Durchreicher `429`, und die Box wächst nicht mehr mit —
+    **ein laufender Job erzeugt Statuswechsel, und jeder Wechsel einen
+    Refetch.** Der Fehler trifft also genau den Fall, für den #78 gebaut wurde.
+
+    htmx bietet `htmx:beforeCleanupElement` an — dasselbe Ereignis, mit dem
+    der Output-Erhalt aus #44 bereits arbeitet."""
+    js = render._EVENTS_JS
+    assert "htmx:beforeCleanupElement" in js, (
+        "kein Aufräumen beim Ersetzen — jede ausgetauschte Box lässt ihren "
+        "Strom offen zurück")
+    # Und es muss auch wirklich schließen, nicht nur lauschen.
+    aufraeum = js[js.index("htmx:beforeCleanupElement"):]
+    assert "_bibiRemote" in aufraeum[:400] and "close()" in aufraeum[:400], (
+        "das Ereignis wird behandelt, die EventSource aber nicht geschlossen")
+
+
+# Ein serverseitiger Zähler-Test stand hier und ist wieder entfallen: mit
+# `TestClient.stream()` startet der Generator erst beim Lesen, die Wartezeit
+# lief in den Watchdog, und der Lauf brauchte 112 Sekunden für eine Aussage,
+# die er nicht traf. **Das Leck entsteht im Browser** — wer es serverseitig
+# nachstellen will, baut den Browser nach. Der ehrliche Nachweis ist ein
+# Playwright-Test; bis dahin hält die Prüfung oben die Struktur fest, die ihn
+# verhindert.
