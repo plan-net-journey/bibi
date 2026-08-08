@@ -334,6 +334,31 @@ def test_run_job_writes_last_ping_at(tmp_path: Path):
     assert ping is not None and ping >= vorher
 
 
+def test_the_reporter_reports_even_when_the_process_is_already_gone(tmp_path: Path):
+    """Ein kurzer Lauf meldet seine Aktivitaet trotzdem.
+
+    **Gefunden vom Engine-CI am 2026-08-08, nicht von der lokalen Suite.**
+    `_ping_reporter` prueft `while proc.poll() is None`, **bevor** er zum
+    ersten Mal meldet. Endet das Kind schneller, als der Thread startet, laeuft
+    die Schleife null Mal und die Spalte bleibt leer. Auf macOS gewann der
+    Thread das Rennen, auf Linux der Prozess — derselbe Test, zweimal ein
+    anderes Ergebnis, und beide Male aus Zufall.
+
+    Hier ist der Prozess **garantiert** schon weg. Damit haengt der Test an
+    keiner Zeitspanne mehr, sondern am Verhalten."""
+    from bibi.daemon import job_db
+
+    db = tmp_path / "jobs.sqlite"
+    _seed_running_job(db, "j-kurz")
+
+    class _Beendet:
+        def poll(self):
+            return 0            # war nie am Leben, aus Sicht des Reporters
+
+    wrapper._ping_reporter(_Beendet(), str(db), "j-kurz", [1234.0])
+    assert _job_row(db, "j-kurz")["last_ping_at"] == 1234.0
+
+
 def test_run_job_without_a_ping_db_stays_silent(tmp_path: Path):
     """Ohne DB-Pfad läuft alles wie bisher — der Reporter ist rein additiv."""
     out = tmp_path / "output.jsonl"

@@ -317,13 +317,24 @@ def _ping_reporter(proc: subprocess.Popen, db_path_str: str, job_id: str,
     plus der Vergleich hier, damit gar nicht erst eine Verbindung aufgeht).
     Ein stiller Lauf kostet damit nichts — und genau ein stiller Lauf ist der,
     dessen Frist gerade abläuft.
+
+    **Gemeldet wird vor der Abbruchprüfung, nicht danach**, und das ist keine
+    Stilfrage. Hier stand zuerst ``while proc.poll() is None:`` — eine
+    Schleife, die bei einem Kind, das schneller endet als dieser Thread
+    startet, **null Mal** läuft; die Spalte blieb dann leer. Gefunden hat es
+    der Engine-CI am 2026-08-08 auf Linux, während dieselbe Suite auf macOS
+    grün war: dort gewann der Thread das Rennen, hier der Prozess. **Ein Test,
+    dessen Ergebnis davon abhängt, wer zuerst drankommt, hat nichts belegt —
+    auch nicht, solange er grün war.**
     """
     geschrieben = 0.0
-    while proc.poll() is None:
+    while True:
         aktuell = last_activity_ts[0]
         if aktuell > geschrieben:
             _report_activity(db_path_str, job_id, aktuell)
             geschrieben = aktuell
+        if proc.poll() is not None:
+            return
         time.sleep(_PING_INTERVAL_S)
 
 
