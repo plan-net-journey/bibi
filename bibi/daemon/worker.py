@@ -102,41 +102,6 @@ def _write_inplace_seed(run_dir: Path) -> Path | None:
         return None
 
 
-def _last_activity(out_path: Path, default: float) -> float:
-    """Zeitpunkt der jüngsten Output-Zeile (mtime), **nie vor Lauf-Start** (``default``).
-
-    Seit per-Run-Output (``data/job/<slug:fire>/``) startet jeder Lauf mit frischer
-    Datei — eine veraltete mtime aus einem Vorlauf kann nicht mehr durchschlagen.
-    Der ``default``-Floor bleibt als Robustheit: existiert die Datei noch nicht
-    (langsam startender Container), liefert ``stat`` einen Fehler ⇒ Lauf-Start, und
-    der ``max`` deckt einen evtl. wiederverwendeten run_id-Pfad mit ab."""
-    try:
-        return max(out_path.stat().st_mtime, default)
-    except OSError:
-        return default
-
-
-def _monitored_wait(
-    proc: subprocess.Popen, *, out_path: Path, started: float,
-    wall_time: int | None, silence_timeout: int | None, poll: float = 0.1,
-    job_id: str | None = None,
-) -> tuple[int, str]:
-    """Auf den Child warten und dabei wall_time/silence überwachen (§5.5).
-
-    Gibt ``(exit_code, outcome)`` mit ``outcome`` ∈ {``normal``, ``wall_time``,
-    ``silence``}. Bei wall_time/silence wird der Lauf terminiert (container-aware)."""
-    while proc.poll() is None:
-        now = time.time()
-        if wall_time and now - started > wall_time:
-            _terminate(proc, job_id=job_id)
-            return proc.wait(), "wall_time"
-        if silence_timeout and now - _last_activity(out_path, started) > silence_timeout:
-            _terminate(proc, job_id=job_id)
-            return proc.wait(), "silence"
-        time.sleep(poll)
-    return proc.returncode, "normal"
-
-
 # ── Container-Exec-Konfig + Terminierung (PLAN-8 Slice B) ────────────────────
 
 #: PLAN-32 Stufe 32.0 (Config-Restrukturierung): CLAUDE_CODE_OAUTH_TOKEN/
@@ -420,22 +385,35 @@ def _run_wrapper(
     repo_root: Path, work_dir: Path, register=None, ephemeral: bool = False,
     in_place: bool = False,
     run_id: str | None = None,
-    # Detach-Modus: Wrapper-Prozess meldet selbst Terminal-Status + Commit (§9).
-    detach: bool = False,
     worker_name: str | None = None, host: str | None = None,
     attempt: int = 0, attempts: int = 1,
     backoff_type: str | None = None,
     scheduler_db_path: str | None = None,  # Direkter DB-Zugriff (kein HTTP)
     scheduler_url: str | None = None,      # HTTP-Reporting (App-Typ / Remote)
-) -> tuple[int, str | None, Path, str, int | None]:
-    """Worktree → Wrapper-Subprozess → Commit/Report.
+) -> tuple[Path, int]:
+    """Worktree vorbereiten → Wrapper-Subprozess spawnen → ``(out_path, pid)``.
 
-    ``detach=True`` (disponierte Jobs): Wrapper läuft eigenständig — kein Wait,
-    kein Commit, kein Report im Worker. Wrapper übernimmt alles.
-    ``detach=False``: blockierender Pfad (wartet synchron auf Prozessende).
+    **Der Wrapper läuft immer eigenständig** — kein Wait, kein Commit, kein
+    Report im Worker; er übernimmt alles selbst (§9).
+
+    Hier stand bis ``v0.7.6`` ein ``detach``-Schalter mit Default ``False`` und
+    darunter ein zweiter, blockierender Pfad: warten, ``_monitored_wait()``,
+    committen, Worktree entfernen. **Er hatte im ganzen Baum keinen Aufrufer,
+    der ihn genommen hätte** — jede Aufrufstelle, Produktion wie Tests, gab
+    ``detach=True`` mit. Am Leben hielten ihn nur die Tests, die den Parameter
+    pflichtschuldig setzten.
+
+    Gefunden wurde er beim Verdrahten von ``last_ping_at`` (#76): dessen
+    Anforderung *„``_last_activity()`` liest die Spalte statt der mtime"* zeigte
+    genau dorthin. Sie zu erfüllen hätte geheißen, einen Leser umzustellen, den
+    niemand ruft — derselbe Fehler eine Ebene tiefer, den #76 an der Spalte
+    selbst anprangert. Mit dem Zweig sind ``_monitored_wait()`` und
+    ``_last_activity()`` entfallen; **die mtime von ``output.jsonl`` ist damit
+    nirgends mehr ein Aktivitätsmaß**, und die Silence-Frist hat nur noch eine
+    Quelle: den Wrapper, der sie sieht, und die Spalte, in die er sie schreibt.
+
     ``run_id`` bestimmt den ``output.jsonl``-Pfad (pro Run eindeutig).
-    Der Container-Name bleibt an ``job_id`` (Docker-Namensregel, §3.3b).
-    5. Rückgabewert: Wrapper-PID (detach) oder ``None`` (nicht-detach)."""
+    Der Container-Name bleibt an ``job_id`` (Docker-Namensregel, §3.3b)."""
     out_run_id = run_id or job_id
     # out_path zuerst (reine Pfad-Arithmetik, kein I/O außer mkdir) — Startup-
     # Phasen (User-Feedback 2026-07-03: "verschiedene Startup Phasen ... auch
@@ -535,44 +513,50 @@ def _run_wrapper(
         if error_time is not None:
             env["BIBI_ERROR_TIME"] = str(error_time)
 
-    # Detach-Modus: Commit + Report im Wrapper-Prozess.
-    if detach:
-        env["BIBI_REPO_ROOT"] = str(repo_root)
-        env["BIBI_RUN_ID"] = out_run_id
-        # Eigene, von "ephemeral" unabhängige Absicherung (User-Fund 2026-07-14,
-        # Plan-Review zu bibi-ctrl test): in_place heißt wt_path is repo_root —
-        # BIBI_EPHEMERAL darf hier NIE gesetzt werden, egal was der Aufrufer für
-        # ephemeral übergibt (run_pinned() erzwingt zwar schon ephemeral=False
-        # bei in_place, aber diese Zeile verlässt sich nicht darauf, dass jeder
-        # künftige Aufrufer das korrekt macht — dritte, unabhängige Schicht
-        # neben run_pinned()s ephemeral=not in_place und worktree.remove()s
-        # eigenem worktree==repo_root-Guard).
-        if ephemeral and not in_place:
-            env["BIBI_EPHEMERAL"] = "1"
-        if wall_time is not None:
-            env["BIBI_WALL_TIME"] = str(wall_time)
-        if silence_timeout is not None:
-            env["BIBI_SILENCE_TIMEOUT"] = str(silence_timeout)
-        if worker_name:
-            env["BIBI_WORKER_NAME"] = worker_name
-        if host:
-            env["BIBI_HOST"] = host
-        env["BIBI_ATTEMPT"] = str(attempt)
-        env["BIBI_ATTEMPTS"] = str(attempts)
-        if backoff_type:
-            env["BIBI_BACKOFF"] = backoff_type
-        # Reporting-Ziel für den eigentlichen Statusübergang: explizit gesetzt >
-        # lokale DB > HTTP-Daemon (PLAN-9 §8 E2 — Zuverlässigkeit, unverändert).
-        # BIBI_SCHEDULER_URL wird zusätzlich IMMER gesetzt, auch wenn eine lokale
-        # DB verfügbar ist (bisher gegenseitig ausschließende elif-Kette) — der
-        # Wrapper braucht sie für den zusätzlichen Merge-back-Trigger nach einem
-        # SQLite-Report (PLAN-30 Ebene 1 v2, s. wrapper/__init__.py::_finish()).
-        if scheduler_db_path:
-            env["BIBI_SCHEDULER_DB_PATH"] = scheduler_db_path
-        if scheduler_url:
-            env["BIBI_SCHEDULER_URL"] = scheduler_url
-        elif not env.get("BIBI_SCHEDULER_URL"):
-            env["BIBI_SCHEDULER_URL"] = "http://127.0.0.1:8769"
+    # Commit + Report macht der Wrapper-Prozess selbst (§9).
+    env["BIBI_REPO_ROOT"] = str(repo_root)
+    env["BIBI_RUN_ID"] = out_run_id
+    # Wohin der Aktivitäts-Reporter des Wrappers `last_ping_at` schreibt (#76).
+    # Bewusst eine eigene Variable neben BIBI_SCHEDULER_DB_PATH, obwohl beide
+    # auf dieselbe Datei zeigen: die trägt den **Terminal-Report**, und die
+    # beiden Bedeutungen zusammenzulegen hieße, sie nie wieder trennen zu
+    # können (s. wrapper._ping_monitors()).
+    if scheduler_db_path:
+        env["BIBI_PING_DB_PATH"] = scheduler_db_path
+    # Eigene, von "ephemeral" unabhängige Absicherung (User-Fund 2026-07-14,
+    # Plan-Review zu bibi-ctrl test): in_place heißt wt_path is repo_root —
+    # BIBI_EPHEMERAL darf hier NIE gesetzt werden, egal was der Aufrufer für
+    # ephemeral übergibt (run_pinned() erzwingt zwar schon ephemeral=False
+    # bei in_place, aber diese Zeile verlässt sich nicht darauf, dass jeder
+    # künftige Aufrufer das korrekt macht — dritte, unabhängige Schicht
+    # neben run_pinned()s ephemeral=not in_place und worktree.remove()s
+    # eigenem worktree==repo_root-Guard).
+    if ephemeral and not in_place:
+        env["BIBI_EPHEMERAL"] = "1"
+    if wall_time is not None:
+        env["BIBI_WALL_TIME"] = str(wall_time)
+    if silence_timeout is not None:
+        env["BIBI_SILENCE_TIMEOUT"] = str(silence_timeout)
+    if worker_name:
+        env["BIBI_WORKER_NAME"] = worker_name
+    if host:
+        env["BIBI_HOST"] = host
+    env["BIBI_ATTEMPT"] = str(attempt)
+    env["BIBI_ATTEMPTS"] = str(attempts)
+    if backoff_type:
+        env["BIBI_BACKOFF"] = backoff_type
+    # Reporting-Ziel für den eigentlichen Statusübergang: explizit gesetzt >
+    # lokale DB > HTTP-Daemon (PLAN-9 §8 E2 — Zuverlässigkeit, unverändert).
+    # BIBI_SCHEDULER_URL wird zusätzlich IMMER gesetzt, auch wenn eine lokale
+    # DB verfügbar ist (bisher gegenseitig ausschließende elif-Kette) — der
+    # Wrapper braucht sie für den zusätzlichen Merge-back-Trigger nach einem
+    # SQLite-Report (PLAN-30 Ebene 1 v2, s. wrapper/__init__.py::_finish()).
+    if scheduler_db_path:
+        env["BIBI_SCHEDULER_DB_PATH"] = scheduler_db_path
+    if scheduler_url:
+        env["BIBI_SCHEDULER_URL"] = scheduler_url
+    elif not env.get("BIBI_SCHEDULER_URL"):
+        env["BIBI_SCHEDULER_URL"] = "http://127.0.0.1:8769"
 
     env.update(_exec_config())
     if exec_mode:
@@ -600,34 +584,14 @@ def _run_wrapper(
         _free_app_port_host(int(app_port), out_path)
 
     output.append(out_path, "phase", "wrapper: wird gestartet …")
-    started = time.time()
     proc = subprocess.Popen(
         [sys.executable, "-m", "bibi.wrapper"],
         env=env, cwd=str(repo_root), start_new_session=True,
     )
     if register is not None:
         register(job_id, proc)
-
-    if detach:
-        # Wrapper-Prozess läuft eigenständig — sofort zurückkehren.
-        return 0, None, out_path, "detached", proc.pid
-
-    # Blockierender Pfad: warten, committen, zurückgeben.
-    code, outcome = _monitored_wait(
-        proc, out_path=out_path, started=started,
-        wall_time=wall_time, silence_timeout=silence_timeout, job_id=job_id,
-    )
-    if register is not None:
-        register(job_id, None)
-
-    commit_sha = worktree.commit(worktree=wt_path, message=f"{slug}: run {out_run_id}", slug=slug)
-    activity.emit(log, logging.DEBUG, "worktree.commit", role="worker",
-                  slug=slug, run_id=out_run_id, commit=(commit_sha or None))
-    if ephemeral:
-        worktree.remove(repo_root=repo_root, worktree=wt_path)
-        activity.emit(log, logging.DEBUG, "worktree.remove", role="worker",
-                      slug=slug, run_id=out_run_id)
-    return code, commit_sha, out_path, outcome, None
+    # Der Wrapper läuft eigenständig weiter — sofort zurückkehren.
+    return out_path, proc.pid
 
 
 def _retry_fields(reservation: dict) -> dict:
@@ -737,7 +701,7 @@ def execute_reservation(
         _daemon_port = int(os.environ.get("BIBI_DAEMON_PORT", "8769"))
         _sched_db_path: str | None = _resolved_db or None
         _sched_url: str | None = f"http://127.0.0.1:{_daemon_port}"
-        _, _, out_path, outcome, proc_pid = _run_wrapper(
+        out_path, proc_pid = _run_wrapper(
             job_id=jid, slug=reservation["slug"], kind=kind,
             payload=reservation["payload"], model=reservation.get("model"),
             schedule_ref=reservation.get("schedule_ref"),
@@ -753,7 +717,7 @@ def execute_reservation(
             error_time=reservation.get("error_time"),
             repo_root=repo_root, work_dir=work_dir, register=register, ephemeral=ephemeral,
             in_place=in_place,
-            run_id=run_id, detach=True,
+            run_id=run_id,
             worker_name=worker_name, host=host,
             attempt=attempt, attempts=attempts,
             backoff_type=reservation.get("backoff"),
@@ -792,7 +756,7 @@ def execute_reservation(
 
     # Detach: Wrapper läuft selbstständig weiter. Worker kehrt sofort zurück.
     activity.emit(log, logging.INFO, "worker.spawned", role="worker",
-                  slug=reservation.get("slug"), run_id=jid, outcome=outcome)
+                  slug=reservation.get("slug"), run_id=jid, outcome="detached")
     return {"id": jid, "exit_code": None, "commit": None,
             "status": "running", "outcome": "detached"}
 
@@ -1010,7 +974,7 @@ def run_pinned(
     (``pinned_host`` erzwingt genau diesen Knoten, kein anderer Worker kann
     die Zeile je reservieren) und **sofort** (kein Warten auf einen
     Poll-Tick — die Zeile wird synchron im selben Aufruf reserviert + über
-    ``execute_reservation()`` dispatcht, das mit ``detach=True`` fast
+    ``execute_reservation()`` dispatcht, das fast
     augenblicklich zurückkehrt, während der Wrapper-Subprozess eigenständig
     weiterläuft und terminale Status via SQLite-Direct selbst meldet — kein
     Netz nötig, funktioniert offline).

@@ -200,16 +200,3 @@ def test_smoke_docker_stop_terminates_running_container():
             f"noch in `docker ps`: {out!r}")
     finally:
         subprocess.run([bin_, "kill", name], capture_output=True, env=env, timeout=15)
-
-
-def test_last_activity_clamps_to_run_start(tmp_path):
-    # Veraltete output.jsonl (wiederverwendet pro job_id) darf Silence nicht sofort
-    # auslösen: _last_activity nie vor dem Lauf-Start (default).
-    import os as _os
-    f = tmp_path / "out.jsonl"
-    f.write_text("x")
-    _os.utime(f, (1000.0, 1000.0))          # alte mtime
-    assert worker._last_activity(f, default=5000.0) == 5000.0   # geklemmt auf Start
-    _os.utime(f, (9000.0, 9000.0))          # frische mtime
-    assert worker._last_activity(f, default=5000.0) == 9000.0   # echte Aktivität
-    assert worker._last_activity(tmp_path / "none", default=5000.0) == 5000.0

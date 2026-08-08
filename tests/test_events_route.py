@@ -102,7 +102,11 @@ def test_events_delivers_collector_findings_after_connect(app_env):
             events = _data_events(c.get("/-/events", params={"limit": 2}).text)
         finally:
             t.join()
-    assert events == [{"t": "hello"}, {"t": "state", "target": "live:a"}]
+    # Seit #79 traegt das Ereignis den Wert mit, den der Diff ohnehin gelesen
+    # hat — der Empfaenger darf ihn ignorieren und refetchen wie bisher.
+    assert events == [{"t": "hello"},
+                      {"t": "state", "target": "live:a",
+                       "v": {"status": "running", "fire": 0}}]
 
 
 def test_events_idle_stream_sends_data_pings_not_counting_limit(app_env):
@@ -177,3 +181,44 @@ def test_a_bus_without_shutdown_keeps_streaming(app_env):
         evts = _data_events(c.get("/-/events", params={"limit": 1}).text)
     assert evts == [{"t": "hello"}]
     assert not bus.closing
+
+
+# ── #77: der Strom wird zum Hauptkanal, und damit schutzbedürftig ────────────
+#
+# `/-/events` ist bewusst ungegatet, weil eine `EventSource` keine Header setzen
+# kann — solange die Route ein Nebenweg ist, hängt daran nichts. Mit #77 wird
+# sie der Hauptkanal zwischen den Knoten, und dort ist der Verbraucher **kein
+# Browser, sondern ein Daemon**: er kann sich ausweisen. Wer sich ausweist, wird
+# geprüft; wer es nicht tut, sieht aus wie ein Browser und bleibt bei dem, was
+# #19 offen lässt — die Frage, wer die Oberfläche sehen darf.
+
+
+def test_events_rejects_an_identified_but_unapproved_node(app_env):
+    app, _, _ = app_env
+    with TestClient(app) as c:
+        r = c.get("/-/events", params={"limit": 1},
+                  headers={"X-Bibi-Node-Id": "nie-gesehen"})
+        assert r.status_code == 403
+
+
+def test_events_lets_an_approved_node_in(app_env):
+    app, _, _ = app_env
+    with TestClient(app) as c:
+        conn = job_db.connect()
+        try:
+            job_db.set_node_approval(conn, "guter-knoten", "approved")
+            conn.commit()
+        finally:
+            conn.close()
+        r = c.get("/-/events", params={"limit": 1},
+                  headers={"X-Bibi-Node-Id": "guter-knoten"})
+        assert r.status_code == 200
+        assert _data_events(r.text) == [{"t": "hello"}]
+
+
+def test_events_without_a_header_stays_open(app_env):
+    """Der Browser kann keinen Header setzen — für ihn ändert sich nichts."""
+    app, _, _ = app_env
+    with TestClient(app) as c:
+        r = c.get("/-/events", params={"limit": 1})
+        assert r.status_code == 200

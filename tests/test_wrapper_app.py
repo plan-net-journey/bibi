@@ -328,7 +328,7 @@ def test_worker_sets_bibi_silence_timeout(tmp_path):
         _worker._run_wrapper(
             job_id="ht1", slug="testslug", kind="job", payload="echo x",
             app_port=8081, app_prefix="/app", silence_timeout=172800,
-            repo_root=tmp_path, work_dir=tmp_path / "wt", detach=True,
+            repo_root=tmp_path, work_dir=tmp_path / "wt",
         )
 
     assert captured_env, "Popen wurde nicht aufgerufen"

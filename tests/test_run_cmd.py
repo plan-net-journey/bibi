@@ -46,7 +46,7 @@ class _Args:
 
 
 def _fake_run_wrapper(tmp_path, *, exit_code=0):
-    # detach=True heißt in echt: der Wrapper-Subprozess meldet seinen
+    # In echt meldet der detacht laufende Wrapper-Subprozess seinen
     # Terminal-Status später, selbständig, außerhalb dieses Aufrufs. Für einen
     # schnellen Test (kein echter Subprozess, _wait_until_terminal() würde
     # sonst ewig auf ein Ereignis warten, das nie eintritt) simuliert dieser
@@ -71,7 +71,7 @@ def _fake_run_wrapper(tmp_path, *, exit_code=0):
         finally:
             conn.close()
         out_path = tmp_path / "data" / "job" / job_id / "output.jsonl"
-        return exit_code, None, out_path, "detached", 999
+        return out_path, 999
     return fake
 
 

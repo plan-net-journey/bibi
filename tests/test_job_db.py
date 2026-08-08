@@ -860,6 +860,43 @@ def test_touch_ping_returns_false_for_unknown(conn):
     assert job_db.touch_ping(conn, "does-not-exist") is False
 
 
+# ── #76: die Spalte wird zur Aktivitäts-Wahrheit ─────────────────────────────
+
+
+def test_touch_ping_only_moves_forward(conn):
+    """Ein Ping darf die Uhr nie zurückstellen.
+
+    Der Wrapper meldet aus einem Thread, die Route aus einem Request — zwei
+    Feeder derselben Spalte. Ohne Monotonie könnte ein knapp verzögerter Aufruf
+    einen jüngeren Wert überschreiben und die Silence-Frist verlängern, die
+    gerade ablaufen sollte."""
+    jid = _insert_job(conn)
+    assert job_db.touch_ping(conn, jid, at=1000.0) is True
+    assert job_db.touch_ping(conn, jid, at=900.0) is False   # rückwärts: kein Schreiben
+    ts = conn.execute("SELECT last_ping_at FROM jobs WHERE id=?", (jid,)).fetchone()["last_ping_at"]
+    assert ts == 1000.0
+    assert job_db.touch_ping(conn, jid, at=1100.0) is True
+    ts = conn.execute("SELECT last_ping_at FROM jobs WHERE id=?", (jid,)).fetchone()["last_ping_at"]
+    assert ts == 1100.0
+
+
+def test_schedule_view_carries_silence_timeout_and_last_ping_at(conn, tmp_path: Path):
+    """#76: aus einer Dauer ohne Startpunkt lässt sich keine Uhrzeit bilden.
+
+    `/-/schedule` trug bisher 26 Attribute — die Silence-Dauer war keins davon,
+    und der Zeitpunkt, ab dem sie zählt, stand nirgends. Beide zusammen sind
+    die Voraussetzung für den Silence-Countdown aus #67."""
+    _write(tmp_path / "case" / "still.md",
+           '---\nschedule: never\njob: "sleep 1"\nsilence_timeout: 42\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    jid = next(j["id"] for j in job_db.list_jobs(conn) if j["slug"] == "still")
+    job_db.touch_ping(conn, jid, at=1234.0)
+
+    sched = next(s for s in job_db.list_schedules(conn) if s["slug"] == "still")
+    assert sched["silence_timeout"] == 42
+    assert sched["last_ping_at"] == 1234.0
+
+
 def test_set_and_get_demand(conn):
     jid = _insert_job(conn)
     demand = {"input_request": "Wie viele?", "input_format": "number"}

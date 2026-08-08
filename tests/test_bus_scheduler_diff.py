@@ -27,7 +27,7 @@ class _Bus:
     def __init__(self) -> None:
         self.published: list[str] = []
 
-    def publish_state(self, target: str) -> None:
+    def publish_state(self, target: str, value: dict | None = None) -> None:
         self.published.append(target)
 
 
@@ -366,3 +366,38 @@ def test_an_unreachable_scheduler_is_not_a_crash():
     bus.published.clear()
     _tick(c)
     assert "live:Witz" not in bus.published
+
+
+# ── #77: der Poll wird zum Rückfall ──────────────────────────────────────────
+#
+# Lebt das Abonnement, ist der Slug-Poll überflüssig — jeder Wechsel kommt
+# ohnehin binnen einer Sekunde über den Strom. Fällt es aus, muss der Poll
+# sofort wieder greifen: ein Abriss darf den Client nicht blind machen (§2.7).
+
+
+class _Abo:
+    def __init__(self, live: bool) -> None:
+        self.live = live
+
+
+def test_a_live_subscription_replaces_the_slug_poll():
+    """Beide Kanäle gleichzeitig wären doppelte Arbeit für dieselbe Auskunft."""
+    bus = _Bus()
+    c = Collector(bus, registry=None, subscription=_Abo(live=True))
+    c._primed = True
+    gerufen = []
+    c._fetch_scheduler_jobs = lambda: gerufen.append(1)
+    c._sched_last_fetch = 0.0
+    assert c._diff_scheduler_jobs() == 0
+    assert gerufen == []
+
+
+def test_without_a_live_subscription_the_poll_still_runs():
+    """Der Rückfall — ohne ihn wäre ein stiller Abriss eine stehende Anzeige."""
+    bus = _Bus()
+    c = Collector(bus, registry=None, subscription=_Abo(live=False))
+    c._primed = True
+    c._fetch_scheduler_jobs = lambda: [{"slug": "a", "row_status": "running", "fire": 1}]
+    c._sched_jobs_snapshot = {"a": ("pending", 1)}
+    assert c._diff_scheduler_jobs() > 0
+    assert "live:a" in bus.published

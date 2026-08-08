@@ -270,6 +270,119 @@ def _silence_monitor(proc: subprocess.Popen, silence_timeout: int,
         time.sleep(1.0)
 
 
+#: Wie oft der Aktivitäts-Reporter nachsieht, ob der Wert vorgerückt ist.
+#: Sekündlich, nicht im Takt des Pump-Loops: der sieht jede Zeile, und ein
+#: gesprächiger Job schriebe sonst hunderte ``UPDATE``s pro Sekunde. Eine
+#: Sekunde Auflösung reicht für eine Frist, die in Minuten gemessen wird.
+_PING_INTERVAL_S = 1.0
+
+
+def _report_activity(db_path_str: str, job_id: str, ts: float) -> None:
+    """Einen Aktivitätszeitpunkt in ``jobs.last_ping_at`` schreiben — best-effort.
+
+    Fehler werden geschluckt (§2.7): die Spalte ist eine **Auskunft**, kein
+    Steuerkanal. Ein gesperrtes SQLite darf einen laufenden Job nicht anfassen,
+    und die Silence-Erkennung des Wrappers selbst hängt nicht an ihr — sie liest
+    den Wert, den dieser Thread nur weitergibt.
+    """
+    try:
+        from bibi.daemon import job_db as _jdb
+        conn = _jdb.connect(Path(db_path_str))
+        try:
+            _jdb.touch_ping(conn, job_id, at=ts)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 — nie den Lauf gefährden
+        log.debug("bibi.wrapper.ping_failed job_id=%s error=%s", job_id, exc)
+
+
+def _ping_reporter(proc: subprocess.Popen, db_path_str: str, job_id: str,
+                   last_activity_ts: list[float]) -> None:
+    """Thread: den Aktivitätszeitpunkt des Laufs fortschreiben (#76).
+
+    **Der Wrapper ist der einzige Ort, der Aktivität sieht** — der Pump-Loop
+    bekommt jede Zeile und setzt ``last_activity_ts``. Bis #76 blieb dieser
+    Wert prozesslokal: die Silence-Frist war damit an genau einer Stelle
+    bekannt, und die war für alle anderen unerreichbar. Der Client konnte den
+    Ablauf nicht anzeigen, das FE keinen Countdown bauen (#67), und die Route
+    ``POST /-/job/{id}/ping`` schrieb eine Spalte, die niemand las.
+
+    Läuft **unabhängig vom Silence-Monitor**, und das ist Absicht: die Spalte
+    ist auch dann die richtige Auskunft, wenn der Lauf gar keine Frist hat
+    (``silence_timeout`` ungesetzt) — „wann war zuletzt etwas los" ist eine
+    Frage für jeden laufenden Job.
+
+    Geschrieben wird nur, wenn der Wert vorrückt (``touch_ping``s Monotonie,
+    plus der Vergleich hier, damit gar nicht erst eine Verbindung aufgeht).
+    Ein stiller Lauf kostet damit nichts — und genau ein stiller Lauf ist der,
+    dessen Frist gerade abläuft.
+
+    **Gemeldet wird vor der Abbruchprüfung, nicht danach**, und das ist keine
+    Stilfrage. Hier stand zuerst ``while proc.poll() is None:`` — eine
+    Schleife, die bei einem Kind, das schneller endet als dieser Thread
+    startet, **null Mal** läuft; die Spalte blieb dann leer. Gefunden hat es
+    der Engine-CI am 2026-08-08 auf Linux, während dieselbe Suite auf macOS
+    grün war: dort gewann der Thread das Rennen, hier der Prozess. **Ein Test,
+    dessen Ergebnis davon abhängt, wer zuerst drankommt, hat nichts belegt —
+    auch nicht, solange er grün war.**
+    """
+    geschrieben = 0.0
+    while True:
+        aktuell = last_activity_ts[0]
+        if aktuell > geschrieben:
+            _report_activity(db_path_str, job_id, aktuell)
+            geschrieben = aktuell
+        if proc.poll() is not None:
+            return
+        time.sleep(_PING_INTERVAL_S)
+
+
+def _ping_final(env: dict[str, str], last_activity_ts: list[float]) -> None:
+    """Den letzten Aktivitätsstand festhalten — **synchron**, im Hauptpfad.
+
+    Der Reporter-Thread ist ``daemon`` und wird nicht gejoint: er kann beim
+    Rückkehren aus ``run_job()``/``run_app()`` noch nichts geschrieben haben.
+    Für die Silence-Frist ist das folgenlos — sie interessiert nur einen
+    laufenden Job. Für **jeden Leser der Spalte** ist es der Unterschied
+    zwischen einem Wert und ``NULL``, und er hing bis hierher daran, wer
+    zuerst drankam (CI-Befund 2026-08-08: dieselbe Suite auf macOS grün, auf
+    Linux rot).
+
+    Den Thread stattdessen zu joinen wäre die naheliegende Alternative und
+    teuer: er schläft in Sekundenschritten, jedes Job-Ende zahlte bis zu eine
+    Sekunde dafür. Ein Aufruf hier kostet nichts und ist obendrein die
+    ehrlichere Stelle — hier steht fest, dass nichts mehr kommt."""
+    db_path_str = env.get("BIBI_PING_DB_PATH")
+    job_id = env.get("BIBI_JOB_ID")
+    if db_path_str and job_id:
+        _report_activity(db_path_str, job_id, last_activity_ts[0])
+
+
+def _ping_monitors(env: dict[str, str], proc: subprocess.Popen,
+                   last_activity_ts: list[float]) -> list[threading.Thread]:
+    """Der Aktivitäts-Reporter als Liste — leer, wenn es nichts zu melden gibt.
+
+    Eine Liste statt eines Optionals, weil beide Aufrufer ihre Monitore ohnehin
+    als Liste führen; so bleibt die Einbindung eine Zeile und der Fall „keine
+    DB" braucht keinen Zweig beim Aufrufer.
+
+    ``BIBI_PING_DB_PATH`` ist bewusst **nicht** ``BIBI_SCHEDULER_DB_PATH``,
+    obwohl beide auf dieselbe Datei zeigen können. Die Report-Variable trägt
+    eine zweite Bedeutung — ``_report_terminal()`` meldet damit den Endzustand —
+    und sie ist nur im detachten Pfad gesetzt. Sie hier mitzubenutzen hieße
+    entweder, den blockierenden Pfad ohne Aktivitätswert zu lassen, oder ihm
+    einen Terminal-Report unterzuschieben, den dort schon der Worker macht.
+    """
+    db_path_str = env.get("BIBI_PING_DB_PATH")
+    job_id = env.get("BIBI_JOB_ID")
+    if not db_path_str or not job_id:
+        return []
+    return [threading.Thread(
+        target=_ping_reporter, args=(proc, db_path_str, job_id, last_activity_ts),
+        daemon=True, name="ping-reporter")]
+
+
 def _deferred_watcher(proc: subprocess.Popen, current_status: list[str],
                       outcome: list[str], lock: threading.Lock,
                       env: dict[str, str] | None = None) -> None:
@@ -693,6 +806,7 @@ def run_app(env: dict[str, str]) -> int:
     monitors = [threading.Thread(
         target=_deferred_watcher, args=(proc, current_status, outcome, lock, env),
         daemon=True, name="deferred-watcher")]
+    monitors += _ping_monitors(env, proc, last_activity_ts)
     if silence_str:
         monitors.append(threading.Thread(
             target=_silence_monitor,
@@ -714,6 +828,7 @@ def run_app(env: dict[str, str]) -> int:
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
     for t in pump_threads:
         t.join()
+    _ping_final(env, last_activity_ts)
 
     with lock:
         cs = current_status[0]
@@ -777,7 +892,7 @@ def run_job(env: dict[str, str]) -> int:
     wall_str = env.get("BIBI_WALL_TIME")
     silence_str = env.get("BIBI_SILENCE_TIMEOUT")
 
-    monitors = []
+    monitors = _ping_monitors(env, proc, last_activity_ts)
     if wall_str:
         monitors.append(threading.Thread(
             target=_wall_monitor, args=(proc, int(wall_str), started, outcome, out_path, lock, env),
@@ -800,6 +915,7 @@ def run_job(env: dict[str, str]) -> int:
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
     for t in threads[:2]:  # pump threads joinen (monitors sind daemon)
         t.join()
+    _ping_final(env, last_activity_ts)
 
     # PLAN-24 Befund 5: mit aktiver Job-Image-Persistenz existiert der
     # Container jetzt noch (kein --rm, s. exec_backend.build_exec) — genau

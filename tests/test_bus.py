@@ -110,7 +110,7 @@ class _RecordingBus:
         self.states: list[str] = []
         self.appends: list[tuple] = []
 
-    def publish_state(self, target):
+    def publish_state(self, target, value=None):
         self.states.append(target)
 
     def publish_append(self, target, off, event):
@@ -336,3 +336,99 @@ def test_collector_flags_diff_fires_feedstatus(collector, monkeypatch):
     col.tick_once()
     assert "feedstatus" in bus.states
     state.set_maintenance(False)
+
+
+# ── #79: Ereignisse tragen den Wert, den der Diff ohnehin gelesen hat ────────
+#
+# Von zwoelf Ereignisarten trugen elf keine Nutzlast: der Bus meldete „Region
+# dreckig", die Region holte ihr HTML neu. Dabei lag der Wert bereits vor —
+# `_diff_scheduler_jobs()` liest je Slug `(status, fire)`, vergleicht mit dem
+# Vorwert und **wirft den neuen Wert dann weg**, um „dreckig" zu melden.
+#
+# Die Regel dahinter: *trage den Wert für das, was du ohnehin vergleichst —
+# füge keinen Vergleich hinzu, um einen Wert tragen zu können.* Die erste
+# Hälfte kostet nichts, die zweite waere der Firehose, den `bus.py`
+# ausdruecklich ausschliesst.
+
+
+def test_a_state_event_can_carry_the_compared_value():
+    async def run():
+        bus = Bus()
+        sub = bus.subscribe()
+        bus.publish_state("live:a", {"status": "running", "fire": 3})
+        return await bus.wait(sub, timeout=1.0)
+    assert asyncio.run(run()) == [
+        {"t": "state", "target": "live:a", "v": {"status": "running", "fire": 3}}]
+
+
+def test_an_event_without_a_value_looks_exactly_as_before():
+    """Rein additiv: wo kein Wert vorliegt, entsteht auch kein Feld.
+
+    Das ist die Bedingung, unter der ein Empfaenger, der den Wert ignoriert,
+    unveraendert funktioniert — er sieht dieselbe Nachricht wie bisher."""
+    async def run():
+        bus = Bus()
+        sub = bus.subscribe()
+        bus.publish_state("feedstatus")
+        return await bus.wait(sub, timeout=1.0)
+    assert asyncio.run(run()) == [{"t": "state", "target": "feedstatus"}]
+
+
+def test_the_newest_value_wins_and_the_target_still_coalesces():
+    """Koaleszenz bleibt Koaleszenz — zwei Wechsel desselben Slugs sind eine
+    Nachricht, und zwar die juengste. Historienfreiheit ist die Zusage des
+    Busses, und ein mitgefuehrter Wert darf sie nicht aufweichen."""
+    async def run():
+        bus = Bus()
+        sub = bus.subscribe()
+        bus.publish_state("live:a", {"status": "pending"})
+        bus.publish_state("live:a", {"status": "running"})
+        return await bus.wait(sub, timeout=1.0)
+    events = asyncio.run(run())
+    assert len(events) == 1
+    assert events[0]["v"] == {"status": "running"}
+
+
+def test_the_scheduler_diff_carries_status_and_fire():
+    """Der Wert, den `_diff_scheduler_jobs()` ohnehin in der Hand hat."""
+    gesehen: list[tuple] = []
+
+    class _B:
+        def publish_state(self, target, value=None):
+            gesehen.append((target, value))
+
+    c = Collector(_B(), registry=None)
+    c._primed = True
+    c._sched_jobs_snapshot = {"a": ("pending", 1)}
+    c._fetch_scheduler_jobs = lambda: [{"slug": "a", "row_status": "running", "fire": 2}]
+    c._diff_scheduler_jobs()
+    assert ("live:a", {"status": "running", "fire": 2}) in gesehen
+    # Das Sammel-Target bleibt wertlos: „irgendwas an der Liste" ist keine
+    # Aussage ueber einen einzelnen Wert.
+    assert ("jobs", None) in gesehen
+
+
+def test_carrying_a_value_adds_no_fetch_and_no_comparison():
+    """Die Gegenrichtung, und die eigentliche Zusage von #79.
+
+    Ein Wert, fuer den erst jemand nachsehen muesste, ist kein Beifang mehr,
+    sondern ein zweiter Poll. Insbesondere bleibt die Runtime draussen: sie
+    steht in keinem Fingerabdruck, und sie hineinzunehmen hiesse, jeden Tick
+    jedes laufenden Jobs zu melden."""
+    aufrufe = {"n": 0}
+
+    class _B:
+        def publish_state(self, target, value=None):
+            pass
+
+    c = Collector(_B(), registry=None)
+    c._primed = True
+    c._sched_jobs_snapshot = {"a": ("pending", 1)}
+
+    def _fetch():
+        aufrufe["n"] += 1
+        return [{"slug": "a", "row_status": "running", "fire": 2, "runtime_p90": 12.0}]
+    c._fetch_scheduler_jobs = _fetch
+    c._diff_scheduler_jobs()
+    assert aufrufe["n"] == 1
+    assert c._sched_jobs_snapshot == {"a": ("running", 2)}   # Fingerabdruck unveraendert

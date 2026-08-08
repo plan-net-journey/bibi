@@ -308,6 +308,44 @@ def _require_approved_or_local(request: Request,
         raise HTTPException(status_code=403, detail=f"node not approved (status: {status})")
 
 
+def _require_approved_if_identified(
+        x_bibi_node_id: str | None = Header(default=None)) -> None:
+    """Gate fuer ``/-/events`` (#77): wer sich ausweist, wird geprueft.
+
+    Die Route ist bewusst ungegatet gebaut, und der Grund haelt: eine
+    ``EventSource`` kann keine Header setzen, ein Gate haette das FE
+    ausgesperrt. Solange der Strom ein Nebenweg war, hing daran nichts.
+
+    **Mit #77 wird er der Hauptkanal zwischen den Knoten** — und dort ist der
+    Verbraucher kein Browser, sondern ein Daemon. Der kann sich ausweisen, und
+    genau deshalb ist der Schutz hier billig: ein Aufruf **mit**
+    ``X-Bibi-Node-Id`` muss ``approved`` sein, sonst 403. Wiederverwendung der
+    vorhandenen Freischaltung (PLAN-32 „Open Trust"), keine neue Auth-Schicht.
+    Wer keine Arbeit und kein Config-Bundle bekommt, soll auch keinen
+    Ereignisstrom bekommen.
+
+    **Die Grenze steht ausdruecklich hier und ist keine Nachlaessigkeit:** ein
+    Aufruf ohne Header kommt weiter durch. Das ist der Browser, und es ist
+    zugleich der Weg, den ein unehrlicher Daemon nehmen koennte, indem er den
+    Header weglaesst. Diese Ebene schuetzt gegen den *ehrlichen* Knoten, der
+    noch nicht freigeschaltet ist — dieselbe Zusage wie
+    ``_require_approved_or_local()`` sie fuer Job-Control gibt, und dieselbe
+    offene Flanke. Wer die Oberflaeche als Ganzes schuetzen will, braucht #19;
+    dass dieser Posten den vorhandenen Schutz mitnimmt, ist genau der Grund,
+    warum #19 dabei bleiben kann, was es ist.
+    """
+    if not x_bibi_node_id:
+        return
+    conn = job_db.connect()
+    try:
+        status = job_db.node_approval_status(conn, x_bibi_node_id)
+        conn.commit()
+    finally:
+        conn.close()
+    if status != "approved":
+        raise HTTPException(status_code=403, detail=f"node not approved (status: {status})")
+
+
 def _pull_for_deploy(sync_lock=None) -> tuple[bool, str | None]:
     """Origin integrieren, synchron und unter dem ``sync_lock`` (m.rau/bibi#39).
 
@@ -909,8 +947,20 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
     @app.post("/-/job/{id}/ping", tags=["job"],
              dependencies=[Depends(_require_approved_or_local)])
     def job_ping(id: str):  # noqa: A002
-        # last_ping_at in der DB statt In-Memory-Timer im Wrapper (§2.5/PLAN-11.4) —
-        # der Job meldet sich selbst lebendig, der Worker liest es fürs Zombie-Timeout.
+        # Der **zweite Feeder** von ``jobs.last_ping_at`` (#76). Der erste ist
+        # der Aktivitäts-Reporter des Wrappers, der jede Output-Zeile sieht;
+        # diese Route ist der Notausgang für Apps, deren Aktivität nicht über
+        # stdout läuft — oder die blockweise puffern und deshalb minutenlang
+        # arbeiten können, ohne dass eine Zeile ankommt (s. den App-Vertrag in
+        # ``bibi/job.py::activity()``).
+        #
+        # Hier stand bis v0.7.6: *„der Worker liest es fürs Zombie-Timeout."*
+        # Das war die Beschreibung einer Absicht, nicht eines Zustands — die
+        # Spalte hatte keinen Leser, und diese Route in der ganzen Engine
+        # keinen Aufrufer. Gültig war die mtime von ``output.jsonl``. Zwei
+        # Aktivitäts-Mechanismen parallel im Haus, und der gebaute war der
+        # unsichtbare; ein Kommentar, der das Gegenteil behauptet, hält den
+        # Irrtum am Leben, statt ihn auffallen zu lassen.
         conn = job_db.connect(worker.db_path)
         try:
             ok = job_db.touch_ping(conn, id)
@@ -1116,7 +1166,7 @@ def create_app(
     rescanner=None, controller_client=None, controller_base_url: str | None = None,
     sync_lock=None, heartbeat=None, pinned_worker: Worker | None = None,
     bus=None, collector=None, drain_timeout: float | None = None,
-    session_scoped: bool = False,
+    session_scoped: bool = False, subscription=None,
 ) -> FastAPI:
     started_at = time.time()
     # FE-Event-Bus (PLAN-36 Stufe 36.1): rollenunabhängig wie pinned_worker —
@@ -1149,9 +1199,31 @@ def create_app(
     # (rollenunabhängig registriert, s. u.) — das deckt beide Worker-Instanzen
     # symmetrisch ab, ohne Sonderfall für ``roles.scheduler``.
     worker_registry = WorkerRegistry() if roles.scheduler else None
+    # Das Scheduler-Abonnement (#77): rollenunabhaengig erzeugt wie der Bus,
+    # aber nur wirksam, wenn dieser Knoten einen *fremden* Scheduler kennt.
+    # `SchedulerEvents.start()` kehrt ohne URL sofort zurueck — ein Host hat
+    # niemanden zu abonnieren, und das ist kein Fehlerfall, sondern der
+    # Normalfall auf der anderen Seite derselben Verbindung.
+    #
+    # NICHT `config.scheduler_base_url()`: die bevorzugt bewusst
+    # BIBI_DAEMON_PORT ("sprich mit MEINEM Daemon") und liefert in einem
+    # Daemon-Prozess die eigene Adresse — der Knoten abonnierte sich selbst.
+    # Dieselbe Unterscheidung, die `Collector._fetch_scheduler_status()` schon
+    # trifft, und aus demselben Grund dort im Docstring steht.
+    if subscription is None:
+        from bibi.daemon.bus import SchedulerEvents
+        _sub_url = (os.environ.get("BIBI_SCHEDULER_URL")
+                    or config.read_env().get("BIBI_SCHEDULER_URL"))
+        _sub_node = None
+        try:
+            _sub_node = config.node_id()
+        except Exception:  # noqa: BLE001 — ohne Identitaet kein Abonnement
+            _sub_node = None
+        subscription = SchedulerEvents(bus, url=_sub_url, node_id=_sub_node)
     if collector is None:
         from bibi.daemon.bus import Collector
-        collector = Collector(bus, registry=worker_registry, heartbeat=heartbeat)
+        collector = Collector(bus, registry=worker_registry, heartbeat=heartbeat,
+                              subscription=subscription)
     # Bugfix (User-Fund: ein erschoepfter gepinnter Job blieb auf einem reinen
     # Client fuer immer in "failed" haengen): job_db.sweep() (failed+erschoepft
     # -> error, deferred+defer_max -> inactive) lief bisher nur unter
@@ -1203,11 +1275,13 @@ def create_app(
         if worker is not None:
             await worker.start()
         await pinned_worker.start()
+        subscription.start()
         await collector.start()
         try:
             yield
         finally:
             await collector.stop()
+            subscription.stop()
             # Job-Drain auch auf diesem Weg (m.rau/bibi#49): ein SIGTERM — vom
             # `systemctl stop`, vom Ende einer Sitzung, vom Restart-Endpunkt —
             # traf Jobs im Setup bisher genau so unkontrolliert, wie es vor #38
@@ -1400,7 +1474,7 @@ def create_app(
         # run_local()) gibt dem Lauf jetzt eine echte jobs-Zeile
         # (pinned_host=dieser Host) und läuft durch dieselbe Retry/Error/
         # Deferred/Zombie-Maschine wie ein Scheduler-Job, bleibt aber hier
-        # (pinned_host) und sofort (execute_reservation()s detach=True kehrt
+        # (pinned_host) und sofort (execute_reservation() kehrt
         # gleich nach dem Subprozess-Spawn zurück, kein Hintergrund-Thread
         # nötig — run_pinned() selbst blockiert nur für die kurze
         # Setup-Phase, nicht für den ganzen Lauf; GET /-/run/live[/{slug}]
@@ -1731,7 +1805,8 @@ def create_app(
     # Für Diagnose (`curl /-/events?limit=10`) und Tests — der TestClient-
     # ASGI-Transport kennt keinen echten Client-Disconnect, ein endloser
     # Generator liefe dort ewig weiter.
-    @app.get("/-/events", tags=["daemon"])
+    @app.get("/-/events", tags=["daemon"],
+             dependencies=[Depends(_require_approved_if_identified)])
     async def events(limit: int | None = None):
         sub = bus.subscribe()
         conn = job_db.connect()

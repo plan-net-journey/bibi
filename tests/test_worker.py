@@ -443,8 +443,7 @@ def test_execute_reservation_retries_pid_report_after_lock_error(gitrepo: Path, 
 
     out_path = gitrepo / "data" / "job" / "dummy" / "output.jsonl"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(W, "_run_wrapper",
-                        lambda **_kw: (0, None, out_path, "detached", 999999))
+    monkeypatch.setattr(W, "_run_wrapper", lambda **_kw: (out_path, 999999))
 
     real_connect = job_db.connect
     calls = {"n": 0}
@@ -526,7 +525,7 @@ def test_execute_reservation_passes_schedule_image_override(gitrepo: Path, monke
 
     def fake_run_wrapper(**kwargs):
         captured.update(kwargs)
-        return 0, None, gitrepo / "data" / "job" / "jid" / "output.jsonl", "detached", 999
+        return gitrepo / "data" / "job" / "jid" / "output.jsonl", 999
     monkeypatch.setattr(W, "_run_wrapper", fake_run_wrapper)
 
     from bibi.daemon.scheduler_client import LocalScheduler
@@ -555,12 +554,12 @@ def test_run_wrapper_logs_worktree_and_spawn_phases(gitrepo: Path, monkeypatch):
         return real_popen(*a, **kw)
     monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
 
-    _, _, out_path, outcome, pid = W._run_wrapper(
+    out_path, pid = W._run_wrapper(
         job_id="j1", slug="phasetest", kind="job", payload="echo hi",
         repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
-        run_id="phasetest:0", detach=True,
+        run_id="phasetest:0",
     )
-    assert outcome == "detached" and pid == 999
+    assert pid == 999
     phases = _output.lines(out_path, "phase")
     assert any("vorbereitet" in p for p in phases)
     assert any("bereit" in p for p in phases)
@@ -591,13 +590,13 @@ def test_run_wrapper_in_place_skips_worktree_and_never_sets_ephemeral(
         return real_popen(*a, **kw)
     monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
 
-    _, _, out_path, outcome, pid = W._run_wrapper(
+    out_path, pid = W._run_wrapper(
         job_id="j1", slug="inplacejob", kind="job", payload="echo hi",
         repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
-        run_id="inplacejob:0", detach=True,
+        run_id="inplacejob:0",
         in_place=True, ephemeral=True,  # ephemeral=True bewusst falsch mitgegeben
     )
-    assert outcome == "detached" and pid == 999
+    assert pid == 999
     assert captured_env["BIBI_WORKTREE"] == str(gitrepo)
     assert captured_env["BIBI_IN_PLACE"] == "1"
     assert captured_env.get("BIBI_EPHEMERAL") != "1"
@@ -639,13 +638,13 @@ def test_run_wrapper_respects_schedule_exec_mode_override_for_cleanup(
         return real_popen(*a, **kw)
     monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
 
-    _, _, out_path, outcome, pid = W._run_wrapper(
+    out_path, pid = W._run_wrapper(
         job_id="j1", slug="hostoverride", kind="job", payload="echo hi",
         exec_mode="host",
         repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
-        run_id="hostoverride:0", detach=True,
+        run_id="hostoverride:0",
     )
-    assert outcome == "detached" and pid == 999
+    assert pid == 999
     phases = _output.lines(out_path, "phase")
     assert not any("alte Instanz" in p for p in phases)
     assert docker_calls == []
@@ -670,13 +669,13 @@ def test_run_wrapper_sets_job_image_env_from_schedule_override(gitrepo: Path, mo
         return real_popen(*a, **kw)
     monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
 
-    _, _, out_path, outcome, pid = W._run_wrapper(
+    out_path, pid = W._run_wrapper(
         job_id="j1", slug="customimg", kind="job", payload="echo hi",
         image="registry.local/custom:7",
         repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
-        run_id="customimg:0", detach=True,
+        run_id="customimg:0",
     )
-    assert outcome == "detached" and pid == 999
+    assert pid == 999
     assert captured_env["BIBI_JOB_IMAGE"] == "registry.local/custom:7"
 
 
@@ -782,7 +781,7 @@ def test_run_wrapper_auto_builds_only_for_default_image(gitrepo: Path, monkeypat
         job_id="j1", slug="customimg", kind="job", payload="echo hi",
         exec_mode="container", image="registry.local/custom:1",
         repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
-        run_id="customimg:0", detach=True,
+        run_id="customimg:0",
     )
     assert build_calls == []  # Custom-Image → kein Auto-Build-Versuch
 
@@ -790,7 +789,7 @@ def test_run_wrapper_auto_builds_only_for_default_image(gitrepo: Path, monkeypat
         job_id="j2", slug="defaultimg", kind="job", payload="echo hi",
         exec_mode="container",
         repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
-        run_id="defaultimg:0", detach=True,
+        run_id="defaultimg:0",
     )
     assert len(build_calls) == 1  # kein Override, kein Job-Image → Default-Check greift
 
@@ -1126,13 +1125,13 @@ def test_run_wrapper_host_mode_no_cleanup_when_port_free(gitrepo: Path, monkeypa
         return real_popen(*a, **kw)
     monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
 
-    _, _, out_path, outcome, pid = W._run_wrapper(
+    out_path, pid = W._run_wrapper(
         job_id="j1", slug="portfree", kind="job", payload="echo hi",
         exec_mode="host", app_port=9100,
         repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
-        run_id="portfree:0", detach=True,
+        run_id="portfree:0",
     )
-    assert outcome == "detached" and pid == 999
+    assert pid == 999
     assert kills == []
     phases = _output.lines(out_path, "phase")
     assert not any("Vorgänger-Prozess" in p for p in phases)
@@ -1167,13 +1166,13 @@ def test_run_wrapper_host_mode_frees_stale_app_port(gitrepo: Path, monkeypatch):
         return real_popen(*a, **kw)
     monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
 
-    _, _, out_path, outcome, pid = W._run_wrapper(
+    out_path, pid = W._run_wrapper(
         job_id="j1", slug="portstale", kind="job", payload="echo hi",
         exec_mode="host", app_port=9100,
         repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
-        run_id="portstale:0", detach=True,
+        run_id="portstale:0",
     )
-    assert outcome == "detached" and pid == 999
+    assert pid == 999
     assert kills == [(4242, W.signal.SIGTERM)]
     phases = _output.lines(out_path, "phase")
     assert any("Vorgänger-Prozess" in p for p in phases)
@@ -1463,3 +1462,46 @@ def test_wait_status_sees_nonterminal_states(gitrepo: Path):
     # Status im Text, sonst steht da nur „hat nicht geklappt".
     with pytest.raises(AssertionError, match="killed"):
         _wait_status(gitrepo, jid, "killed", timeout=0.3)
+
+
+# ── #76: die Aktivität eines Laufs ist ein Wert, nicht eine mtime ────────────
+#
+# `last_ping_at` stand seit Schema v11 im Haus und war an beiden Enden tot: die
+# einzige schreibende Route (`POST /-/job/{id}/ping`) hatte keinen Aufrufer, und
+# gelesen wurde die Spalte nirgends. Gültig war die mtime von `output.jsonl` —
+# eine Wahrheit, die nur erreicht, wer die Datei sehen kann. Der Client kann das
+# nicht, und damit auch nicht die Silence-Frist anzeigen (#67).
+#
+# Beim Verdrahten fiel auf, dass der einzige mtime-Leser (`_last_activity()` in
+# `_monitored_wait()`) im blockierenden `detach=False`-Zweig saß — und den rief
+# niemand. Er ist mit #76 entfallen; die Tests dazu ebenfalls, weil sie ab da
+# nur noch sich selbst geprüft hätten.
+
+
+def test_run_wrapper_passes_the_ping_db_to_the_wrapper(gitrepo: Path, monkeypatch):
+    """Der Wrapper bekommt den Weg, auf dem er die Aktivität meldet (#76).
+
+    Eigene Variable neben `BIBI_SCHEDULER_DB_PATH`: die trägt den
+    Terminal-Report, diese nur den Aktivitätszeitpunkt."""
+    import sys
+    import types
+
+    import bibi.daemon.worker as W
+
+    captured_env: dict = {}
+    real_popen = W.subprocess.Popen
+
+    def fake_popen(*a, **kw):
+        if a and isinstance(a[0], list) and a[0][:1] == [sys.executable]:
+            captured_env.update(kw.get("env") or {})
+            return types.SimpleNamespace(pid=999)
+        return real_popen(*a, **kw)
+    monkeypatch.setattr(W.subprocess, "Popen", fake_popen)
+
+    W._run_wrapper(
+        job_id="j1", slug="pingjob", kind="job", payload="echo hi",
+        repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
+        run_id="pingjob:0", scheduler_db_path="/tmp/jobs.sqlite",
+    )
+    assert captured_env["BIBI_PING_DB_PATH"] == "/tmp/jobs.sqlite"
+    assert captured_env["BIBI_JOB_ID"] == "j1"

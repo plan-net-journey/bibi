@@ -287,3 +287,107 @@ def test_main_reports_crash_as_error_and_logs_phase(tmp_path: Path, monkeypatch)
     assert wrapper.main() == 1
     phases = output.lines(out, "phase")
     assert any("exec-Setup kaputt" in p for p in phases)
+
+
+# ── #76: der Wrapper schreibt die Aktivität fort ─────────────────────────────
+#
+# Er ist der einzige Ort, der Aktivität *sieht* — der Pump-Loop bekommt jede
+# Zeile. Bis #76 hat er den Zeitpunkt nur in einer Prozess-lokalen Liste
+# gehalten (`last_activity_ts`), aus der ihn niemand sonst lesen konnte.
+
+
+def _job_row(db: Path, job_id: str):
+    from bibi.daemon import job_db
+    conn = job_db.connect(db)
+    try:
+        return conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def _seed_running_job(db: Path, job_id: str) -> None:
+    from bibi.daemon import job_db
+    conn = job_db.connect(db)
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)", (job_id, "s", "s.md", "job", "echo hi", "running"))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_run_job_writes_last_ping_at(tmp_path: Path):
+    """Nach einer Output-Zeile eines laufenden Laufs ist `last_ping_at` gesetzt."""
+    db = tmp_path / "jobs.sqlite"
+    _seed_running_job(db, "j1")
+    out = tmp_path / "output.jsonl"
+    vorher = __import__("time").time()
+    env = {
+        "BIBI_JOB_TYPE": "job", "BIBI_OUTPUT_PATH": str(out),
+        "BIBI_JOB_CMD": "echo hallo",
+        "BIBI_JOB_ID": "j1", "BIBI_PING_DB_PATH": str(db),
+    }
+    assert wrapper.run_job(env) == 0
+    assert output.lines(out, "out") == ["hallo"]
+    ping = _job_row(db, "j1")["last_ping_at"]
+    assert ping is not None and ping >= vorher
+
+
+def test_the_reporter_reports_even_when_the_process_is_already_gone(tmp_path: Path):
+    """Ein kurzer Lauf meldet seine Aktivitaet trotzdem.
+
+    **Gefunden vom Engine-CI am 2026-08-08, nicht von der lokalen Suite.**
+    `_ping_reporter` prueft `while proc.poll() is None`, **bevor** er zum
+    ersten Mal meldet. Endet das Kind schneller, als der Thread startet, laeuft
+    die Schleife null Mal und die Spalte bleibt leer. Auf macOS gewann der
+    Thread das Rennen, auf Linux der Prozess — derselbe Test, zweimal ein
+    anderes Ergebnis, und beide Male aus Zufall.
+
+    Hier ist der Prozess **garantiert** schon weg. Damit haengt der Test an
+    keiner Zeitspanne mehr, sondern am Verhalten."""
+    from bibi.daemon import job_db
+
+    db = tmp_path / "jobs.sqlite"
+    _seed_running_job(db, "j-kurz")
+
+    class _Beendet:
+        def poll(self):
+            return 0            # war nie am Leben, aus Sicht des Reporters
+
+    wrapper._ping_reporter(_Beendet(), str(db), "j-kurz", [1234.0])
+    assert _job_row(db, "j-kurz")["last_ping_at"] == 1234.0
+
+
+def test_run_job_records_the_activity_before_it_returns(monkeypatch, tmp_path: Path):
+    """Wenn `run_job()` zurueckkehrt, steht der Wert — ohne Thread-Glueck.
+
+    **Der zweite CI-Befund am 2026-08-08, und der eigentliche.** Der erste Fix
+    liess den Reporter-Thread garantiert *einmal* laufen; er blieb aber
+    `daemon` und wird nicht gejoint. `run_job()` kehrte also zurueck, waehrend
+    der Thread unter Umstaenden noch nichts geschrieben hatte — auf macOS war
+    er schnell genug, auf Linux nicht. Zwei Laeufe, zwei Ergebnisse, wieder
+    aus Zufall.
+
+    Der Reporter ist hier abgeschaltet. Damit haengt der Test an keinem Thread
+    mehr, sondern allein daran, ob der Hauptpfad den letzten Stand festhaelt."""
+    monkeypatch.setattr(wrapper, "_ping_monitors", lambda *a, **kw: [])
+
+    db = tmp_path / "jobs.sqlite"
+    _seed_running_job(db, "j-sync")
+    out = tmp_path / "output.jsonl"
+    env = {
+        "BIBI_JOB_TYPE": "job", "BIBI_OUTPUT_PATH": str(out),
+        "BIBI_JOB_CMD": "echo hallo",
+        "BIBI_JOB_ID": "j-sync", "BIBI_PING_DB_PATH": str(db),
+    }
+    assert wrapper.run_job(env) == 0
+    assert _job_row(db, "j-sync")["last_ping_at"] is not None
+
+
+def test_run_job_without_a_ping_db_stays_silent(tmp_path: Path):
+    """Ohne DB-Pfad läuft alles wie bisher — der Reporter ist rein additiv."""
+    out = tmp_path / "output.jsonl"
+    env = {"BIBI_JOB_TYPE": "job", "BIBI_OUTPUT_PATH": str(out), "BIBI_JOB_CMD": "echo hallo"}
+    assert wrapper.run_job(env) == 0
+    assert output.lines(out, "out") == ["hallo"]

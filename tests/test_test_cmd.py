@@ -62,7 +62,7 @@ def _fake_run_wrapper(tmp_path, captured: dict, *, exit_code=0):
         finally:
             conn.close()
         out_path = tmp_path / "data" / "job" / job_id / "output.jsonl"
-        return exit_code, None, out_path, "detached", 999
+        return out_path, 999
     return fake
 
 

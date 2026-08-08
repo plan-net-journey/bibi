@@ -43,7 +43,29 @@ def running() -> None:
 def activity() -> None:
     """Reiner Herzschlag ohne sichtbaren Output — hält den silence_timeout am
     Leben, ohne dass der Job selbst etwas zu loggen hat (z. B. pro HTTP-Request
-    einer HITL-App, die während ``awaiting`` sonst nichts mehr ausgibt)."""
+    einer HITL-App, die während ``awaiting`` sonst nichts mehr ausgibt).
+
+    ── Der App-Vertrag (Entscheidung m.rau, 2026-08-08; #76) ─────────────────
+
+    **Wer läuft, gibt etwas aus.** Jede Zeile auf ``stdout``/``stderr`` und
+    jedes BIBI-Signal zählt als Aktivität; der Wrapper schreibt den Zeitpunkt
+    nach ``jobs.last_ping_at`` fort, und daraus bildet das FE, wann die
+    Silence-Frist abläuft. Ein Job, der nichts sagt, gilt nach
+    ``silence_timeout`` als Zombie und wird beendet — das ist die Zusage, nicht
+    ein Unfall.
+
+    ⚠ **Ungepuffert ausgeben, oder je Eintrag flushen.** Der Wrapper sieht eine
+    Zeile erst, wenn sie seine Pipe erreicht. Puffert eine App blockweise, kann
+    sie minutenlang arbeiten und protokollieren, ohne dass eine einzige Zeile
+    ankommt — aus Sicht der Frist ist sie in dieser Zeit **stumm** und wird
+    abgeräumt, obwohl sie nie stillstand. Python: ``print(..., flush=True)``
+    oder ``PYTHONUNBUFFERED=1``. Die Falle ist deshalb tückisch, weil sie erst
+    unter Last auffällt: kurze Läufe leeren ihren Puffer beim Beenden.
+
+    **Diese Funktion ist der Weg für alles, was keine Zeile erzeugen soll** —
+    eine App, die zwischen zwei Requests wartet, hat nichts zu loggen und ist
+    trotzdem am Leben. Wer gar nicht über ``stdout`` reden kann, nimmt den
+    Notausgang ``POST /-/job/{id}/ping``; er speist dieselbe Spalte."""
     _emit({"name": "activity"})
 
 

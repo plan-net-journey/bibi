@@ -1116,7 +1116,7 @@ def test_a_slot_state_change_reaches_the_runs_target():
         def __init__(self):
             self.published = []
 
-        def publish_state(self, ziel):
+        def publish_state(self, ziel, wert=None):
             self.published.append(ziel)
 
     bus = _Bus()

@@ -5,9 +5,14 @@ Zwei Komponenten, bewusst FastAPI-frei (rein testbar):
 - :class:`Bus` — In-Process-Pub/Sub. Publisher dürfen aus beliebigen Threads
   kommen (der Collector tickt via ``run_in_executor``, Muster ``Sweeper``);
   Konsumenten sind asyncio-Generatoren (die ``/-/events``-Route). Zwei
-  Event-Klassen (PLAN-36 E2): **Zustands-Events** sind leere Dirty-Meldungen
-  pro Ziel-Element, idempotent, last-write-wins — pro Abonnent per Ziel
-  koalesziert, nie gepuffert-historisiert. **Append-Events** (Output-Zeilen)
+  Event-Klassen (PLAN-36 E2): **Zustands-Events** sind Dirty-Meldungen pro
+  Ziel-Element, idempotent, last-write-wins — pro Abonnent per Ziel
+  koalesziert, nie gepuffert-historisiert. Seit #79 duerfen sie den Wert
+  mitfuehren, den der Diff **ohnehin verglichen hat** (``status``/``fire`` je
+  Slug); die Regel dazu lautet: *trage den Wert fuer das, was du ohnehin
+  vergleichst — fuege keinen Vergleich hinzu, um einen Wert tragen zu koennen.*
+  Der Wert ist eine Beigabe, kein Vertrag: ein Empfaenger, der ihn ignoriert
+  und refetcht, verhaelt sich wie vorher. **Append-Events** (Output-Zeilen)
   tragen Offset + formatierte Zeile; bei Überlauf eines langsamen Abonnenten
   werden sie verworfen und durch eine Dirty-Meldung fürs betroffene Ziel
   ersetzt (Refetch mit frischem Seed heilt — PLAN-36 E6). Der Bus hält
@@ -31,6 +36,8 @@ Ziel-Schema (Targets, von Stufe 36.2 konsumiert):
 - ``live:<slug>`` — die Live-Region eines Jobs (Kachel + Aktionsleiste).
 - ``journal:<slug>`` — die Journal-Liste eines Jobs.
 - ``out:<job_id>`` — die Live-Output-Box (Append-Events).
+- ``feed`` — die Feed-Liste (#80), gespeist vom Fingerabdruck ueber die
+  Quellen, aus denen ``feed.py`` liest.
 
 Für gepinnte Läufe (``pinned_host`` gesetzt, Slug trägt ein
 ``-<8hex>``-Suffix, s. ``run_pinned()``) wird zusätzlich der Bucket-Slug
@@ -40,6 +47,7 @@ publiziert — die Client-Detailseite adressiert über ihn.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import threading
@@ -82,7 +90,9 @@ class _Subscriber:
     __slots__ = ("state", "appends", "wakeup", "loop")
 
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
-        self.state: dict[str, None] = {}  # Ziel → None; Insertion-Reihenfolge
+        #: Ziel → Wert (oder ``None``); Insertion-Reihenfolge. Seit #79 darf
+        #: hier der verglichene Wert stehen statt nur „dreckig".
+        self.state: dict[str, dict | None] = {}
         self.appends: deque = deque()
         self.wakeup = asyncio.Event()
         self.loop = loop
@@ -151,11 +161,24 @@ class Bus:
         except RuntimeError:
             pass
 
-    def publish_state(self, target: str) -> None:
+    def publish_state(self, target: str, value: dict | None = None) -> None:
+        """Ein Ziel als dreckig melden — optional mit dem verglichenen Wert (#79).
+
+        **Der Wert ist eine Beigabe, kein Vertrag.** Ein Empfaenger, der ihn
+        ignoriert und stattdessen refetcht, verhaelt sich genau wie vorher; das
+        ist die Bedingung, unter der die Aenderung rein additiv bleibt. Wo kein
+        Wert vorliegt, entsteht auch kein Feld.
+
+        **Koaleszenz und Historienfreiheit bleiben unangetastet.** Zwei
+        Meldungen desselben Ziels sind weiterhin eine Nachricht — jetzt mit dem
+        juengsten Wert. Last-write-wins gilt damit fuer den Wert genauso wie
+        fuer das Ziel, und das ist die einzige Lesart, die zur Zusage des
+        Busses passt: er haelt keine Historie, also auch keine Wertfolge.
+        """
         with self._lock:
             subs = list(self._subs)
             for s in subs:
-                s.state[target] = None
+                s.state[target] = value
         for s in subs:
             self._wake(s)
 
@@ -185,11 +208,230 @@ class Bus:
             return []
         with self._lock:
             sub.wakeup.clear()
-            out: list[dict] = [{"t": "state", "target": t} for t in sub.state]
+            out: list[dict] = []
+            for t, v in sub.state.items():
+                ev: dict = {"t": "state", "target": t}
+                if v is not None:
+                    ev["v"] = v
+                out.append(ev)
             sub.state.clear()
             out.extend(sub.appends)
             sub.appends.clear()
         return out
+
+
+#: Wie lange ein Abonnement stumm sein darf, bevor es als tot gilt (#77).
+#: Der Scheduler sendet alle ``EVENTS_PING_S`` (15 s) ein ``{"t":"ping"}`` —
+#: dreimal nichts ist der Beleg, dass die Verbindung gestorben ist, ohne dass
+#: TCP es gemerkt hätte. **Derselbe Wert wie im FE-Watchdog**, aus demselben
+#: Grund: eine still gestorbene Verbindung sieht von innen aus wie ein sehr
+#: ruhiger Scheduler. Ohne diesen Schutz tauschte das Release eine träge
+#: Anzeige gegen eine stehende — ein Poll faellt sichtbar aus, ein Abonnement
+#: kann still sterben.
+_SUB_WATCHDOG_S = 45.0
+
+#: Ziele, die ein Abonnement **nicht** uebernimmt, weil sie den eigenen Knoten
+#: meinen und nicht den, von dem sie kommen (#77 trifft #80).
+#:
+#: ``feed`` ist der einzige: die Feed-Liste zeigt das Repo, in dem sie laeuft —
+#: Commits, offene Aenderungen, Cases im lokalen Arbeitsbaum. Uebernaehme der
+#: Client die Meldung des Schedulers, laedt er seine eigene Liste neu, weil
+#: anderswo etwas passiert ist, und zahlt dafuer einen ``git log`` plus einen
+#: ``git status``. Denselben Commit sieht er ohnehin selbst, sobald der
+#: Synchronizer ihn gebracht hat.
+#:
+#: **Ein Eintrag ist keine Ausnahmeliste, sondern eine Aussage.** Alles andere —
+#: ``live:``, ``journal:``, ``jobs``, ``nodes``, ``archived`` — ist
+#: Scheduler-Zustand und gehoert uebernommen. Waechst diese Menge, ist das ein
+#: Hinweis darauf, dass ein Ziel zwei Dinge zugleich meint.
+_NUR_LOKALE_ZIELE = frozenset({"feed"})
+
+#: Pause vor dem naechsten Verbindungsversuch. Kurz, weil ein Client ohne Strom
+#: auf den Poll zurueckfaellt und dort ohnehin nur alle 5 s nachsieht.
+_SUB_RETRY_S = 3.0
+
+#: Wie lange ein einzelner Read hoechstens blockiert. Nicht die Frist, sondern
+#: die Koernung, in der sie geprueft wird — und zugleich die Obergrenze dafuer,
+#: wie lange ``stop()`` auf seinen Thread wartet (s. ``_open()``).
+_READ_TICK_S = 1.0
+
+
+class SchedulerEvents:
+    """Abonniert ``/-/events`` des Schedulers und spiegelt ihn auf den eigenen Bus (#77).
+
+    **Der Strom lag bereit, es fehlte der Abonnent.** Der Scheduler-Collector
+    tickt sekuendlich; der Client fragte ihn alle fuenf Sekunden ab. Der
+    Scheduler war damit fuenfmal genauer, als der Client von ihm wissen wollte,
+    und die Differenz sah man jedem Statuswechsel an (Befund m.rau, 2026-08-08:
+    *„Statuswechsel kommen eindeutig zu traege."*).
+
+    **Es aendert sich die Quelle, nicht die Struktur.** Der Mischer stand schon:
+    ``Collector._diff_scheduler_jobs()`` veroeffentlicht seine Funde laengst auf
+    dem eigenen Bus dieses Knotens. Hier kommen dieselben Ziele an, nur frueher
+    und ohne Abfrage.
+
+    Was **nicht** uebernommen wird, sind die Append-Ereignisse. Sie tragen
+    Offsets in eine ``output.jsonl``, die es auf diesem Knoten nicht gibt; der
+    Weg dorthin ist der Durchreicher aus #78 — eine eigene Verbindung je
+    Output-Box, kein Sammelstrom.
+
+    **Die Identitaet ist der Schutz.** ``/-/events`` ist bewusst ungegatet, weil
+    eine ``EventSource`` keine Header setzen kann. Hier ist der Verbraucher aber
+    ein Daemon, und der kann sich ausweisen: die ``node_id`` geht als
+    ``X-Bibi-Node-Id`` mit, der Scheduler prueft sie gegen ``approved_nodes``.
+    Wer keine Arbeit und kein Config-Bundle bekommt, soll auch keinen
+    Ereignisstrom bekommen.
+
+    Ein eigener Thread statt einer asyncio-Task: das Lesen haengt an ``urllib``
+    (dieselbe Wahl wie ``ControllerClient``/``scheduler_client``, keine neue
+    Abhaengigkeit), und ein blockierender Read gehoert nicht in den Event-Loop.
+    """
+
+    def __init__(self, bus: Bus, *, url: str | None = None, node_id: str | None = None,
+                 watchdog: float = _SUB_WATCHDOG_S, retry: float = _SUB_RETRY_S,
+                 autorun: bool = True) -> None:
+        self.bus = bus
+        self.url = url
+        self.node_id = node_id
+        self.watchdog = watchdog
+        self.retry = retry
+        self.autorun = autorun
+        self._live = False
+        self._running = False
+        self._thread: threading.Thread | None = None
+        self._resp = None
+
+    @property
+    def live(self) -> bool:
+        """Steht die Verbindung? Der Collector entscheidet daran, ob er pollt.
+
+        Bewusst kein „war zuletzt erfolgreich": ein Abonnement, das gerade neu
+        verbindet, ist **nicht** lebendig, und in genau diesem Fenster muss der
+        Poll greifen."""
+        return self._live
+
+    # ── Verbindung ──────────────────────────────────────────────────────────
+
+    def _open(self):
+        """Den Strom oeffnen — die Naht, die Tests ersetzen koennen.
+
+        Der Socket-Timeout ist **kurz** (``_READ_TICK_S``) und ist nicht der
+        Watchdog. Ihn auf die Watchdog-Frist zu setzen waere die naheliegende
+        Vereinfachung und ein Fehler: ein blockierender Read laesst sich von
+        aussen nicht aufbrechen, ``stop()`` haette also bis zu 45 Sekunden auf
+        eine Verbindung gewartet, die niemand mehr braucht — beim
+        Daemon-Shutdown genau die Sorte Haenger, die #77 verhindern soll.
+
+        Stattdessen kehrt der Read regelmaessig ergebnislos zurueck, und
+        ``_session()`` zaehlt die Stille selbst. Ein leerer Rueckkehrer ist
+        keine Nachricht, nur eine Gelegenheit nachzusehen, ob es weitergehen
+        soll."""
+        import urllib.request
+        req = urllib.request.Request(
+            f"{self.url.rstrip('/')}/-/events",
+            headers={"Accept": "text/event-stream"},
+        )
+        if self.node_id:
+            req.add_header("X-Bibi-Node-Id", self.node_id)
+        return urllib.request.urlopen(req, timeout=_READ_TICK_S)  # noqa: S310
+
+    def _handle(self, roh: str) -> None:
+        """Eine ``data:``-Zeile auf den eigenen Bus uebersetzen."""
+        try:
+            ev = json.loads(roh)
+        except ValueError:
+            return
+        if ev.get("t") != "state":
+            # hello/ping sind Lebenszeichen, append gehoert nicht hierher (s.o.),
+            # bye meldet den Shutdown des Schedulers — den merkt die Schleife
+            # draussen ohnehin am Ende des Stroms.
+            return
+        ziel = ev.get("target")
+        if ziel and ziel not in _NUR_LOKALE_ZIELE:
+            # Der Wert reist mit (#79). Ohne diese Zeile ginge er genau auf der
+            # Strecke verloren, fuer die er gedacht ist: der Scheduler weiss den
+            # neuen Status, der Client zeigt ihn an. Ein Ereignis ohne Wert
+            # bleibt eins — `v` fehlt dann schlicht.
+            self.bus.publish_state(ziel, ev.get("v"))
+
+    def _session(self) -> None:
+        """Eine Verbindung von ihrem Aufbau bis zu ihrem Ende.
+
+        Die Schleife liest zeilenweise und misst dabei die Stille. Drei Enden
+        sind moeglich, und alle drei fuehren an dieselbe Stelle zurueck: der
+        Strom endet regulaer (leere Zeile am EOF, der Scheduler faehrt herunter),
+        die Frist laeuft ab (still gestorbene Verbindung), oder ``stop()`` hat
+        das Laufen abgestellt. Danach ist ``live`` falsch, und der Poll im
+        Collector traegt weiter."""
+        resp = self._open()
+        self._resp = resp
+        letztes = time.time()
+        try:
+            self._live = True
+            while self._running:
+                try:
+                    zeile = resp.readline()
+                except TimeoutError:
+                    # Kein Lebenszeichen in diesem Tick — nur dann ist die
+                    # Stille ueberhaupt zu messen.
+                    if time.time() - letztes > self.watchdog:
+                        log.debug("Scheduler-Abonnement stumm seit %.0fs — Neuaufbau",
+                                  self.watchdog)
+                        return
+                    continue
+                except (OSError, ValueError):
+                    return  # Abriss oder von stop() geschlossen
+                if not zeile:
+                    return  # EOF: der Scheduler hat den Strom beendet
+                letztes = time.time()
+                text = zeile.decode("utf-8", "replace").rstrip("\n")
+                if text.startswith("data: "):
+                    self._handle(text[len("data: "):])
+        finally:
+            self._live = False
+            self._resp = None
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _loop(self) -> None:
+        while self._running:
+            try:
+                self._session()
+            except Exception as exc:  # noqa: BLE001 — der Host darf ausfallen (§2.7)
+                self._live = False
+                log.debug("Scheduler-Abonnement nicht verfuegbar: %s", exc)
+            if self._running:
+                time.sleep(self.retry)
+
+    # ── Lifecycle ───────────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        if not self.autorun or not self.url:
+            # Kein Scheduler konfiguriert heisst: dieser Knoten **ist** einer.
+            # Es gibt niemanden zu abonnieren, und das ist kein Fehlerfall.
+            return
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name="scheduler-events")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        self._live = False
+        # Den laufenden Read aufbrechen, statt bis zum Watchdog zu warten —
+        # sonst haenge der Shutdown bis zu 45 Sekunden an einer Verbindung, die
+        # niemand mehr braucht.
+        resp, self._resp = self._resp, None
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
 
 
 class Collector:
@@ -202,8 +444,13 @@ class Collector:
 
     def __init__(self, bus: Bus, *, db_path: Path | None = None,
                  repo_root: Path | None = None, interval: float = 1.0,
-                 autorun: bool = True, registry=None, heartbeat=None) -> None:
+                 autorun: bool = True, registry=None, heartbeat=None,
+                 subscription=None) -> None:
         self.bus = bus
+        #: Das Scheduler-Abonnement (#77), sofern dieser Knoten eins hat. Der
+        #: Collector liest davon nur `live` — wie er von der Registry die
+        #: Knotenliste liest: eine Referenz, kein Aufruf.
+        self.subscription = subscription
         self.db_path = db_path
         self.repo_root = repo_root
         self.interval = interval
@@ -232,8 +479,14 @@ class Collector:
         #: Eigener Speicher *und* eigene Drossel, weil er eine andere Quelle
         #: hat als der Scheduler-Poll — denselben Takt, aber keinen Netzaufruf.
         self._git_snapshot: tuple | None = None
+        #: Sechster Fingerabdruck (#80), und der erste mit eigenem Ziel statt
+        #: `feedstatus`: die Quellen des Feeds. Eigene Drossel, weil er einen
+        #: zweiten git-Aufruf braucht (`dirty_files()`), den `_diff_git()`
+        #: nicht schon macht.
+        self._feed_snapshot: tuple | None = None
         self._sched_last_fetch: float = 0.0
         self._git_last_check: float = 0.0
+        self._feed_last_check: float = 0.0
         self._primed = False
         self._task: asyncio.Task | None = None
         self._running = False
@@ -267,7 +520,8 @@ class Collector:
                        and self._jobs.get(jid, (None,))[:2] != seen[jid][:2])
             if changed:
                 any_job_change = True
-                self._publish_live(slug, r["pinned_host"])
+                self._publish_live(slug, r["pinned_host"],
+                                   {"status": r["status"], "fire": r["fire"]})
                 # Journal bei JEDEM Statuswechsel mit-dirty (nicht nur beim
                 # Journal-INSERT unten): die Journal-Liste zeigt für laufende
                 # Jobs eine Live-Platzhalterzeile (journal_fragment(),
@@ -320,6 +574,7 @@ class Collector:
         stats["state"] += self._diff_scheduler()
         stats["state"] += self._diff_heartbeat()
         stats["state"] += self._diff_git()
+        stats["state"] += self._diff_feed()
 
         # Tails: Output-Zuwachs publizieren; Läufe, die nicht mehr aktiv
         # wachsen (Terminal/deferred), nach einem letzten Read entlassen.
@@ -482,6 +737,79 @@ class Collector:
             return 1
         return 0
 
+    def _read_feed(self) -> dict | None:
+        """Fingerabdruck ueber die Quellen, aus denen ``feed.py`` liest — oder
+        ``None`` (kein Git-Repo).
+
+        Zwei Werte, und sie decken alle vier Quellen ab:
+
+        * ``oid`` — der HEAD. Er traegt die **Commits**, und mit ihnen auch die
+          **Agent-Slugs** (aus ``git log``) und jeden **Case**, der bereits
+          committet ist.
+        * ``dirty`` — die geaenderten Pfade samt Zustand, dieselbe Quelle, aus
+          der ``feed.uncommitted_units()`` seine offenen Einheiten bildet. Sie
+          traegt zugleich jeden **neuen Case**: dessen ``README.md`` ist
+          untracked, bevor sie committet ist.
+
+        **Deshalb steht ``discover_cases()`` hier bewusst nicht**, obwohl der
+        Feed es aufruft. Es ist ein Verzeichnis-Walk und damit der teuerste
+        Teil — und er brachte nichts, was die beiden Werte oben nicht schon
+        sagen. Ein Fingerabdruck, der mehr liest als noetig, verliert genau die
+        Kosten-Entscheidung, um die es hier geht.
+
+        Eigene Naht wie ``_read_git()``: dahinter stecken Subprozesse, und
+        Tests sollen sie ersetzen koennen, ohne ein Repo anzulegen.
+        """
+        try:
+            from bibi import repo
+            from bibi.git_status import dirty_files, working_tree_status
+            root = self.repo_root or repo.root()
+            st = working_tree_status(root)
+            if st is None:
+                return None
+            return {"oid": st.oid,
+                    "dirty": tuple(sorted(dirty_files(root).items()))}
+        except Exception:  # noqa: BLE001 — ein fehlendes Repo ist kein Fehler
+            return None
+
+    def _diff_feed(self) -> int:
+        """Der Ausloeser des Feeds (#80).
+
+        **``#feedboard`` trug weder ``data-bus`` noch ``data-bus-refetch``** —
+        als einzige Live-Region des FE. Er aktualisierte nur beim Seitenaufbau
+        und beim Klick auf ``LOAD MORE``; blieb ein Tab offen, waehrend eine
+        Vault-Datei gespeichert oder ein Commit erzeugt wurde, stand er still.
+
+        Aufgefallen ist es lange nicht, und der Grund ist lehrreich: **man
+        betritt den Feed und laedt dabei die Seite.** Er ist frisch, wenn man
+        hinkommt, nicht waehrend man hinsieht.
+
+        Derselbe Takt wie ``_diff_git()``/``_diff_scheduler()``, aus demselben
+        Grund — der Fingerabdruck haengt an git. Und dieselbe Regel: gemeldet
+        wird nur bei echter Aenderung, der Takt begrenzt allein, **wie oft
+        nachgesehen** wird. Ein Mindesttakt, der die Region periodisch dreckig
+        macht, waere ein Poll durch die Hintertuer und ist schon fuer die
+        Git-Zeile verworfen worden.
+
+        Eigenes Ziel, nicht ``feedstatus``: der Header haengt an einem
+        git-Aufruf, und ihn bei jeder Feed-Aenderung mitzunehmen waere genau
+        der Firehose, den der Modul-Docstring ausschliesst. Zwei
+        Fingerabdruecke, zwei Ziele — dieselbe Trennung wie zwischen
+        ``_diff_scheduler()`` und ``_diff_scheduler_jobs()``.
+        """
+        jetzt = time.time()
+        if jetzt - self._feed_last_check < self._SCHED_POLL_S:
+            return 0
+        self._feed_last_check = jetzt
+        f = self._read_feed()
+        snap: tuple | None = None if f is None else (f.get("oid"), f.get("dirty"))
+        changed = self._primed and snap != self._feed_snapshot
+        self._feed_snapshot = snap
+        if changed:
+            self.bus.publish_state("feed")
+            return 1
+        return 0
+
     def _fetch_scheduler_status(self) -> dict | None:
         """Status des konfigurierten Schedulers, oder ``None``.
 
@@ -609,7 +937,17 @@ class Collector:
         der letzte Stand stehen, statt jeden Slug als geaendert zu melden;
         dieselbe Zurueckhaltung wie beim groben Fingerabdruck. Der Ausfall
         selbst steht im Header, der ihn ohnehin zeigt.
+
+        **Seit #77 ist das hier der Rueckfall, nicht der Hauptweg.** Lebt das
+        Abonnement auf ``/-/events`` des Schedulers, kommt jeder Wechsel binnen
+        einer Sekunde von dort — dann waere dieser Poll doppelte Arbeit fuer
+        dieselbe Auskunft, mit vier Sekunden mehr Verzoegerung. Faellt das
+        Abonnement aus, greift er sofort wieder: ein Abriss darf den Client
+        nicht blind machen (§2.7). Genau dafuer ist ``live`` kein „war zuletzt
+        erfolgreich" — waehrend eines Wiederaufbaus muss der Poll laufen.
         """
+        if self.subscription is not None and self.subscription.live:
+            return 0
         zeilen = self._fetch_scheduler_jobs()
         if zeilen is None:
             return 0
@@ -634,7 +972,14 @@ class Collector:
         if not geaendert:
             return 0
         for slug in geaendert:
-            self.bus.publish_state(f"live:{slug}")
+            # Der Wert, der oben ohnehin gelesen und verglichen wurde (#79) —
+            # bis dahin wurde er hier weggeworfen, um „dreckig" zu melden. Ein
+            # verschwundener Slug hat keinen: `snap.get()` liefert None, und
+            # ohne Wert entsteht kein Feld.
+            wert = snap.get(slug)
+            self.bus.publish_state(
+                f"live:{slug}",
+                None if wert is None else {"status": wert[0], "fire": wert[1]})
         # Die Liste hoert auf EIN Sammel-Target, nicht auf jeden Slug einzeln
         # (PLAN-36 Stufe 36.3) — ohne sie bewegt sich die Kachel im Detail und
         # die Zeile in der Liste nicht, und genau die sieht man zuerst.
@@ -643,11 +988,16 @@ class Collector:
 
     # ── Innereien ───────────────────────────────────────────────────────────
 
-    def _publish_live(self, slug: str, pinned_host) -> None:
-        self.bus.publish_state(f"live:{slug}")
+    def _publish_live(self, slug: str, pinned_host, wert: dict | None = None) -> None:
+        """Die Live-Region eines Slugs dreckig melden — mit dem Wert, falls
+        bekannt (#79).
+
+        Der Bucket-Slug bekommt denselben: er adressiert dieselbe Zeile, nur
+        unter dem Namen, unter dem die Client-Detailseite sie kennt."""
+        self.bus.publish_state(f"live:{slug}", wert)
         b = bucket_slug(slug, pinned_host)
         if b:
-            self.bus.publish_state(f"live:{b}")
+            self.bus.publish_state(f"live:{b}", wert)
 
     def _publish_journal(self, slug: str, pinned_host) -> None:
         self.bus.publish_state(f"journal:{slug}")

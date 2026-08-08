@@ -315,7 +315,8 @@ def _fake_run_pinned_factory(*, jid: str = "fakejid", slug_suffix: str = "abcd")
 
 
 def test_run_route_returns_running_immediately(client_only, monkeypatch):
-    # PLAN-28: run_pinned() kehrt synchron zurück (detach=True, kein
+    # PLAN-28: run_pinned() kehrt synchron zurück (der Wrapper läuft
+    # detacht weiter, kein
     # Hintergrund-Thread mehr in der Route nötig) — kein Warten/Event mehr.
     monkeypatch.setattr("bibi.daemon.app.run_pinned", _fake_run_pinned_factory())
     r = client_only.post("/-/run", json={"cmd": "irrelevant"})

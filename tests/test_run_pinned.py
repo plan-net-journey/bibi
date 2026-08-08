@@ -44,7 +44,7 @@ def _seed(root: Path, rel: str, body: str) -> None:
 
 def _fake_run_wrapper(tmp_path):
     def fake(**kwargs):
-        return 0, None, tmp_path / "data" / "job" / "jid" / "output.jsonl", "detached", 999
+        return tmp_path / "data" / "job" / "jid" / "output.jsonl", 999
     return fake
 
 
@@ -56,7 +56,7 @@ def test_run_pinned_with_cmd_creates_pinned_row_and_dispatches(gitrepo, monkeypa
     row = conn.execute("SELECT * FROM jobs WHERE id=?", (res["id"],)).fetchone()
     conn.close()
     assert row["pinned_host"] == "mac"
-    assert row["status"] == "running"  # detach=True: sofort reserviert+dispatcht
+    assert row["status"] == "running"  # sofort reserviert + dispatcht
     assert row["payload"] == "echo hi"
     # attempts=0 (nicht 1!) ist "kein Retry" — der Wrapper prüft attempt_cur
     # (0 bei einem frischen Job) < attempts_max; attempts=1 würde also einen
@@ -253,7 +253,7 @@ def test_run_pinned_other_host_cannot_reserve_it(gitrepo, monkeypatch):
 def _capturing_run_wrapper(tmp_path: Path, captured: dict):
     def fake(**kwargs):
         captured.update(kwargs)
-        return 0, None, tmp_path / "data" / "job" / "jid" / "output.jsonl", "detached", 999
+        return tmp_path / "data" / "job" / "jid" / "output.jsonl", 999
     return fake
 
 
