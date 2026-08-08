@@ -26,9 +26,12 @@ import os
 import re
 import threading
 import time
+import urllib.parse
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi import FastAPI, Header, Query, Request
+from fastapi.responses import (
+    HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse,
+)
 
 from bibi.daemon import activity, openapi, roles as roles_mod
 
@@ -36,6 +39,28 @@ from . import render
 from .client import ControllerClient
 
 log = logging.getLogger("bibi.controller")
+
+#: Wie viele Output-Ströme dieser Knoten gleichzeitig zum Scheduler
+#: durchreicht (#78). Der Durchreicher hält **je offener Output-Box je Tab**
+#: eine Verbindung; ohne Deckel multipliziert sich das mit den Tabs, und ein
+#: vergessenes Fenster kostet den Host dauerhaft Verbindungen.
+#:
+#: Der abgewiesene Fall ist bewusst harmlos: die Box behält ihren
+#: server-seitigen Seed und bleibt lesbar, sie wächst nur nicht mit. Ein
+#: Deckel, der eine Anzeige verstümmelt, wäre schlimmer als das Problem.
+_MAX_OUTPUT_PROXIES = 8
+
+#: Zähler dazu, plus sein Schloss. Modul-global statt pro App: die Grenze
+#: gilt dem *Prozess* und den Verbindungen, die er nach draußen hält — nicht
+#: einer App-Instanz, von denen die Tests regelmäßig mehrere bauen.
+_output_proxies = 0
+_output_proxy_lock = threading.Lock()
+
+#: Wie lange ein einzelner Read im Durchreicher blockiert. Kein Watchdog: beim
+#: Output ist Stille der Normalfall, ein Job denkt nach. Der Tick dient allein
+#: dazu, einen abgebrochenen Verbraucher bemerken zu koennen, statt fuer immer
+#: im Read zu haengen — dieselbe Ueberlegung wie bei `bus._READ_TICK_S`.
+_PROXY_READ_TICK_S = 1.0
 
 __all__ = ["ControllerClient", "add_controller_routes", "render", "service_descriptor"]
 
@@ -1017,6 +1042,23 @@ def add_controller_routes(
             pass
         return live_output
 
+    def _output_stream_url(job: dict | None) -> str | None:
+        """Woher die Output-Box eines laufenden Scheduler-Laufs waechst (#78).
+
+        ``None`` heisst „vom globalen Bus", und das ist auf dem **Host** der
+        richtige Weg: dort liegt die ``output.jsonl`` lokal, der Collector
+        tailt sie, und ein Umweg ueber sich selbst waere keiner. Nur auf einem
+        Knoten mit fremdem Scheduler fehlt die Datei — und nur dort braucht die
+        Box ihren zweiten Strom.
+
+        Auch ``None`` fuer jeden nicht laufenden Lauf: ein terminaler braucht
+        keinen Strom, dort bleibt der einmalige Abruf richtig."""
+        if not job or job.get("status") != "running" or not job.get("id"):
+            return None
+        if not _scheduler_url():
+            return None
+        return f"/-/ui/jobs/{urllib.parse.quote(str(job['id']), safe='')}/output/stream"
+
     @app.get("/-/ui/schedule/{slug}", include_in_schema=False)
     def schedule_detail(slug: str):
         from bibi import config
@@ -1025,7 +1067,8 @@ def add_controller_routes(
         live_output = _detail_outputs(job)
         return HTMLResponse(render.schedule_detail_page(
             schedule, runs, job, slug=slug, live_output=live_output,
-            daemon_status=_status(), public_host=config.public_host()))
+            daemon_status=_status(), public_host=config.public_host(),
+            output_stream_url=_output_stream_url(job)))
 
     @app.get("/-/ui/schedule/{slug}/live", include_in_schema=False)
     def schedule_live_fragment(slug: str):
@@ -1039,7 +1082,8 @@ def add_controller_routes(
         live_output = _detail_outputs(job)
         return HTMLResponse(render.live_fragment(
             schedule, runs, job, slug=slug, live_output=live_output,
-            public_host=config.public_host()))
+            public_host=config.public_host(),
+            output_stream_url=_output_stream_url(job)))
 
     @app.get("/-/ui/schedule/{slug}/runs", include_in_schema=False)
     def schedule_runs_fragment(slug: str, offset: int = 0):
@@ -1628,6 +1672,95 @@ def add_controller_routes(
             return ControllerClient(url)
         from bibi import config as config_mod
         return ControllerClient(f"http://127.0.0.1:{config_mod.daemon_port()}")
+
+    @app.get("/-/ui/jobs/{job_id}/output/stream", include_in_schema=False)
+    def output_proxy(job_id: str, from_: int = Query(0, alias="from"),
+                     last_event_id: str | None = Header(default=None)):
+        """Der Output eines **Scheduler**-Laufs, durchgereicht (#78).
+
+        **Der Kanal existiert seit dem 2026-07-20**, und er kann alles, was
+        gebraucht wird: ``/-/job/{id}/output/stream`` waechst zur Laufzeit,
+        sendet ``event: done`` als eindeutiges Ende und traegt ``id:``-Zeilen
+        fuer lueckenloses Wiederaufsetzen. Genutzt wurde er nicht, weil PLAN-36
+        Stufe 36.2 die Output-EventSource abgeschafft hat — *„es habe sie auf
+        Client-Knoten gar nicht gegeben"*. Richtig beobachtet, falsch
+        geschlossen: sie war auf den **eigenen** Knoten gerichtet.
+
+        **Was fehlte, ist genau diese Route.** Der Browser kann den Scheduler
+        nicht direkt ansprechen (keine CORS-Header, dieselbe Lage, aus der
+        ``_ops_ziel()`` entstand). Sie ist deshalb ein Durchreicher und nichts
+        weiter: lesen, weiterschreiben, ``event: done`` mitnehmen. Offsets,
+        Wiederaufsetzen und das eindeutige Ende sind gebaut — sie hier neu zu
+        erfinden hiesse, zwei Fassungen derselben Mechanik zu pflegen.
+
+        ``404`` ohne konfigurierten Scheduler: dann *ist* dieser Knoten einer,
+        und der eigene Strom (``/-/job/{id}/output/stream``) ist der richtige —
+        der Umweg ueber sich selbst waere keiner.
+
+        **Nur fuer laufende Laeufe.** Ein terminaler braucht keinen Strom, dort
+        bleibt der einmalige Abruf richtig (Klarstellung m.rau: *„Bei
+        terminalen Laeufen nicht, ich weiss."*); die Box bekommt ihre
+        ``data-stream``-Angabe deshalb nur im ``running``-Zweig von
+        ``_live_panel()``.
+        """
+        global _output_proxies
+        url = _scheduler_url()
+        if not url:
+            return PlainTextResponse("", status_code=404)
+        # Last-Event-ID hat Vorrang vor `from` — dieselbe Reihenfolge wie in
+        # `job_output_stream()` beim Scheduler, und aus demselben Grund: den
+        # Header schickt der Browser bei jedem automatischen Reconnect selbst
+        # mit, der Query-Parameter ist einmalig eingefroren.
+        if last_event_id is not None:
+            try:
+                from_ = int(last_event_id)
+            except ValueError:
+                pass
+        with _output_proxy_lock:
+            if _output_proxies >= _MAX_OUTPUT_PROXIES:
+                activity.emit(log, logging.WARNING, "controller.output_proxy_limit",
+                              "Output-Durchreicher am Limit — Box bleibt beim Seed",
+                              role="controller", job_id=job_id,
+                              offen=str(_output_proxies))
+                return PlainTextResponse("too many open output streams",
+                                         status_code=429)
+            _output_proxies += 1
+
+        import urllib.request
+        ziel = (f"{url.rstrip('/')}/-/job/{urllib.parse.quote(job_id, safe='')}"
+                f"/output/stream?from={from_}")
+        req = urllib.request.Request(ziel, headers={"Accept": "text/event-stream"})
+        try:
+            from bibi import config as config_mod
+            req.add_header("X-Bibi-Node-Id", config_mod.node_id())
+        except Exception:  # noqa: BLE001 — ohne Identitaet wie bisher
+            pass
+
+        def gen():
+            global _output_proxies
+            try:
+                with urllib.request.urlopen(req, timeout=_PROXY_READ_TICK_S) as resp:  # noqa: S310
+                    while True:
+                        try:
+                            zeile = resp.readline()
+                        except TimeoutError:
+                            # Stille ist beim Output der Normalfall — ein Job
+                            # denkt nach. Der Tick dient nur dazu, einen
+                            # abgebrochenen Verbraucher ueberhaupt bemerken zu
+                            # koennen, statt fuer immer im Read zu haengen.
+                            continue
+                        except (OSError, ValueError):
+                            return
+                        if not zeile:
+                            return
+                        yield zeile
+            except Exception as exc:  # noqa: BLE001 — der Host darf ausfallen (§2.7)
+                log.debug("Output-Durchreicher fuer %s beendet: %s", job_id, exc)
+            finally:
+                with _output_proxy_lock:
+                    _output_proxies -= 1
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
 
     @app.post("/-/ui/ops/rescan", include_in_schema=False)
     def screen_ops_rescan():

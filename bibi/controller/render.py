@@ -2984,13 +2984,23 @@ def output_block(events: list[dict], kind: str) -> str:
 
 
 def live_output_box(job_id: str, events: list[dict] | None = None,
-                    *, kind: str = "job") -> str:
+                    *, kind: str = "job", stream_url: str | None = None) -> str:
     """Die Live-Output-Box eines laufenden Jobs. Server-seitig mit dem
     aktuellen (bereits formatierten) Output geseedet (no-JS-Paint); ab
     ``data-from`` hängen die ``append``-Events des globalen Event-Stroms an
     (``_EVENTS_JS``, PLAN-36 Stufe 36.2 — vorher eine eigene EventSource pro
     Box gegen ``/-/job/{id}/output/stream``, die es auf Client-Knoten gar
-    nicht gab, s. FE-Live-Update-Briefing Befund 1). Offsets zählen in
+    nicht gab, s. FE-Live-Update-Briefing Befund 1).
+
+    **Für einen Lauf auf dem Scheduler kommt genau diese EventSource zurück**
+    (#78, ``stream_url``), und der damalige Schluss ist dabei zu berichtigen:
+    die Route fehlte nicht, sie war auf den *eigenen* Knoten gerichtet. Der
+    globale Bus kann diesen Fall nicht bedienen — seine ``append``-Ereignisse
+    entstehen, indem der Collector eine lokale Datei tailt, und die gibt es
+    hier nicht. Der Unterschied zu damals ist ``event: done``: seither lässt
+    sich ein beabsichtigtes Ende von einem Abriss unterscheiden.
+
+    Offsets zählen in
     denselben formatierten Einheiten wie der Seed — kein Offset-Mismatch.
     Kein ``hx-preserve`` mehr: die Box wird nur noch bei echten Zustands-
     Refetches ersetzt (frischer Seed + neuer data-from = Resync-Heilung),
@@ -2999,8 +3009,15 @@ def live_output_box(job_id: str, events: list[dict] | None = None,
     evs = events or []
     seed = "\n".join(_event_line(e) for e in _merge_deltas(evs))
     jid = _e(job_id)
-    return (f'<pre class="term liveterm" id="livebox-{jid}" data-job="{jid}" '
-            f'data-from="{len(evs)}">{seed}</pre>')
+    # ``data-stream`` (#78): dieser Lauf laeuft beim **Scheduler**, seine
+    # ``output.jsonl`` liegt hier nicht. Der globale Bus kann ihn deshalb nicht
+    # speisen — seine ``append``-Ereignisse entstehen aus einer lokalen Datei.
+    # Steht das Attribut, oeffnet ``_EVENTS_JS`` fuer diese Box eine eigene
+    # EventSource auf den Durchreicher. Rein additiv: ohne das Attribut bleibt
+    # alles beim globalen Strom.
+    strom = f' data-stream="{_e(stream_url)}"' if stream_url else ""
+    return (f'<pre class="term liveterm" id="livebox-{jid}" data-job="{jid}"'
+            f'{strom} data-from="{len(evs)}">{seed}</pre>')
 
 
 #: PLAN-36 Stufe 36.2: EIN globaler Event-Strom pro Seite statt per-Box-
@@ -3032,7 +3049,36 @@ _EVENTS_JS = """
       // Seed ans Ende (2026-07-06-Lektion: sonst liefert atBottom() ab dem
       // allerersten Check false und FOLLOW bleibt dauerhaft wirkungslos).
       box.scrollTop = box.scrollHeight;
+      attachRemote(box);
     });
+  }
+
+  // #78: eine Box mit data-stream waechst NICHT ueber den globalen Bus — ihr
+  // Lauf liegt beim Scheduler, seine output.jsonl gibt es hier nicht. Sie
+  // bekommt deshalb eine eigene EventSource auf den Durchreicher dieses
+  // Knotens, so wie es sie vor PLAN-36 Stufe 36.2 fuer lokale Laeufe gab.
+  //
+  // Kein onerror-Schliessen (2026-07-20-Lektion: Abriss und Serverende sehen
+  // clientseitig gleich aus) -- geschlossen wird auf 'done', das der
+  // Durchreicher vom Scheduler mitbringt. Danach ist der Lauf terminal, und
+  // ein terminaler Lauf braucht keinen Strom.
+  function attachRemote(box){
+    const url = box.getAttribute('data-stream');
+    if (!url || box._bibiRemote) return;
+    const src = new EventSource(url + (url.indexOf('?') < 0 ? '?' : '&')
+                                + 'from=' + (box.getAttribute('data-from') || 0));
+    box._bibiRemote = src;
+    src.addEventListener('done', () => { src.close(); box._bibiRemote = null; });
+    src.onmessage = (e) => {
+      // Offset-Dedup wie beim globalen Strom: ein Refetch traegt frischen Seed
+      // und neues data-from, nachlaufende Zeilen mit kleinerem Offset sind
+      // dadurch harmlos.
+      const off = parseInt(e.lastEventId || '0', 10);
+      const from = parseInt(box.getAttribute('data-from') || '0', 10);
+      if (off && off <= from) return;
+      try { appendLine(box, JSON.parse(e.data)); } catch (err) { return; }
+      if (off) box.setAttribute('data-from', String(off));
+    };
   }
   document.addEventListener('DOMContentLoaded', initBoxes);
   document.body.addEventListener('htmx:afterSettle', initBoxes);
@@ -3348,7 +3394,8 @@ def _run_rows(runs: list[dict], slug: str, now: float, *, base: str = _JOURNAL_B
 
 def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
                slug: str = "", *, public_host: str = "localhost",
-               raw_stream_base: str | None = "/-/job") -> str:
+               raw_stream_base: str | None = "/-/job",
+               output_stream_url: str | None = None) -> str:
     """Eigener Block für den **aktuellen** Lauf (aktiv oder zuletzt beendet), nahe
     am Header. Bleibt auch nach einem Terminal-Übergang mit Status+Output stehen
     (User-Feedback 2026-07-01: "archiviert wird erst vor dem nächsten Rerun" —
@@ -3398,8 +3445,11 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
         raw_link = (f'<span class="muted">'
                     f'<a class="back" href="{raw_stream_base}/{_e(jid)}/stream">roher Stream →</a>'
                     f'</span>') if raw_stream_base else ""
+        # `output_stream_url` nur hier, im running-Zweig (#78): ein terminaler
+        # Lauf braucht keinen Strom, dort bleibt der einmalige Abruf richtig.
         out = (f'<div class="liveout">{raw_link}'
-               + live_output_box(jid, events, kind=(live_output or {}).get("kind", "job"))
+               + live_output_box(jid, events, kind=(live_output or {}).get("kind", "job"),
+                                 stream_url=output_stream_url)
                + "</div>")
     elif job.get("status") == "awaiting":
         if live_output and live_output.get("events"):
@@ -3532,6 +3582,7 @@ def live_fragment(
     schedule: dict | None, runs: list[dict], job: dict | None,
     slug: str = "", now: float | None = None,
     *, live_output: dict | None = None, public_host: str = "localhost",
+    output_stream_url: str | None = None,
 ) -> str:
     """Der austauschbare Live-Kern (``#live``): Meta + Aktions-Leiste
     (START/RESET/KILL) + Live-Block (aktiver Lauf, Output default expanded).
@@ -3573,7 +3624,7 @@ def live_fragment(
         f"<h1>{name}</h1>"
         f'<div class="meta">{meta}</div>'
         f"{_action_bar(slug, job, exec_mode=s.get('exec_mode'))}"
-        f"{_live_panel(job, now, live_output, slug=slug, public_host=public_host)}"
+        f"{_live_panel(job, now, live_output, slug=slug, public_host=public_host, output_stream_url=output_stream_url)}"
         "</div>"
     )
 
@@ -3582,13 +3633,14 @@ def schedule_detail_inner(
     schedule: dict | None, runs: list[dict], job: dict | None,
     slug: str = "", now: float | None = None,
     *, live_output: dict | None = None, public_host: str = "localhost",
+    output_stream_url: str | None = None,
 ) -> str:
     """Voller Detail-Kern für den initialen Seitenaufbau: ``#live`` (bus-
     getrieben) + ``#journal`` (einmalig, wächst nur per Infinite Scroll)."""
     now = time.time() if now is None else now
     return (
         live_fragment(schedule, runs, job, slug, now, live_output=live_output,
-                      public_host=public_host)
+                      public_host=public_host, output_stream_url=output_stream_url)
         + journal_fragment(runs, slug, now, live_job=job)
     )
 
@@ -3597,7 +3649,7 @@ def schedule_detail_page(
     schedule: dict | None, runs: list[dict], job: dict | None = None,
     slug: str = "", now: float | None = None,
     *, live_output: dict | None = None, daemon_status: dict | None = None,
-    public_host: str = "localhost",
+    public_host: str = "localhost", output_stream_url: str | None = None,
 ) -> str:
     """Schedule-zentrierte Detail-Sicht (§3 Ebene 3) als volle Seite. Ops-Handles
     (RESCAN/MAINT) seit User-Feedback 2026-07-03 auch hier — außerhalb von
@@ -3616,7 +3668,7 @@ def schedule_detail_page(
         f'<div style="display:flex;gap:.75rem;align-items:baseline">'
         f'<a class="back" href="/-/ui/schedule/{_e(name)}/attrs">Attribute →</a>'
         f'</div>'
-        f"{schedule_detail_inner(schedule, runs, job, slug, now, live_output=live_output, public_host=public_host)}"
+        f"{schedule_detail_inner(schedule, runs, job, slug, now, live_output=live_output, public_host=public_host, output_stream_url=output_stream_url)}"
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_SCROLL_JS}</script>"
