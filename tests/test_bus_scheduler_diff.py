@@ -27,7 +27,7 @@ class _Bus:
     def __init__(self) -> None:
         self.published: list[str] = []
 
-    def publish_state(self, target: str) -> None:
+    def publish_state(self, target: str, value: dict | None = None) -> None:
         self.published.append(target)
 
 

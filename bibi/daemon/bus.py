@@ -5,9 +5,14 @@ Zwei Komponenten, bewusst FastAPI-frei (rein testbar):
 - :class:`Bus` — In-Process-Pub/Sub. Publisher dürfen aus beliebigen Threads
   kommen (der Collector tickt via ``run_in_executor``, Muster ``Sweeper``);
   Konsumenten sind asyncio-Generatoren (die ``/-/events``-Route). Zwei
-  Event-Klassen (PLAN-36 E2): **Zustands-Events** sind leere Dirty-Meldungen
-  pro Ziel-Element, idempotent, last-write-wins — pro Abonnent per Ziel
-  koalesziert, nie gepuffert-historisiert. **Append-Events** (Output-Zeilen)
+  Event-Klassen (PLAN-36 E2): **Zustands-Events** sind Dirty-Meldungen pro
+  Ziel-Element, idempotent, last-write-wins — pro Abonnent per Ziel
+  koalesziert, nie gepuffert-historisiert. Seit #79 duerfen sie den Wert
+  mitfuehren, den der Diff **ohnehin verglichen hat** (``status``/``fire`` je
+  Slug); die Regel dazu lautet: *trage den Wert fuer das, was du ohnehin
+  vergleichst — fuege keinen Vergleich hinzu, um einen Wert tragen zu koennen.*
+  Der Wert ist eine Beigabe, kein Vertrag: ein Empfaenger, der ihn ignoriert
+  und refetcht, verhaelt sich wie vorher. **Append-Events** (Output-Zeilen)
   tragen Offset + formatierte Zeile; bei Überlauf eines langsamen Abonnenten
   werden sie verworfen und durch eine Dirty-Meldung fürs betroffene Ziel
   ersetzt (Refetch mit frischem Seed heilt — PLAN-36 E6). Der Bus hält
@@ -83,7 +88,9 @@ class _Subscriber:
     __slots__ = ("state", "appends", "wakeup", "loop")
 
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
-        self.state: dict[str, None] = {}  # Ziel → None; Insertion-Reihenfolge
+        #: Ziel → Wert (oder ``None``); Insertion-Reihenfolge. Seit #79 darf
+        #: hier der verglichene Wert stehen statt nur „dreckig".
+        self.state: dict[str, dict | None] = {}
         self.appends: deque = deque()
         self.wakeup = asyncio.Event()
         self.loop = loop
@@ -152,11 +159,24 @@ class Bus:
         except RuntimeError:
             pass
 
-    def publish_state(self, target: str) -> None:
+    def publish_state(self, target: str, value: dict | None = None) -> None:
+        """Ein Ziel als dreckig melden — optional mit dem verglichenen Wert (#79).
+
+        **Der Wert ist eine Beigabe, kein Vertrag.** Ein Empfaenger, der ihn
+        ignoriert und stattdessen refetcht, verhaelt sich genau wie vorher; das
+        ist die Bedingung, unter der die Aenderung rein additiv bleibt. Wo kein
+        Wert vorliegt, entsteht auch kein Feld.
+
+        **Koaleszenz und Historienfreiheit bleiben unangetastet.** Zwei
+        Meldungen desselben Ziels sind weiterhin eine Nachricht — jetzt mit dem
+        juengsten Wert. Last-write-wins gilt damit fuer den Wert genauso wie
+        fuer das Ziel, und das ist die einzige Lesart, die zur Zusage des
+        Busses passt: er haelt keine Historie, also auch keine Wertfolge.
+        """
         with self._lock:
             subs = list(self._subs)
             for s in subs:
-                s.state[target] = None
+                s.state[target] = value
         for s in subs:
             self._wake(s)
 
@@ -186,7 +206,12 @@ class Bus:
             return []
         with self._lock:
             sub.wakeup.clear()
-            out: list[dict] = [{"t": "state", "target": t} for t in sub.state]
+            out: list[dict] = []
+            for t, v in sub.state.items():
+                ev: dict = {"t": "state", "target": t}
+                if v is not None:
+                    ev["v"] = v
+                out.append(ev)
             sub.state.clear()
             out.extend(sub.appends)
             sub.appends.clear()
@@ -305,7 +330,11 @@ class SchedulerEvents:
             return
         ziel = ev.get("target")
         if ziel:
-            self.bus.publish_state(ziel)
+            # Der Wert reist mit (#79). Ohne diese Zeile ginge er genau auf der
+            # Strecke verloren, fuer die er gedacht ist: der Scheduler weiss den
+            # neuen Status, der Client zeigt ihn an. Ein Ereignis ohne Wert
+            # bleibt eins — `v` fehlt dann schlicht.
+            self.bus.publish_state(ziel, ev.get("v"))
 
     def _session(self) -> None:
         """Eine Verbindung von ihrem Aufbau bis zu ihrem Ende.
@@ -467,7 +496,8 @@ class Collector:
                        and self._jobs.get(jid, (None,))[:2] != seen[jid][:2])
             if changed:
                 any_job_change = True
-                self._publish_live(slug, r["pinned_host"])
+                self._publish_live(slug, r["pinned_host"],
+                                   {"status": r["status"], "fire": r["fire"]})
                 # Journal bei JEDEM Statuswechsel mit-dirty (nicht nur beim
                 # Journal-INSERT unten): die Journal-Liste zeigt für laufende
                 # Jobs eine Live-Platzhalterzeile (journal_fragment(),
@@ -844,7 +874,14 @@ class Collector:
         if not geaendert:
             return 0
         for slug in geaendert:
-            self.bus.publish_state(f"live:{slug}")
+            # Der Wert, der oben ohnehin gelesen und verglichen wurde (#79) —
+            # bis dahin wurde er hier weggeworfen, um „dreckig" zu melden. Ein
+            # verschwundener Slug hat keinen: `snap.get()` liefert None, und
+            # ohne Wert entsteht kein Feld.
+            wert = snap.get(slug)
+            self.bus.publish_state(
+                f"live:{slug}",
+                None if wert is None else {"status": wert[0], "fire": wert[1]})
         # Die Liste hoert auf EIN Sammel-Target, nicht auf jeden Slug einzeln
         # (PLAN-36 Stufe 36.3) — ohne sie bewegt sich die Kachel im Detail und
         # die Zeile in der Liste nicht, und genau die sieht man zuerst.
@@ -853,11 +890,16 @@ class Collector:
 
     # ── Innereien ───────────────────────────────────────────────────────────
 
-    def _publish_live(self, slug: str, pinned_host) -> None:
-        self.bus.publish_state(f"live:{slug}")
+    def _publish_live(self, slug: str, pinned_host, wert: dict | None = None) -> None:
+        """Die Live-Region eines Slugs dreckig melden — mit dem Wert, falls
+        bekannt (#79).
+
+        Der Bucket-Slug bekommt denselben: er adressiert dieselbe Zeile, nur
+        unter dem Namen, unter dem die Client-Detailseite sie kennt."""
+        self.bus.publish_state(f"live:{slug}", wert)
         b = bucket_slug(slug, pinned_host)
         if b:
-            self.bus.publish_state(f"live:{b}")
+            self.bus.publish_state(f"live:{b}", wert)
 
     def _publish_journal(self, slug: str, pinned_host) -> None:
         self.bus.publish_state(f"journal:{slug}")

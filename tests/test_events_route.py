@@ -102,7 +102,11 @@ def test_events_delivers_collector_findings_after_connect(app_env):
             events = _data_events(c.get("/-/events", params={"limit": 2}).text)
         finally:
             t.join()
-    assert events == [{"t": "hello"}, {"t": "state", "target": "live:a"}]
+    # Seit #79 traegt das Ereignis den Wert mit, den der Diff ohnehin gelesen
+    # hat — der Empfaenger darf ihn ignorieren und refetchen wie bisher.
+    assert events == [{"t": "hello"},
+                      {"t": "state", "target": "live:a",
+                       "v": {"status": "running", "fire": 0}}]
 
 
 def test_events_idle_stream_sends_data_pings_not_counting_limit(app_env):

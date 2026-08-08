@@ -35,7 +35,7 @@ class _Bus:
         self.published: list[str] = []
         self._lock = threading.Lock()
 
-    def publish_state(self, target: str) -> None:
+    def publish_state(self, target: str, value: dict | None = None) -> None:
         with self._lock:
             self.published.append(target)
 
@@ -158,6 +158,30 @@ def test_a_status_change_reaches_the_client_bus_in_under_a_second(scheduler):
         assert _warte_auf(lambda: "live:mein-job" in bus.snapshot(), frist=1.0), \
             "Statuswechsel kam nicht binnen einer Sekunde an"
         assert time.time() - beginn < 1.0
+    finally:
+        abo.stop()
+
+
+def test_the_value_travels_with_the_event(scheduler):
+    """#77 und #79 wirken zusammen — oder gar nicht.
+
+    Der Scheduler weiss den neuen Status, der Client zeigt ihn an. Ginge der
+    Wert auf genau dieser Strecke verloren, traege ihn niemand dorthin, wo er
+    gebraucht wird."""
+    gesehen: list[tuple] = []
+
+    class _WertBus(_Bus):
+        def publish_state(self, target, value=None):
+            gesehen.append((target, value))
+
+    abo = SchedulerEvents(_WertBus(), url=scheduler.url, node_id="n1")
+    abo.start()
+    try:
+        assert _warte_auf(lambda: abo.live)
+        scheduler.sende({"t": "state", "target": "live:a",
+                         "v": {"status": "running", "fire": 2}})
+        assert _warte_auf(lambda: gesehen != [])
+        assert gesehen[0] == ("live:a", {"status": "running", "fire": 2})
     finally:
         abo.stop()
 
