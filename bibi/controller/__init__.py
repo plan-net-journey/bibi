@@ -56,11 +56,25 @@ _MAX_OUTPUT_PROXIES = 8
 _output_proxies = 0
 _output_proxy_lock = threading.Lock()
 
-#: Wie lange ein einzelner Read im Durchreicher blockiert. Kein Watchdog: beim
-#: Output ist Stille der Normalfall, ein Job denkt nach. Der Tick dient allein
-#: dazu, einen abgebrochenen Verbraucher bemerken zu koennen, statt fuer immer
-#: im Read zu haengen — dieselbe Ueberlegung wie bei `bus._READ_TICK_S`.
-_PROXY_READ_TICK_S = 1.0
+#: Wie lange ein Read im Durchreicher hoechstens blockiert.
+#:
+#: **Groesser als die Sendepause der Gegenseite, und das ist die ganze Regel.**
+#: `_formatted_sse()` sendet bei >=15 s Stille ein `: ping`; ein Timeout
+#: darunter heisst deshalb nicht *tot*, sondern *still* — und Stille ist beim
+#: Output der Normalfall, ein Job denkt nach.
+#:
+#: Hier stand bis `v0.7.7` eine Sekunde, mit der Begruendung, ein abgebrochener
+#: Verbraucher solle schnell bemerkt werden. **Derselbe Fehler wie im
+#: Ereignis-Abonnement, und am selben Tag gefunden:** nach einem
+#: `socket.timeout` ist der `http.client`-Stream unbrauchbar, der Leser faellt
+#: heraus, und die Box im Browser verbindet neu — im Takt des Timeouts. Bei
+#: einem Job wie `burndown-app`, der alle 300 s erhebt, waere das jede Sekunde
+#: gewesen.
+#:
+#: Der Preis ist bekannt und kleiner: bricht der Browser ab, haelt der
+#: Durchreicher seine Verbindung zum Scheduler noch bis zu dieser Frist. Dafuer
+#: gibt es `_MAX_OUTPUT_PROXIES`.
+_PROXY_READ_TICK_S = 45.0
 
 __all__ = ["ControllerClient", "add_controller_routes", "render", "service_descriptor"]
 
@@ -1744,11 +1758,12 @@ def add_controller_routes(
                         try:
                             zeile = resp.readline()
                         except TimeoutError:
-                            # Stille ist beim Output der Normalfall — ein Job
-                            # denkt nach. Der Tick dient nur dazu, einen
-                            # abgebrochenen Verbraucher ueberhaupt bemerken zu
-                            # koennen, statt fuer immer im Read zu haengen.
-                            continue
+                            # Laenger stumm, als der Output-Strom je sein darf
+                            # (er pingt alle 15 s) — die Gegenseite ist weg.
+                            # **Nicht** weiterlesen: nach einem socket.timeout
+                            # ist der Stream unbrauchbar, und ein `continue`
+                            # hier war genau der Fehler, den v0.7.7 behebt.
+                            return
                         except (OSError, ValueError):
                             return
                         if not zeile:
