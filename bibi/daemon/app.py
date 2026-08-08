@@ -909,8 +909,20 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
     @app.post("/-/job/{id}/ping", tags=["job"],
              dependencies=[Depends(_require_approved_or_local)])
     def job_ping(id: str):  # noqa: A002
-        # last_ping_at in der DB statt In-Memory-Timer im Wrapper (§2.5/PLAN-11.4) —
-        # der Job meldet sich selbst lebendig, der Worker liest es fürs Zombie-Timeout.
+        # Der **zweite Feeder** von ``jobs.last_ping_at`` (#76). Der erste ist
+        # der Aktivitäts-Reporter des Wrappers, der jede Output-Zeile sieht;
+        # diese Route ist der Notausgang für Apps, deren Aktivität nicht über
+        # stdout läuft — oder die blockweise puffern und deshalb minutenlang
+        # arbeiten können, ohne dass eine Zeile ankommt (s. den App-Vertrag in
+        # ``bibi/job.py::activity()``).
+        #
+        # Hier stand bis v0.7.6: *„der Worker liest es fürs Zombie-Timeout."*
+        # Das war die Beschreibung einer Absicht, nicht eines Zustands — die
+        # Spalte hatte keinen Leser, und diese Route in der ganzen Engine
+        # keinen Aufrufer. Gültig war die mtime von ``output.jsonl``. Zwei
+        # Aktivitäts-Mechanismen parallel im Haus, und der gebaute war der
+        # unsichtbare; ein Kommentar, der das Gegenteil behauptet, hält den
+        # Irrtum am Leben, statt ihn auffallen zu lassen.
         conn = job_db.connect(worker.db_path)
         try:
             ok = job_db.touch_ping(conn, id)
@@ -1400,7 +1412,7 @@ def create_app(
         # run_local()) gibt dem Lauf jetzt eine echte jobs-Zeile
         # (pinned_host=dieser Host) und läuft durch dieselbe Retry/Error/
         # Deferred/Zombie-Maschine wie ein Scheduler-Job, bleibt aber hier
-        # (pinned_host) und sofort (execute_reservation()s detach=True kehrt
+        # (pinned_host) und sofort (execute_reservation() kehrt
         # gleich nach dem Subprozess-Spawn zurück, kein Hintergrund-Thread
         # nötig — run_pinned() selbst blockiert nur für die kurze
         # Setup-Phase, nicht für den ganzen Lauf; GET /-/run/live[/{slug}]

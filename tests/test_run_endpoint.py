@@ -121,7 +121,7 @@ def test_run_endpoint(gitrepo: Path):
         # PLAN-21 Befund 10, 2. Nachtrag: /-/run antwortet sofort nach
         # Subprozess-Start (status="running"), nicht erst nach Lauf-Ende.
         # PLAN-28: run_pinned() ersetzt run_local() für diese Route — der
-        # Wrapper-Subprozess (detach=True) meldet Commit/Terminal-Status
+        # Der detacht laufende Wrapper-Subprozess meldet Commit/Terminal-Status
         # selbständig, kein Hintergrund-Thread mehr im Daemon nötig.
         slug = r.json()["slug"]
         assert r.json()["status"] == "running"

@@ -892,6 +892,18 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None, *,
         "fire": row["fire"],
         "host": row["host"],
         "worker": row["worker"],
+        # ── Die Silence-Frist, beide Hälften (#76) ───────────────────────────
+        # `silence_timeout` ist die **Dauer**, `last_ping_at` der **Zeitpunkt**,
+        # ab dem sie zählt. Bis #76 trug diese Sicht keins von beiden, und aus
+        # einer Dauer ohne Startpunkt lässt sich keine Uhrzeit bilden — der
+        # Client konnte deshalb nicht anzeigen, wann ein stiller Lauf abgeräumt
+        # wird, obwohl der Scheduler es die ganze Zeit wusste.
+        #
+        # Sie stehen zusammen, weil sie einzeln nichts aussagen. Wer nur die
+        # Dauer hat, kennt kein Ziel; wer nur den Zeitpunkt hat, weiß nicht,
+        # wie lange er noch gilt.
+        "silence_timeout": row["silence_timeout"],
+        "last_ping_at": row["last_ping_at"],
     }
 
 
@@ -1538,8 +1550,8 @@ def report_pid(
     stattfand.
 
     **Das ``AND status='starting'`` ist der Kern und kein Schmuck.** Diese
-    Funktion läuft, nachdem ``_run_wrapper()`` zurückgekehrt ist — bei
-    ``detach=True`` also unmittelbar nach dem ``Popen``, während der Wrapper
+    Funktion läuft, nachdem ``_run_wrapper()`` zurückgekehrt ist — also
+    unmittelbar nach dem ``Popen``, während der Wrapper
     schon arbeitet. Ein sehr kurzer Job kann in diesem Moment längst fertig sein
     und ``complete`` gemeldet haben. Ein unbedingtes ``SET status='running'``
     würde diesen Terminalzustand überschreiben: der Job fiele auf ``running``
@@ -1948,10 +1960,30 @@ def verdict(conn: sqlite3.Connection, now: float | None = None) -> dict:
 # ── PLAN-11.2: Ping + Demand ──────────────────────────────────────────────────
 
 
-def touch_ping(conn: sqlite3.Connection, job_id: str) -> bool:
-    """Setzt last_ping_at = now. Gibt False zurück wenn Job nicht existiert."""
+def touch_ping(conn: sqlite3.Connection, job_id: str, *, at: float | None = None) -> bool:
+    """Rückt ``last_ping_at`` auf ``at`` (Default: jetzt) vor.
+
+    **Monoton, und das ist der Punkt** (#76): geschrieben wird nur, wenn der
+    Wert wirklich vorrückt. Zwei Feeder speisen dieselbe Spalte — der
+    Aktivitäts-Reporter des Wrappers aus einem Thread und ``POST
+    /-/job/{id}/ping`` aus einem Request —, und ein knapp verzögerter Aufruf
+    dürfte niemals eine jüngere Meldung überschreiben: das verlängerte genau die
+    Silence-Frist, die gerade ablaufen sollte.
+
+    Die Monotonie ist zugleich die Drossel. Der Wrapper sieht Aktivität so oft,
+    wie das Kind Zeilen schreibt; ohne diese Bedingung wäre jede Zeile ein
+    ``UPDATE``. Mit ihr kostet ein stiller Lauf nichts, und ein lauter genau so
+    viele Schreibvorgänge, wie sein Reporter tickt (einmal je Sekunde).
+
+    ``False`` heißt deshalb zweierlei und wird gleich behandelt: es gibt die
+    Zeile nicht, oder der Wert wäre nicht vorgerückt. Beide Male ist nichts zu
+    tun.
+    """
+    ts = time.time() if at is None else at
     cur = conn.execute(
-        "UPDATE jobs SET last_ping_at=? WHERE id=?", (time.time(), job_id)
+        "UPDATE jobs SET last_ping_at=? "
+        " WHERE id=? AND (last_ping_at IS NULL OR last_ping_at < ?)",
+        (ts, job_id, ts),
     )
     return cur.rowcount > 0
 

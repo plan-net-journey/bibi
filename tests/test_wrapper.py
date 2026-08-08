@@ -287,3 +287,56 @@ def test_main_reports_crash_as_error_and_logs_phase(tmp_path: Path, monkeypatch)
     assert wrapper.main() == 1
     phases = output.lines(out, "phase")
     assert any("exec-Setup kaputt" in p for p in phases)
+
+
+# ── #76: der Wrapper schreibt die Aktivität fort ─────────────────────────────
+#
+# Er ist der einzige Ort, der Aktivität *sieht* — der Pump-Loop bekommt jede
+# Zeile. Bis #76 hat er den Zeitpunkt nur in einer Prozess-lokalen Liste
+# gehalten (`last_activity_ts`), aus der ihn niemand sonst lesen konnte.
+
+
+def _job_row(db: Path, job_id: str):
+    from bibi.daemon import job_db
+    conn = job_db.connect(db)
+    try:
+        return conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def _seed_running_job(db: Path, job_id: str) -> None:
+    from bibi.daemon import job_db
+    conn = job_db.connect(db)
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)", (job_id, "s", "s.md", "job", "echo hi", "running"))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_run_job_writes_last_ping_at(tmp_path: Path):
+    """Nach einer Output-Zeile eines laufenden Laufs ist `last_ping_at` gesetzt."""
+    db = tmp_path / "jobs.sqlite"
+    _seed_running_job(db, "j1")
+    out = tmp_path / "output.jsonl"
+    vorher = __import__("time").time()
+    env = {
+        "BIBI_JOB_TYPE": "job", "BIBI_OUTPUT_PATH": str(out),
+        "BIBI_JOB_CMD": "echo hallo",
+        "BIBI_JOB_ID": "j1", "BIBI_PING_DB_PATH": str(db),
+    }
+    assert wrapper.run_job(env) == 0
+    assert output.lines(out, "out") == ["hallo"]
+    ping = _job_row(db, "j1")["last_ping_at"]
+    assert ping is not None and ping >= vorher
+
+
+def test_run_job_without_a_ping_db_stays_silent(tmp_path: Path):
+    """Ohne DB-Pfad läuft alles wie bisher — der Reporter ist rein additiv."""
+    out = tmp_path / "output.jsonl"
+    env = {"BIBI_JOB_TYPE": "job", "BIBI_OUTPUT_PATH": str(out), "BIBI_JOB_CMD": "echo hallo"}
+    assert wrapper.run_job(env) == 0
+    assert output.lines(out, "out") == ["hallo"]
