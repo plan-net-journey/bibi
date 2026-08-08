@@ -367,3 +367,33 @@ def test_uncommitted_alone_is_not_the_empty_state():
     html = render._feed_list([], days=7, uncommitted=_uncommitted())
     assert "No changes" not in html
     assert "Bibi5" in html
+
+
+# --- #80: der Feed hängt am Bus wie jede andere Live-Region -------------------
+
+
+def test_the_feedboard_listens_on_the_bus():
+    """`#feedboard` war die einzige Live-Region ohne `data-bus`.
+
+    Ohne das Attribut findet `_EVENTS_JS` das Element nie — der Feed
+    aktualisierte deshalb nur beim Seitenaufbau und beim Klick auf LOAD MORE."""
+    html = render.feed_fragment(_daten(_entry("case/a", _T)), days=7)
+    assert 'data-bus="feed"' in html
+    assert 'data-bus-refetch=' in html
+
+
+def test_the_refetch_keeps_the_window_the_user_opened():
+    """Ein per LOAD MORE erweitertes Fenster darf ein Refetch nicht
+    zurückdrehen (dieselbe Klasse wie #44).
+
+    Die Reichweite steckt deshalb in der Refetch-URL selbst: das ausgetauschte
+    Fragment trägt sein eigenes `days` mit, und der nächste Refetch nimmt
+    wieder dasselbe."""
+    html = render.feed_fragment(_daten(_entry("case/a", _T)), days=30)
+    assert 'data-bus-refetch="/-/ui/feed/board?days=30"' in html
+
+
+def test_without_a_window_the_refetch_stays_plain():
+    """Ohne Fenster keine Fensterangabe — sonst stünde `days=None` in der URL."""
+    html = render.feed_fragment(_daten(_entry("case/a", _T)), days=None)
+    assert 'data-bus-refetch="/-/ui/feed/board"' in html

@@ -36,6 +36,8 @@ Ziel-Schema (Targets, von Stufe 36.2 konsumiert):
 - ``live:<slug>`` — die Live-Region eines Jobs (Kachel + Aktionsleiste).
 - ``journal:<slug>`` — die Journal-Liste eines Jobs.
 - ``out:<job_id>`` — die Live-Output-Box (Append-Events).
+- ``feed`` — die Feed-Liste (#80), gespeist vom Fingerabdruck ueber die
+  Quellen, aus denen ``feed.py`` liest.
 
 Für gepinnte Läufe (``pinned_host`` gesetzt, Slug trägt ein
 ``-<8hex>``-Suffix, s. ``run_pinned()``) wird zusätzlich der Bucket-Slug
@@ -461,8 +463,14 @@ class Collector:
         #: Eigener Speicher *und* eigene Drossel, weil er eine andere Quelle
         #: hat als der Scheduler-Poll — denselben Takt, aber keinen Netzaufruf.
         self._git_snapshot: tuple | None = None
+        #: Sechster Fingerabdruck (#80), und der erste mit eigenem Ziel statt
+        #: `feedstatus`: die Quellen des Feeds. Eigene Drossel, weil er einen
+        #: zweiten git-Aufruf braucht (`dirty_files()`), den `_diff_git()`
+        #: nicht schon macht.
+        self._feed_snapshot: tuple | None = None
         self._sched_last_fetch: float = 0.0
         self._git_last_check: float = 0.0
+        self._feed_last_check: float = 0.0
         self._primed = False
         self._task: asyncio.Task | None = None
         self._running = False
@@ -550,6 +558,7 @@ class Collector:
         stats["state"] += self._diff_scheduler()
         stats["state"] += self._diff_heartbeat()
         stats["state"] += self._diff_git()
+        stats["state"] += self._diff_feed()
 
         # Tails: Output-Zuwachs publizieren; Läufe, die nicht mehr aktiv
         # wachsen (Terminal/deferred), nach einem letzten Read entlassen.
@@ -709,6 +718,79 @@ class Collector:
         self._git_snapshot = snap
         if changed:
             self.bus.publish_state("feedstatus")
+            return 1
+        return 0
+
+    def _read_feed(self) -> dict | None:
+        """Fingerabdruck ueber die Quellen, aus denen ``feed.py`` liest — oder
+        ``None`` (kein Git-Repo).
+
+        Zwei Werte, und sie decken alle vier Quellen ab:
+
+        * ``oid`` — der HEAD. Er traegt die **Commits**, und mit ihnen auch die
+          **Agent-Slugs** (aus ``git log``) und jeden **Case**, der bereits
+          committet ist.
+        * ``dirty`` — die geaenderten Pfade samt Zustand, dieselbe Quelle, aus
+          der ``feed.uncommitted_units()`` seine offenen Einheiten bildet. Sie
+          traegt zugleich jeden **neuen Case**: dessen ``README.md`` ist
+          untracked, bevor sie committet ist.
+
+        **Deshalb steht ``discover_cases()`` hier bewusst nicht**, obwohl der
+        Feed es aufruft. Es ist ein Verzeichnis-Walk und damit der teuerste
+        Teil — und er brachte nichts, was die beiden Werte oben nicht schon
+        sagen. Ein Fingerabdruck, der mehr liest als noetig, verliert genau die
+        Kosten-Entscheidung, um die es hier geht.
+
+        Eigene Naht wie ``_read_git()``: dahinter stecken Subprozesse, und
+        Tests sollen sie ersetzen koennen, ohne ein Repo anzulegen.
+        """
+        try:
+            from bibi import repo
+            from bibi.git_status import dirty_files, working_tree_status
+            root = self.repo_root or repo.root()
+            st = working_tree_status(root)
+            if st is None:
+                return None
+            return {"oid": st.oid,
+                    "dirty": tuple(sorted(dirty_files(root).items()))}
+        except Exception:  # noqa: BLE001 — ein fehlendes Repo ist kein Fehler
+            return None
+
+    def _diff_feed(self) -> int:
+        """Der Ausloeser des Feeds (#80).
+
+        **``#feedboard`` trug weder ``data-bus`` noch ``data-bus-refetch``** —
+        als einzige Live-Region des FE. Er aktualisierte nur beim Seitenaufbau
+        und beim Klick auf ``LOAD MORE``; blieb ein Tab offen, waehrend eine
+        Vault-Datei gespeichert oder ein Commit erzeugt wurde, stand er still.
+
+        Aufgefallen ist es lange nicht, und der Grund ist lehrreich: **man
+        betritt den Feed und laedt dabei die Seite.** Er ist frisch, wenn man
+        hinkommt, nicht waehrend man hinsieht.
+
+        Derselbe Takt wie ``_diff_git()``/``_diff_scheduler()``, aus demselben
+        Grund — der Fingerabdruck haengt an git. Und dieselbe Regel: gemeldet
+        wird nur bei echter Aenderung, der Takt begrenzt allein, **wie oft
+        nachgesehen** wird. Ein Mindesttakt, der die Region periodisch dreckig
+        macht, waere ein Poll durch die Hintertuer und ist schon fuer die
+        Git-Zeile verworfen worden.
+
+        Eigenes Ziel, nicht ``feedstatus``: der Header haengt an einem
+        git-Aufruf, und ihn bei jeder Feed-Aenderung mitzunehmen waere genau
+        der Firehose, den der Modul-Docstring ausschliesst. Zwei
+        Fingerabdruecke, zwei Ziele — dieselbe Trennung wie zwischen
+        ``_diff_scheduler()`` und ``_diff_scheduler_jobs()``.
+        """
+        jetzt = time.time()
+        if jetzt - self._feed_last_check < self._SCHED_POLL_S:
+            return 0
+        self._feed_last_check = jetzt
+        f = self._read_feed()
+        snap: tuple | None = None if f is None else (f.get("oid"), f.get("dirty"))
+        changed = self._primed and snap != self._feed_snapshot
+        self._feed_snapshot = snap
+        if changed:
+            self.bus.publish_state("feed")
             return 1
         return 0
 

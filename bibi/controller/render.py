@@ -2679,7 +2679,20 @@ def _feed_board_url(days: int | None) -> str:
 def feed_fragment(feed_data: dict, *, days: int | None = None,
                   now: float | None = None) -> str:
     """Der austauschbare Feed-Kern (``#feedboard``): Reichweite, Liste,
-    LOAD MORE. Ein Klick erweitert das Fenster um einen Tag."""
+    LOAD MORE. Ein Klick erweitert das Fenster um einen Tag.
+
+    **Haengt am Bus wie jede andere Live-Region** (#80). Bis dahin war dies die
+    einzige, die es nicht tat — ``#feedstatus``, ``#jobstatuscard``,
+    ``#clientsboard``, ``#jobs``, ``#tiles``, ``#runs`` und die Journal-Liste
+    alle schon. Der Feed aktualisierte deshalb nur beim Seitenaufbau und beim
+    Klick auf LOAD MORE; blieb ein Tab offen, waehrend jemand eine Vault-Datei
+    speicherte, stand er still.
+
+    **Die Reichweite steckt in der Refetch-URL**, und das ist kein Detail
+    (dieselbe Klasse wie #44): das ausgetauschte Fragment traegt sein eigenes
+    ``days`` mit, damit ein Bus-Refetch ein per LOAD MORE geoeffnetes Fenster
+    nicht wieder zudreht. Wer sich dreissig Tage aufgeklappt hat, will nicht
+    beim naechsten Commit wieder bei sieben stehen."""
     entries = feed_data.get("entries") or []
     commit_base_url = feed_data.get("commit_base_url")
     load_more = ""
@@ -2692,7 +2705,8 @@ def feed_fragment(feed_data: dict, *, days: int | None = None,
             "</div>"
         )
     return (
-        '<div id="feedboard"><div class="panel-card">'
+        f'<div id="feedboard" data-bus="feed" '
+        f'data-bus-refetch="{_feed_board_url(days)}"><div class="panel-card">'
         f"{_feed_reach(entries, days)}"
         f"{_feed_list(entries, days=days, commit_base_url=commit_base_url, uncommitted=feed_data.get('uncommitted') or [])}"
         f"{load_more}"
