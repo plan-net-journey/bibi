@@ -230,6 +230,22 @@ class Bus:
 #: kann still sterben.
 _SUB_WATCHDOG_S = 45.0
 
+#: Ziele, die ein Abonnement **nicht** uebernimmt, weil sie den eigenen Knoten
+#: meinen und nicht den, von dem sie kommen (#77 trifft #80).
+#:
+#: ``feed`` ist der einzige: die Feed-Liste zeigt das Repo, in dem sie laeuft —
+#: Commits, offene Aenderungen, Cases im lokalen Arbeitsbaum. Uebernaehme der
+#: Client die Meldung des Schedulers, laedt er seine eigene Liste neu, weil
+#: anderswo etwas passiert ist, und zahlt dafuer einen ``git log`` plus einen
+#: ``git status``. Denselben Commit sieht er ohnehin selbst, sobald der
+#: Synchronizer ihn gebracht hat.
+#:
+#: **Ein Eintrag ist keine Ausnahmeliste, sondern eine Aussage.** Alles andere —
+#: ``live:``, ``journal:``, ``jobs``, ``nodes``, ``archived`` — ist
+#: Scheduler-Zustand und gehoert uebernommen. Waechst diese Menge, ist das ein
+#: Hinweis darauf, dass ein Ziel zwei Dinge zugleich meint.
+_NUR_LOKALE_ZIELE = frozenset({"feed"})
+
 #: Pause vor dem naechsten Verbindungsversuch. Kurz, weil ein Client ohne Strom
 #: auf den Poll zurueckfaellt und dort ohnehin nur alle 5 s nachsieht.
 _SUB_RETRY_S = 3.0
@@ -331,7 +347,7 @@ class SchedulerEvents:
             # draussen ohnehin am Ende des Stroms.
             return
         ziel = ev.get("target")
-        if ziel:
+        if ziel and ziel not in _NUR_LOKALE_ZIELE:
             # Der Wert reist mit (#79). Ohne diese Zeile ginge er genau auf der
             # Strecke verloren, fuer die er gedacht ist: der Scheduler weiss den
             # neuen Status, der Client zeigt ihn an. Ein Ereignis ohne Wert

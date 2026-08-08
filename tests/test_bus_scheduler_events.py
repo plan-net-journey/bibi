@@ -237,6 +237,33 @@ def test_appends_stay_out(scheduler):
         abo.stop()
 
 
+def test_the_feed_target_stays_at_home(scheduler):
+    """Der Feed ist **dieser** Knoten (#80 trifft #77).
+
+    Er zeigt das Repo, in dem er laeuft: Commits, offene Aenderungen, Cases im
+    lokalen Arbeitsbaum. Der Scheduler meldet sein `feed`, wenn sich *dort*
+    etwas ruehrt — uebernaehme der Client das, laedt er seine eigene Liste neu,
+    weil anderswo etwas passiert ist, und zahlt dafuer einen `git log` plus
+    `git status`. Denselben Commit sieht er ohnehin selbst, sobald der
+    Synchronizer ihn gebracht hat, und dann meldet ihn sein eigener
+    `_diff_feed()`.
+
+    Ein Eintrag ist keine Ausnahmeliste, sondern eine Aussage. Alles andere —
+    `live:`, `journal:`, `jobs`, `nodes`, `archived` — ist Scheduler-Zustand
+    und gehoert uebernommen."""
+    bus = _Bus()
+    abo = SchedulerEvents(bus, url=scheduler.url, node_id="n1")
+    abo.start()
+    try:
+        assert _warte_auf(lambda: abo.live)
+        scheduler.sende({"t": "state", "target": "feed"})
+        scheduler.sende({"t": "state", "target": "jobs"})
+        assert _warte_auf(lambda: "jobs" in bus.snapshot())
+        assert "feed" not in bus.snapshot()
+    finally:
+        abo.stop()
+
+
 def test_a_rejected_node_gets_no_subscription_and_stays_dead(scheduler):
     """Ein nicht freigeschalteter Knoten bekommt keinen Strom.
 
