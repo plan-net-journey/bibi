@@ -1176,3 +1176,32 @@ def test_the_url_still_beats_the_cookie_on_the_fragment(app_with, team_repo: Pat
         c.get("/-/jobs/list?f=1&typ=app", headers={"accept": "text/html"})
         html = c.get("/-/jobs/list?f=1", headers={"accept": "text/html"}).text
     assert _zeile_von(html, "flach"), "der abgewählte Filter kam über den Cookie zurück"
+
+
+# ── #85: die Handles überleben einen Bus-Refetch ────────────────────────────
+
+
+def test_the_view_handles_are_delegated_not_bound_per_element():
+    """**Ein struktureller Wächter, und er weiß, was er nicht zeigt.**
+
+    Der Nachweis für `#85` ist der Browser-Test (`tests/browser/
+    test_jobs_view.py::test_the_filter_handles_survive_a_bus_refetch`) — er
+    klickt nach einem echten Refetch und sieht, ob etwas passiert. Nur läuft
+    die Browser-Ebene im Engine-CI **nicht** mit; sie hat ihren eigenen,
+    selteneren Job. Ohne eine Zeile hier fiele ein Rückfall erst dort auf,
+    also womöglich nach dem Release.
+
+    Was diese Prüfung leistet: sie hält die Eigenschaft fest, an der der
+    Fehler hing — die Handles hängen an `document.body` und nicht an
+    Elementen, die der `outerHTML`-Swap ersetzt. Was sie **nicht** leistet:
+    zu zeigen, dass ein Klick wirkt. Genau dieser Abstand ist der Grund für
+    `#84`, und er gehört benannt statt kaschiert.
+    """
+    js = render._JOBS_JS
+    assert "document.body.addEventListener('click'" in js, (
+        "die Ansichts-Handles hängen nicht mehr am Body — nach dem ersten "
+        "Bus-Refetch wären sie tot (#85)")
+    for tot in ("document.querySelectorAll('.fltr[data-filter]')",
+                "document.querySelectorAll('th[data-sort]')"):
+        assert tot not in js, (
+            f"{tot} bindet an Elemente, die der Swap ersetzt — das war #85")

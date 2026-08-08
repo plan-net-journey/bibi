@@ -4235,51 +4235,71 @@ _JOBS_JS = """
   // damit ist jede Ansicht teilbar, ueberlebt ein Neuladen und laesst sich
   // zurueckblaettern. Die Auswertung passiert am Server -- dieselbe
   // Klassifikation wie beim ersten Aufbau, kein zweiter Filter im Browser.
-  const url = new URL(window.location.href);
-  // Jede von hier gebaute URL traegt `f=1` (m.rau/bibi#156): sie sagt damit
-  // "diese Query ist die Antwort, auch wo sie schweigt". Ohne das Zeichen ist
-  // eine URL ohne `typ` von einer nie gesetzten nicht zu unterscheiden -- der
-  // Server faellt dann auf den Cookie zurueck und bringt genau den Filter
-  // wieder, den man eben abgewaehlt hat.
-  const gehe = () => {
-    url.searchParams.set('f', '1');
-    window.location.href = url.toString();
-  };
-  const mehrfach = (name, wert) => {
-    const da = url.searchParams.getAll(name);
-    url.searchParams.delete(name);
-    // Toggle: was schon drin ist, faellt raus.
-    const neu = da.includes(wert) ? da.filter(v => v !== wert) : da.concat([wert]);
-    neu.forEach(v => url.searchParams.append(name, v));
-    gehe();
-  };
+  //
+  // #85: **ein Zuhoerer an `document.body`, nicht einer je Knopf.** Die
+  // Knoepfe und die Spaltenkoepfe stehen IN `#jobs`, und der Bus ersetzt genau
+  // diese Region per `outerHTML`-Swap. Direkt gebundene Handler hingen danach
+  // an Elementen, die nicht mehr im DOM waren -- ab dem ersten Refetch war
+  // jeder Klick folgenlos, bis jemand neu lud. Und ein Refetch passiert bei
+  // jedem Job-Zustandswechsel: auf einem Knoten mit laufenden Jobs war "tot"
+  // der Normalfall und "klickbar" das kurze Fenster nach dem Laden.
+  //
+  // `_EVENTS_JS` loest dasselbe Problem ueber `htmx:afterSettle` und
+  // Neuverdrahtung; hier ist Delegation der einfachere Weg, weil es nichts
+  // aufzubauen gibt -- nur zuzuhoeren. Der Zuhoerer haengt an `body`, das kein
+  // Swap dieser Seite je austauscht.
+  //
+  // Die URL wird beim Klick gelesen und nicht beim Laden gemerkt: ein
+  // gemerktes Objekt waere nach einer History-Aenderung veraltet, und
+  // "veraltet" hiesse hier "faellt auf eine fruehere Ansicht zurueck".
   const gruppe = (wert) => {
     if (['job','claude','app'].includes(wert)) return 'typ';
     if (['waiting','running','stopped'].includes(wert)) return 'status';
     return 'journal';
   };
-  document.querySelectorAll('.fltr[data-filter]').forEach(b => {
-    b.addEventListener('click', () => mehrfach(gruppe(b.dataset.filter), b.dataset.filter));
-  });
-  // Das group-Handle ist kein Mehrfach-Toggle, sondern ein Schalter mit zwei
-  // Stellungen -- der Knopf traegt die Stellung, die er herstellt.
-  document.querySelectorAll('.fltr[data-group]').forEach(b => {
-    b.addEventListener('click', () => {
-      if (b.dataset.group === 'off') url.searchParams.set('group', 'off');
+  // Jede von hier gebaute URL traegt `f=1` (m.rau/bibi#156): sie sagt damit
+  // "diese Query ist die Antwort, auch wo sie schweigt". Ohne das Zeichen ist
+  // eine URL ohne `typ` von einer nie gesetzten nicht zu unterscheiden -- der
+  // Server faellt dann auf den Cookie zurueck und bringt genau den Filter
+  // wieder, den man eben abgewaehlt hat.
+  const gehe = (url) => {
+    url.searchParams.set('f', '1');
+    window.location.href = url.toString();
+  };
+  const mehrfach = (url, name, wert) => {
+    const da = url.searchParams.getAll(name);
+    url.searchParams.delete(name);
+    // Toggle: was schon drin ist, faellt raus.
+    const neu = da.includes(wert) ? da.filter(v => v !== wert) : da.concat([wert]);
+    neu.forEach(v => url.searchParams.append(name, v));
+    gehe(url);
+  };
+  document.body.addEventListener('click', (ev) => {
+    const ziel = ev.target;
+    if (!ziel || !ziel.closest) return;
+    // `closest`, nicht `ev.target` selbst: ein Klick kann ein Kind treffen
+    // (der Pfeil im sortierten Spaltenkopf ist Text im `th`).
+    const knopf = ziel.closest('.fltr[data-filter], .fltr[data-group]');
+    const kopf = knopf ? null : ziel.closest('th[data-sort]');
+    if (!knopf && !kopf) return;
+    const url = new URL(window.location.href);
+    if (knopf && knopf.dataset.filter !== undefined) {
+      mehrfach(url, gruppe(knopf.dataset.filter), knopf.dataset.filter);
+    } else if (knopf) {
+      // Das group-Handle ist kein Mehrfach-Toggle, sondern ein Schalter mit
+      // zwei Stellungen -- der Knopf traegt die Stellung, die er herstellt.
+      if (knopf.dataset.group === 'off') url.searchParams.set('group', 'off');
       else url.searchParams.delete('group');
-      gehe();
-    });
-  });
-  document.querySelectorAll('th[data-sort]').forEach(th => {
-    th.addEventListener('click', () => {
+      gehe(url);
+    } else {
       const jetzt = url.searchParams.get('sort');
       const richtung = url.searchParams.get('dir') || 'asc';
-      url.searchParams.set('sort', th.dataset.sort);
+      url.searchParams.set('sort', kopf.dataset.sort);
       // Zweiter Klick auf dieselbe Spalte dreht die Richtung um.
-      url.searchParams.set('dir', jetzt === th.dataset.sort && richtung === 'asc'
+      url.searchParams.set('dir', jetzt === kopf.dataset.sort && richtung === 'asc'
                                    ? 'desc' : 'asc');
-      gehe();
-    });
+      gehe(url);
+    }
   });
 })();
 """
