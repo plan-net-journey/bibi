@@ -338,6 +338,27 @@ def _ping_reporter(proc: subprocess.Popen, db_path_str: str, job_id: str,
         time.sleep(_PING_INTERVAL_S)
 
 
+def _ping_final(env: dict[str, str], last_activity_ts: list[float]) -> None:
+    """Den letzten Aktivitätsstand festhalten — **synchron**, im Hauptpfad.
+
+    Der Reporter-Thread ist ``daemon`` und wird nicht gejoint: er kann beim
+    Rückkehren aus ``run_job()``/``run_app()`` noch nichts geschrieben haben.
+    Für die Silence-Frist ist das folgenlos — sie interessiert nur einen
+    laufenden Job. Für **jeden Leser der Spalte** ist es der Unterschied
+    zwischen einem Wert und ``NULL``, und er hing bis hierher daran, wer
+    zuerst drankam (CI-Befund 2026-08-08: dieselbe Suite auf macOS grün, auf
+    Linux rot).
+
+    Den Thread stattdessen zu joinen wäre die naheliegende Alternative und
+    teuer: er schläft in Sekundenschritten, jedes Job-Ende zahlte bis zu eine
+    Sekunde dafür. Ein Aufruf hier kostet nichts und ist obendrein die
+    ehrlichere Stelle — hier steht fest, dass nichts mehr kommt."""
+    db_path_str = env.get("BIBI_PING_DB_PATH")
+    job_id = env.get("BIBI_JOB_ID")
+    if db_path_str and job_id:
+        _report_activity(db_path_str, job_id, last_activity_ts[0])
+
+
 def _ping_monitors(env: dict[str, str], proc: subprocess.Popen,
                    last_activity_ts: list[float]) -> list[threading.Thread]:
     """Der Aktivitäts-Reporter als Liste — leer, wenn es nichts zu melden gibt.
@@ -807,6 +828,7 @@ def run_app(env: dict[str, str]) -> int:
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
     for t in pump_threads:
         t.join()
+    _ping_final(env, last_activity_ts)
 
     with lock:
         cs = current_status[0]
@@ -893,6 +915,7 @@ def run_job(env: dict[str, str]) -> int:
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
     for t in threads[:2]:  # pump threads joinen (monitors sind daemon)
         t.join()
+    _ping_final(env, last_activity_ts)
 
     # PLAN-24 Befund 5: mit aktiver Job-Image-Persistenz existiert der
     # Container jetzt noch (kein --rm, s. exec_backend.build_exec) — genau

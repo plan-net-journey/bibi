@@ -359,6 +359,32 @@ def test_the_reporter_reports_even_when_the_process_is_already_gone(tmp_path: Pa
     assert _job_row(db, "j-kurz")["last_ping_at"] == 1234.0
 
 
+def test_run_job_records_the_activity_before_it_returns(monkeypatch, tmp_path: Path):
+    """Wenn `run_job()` zurueckkehrt, steht der Wert — ohne Thread-Glueck.
+
+    **Der zweite CI-Befund am 2026-08-08, und der eigentliche.** Der erste Fix
+    liess den Reporter-Thread garantiert *einmal* laufen; er blieb aber
+    `daemon` und wird nicht gejoint. `run_job()` kehrte also zurueck, waehrend
+    der Thread unter Umstaenden noch nichts geschrieben hatte — auf macOS war
+    er schnell genug, auf Linux nicht. Zwei Laeufe, zwei Ergebnisse, wieder
+    aus Zufall.
+
+    Der Reporter ist hier abgeschaltet. Damit haengt der Test an keinem Thread
+    mehr, sondern allein daran, ob der Hauptpfad den letzten Stand festhaelt."""
+    monkeypatch.setattr(wrapper, "_ping_monitors", lambda *a, **kw: [])
+
+    db = tmp_path / "jobs.sqlite"
+    _seed_running_job(db, "j-sync")
+    out = tmp_path / "output.jsonl"
+    env = {
+        "BIBI_JOB_TYPE": "job", "BIBI_OUTPUT_PATH": str(out),
+        "BIBI_JOB_CMD": "echo hallo",
+        "BIBI_JOB_ID": "j-sync", "BIBI_PING_DB_PATH": str(db),
+    }
+    assert wrapper.run_job(env) == 0
+    assert _job_row(db, "j-sync")["last_ping_at"] is not None
+
+
 def test_run_job_without_a_ping_db_stays_silent(tmp_path: Path):
     """Ohne DB-Pfad läuft alles wie bisher — der Reporter ist rein additiv."""
     out = tmp_path / "output.jsonl"
