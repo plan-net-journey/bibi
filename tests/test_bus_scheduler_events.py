@@ -304,6 +304,36 @@ def test_a_broken_stream_reconnects(scheduler):
         abo.stop()
 
 
+def test_a_quiet_stream_does_not_reconnect(scheduler):
+    """Ein stiller Strom ist der Normalfall — kein Grund, neu zu verbinden.
+
+    **Live gefunden am 2026-08-08, kurz nach dem v0.7.6-Rollout.** Der
+    Socket-Timeout stand auf einer Sekunde, damit `stop()` schnell greift.
+    Nach einem `socket.timeout` ist der `http.client`-Stream aber unbrauchbar:
+    der Lese-Loop fiel heraus, wartete die Retry-Pause ab und verband neu —
+    **alle vier Sekunden**. Und weil der Scheduler bei jedem Verbindungsaufbau
+    seinen Resync schickt, meldete er dabei jedes Mal jede aktive Live-Region
+    als dreckig.
+
+    Damit kehrte der Posten seine eigene Absicht um: statt den
+    Fünf-Sekunden-Poll zu ersetzen, lud ein offener Tab nun alle paar Sekunden
+    *alles* nach. Gemessen: 100 Verbindungsaufbauten in zwei Minuten.
+    """
+    bus = _Bus()
+    abo = SchedulerEvents(bus, url=scheduler.url, node_id="n1", retry=0.05)
+    abo.start()
+    try:
+        assert _warte_auf(lambda: abo.live)
+        # Der Stub sendet nach dem `hello` nichts mehr. Genau das muss der
+        # Abonnent aushalten, ohne die Verbindung wegzuwerfen.
+        time.sleep(4.0)
+        assert len(scheduler.gesehene_node_ids) == 1, (
+            f"{len(scheduler.gesehene_node_ids)} Verbindungsaufbauten in 4 s "
+            "— der Strom wird verworfen, obwohl er nur still ist")
+    finally:
+        abo.stop()
+
+
 def test_a_node_without_a_scheduler_never_subscribes():
     """Ein Knoten, der selbst der Scheduler ist, hat niemanden zu abonnieren."""
     bus = _Bus()
@@ -315,3 +345,49 @@ def test_a_node_without_a_scheduler_never_subscribes():
         assert bus.snapshot() == []
     finally:
         abo.stop()
+
+
+# ── Ein Knoten abonniert nicht sich selbst ──────────────────────────────────
+
+
+def test_a_scheduler_node_does_not_subscribe_at_all(team_repo, monkeypatch):
+    """Wer die Quelle **ist**, abonniert sie nicht.
+
+    **Live gefunden am 2026-08-08.** Auf dem Host steht
+    ``BIBI_SCHEDULER_URL=http://localhost:8780`` — seine eigene Adresse. Der
+    Abonnent nahm sie und verband sich mit dem Daemon, in dem er selbst läuft.
+
+    Verhindert hat den Schaden ein Zufall: die eigene ``node_id`` des Hosts
+    stand in seiner eigenen ``approved_nodes`` auf ``blocked``, das Gate wies
+    ihn also ab — was blieb, war ein Retry-Sturm alle drei Sekunden gegen sich
+    selbst. **Wäre sie ``approved`` gewesen, hätte er seine eigenen Ereignisse
+    abonniert und auf denselben Bus zurückveröffentlicht: eine Endlosschleife.**
+
+    Der Kommentar in ``create_app()`` warnte wörtlich vor genau diesem Fall.
+    Die Prüfung dazu fehlte trotzdem — deshalb steht sie jetzt hier und nicht
+    nur in Prosa."""
+    from fastapi.testclient import TestClient
+
+    from bibi.daemon import roles
+    from bibi.daemon.app import create_app
+
+    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://localhost:8780")
+    app = create_app(roles.resolve({"scheduler", "worker"}))
+    with TestClient(app):
+        sub = app.state.subscription
+        assert sub is not None
+        assert sub.live is False, "ein Scheduler-Knoten hat sich selbst abonniert"
+
+
+def test_a_client_still_subscribes(team_repo, monkeypatch, scheduler):
+    """Die Gegenrichtung — der Fix darf den eigentlichen Zweck nicht abwürgen."""
+    from fastapi.testclient import TestClient
+
+    from bibi.daemon import roles
+    from bibi.daemon.app import create_app
+
+    monkeypatch.setenv("BIBI_SCHEDULER_URL", scheduler.url)
+    app = create_app(roles.resolve({"controller", "connect"}))
+    with TestClient(app):
+        assert _warte_auf(lambda: app.state.subscription.live), \
+            "ein Client ohne scheduler-Rolle muss abonnieren"

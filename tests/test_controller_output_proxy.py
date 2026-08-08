@@ -232,3 +232,34 @@ def test_the_frontend_knows_how_to_consume_the_second_stream():
     assert "data-stream" in js
     assert "attachRemote" in js
     assert "'done'" in js
+
+
+# ── Die Invariante, die dreimal gebrochen wurde ─────────────────────────────
+
+
+def test_read_timeouts_outlast_the_servers_ping():
+    """Wer einen SSE-Strom liest, muss länger warten können, als der Server
+    schweigt.
+
+    **Dreimal am 2026-08-08 verletzt, jedes Mal mit demselben Muster:** ein
+    kurzer Socket-Timeout, gewählt damit ein Abbruch schnell greift — und nach
+    `socket.timeout` ist der `http.client`-Stream unbrauchbar. Der Leser fiel
+    heraus und verband neu, im Takt des Timeouts. Beim Ereignis-Abonnement
+    (#77) waren das 100 Verbindungsaufbauten in zwei Minuten; beim
+    Output-Durchreicher (#78) hätte es jede Box getroffen, deren Job gerade
+    nachdenkt.
+
+    Die Regel ist einfach genug, um sie zu prüfen statt sie zu erinnern: **der
+    Lese-Timeout ist größer als das Ping-Intervall der Gegenseite.** Ein
+    Timeout heißt dann *tot*, nicht *still* — und nur dann ist ein Neuaufbau
+    die richtige Antwort."""
+    from bibi.controller import _PROXY_READ_TICK_S
+    from bibi.daemon.app import EVENTS_PING_S
+    from bibi.daemon.bus import _SUB_WATCHDOG_S
+
+    # Beide Ströme, die dieser Knoten liest, gegen die Sendepause der Gegenseite.
+    assert _SUB_WATCHDOG_S > EVENTS_PING_S, (
+        "das Abonnement wirft die Verbindung weg, bevor der Scheduler pingt")
+    assert _PROXY_READ_TICK_S > 15, (
+        "der Durchreicher wirft die Verbindung weg, bevor der Output-Strom pingt "
+        "(_formatted_sse sendet ': ping' bei >=15 s Sendepause)")

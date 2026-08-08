@@ -50,6 +50,7 @@ import asyncio
 import json
 import logging
 import re
+import socket
 import threading
 import time
 from collections import deque
@@ -250,10 +251,23 @@ _NUR_LOKALE_ZIELE = frozenset({"feed"})
 #: auf den Poll zurueckfaellt und dort ohnehin nur alle 5 s nachsieht.
 _SUB_RETRY_S = 3.0
 
-#: Wie lange ein einzelner Read hoechstens blockiert. Nicht die Frist, sondern
-#: die Koernung, in der sie geprueft wird — und zugleich die Obergrenze dafuer,
-#: wie lange ``stop()`` auf seinen Thread wartet (s. ``_open()``).
-_READ_TICK_S = 1.0
+#: **Eine Uhr, nicht zwei.** Der Socket-Timeout *ist* der Watchdog: laeuft er
+#: ab, hat der Strom laenger geschwiegen, als der Scheduler je schweigen darf
+#: (er sendet alle ``EVENTS_PING_S`` = 15 s ein Lebenszeichen), und ein
+#: Neuaufbau ist die richtige Antwort.
+#:
+#: Hier standen bis ``v0.7.7`` eine Sekunde und ein eigener Frist-Zaehler
+#: daneben — mit der Begruendung, ``stop()`` solle nicht auf einen
+#: blockierenden Read warten muessen. **Das war ein Fehler mit Ansage:** nach
+#: einem ``socket.timeout`` ist der ``http.client``-Stream unbrauchbar, der
+#: Lese-Loop fiel also im Sekundentakt heraus und verband neu. Weil jeder
+#: Verbindungsaufbau beim Scheduler einen Resync ausloest, meldete das jedes
+#: Mal jede aktive Live-Region als dreckig — der Posten kehrte damit seine
+#: eigene Absicht um. Live gemessen: 100 Verbindungsaufbauten in zwei Minuten.
+#:
+#: ``stop()`` braucht den kurzen Timeout nicht: es schliesst die Antwort und
+#: joint mit eigener Frist, und der Thread ist ``daemon`` — er haelt keinen
+#: Prozess auf.
 
 
 class SchedulerEvents:
@@ -333,7 +347,7 @@ class SchedulerEvents:
         )
         if self.node_id:
             req.add_header("X-Bibi-Node-Id", self.node_id)
-        return urllib.request.urlopen(req, timeout=_READ_TICK_S)  # noqa: S310
+        return urllib.request.urlopen(req, timeout=self.watchdog)  # noqa: S310
 
     def _handle(self, roh: str) -> None:
         """Eine ``data:``-Zeile auf den eigenen Bus uebersetzen."""
@@ -365,25 +379,22 @@ class SchedulerEvents:
         Collector traegt weiter."""
         resp = self._open()
         self._resp = resp
-        letztes = time.time()
         try:
             self._live = True
             while self._running:
                 try:
                     zeile = resp.readline()
                 except TimeoutError:
-                    # Kein Lebenszeichen in diesem Tick — nur dann ist die
-                    # Stille ueberhaupt zu messen.
-                    if time.time() - letztes > self.watchdog:
-                        log.debug("Scheduler-Abonnement stumm seit %.0fs — Neuaufbau",
-                                  self.watchdog)
-                        return
-                    continue
+                    # Der Watchdog: laenger stumm, als der Scheduler je sein
+                    # darf. Ein *stiller* Strom ist dagegen der Normalfall und
+                    # erreicht diese Zeile nie — dafuer sorgen die Pings.
+                    log.debug("Scheduler-Abonnement stumm seit %.0fs — Neuaufbau",
+                              self.watchdog)
+                    return
                 except (OSError, ValueError):
                     return  # Abriss oder von stop() geschlossen
                 if not zeile:
                     return  # EOF: der Scheduler hat den Strom beendet
-                letztes = time.time()
                 text = zeile.decode("utf-8", "replace").rstrip("\n")
                 if text.startswith("data: "):
                     self._handle(text[len("data: "):])
@@ -420,11 +431,28 @@ class SchedulerEvents:
     def stop(self) -> None:
         self._running = False
         self._live = False
-        # Den laufenden Read aufbrechen, statt bis zum Watchdog zu warten —
-        # sonst haenge der Shutdown bis zu 45 Sekunden an einer Verbindung, die
-        # niemand mehr braucht.
+        # Den laufenden Read aufbrechen — und zwar **hart**, ueber den Socket.
+        #
+        # ``resp.close()`` allein genuegt nicht und ist die Falle: bei einer
+        # offenen Antwort will ``http.client`` den Rest des Bodys lesen, bevor
+        # es schliesst. Bei einem endlosen Strom kommt dieser Rest nie, also
+        # blockiert der Aufruf bis zum Socket-Timeout — ``stop()`` haengt dann
+        # 45 Sekunden an einer Verbindung, die niemand mehr braucht. Gemessen
+        # beim Bau von ``v0.7.7``: ein Test, der eine Sekunde prueft, lief
+        # achtundfuenfzig.
+        #
+        # ``shutdown()`` bricht den blockierenden ``recv`` im Lese-Thread
+        # sofort auf; ``close()`` danach raeumt die Huelle. Beides
+        # best-effort — ein bereits toter Socket ist genau das, was wir wollten.
         resp, self._resp = self._resp, None
         if resp is not None:
+            try:
+                roh = getattr(getattr(resp, "fp", None), "raw", None)
+                sock = getattr(roh, "_sock", None)
+                if sock is not None:
+                    sock.shutdown(socket.SHUT_RDWR)
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 resp.close()
             except Exception:  # noqa: BLE001
