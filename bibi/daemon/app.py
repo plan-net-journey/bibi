@@ -1212,8 +1212,35 @@ def create_app(
     # trifft, und aus demselben Grund dort im Docstring steht.
     if subscription is None:
         from bibi.daemon.bus import SchedulerEvents
-        _sub_url = (os.environ.get("BIBI_SCHEDULER_URL")
-                    or config.read_env().get("BIBI_SCHEDULER_URL"))
+        # **Wer die Quelle ist, abonniert sie nicht** (v0.7.7). Ein
+        # Scheduler-Knoten traegt in aller Regel trotzdem einen
+        # `BIBI_SCHEDULER_URL` — auf sarasate steht dort seine eigene Adresse
+        # (`http://localhost:8780`). Ohne diese Zeile nahm der Abonnent sie und
+        # verband sich mit dem Daemon, in dem er selbst laeuft.
+        #
+        # Was daraus wurde, hing an einem Zufall: die eigene `node_id` des
+        # Hosts stand in seiner eigenen `approved_nodes` auf `blocked`, das
+        # Gate wies ihn also ab — es blieb ein Retry-Sturm gegen sich selbst.
+        # **Waere sie `approved` gewesen, haette er seine eigenen Ereignisse
+        # abonniert und auf denselben Bus zurueckveroeffentlicht: eine
+        # Endlosschleife.** Der Kommentar unten warnte vor genau diesem Fall;
+        # die Pruefung dazu fehlte.
+        #
+        # Die Rolle ist das richtige Kriterium, nicht die Adresse: ein
+        # Scheduler *ist* die Quelle seiner Ereignisse, unabhaengig davon,
+        # unter welchem Namen er sich selbst kennt. Ein Adressvergleich
+        # muesste `localhost`, `127.0.0.1`, den Hostnamen und die Tailnet-IP
+        # als dasselbe erkennen — und jede vergessene Schreibweise waere ein
+        # stiller Rueckfall in genau diesen Fehler.
+        #
+        # NICHT `config.scheduler_base_url()`: die bevorzugt bewusst
+        # BIBI_DAEMON_PORT ("sprich mit MEINEM Daemon") und liefert in einem
+        # Daemon-Prozess die eigene Adresse. Dieselbe Unterscheidung, die
+        # `Collector._fetch_scheduler_status()` schon trifft.
+        _sub_url = None
+        if not roles.scheduler:
+            _sub_url = (os.environ.get("BIBI_SCHEDULER_URL")
+                        or config.read_env().get("BIBI_SCHEDULER_URL"))
         _sub_node = None
         try:
             _sub_node = config.node_id()
@@ -1339,6 +1366,9 @@ def create_app(
     # ist ehrlicher als ein Modul-Singleton: es gibt einen Bus **pro App**,
     # und die Tests bauen regelmäßig mehrere.
     app.state.bus = bus
+    # Wie der Bus: von aussen greifbar, weil Tests und Diagnose wissen wollen,
+    # ob dieser Knoten ueberhaupt abonniert und ob die Verbindung steht.
+    app.state.subscription = subscription
 
     # Defensiv: ein Endpunkt-Fehler darf den Daemon nie killen — generischer
     # Handler liefert 500-JSON statt einer ungefangenen Exception (§2.7).
