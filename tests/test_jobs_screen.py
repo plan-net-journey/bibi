@@ -1125,3 +1125,54 @@ def test_a_slot_state_change_reaches_the_runs_target():
     c._publish_journal("laeuft", None)
     assert "live:laeuft" in bus.published, "die Kachel bekommt nichts"
     assert "journal:laeuft" in bus.published, "die Liste bekommt nichts"
+
+
+# ── #83: die Wahl überlebt einen Tab-Wechsel ────────────────────────────────
+
+
+def test_a_filter_set_on_the_fragment_survives_leaving_and_returning(
+        app_with, team_repo: Path):
+    """Befund m.rau, 2026-08-08: *„er muss auch greifen, wenn ich über Tabs
+    navigiere. Wenn ich zurück komme, erwarte ich gleiche Filter."*
+
+    Zwei Routen bedienen den Screen, und bis `#83` merkte sich nur eine die
+    Ansicht: `/-/jobs` las **und** schrieb den Cookie, `/-/jobs/list` las ihn
+    nur. Ein Filter-Klick geht aber auf das Fragment — die Wahl überlebte
+    damit jeden Bus-Refetch (dafür trägt die Refetch-URL seit `m.rau/bibi#156`
+    alle Parameter mit) und keinen einzigen Seitenwechsel.
+
+    Das ist die zweite Hälfte von `#156`: dort standen beide Verlustwege, und
+    geschlossen wurde nur der erste."""
+    _mit_job_md(team_repo, "flach")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        # 1. Filter setzen — wie der Klick im Browser: aufs Fragment.
+        c.get("/-/jobs/list?f=1&typ=app", headers={"accept": "text/html"})
+        # 2. Weg und zurück — die volle Seite, ohne Query.
+        html = c.get("/-/jobs", headers={"accept": "text/html"}).text
+    assert 'title="flach"' not in html, (
+        "die auf dem Fragment getroffene Filterwahl war nach dem Seitenwechsel weg")
+
+
+def test_the_fragment_remembers_the_view(app_with, team_repo: Path):
+    """Dieselbe Zusage, an der Naht statt am Verhalten gemessen."""
+    _mit_job_md(team_repo, "flach")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        r = c.get("/-/jobs/list?f=1&typ=app", headers={"accept": "text/html"})
+    assert "bibi_jobs_typ" in r.headers.get("set-cookie", ""), \
+        "das Fragment merkt sich die Ansicht nicht"
+
+
+def test_the_url_still_beats_the_cookie_on_the_fragment(app_with, team_repo: Path):
+    """Die Gegenrichtung, und die Bedingung, unter der der Fix harmlos ist.
+
+    Ein Deep-Link muss stärker sein als die Erinnerung — sonst wäre eine
+    geteilte Ansicht nicht mehr teilbar. Und das Abwählen des letzten Filters
+    darf der Cookie nicht rückgängig machen (`f=1`, s. oben)."""
+    _mit_job_md(team_repo, "flach")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        c.get("/-/jobs/list?f=1&typ=app", headers={"accept": "text/html"})
+        html = c.get("/-/jobs/list?f=1", headers={"accept": "text/html"}).text
+    assert _zeile_von(html, "flach"), "der abgewählte Filter kam über den Cookie zurück"

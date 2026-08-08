@@ -1476,10 +1476,27 @@ def add_controller_routes(
         # `jobs_list_fragment`, nicht `jobs_screen`: die Antwort muss ihren
         # Bus-Wrapper mitbringen, weil `_EVENTS_JS` mit `outerHTML` swappt —
         # sonst ist die Region nach genau einem Update abgemeldet.
-        return HTMLResponse(render.jobs_list_fragment(
+        resp = HTMLResponse(render.jobs_list_fragment(
             zeilen, jetzt, typ=v["typ"], status=v["status"],
             journal=v["journal"], sort=v["sort"], direction=v["direction"],
             group=v["group"]))
+        # **Auch hier merken** (#83). Bis dahin las diese Route den Cookie und
+        # schrieb ihn nie — und ein Filter-Klick geht auf genau sie. Die Wahl
+        # ueberlebte damit jeden Bus-Refetch (dafuer traegt die Refetch-URL
+        # seit #156 alle Parameter mit) und keinen einzigen Seitenwechsel:
+        # wer wegnavigierte und ueber den Tab zurueckkam, landete auf
+        # `/-/jobs`, und das las den alten Stand.
+        #
+        # Befund m.rau, 2026-08-08: *„er muss auch greifen, wenn ich ueber Tabs
+        # navigiere. Wenn ich zurueck komme, erwarte ich gleiche Filter."*
+        #
+        # Dass der Bus dieselbe Route refetcht, ist dabei **kein** Problem: er
+        # traegt die aktuelle Ansicht in seiner URL mit, schreibt also denselben
+        # Wert zurueck, den der Cookie schon hat. Ein `Set-Cookie` je Ereignis
+        # ist der Preis; ihn per Vergleich zu sparen hiesse, den gemerkten Stand
+        # zusaetzlich zu lesen, um ihn nicht zu schreiben.
+        _merke_jobs_view(resp, v)
+        return resp
 
     @app.get("/-/jobs/{job_uid}", include_in_schema=False)
     def screen_job_detail(request: Request, job_uid: str,  # noqa: ARG001

@@ -3083,6 +3083,28 @@ _EVENTS_JS = """
   document.addEventListener('DOMContentLoaded', initBoxes);
   document.body.addEventListener('htmx:afterSettle', initBoxes);
 
+  // #82: eine Box, die htmx gleich entfernt, nimmt ihren Strom mit.
+  //
+  // `attachRemote()` schuetzt gegen doppeltes Anhaengen an DIESELBE Box —
+  // nicht gegen den Fall, der im Betrieb eintritt: ein Bus-Refetch *ersetzt*
+  // die Box (outerHTML-Swap). Die neue ist ein neues Element ohne
+  // `_bibiRemote` und oeffnet eine eigene EventSource; die alte war aus dem
+  // DOM, ihre Verbindung lief aber weiter. Jeder Refetch hinterliess eine
+  // Leiche, und nach `_MAX_OUTPUT_PROXIES` antwortete der Durchreicher 429 —
+  // die Box wuchs nicht mehr mit. Ein laufender Job erzeugt Statuswechsel,
+  // jeder Wechsel einen Refetch: es traf genau den Fall, fuer den #78 gebaut
+  // wurde. (Befund m.rau bei der Abnahme von v0.7.7.)
+  //
+  // `beforeCleanupElement` statt `beforeSwap`: htmx feuert es fuer **jedes**
+  // Element, das es aus dem DOM nimmt — auch fuer Kinder des getauschten
+  // Knotens, und die Box ist eins. `beforeSwap` traegt nur das Ziel selbst.
+  document.body.addEventListener('htmx:beforeCleanupElement', (ev) => {
+    const box = ev.target;
+    if (!box || !box._bibiRemote) return;
+    try { box._bibiRemote.close(); } catch (e) { /* schon zu */ }
+    box._bibiRemote = null;
+  });
+
   function appendLine(box, o){
     const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
     // Token-Delta (PLAN-14): an die zuletzt gerenderte Zeile anhaengen statt
