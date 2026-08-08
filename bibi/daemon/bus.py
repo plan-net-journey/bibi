@@ -40,6 +40,7 @@ publiziert — die Client-Detailseite adressiert über ihn.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import threading
@@ -192,6 +193,200 @@ class Bus:
         return out
 
 
+#: Wie lange ein Abonnement stumm sein darf, bevor es als tot gilt (#77).
+#: Der Scheduler sendet alle ``EVENTS_PING_S`` (15 s) ein ``{"t":"ping"}`` —
+#: dreimal nichts ist der Beleg, dass die Verbindung gestorben ist, ohne dass
+#: TCP es gemerkt hätte. **Derselbe Wert wie im FE-Watchdog**, aus demselben
+#: Grund: eine still gestorbene Verbindung sieht von innen aus wie ein sehr
+#: ruhiger Scheduler. Ohne diesen Schutz tauschte das Release eine träge
+#: Anzeige gegen eine stehende — ein Poll faellt sichtbar aus, ein Abonnement
+#: kann still sterben.
+_SUB_WATCHDOG_S = 45.0
+
+#: Pause vor dem naechsten Verbindungsversuch. Kurz, weil ein Client ohne Strom
+#: auf den Poll zurueckfaellt und dort ohnehin nur alle 5 s nachsieht.
+_SUB_RETRY_S = 3.0
+
+#: Wie lange ein einzelner Read hoechstens blockiert. Nicht die Frist, sondern
+#: die Koernung, in der sie geprueft wird — und zugleich die Obergrenze dafuer,
+#: wie lange ``stop()`` auf seinen Thread wartet (s. ``_open()``).
+_READ_TICK_S = 1.0
+
+
+class SchedulerEvents:
+    """Abonniert ``/-/events`` des Schedulers und spiegelt ihn auf den eigenen Bus (#77).
+
+    **Der Strom lag bereit, es fehlte der Abonnent.** Der Scheduler-Collector
+    tickt sekuendlich; der Client fragte ihn alle fuenf Sekunden ab. Der
+    Scheduler war damit fuenfmal genauer, als der Client von ihm wissen wollte,
+    und die Differenz sah man jedem Statuswechsel an (Befund m.rau, 2026-08-08:
+    *„Statuswechsel kommen eindeutig zu traege."*).
+
+    **Es aendert sich die Quelle, nicht die Struktur.** Der Mischer stand schon:
+    ``Collector._diff_scheduler_jobs()`` veroeffentlicht seine Funde laengst auf
+    dem eigenen Bus dieses Knotens. Hier kommen dieselben Ziele an, nur frueher
+    und ohne Abfrage.
+
+    Was **nicht** uebernommen wird, sind die Append-Ereignisse. Sie tragen
+    Offsets in eine ``output.jsonl``, die es auf diesem Knoten nicht gibt; der
+    Weg dorthin ist der Durchreicher aus #78 — eine eigene Verbindung je
+    Output-Box, kein Sammelstrom.
+
+    **Die Identitaet ist der Schutz.** ``/-/events`` ist bewusst ungegatet, weil
+    eine ``EventSource`` keine Header setzen kann. Hier ist der Verbraucher aber
+    ein Daemon, und der kann sich ausweisen: die ``node_id`` geht als
+    ``X-Bibi-Node-Id`` mit, der Scheduler prueft sie gegen ``approved_nodes``.
+    Wer keine Arbeit und kein Config-Bundle bekommt, soll auch keinen
+    Ereignisstrom bekommen.
+
+    Ein eigener Thread statt einer asyncio-Task: das Lesen haengt an ``urllib``
+    (dieselbe Wahl wie ``ControllerClient``/``scheduler_client``, keine neue
+    Abhaengigkeit), und ein blockierender Read gehoert nicht in den Event-Loop.
+    """
+
+    def __init__(self, bus: Bus, *, url: str | None = None, node_id: str | None = None,
+                 watchdog: float = _SUB_WATCHDOG_S, retry: float = _SUB_RETRY_S,
+                 autorun: bool = True) -> None:
+        self.bus = bus
+        self.url = url
+        self.node_id = node_id
+        self.watchdog = watchdog
+        self.retry = retry
+        self.autorun = autorun
+        self._live = False
+        self._running = False
+        self._thread: threading.Thread | None = None
+        self._resp = None
+
+    @property
+    def live(self) -> bool:
+        """Steht die Verbindung? Der Collector entscheidet daran, ob er pollt.
+
+        Bewusst kein „war zuletzt erfolgreich": ein Abonnement, das gerade neu
+        verbindet, ist **nicht** lebendig, und in genau diesem Fenster muss der
+        Poll greifen."""
+        return self._live
+
+    # ── Verbindung ──────────────────────────────────────────────────────────
+
+    def _open(self):
+        """Den Strom oeffnen — die Naht, die Tests ersetzen koennen.
+
+        Der Socket-Timeout ist **kurz** (``_READ_TICK_S``) und ist nicht der
+        Watchdog. Ihn auf die Watchdog-Frist zu setzen waere die naheliegende
+        Vereinfachung und ein Fehler: ein blockierender Read laesst sich von
+        aussen nicht aufbrechen, ``stop()`` haette also bis zu 45 Sekunden auf
+        eine Verbindung gewartet, die niemand mehr braucht — beim
+        Daemon-Shutdown genau die Sorte Haenger, die #77 verhindern soll.
+
+        Stattdessen kehrt der Read regelmaessig ergebnislos zurueck, und
+        ``_session()`` zaehlt die Stille selbst. Ein leerer Rueckkehrer ist
+        keine Nachricht, nur eine Gelegenheit nachzusehen, ob es weitergehen
+        soll."""
+        import urllib.request
+        req = urllib.request.Request(
+            f"{self.url.rstrip('/')}/-/events",
+            headers={"Accept": "text/event-stream"},
+        )
+        if self.node_id:
+            req.add_header("X-Bibi-Node-Id", self.node_id)
+        return urllib.request.urlopen(req, timeout=_READ_TICK_S)  # noqa: S310
+
+    def _handle(self, roh: str) -> None:
+        """Eine ``data:``-Zeile auf den eigenen Bus uebersetzen."""
+        try:
+            ev = json.loads(roh)
+        except ValueError:
+            return
+        if ev.get("t") != "state":
+            # hello/ping sind Lebenszeichen, append gehoert nicht hierher (s.o.),
+            # bye meldet den Shutdown des Schedulers — den merkt die Schleife
+            # draussen ohnehin am Ende des Stroms.
+            return
+        ziel = ev.get("target")
+        if ziel:
+            self.bus.publish_state(ziel)
+
+    def _session(self) -> None:
+        """Eine Verbindung von ihrem Aufbau bis zu ihrem Ende.
+
+        Die Schleife liest zeilenweise und misst dabei die Stille. Drei Enden
+        sind moeglich, und alle drei fuehren an dieselbe Stelle zurueck: der
+        Strom endet regulaer (leere Zeile am EOF, der Scheduler faehrt herunter),
+        die Frist laeuft ab (still gestorbene Verbindung), oder ``stop()`` hat
+        das Laufen abgestellt. Danach ist ``live`` falsch, und der Poll im
+        Collector traegt weiter."""
+        resp = self._open()
+        self._resp = resp
+        letztes = time.time()
+        try:
+            self._live = True
+            while self._running:
+                try:
+                    zeile = resp.readline()
+                except TimeoutError:
+                    # Kein Lebenszeichen in diesem Tick — nur dann ist die
+                    # Stille ueberhaupt zu messen.
+                    if time.time() - letztes > self.watchdog:
+                        log.debug("Scheduler-Abonnement stumm seit %.0fs — Neuaufbau",
+                                  self.watchdog)
+                        return
+                    continue
+                except (OSError, ValueError):
+                    return  # Abriss oder von stop() geschlossen
+                if not zeile:
+                    return  # EOF: der Scheduler hat den Strom beendet
+                letztes = time.time()
+                text = zeile.decode("utf-8", "replace").rstrip("\n")
+                if text.startswith("data: "):
+                    self._handle(text[len("data: "):])
+        finally:
+            self._live = False
+            self._resp = None
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _loop(self) -> None:
+        while self._running:
+            try:
+                self._session()
+            except Exception as exc:  # noqa: BLE001 — der Host darf ausfallen (§2.7)
+                self._live = False
+                log.debug("Scheduler-Abonnement nicht verfuegbar: %s", exc)
+            if self._running:
+                time.sleep(self.retry)
+
+    # ── Lifecycle ───────────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        if not self.autorun or not self.url:
+            # Kein Scheduler konfiguriert heisst: dieser Knoten **ist** einer.
+            # Es gibt niemanden zu abonnieren, und das ist kein Fehlerfall.
+            return
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name="scheduler-events")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        self._live = False
+        # Den laufenden Read aufbrechen, statt bis zum Watchdog zu warten —
+        # sonst haenge der Shutdown bis zu 45 Sekunden an einer Verbindung, die
+        # niemand mehr braucht.
+        resp, self._resp = self._resp, None
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+
 class Collector:
     """Der eine Poller des Knotens — s. Modul-Docstring und PLAN-36 E4.
 
@@ -202,8 +397,13 @@ class Collector:
 
     def __init__(self, bus: Bus, *, db_path: Path | None = None,
                  repo_root: Path | None = None, interval: float = 1.0,
-                 autorun: bool = True, registry=None, heartbeat=None) -> None:
+                 autorun: bool = True, registry=None, heartbeat=None,
+                 subscription=None) -> None:
         self.bus = bus
+        #: Das Scheduler-Abonnement (#77), sofern dieser Knoten eins hat. Der
+        #: Collector liest davon nur `live` — wie er von der Registry die
+        #: Knotenliste liest: eine Referenz, kein Aufruf.
+        self.subscription = subscription
         self.db_path = db_path
         self.repo_root = repo_root
         self.interval = interval
@@ -609,7 +809,17 @@ class Collector:
         der letzte Stand stehen, statt jeden Slug als geaendert zu melden;
         dieselbe Zurueckhaltung wie beim groben Fingerabdruck. Der Ausfall
         selbst steht im Header, der ihn ohnehin zeigt.
+
+        **Seit #77 ist das hier der Rueckfall, nicht der Hauptweg.** Lebt das
+        Abonnement auf ``/-/events`` des Schedulers, kommt jeder Wechsel binnen
+        einer Sekunde von dort — dann waere dieser Poll doppelte Arbeit fuer
+        dieselbe Auskunft, mit vier Sekunden mehr Verzoegerung. Faellt das
+        Abonnement aus, greift er sofort wieder: ein Abriss darf den Client
+        nicht blind machen (§2.7). Genau dafuer ist ``live`` kein „war zuletzt
+        erfolgreich" — waehrend eines Wiederaufbaus muss der Poll laufen.
         """
+        if self.subscription is not None and self.subscription.live:
+            return 0
         zeilen = self._fetch_scheduler_jobs()
         if zeilen is None:
             return 0
