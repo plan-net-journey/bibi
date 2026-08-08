@@ -80,6 +80,12 @@ def _hermetic_env(tmp_path_factory, monkeypatch: pytest.MonkeyPatch):
 def pytest_addoption(parser):
     parser.addoption("--slow", action="store_true", default=False,
                      help="run slow tests (subprocess/Docker)")
+    # NICHT ``--browser``: den Namen belegt ``pytest-playwright`` selbst (dort
+    # wählt er die Engine — chromium/firefox/webkit). Zwei Bedeutungen für ein
+    # Wort wären genau die Sorte Stolperstelle, die man einmal debuggt und
+    # danach jedes Mal wieder.
+    parser.addoption("--browser-tests", action="store_true", default=False,
+                     help="run browser tests (echter Daemon + echter Browser, #84)")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -88,6 +94,64 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "slow" in item.keywords:
                 item.add_marker(skip)
+    if not config.getoption("--browser-tests"):
+        skip = pytest.mark.skip(reason="use --browser-tests to run")
+        for item in items:
+            if "browser" in item.keywords:
+                item.add_marker(skip)
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):  # noqa: ARG001
+    """**Eine ausgefallene Prüfung muss lauter sein als ihr Ergebnis** (#84).
+
+    Der übliche Weg, eine Testebene abzuschalten, ist ein Marker plus ein
+    ``s`` in der Punktereihe — und das ist die leiseste Meldung, die pytest
+    kennt. Für ``slow`` geht das in Ordnung: dort steht dieselbe Aussage auch
+    schnell zu haben, nur gröber. Für die Browser-Ebene gilt das nicht. Sie
+    prüft eine Klasse von Fehlern, die **keine** andere Ebene sieht (19
+    FE-nahe Testdateien, davon 0 mit einem Browser) — ein Lauf ohne sie ist
+    an genau dieser Stelle blind, und ein grünes ``2754 passed`` sagt das
+    nicht.
+
+    Deshalb steht der Ausfall hier im Klartext, in derselben Zusammenfassung
+    wie das Ergebnis. Wer die Ebene abschaltet, soll es lesen müssen.
+    """
+    if config.getoption("--browser-tests"):
+        return
+    if not _browser_uebersprungen(terminalreporter):
+        return          # keine Browser-Tests im Lauf — nichts zu melden
+    terminalreporter.write_sep("=", "BROWSER-EBENE NICHT GELAUFEN", yellow=True, bold=True)
+    terminalreporter.write_line(
+        "Die drei Szenarien aus #84 (Filter über Navigation, Output-Box über "
+        "Refetches,\nruhiger Strom) waren NICHT Teil dieses Laufs. Sie prüfen, "
+        "was erst im Browser\nentsteht — Swap, JS-Zustand, EventSource — und "
+        "keine andere Ebene sieht das.\n"
+        "Einschalten: uv sync --group browser && uv run pytest --browser-tests")
+
+
+#: Woran ein übersprungener Browser-Test zu erkennen ist — beide Wege dorthin.
+_BROWSER_GRUENDE = ("--browser-tests", "pytest-playwright fehlt")
+
+
+def _browser_uebersprungen(terminalreporter) -> bool:
+    """Ob in diesem Lauf Browser-Tests übersprungen wurden.
+
+    **Gezählt wird an den Berichten, nicht an den eingesammelten Items**, und
+    das ist der Unterschied zwischen einer Meldung, die immer kommt, und einer,
+    die man nur ohne ``-n`` sieht. Die Suite läuft per Vorgabe unter
+    ``pytest-xdist``: dort sammeln die **Worker** ein, der Zusammenfassungs-Hook
+    läuft auf dem **Controller**, und dessen Item-Liste ist leer. Die erste
+    Fassung dieser Meldung hing genau daran und schwieg im Normalbetrieb —
+    ausgerechnet die Meldung, deren einziger Zweck es ist, nicht zu schweigen.
+
+    Die Ergebnisberichte dagegen wandern von den Workern zurück und liegen hier
+    vollständig vor.
+    """
+    for bericht in terminalreporter.stats.get("skipped", []):
+        grund = str(getattr(bericht, "longrepr", ""))
+        if any(g in grund for g in _BROWSER_GRUENDE):
+            return True
+    return False
 
 
 # PLAN-30 Ebene 4 (Review-Runde 7, Fund 1/2): mergeback.merge_back()s

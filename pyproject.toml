@@ -40,10 +40,24 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.6",
 ]
+# Die Browser-Ebene (#84) in einer **eigenen** Gruppe, nicht in `dev`.
+#
+# `dev` ist, was jeder Lauf braucht — auch der Engine-CI, der bei jedem Push
+# anspringt und in 70 Sekunden durch sein soll. `playwright` bringt einen
+# Chromium-Download von rund 150 MB mit; ihn in `dev` zu legen hiesse, dass ihn
+# jeder frische Klon zieht, ob er einen Browser fährt oder nicht. Die Ebene
+# läuft in ihrem eigenen Job (`browser-ci.sh`), und der installiert sie sich
+# ausdrücklich: `uv sync --group browser`.
+browser = [
+    "pytest-playwright>=0.5",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: echte Prozesse/Docker — nur mit --slow"]
+markers = [
+    "slow: echte Prozesse/Docker — nur mit --slow",
+    "browser: echter Daemon + echter Browser — nur mit --browser-tests",
+]
 # Parallel als Standard (m.rau/bibi#115). Auf 8 Kernen gemessen: die volle Suite
 # parallel (53 s) ist schneller als die halbe seriell (86 s). Damit ist der
 # `slow`-Marker als Geschwindigkeitswerkzeug hinfällig — er benennt nur noch,
