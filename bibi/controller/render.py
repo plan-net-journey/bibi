@@ -4519,16 +4519,11 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
 _JOB_DETAIL_JS = """
 (() => {
   const SEITE = {S: 'scheduler', C: 'client'};
-  document.addEventListener('click', async (ev) => {
-    const show = ev.target.closest('.run-show');
-    if (!show) return;
-    const zeile = document.getElementById('run-' + show.dataset.run);
-    if (!zeile) return;
-    if (!zeile.hidden) { zeile.hidden = true; show.textContent = '[show]'; return; }
-    zeile.hidden = false;
-    show.textContent = '[hide]';
+  // Der Ladevorgang als eigene Funktion, weil ihn zwei Stellen brauchen: der
+  // Klick und der Retter nach einem Swap (m.rau/bibi#105).
+  const ladeOutput = async (zeile, show) => {
     const feld = zeile.querySelector('.out-body');
-    if (feld.dataset.geladen) return;
+    if (!feld || feld.dataset.geladen) return;
     feld.textContent = 'loading …';
     // Der Pfad ohne Query: `?days=90` gehoert zur Liste, nicht zum Lauf.
     const basis = location.pathname;
@@ -4548,6 +4543,16 @@ _JOB_DETAIL_JS = """
       // naechsten Aufklappen nicht aus dem Cache kommen.
       if (r.ok && !show.dataset.slot) feld.dataset.geladen = '1';
     } catch (e) { feld.textContent = 'output unavailable'; }
+  };
+  document.addEventListener('click', async (ev) => {
+    const show = ev.target.closest('.run-show');
+    if (!show) return;
+    const zeile = document.getElementById('run-' + show.dataset.run);
+    if (!zeile) return;
+    if (!zeile.hidden) { zeile.hidden = true; show.textContent = '[show]'; return; }
+    zeile.hidden = false;
+    show.textContent = '[hide]';
+    await ladeOutput(zeile, show);
   });
   // Der Faltzustand ueberlebt einen Bus-Refetch (#44).
   //
@@ -4573,7 +4578,11 @@ _JOB_DETAIL_JS = """
     t.querySelectorAll('tr.out:not([hidden])').forEach((z) => {
       const feld = z.querySelector('.out-body');
       offen.push({run: z.id.slice(4),
-                  text: feld ? feld.textContent : '',
+                  // `innerHTML`, nicht `textContent`: die Antwort ist seit
+                  // #99 ausgezeichnetes Markup (Uhrzeit, thinking-Klassen,
+                  // der einklappbare Denkabschnitt). Als Text gesichert kaeme
+                  // er als Text zurueck und das Markup staende lesbar da.
+                  html: feld ? feld.innerHTML : '',
                   geladen: !!(feld && feld.dataset.geladen)});
     });
   });
@@ -4584,13 +4593,25 @@ _JOB_DETAIL_JS = """
       if (!z) continue;           // der Lauf ist aus dem Zeitfenster gefallen
       z.hidden = false;
       const feld = z.querySelector('.out-body');
-      if (feld) {
-        // Den Text mitretten statt neu zu holen: er ist schon da, und ein
-        // Roundtrip je Refetch waere bei einem laufenden Job der Sekundentakt.
-        feld.textContent = s.text;
-        if (s.geladen) feld.dataset.geladen = '1';
-      }
       const b = document.querySelector('.run-show[data-run="' + s.run + '"]');
+      if (feld) {
+        // **Zwei Faelle, und bis #105 wurden sie gleich behandelt.**
+        //
+        // Ist der Lauf archiviert (`geladen`), ist sein Output vollstaendig
+        // und unveraenderlich — der gerettete Stand ist der richtige, und ihn
+        // neu zu holen waere ein Roundtrip je Refetch ohne Gewinn. Das war
+        // die urspruengliche Begruendung und sie gilt hier weiter.
+        //
+        // Ist er es **nicht**, laeuft er noch — und dann ist der gerettete
+        // Stand per Definition unfertig. Genau hier lag der Fehler: wird der
+        // Lauf terminal, feuert der Bus, `#runs` wird getauscht, und der alte
+        // Text kam zurueck. Danach korrigiert ihn nichts mehr, weil kein
+        // weiteres Ereignis folgt. Sichtbar als: Status `complete`, letzte
+        // Zeile fehlt, erst ein Reload holt sie (Befund m.rau, 2026-08-09).
+        feld.innerHTML = s.html;
+        if (s.geladen) { feld.dataset.geladen = '1'; }
+        else if (b) { ladeOutput(z, b); }
+      }
       if (b) b.textContent = '[hide]';
     }
     offen = null;
