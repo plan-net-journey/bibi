@@ -608,10 +608,6 @@ th.sorted { font-weight: 700; }
 """
 
 
-def _plural(n: int, sing: str, plur: str) -> str:
-    return sing if n == 1 else plur
-
-
 def _ago(ts: float | None, now: float) -> str:
     if ts is None:
         return "—"
@@ -1227,11 +1223,13 @@ _RESOLUTION_LABEL = {1440: "24h/1m", 480: "8h/1w", 180: "3h/3d", 120: "2h/2d",
 
 
 
-def _effective_sched_type(s: dict) -> str:
-    """Anzeige-/Filter-Typ ableiten — ``kind`` ist seit PLAN-10 (Unified Job
-    Model) immer ``"job"`` und trägt keine Information mehr (§5.3). Delegiert an
-    ``models.effective_kind`` (PLAN-12 Stufe 12.0 — einzige Quelle für alle Aufrufer)."""
-    return models.effective_kind(s.get("payload"))
+# Hier stand `_effective_sched_type()` — ein Ein-Zeilen-Delegator an
+# `models.effective_kind()`. Sein letzter Aufrufer war `_local_job_meta_line()`,
+# und der ist mit `#96` auf `_jobs_type_cell()` umgestellt worden, weil er den
+# `app_port` mitlesen muss. Damit war die Funktion aufrufer-los — eigene
+# Hinterlassenschaft desselben Tages, entfernt mit `#100`. Wer den Typ braucht,
+# ruft `models.effective_kind()` direkt; wer ihn anzeigen will,
+# `models.display_kind()` (mit `app_port`) oder `_jobs_type_cell()`.
 
 
 # Hier standen `_SORT_KEYS` und `sort_rows()` (m.rau/bibi#66) — der
@@ -5156,16 +5154,10 @@ _ATTR_FELDER = ("schedule", "at", "attempts", "backoff",
                 "wall_time", "hitl_timeout")
 
 
-def _load_more(ziel: str, offset: int, limit: int) -> str:
-    """Der Nachlade-Knopf. Er erscheint **nur**, wenn es wirklich mehr gibt.
-
-    Ein Knopf, der nichts mehr lädt, ist schlimmer als keiner — er sieht aus
-    wie ein Weg. Genau die Unterscheidung, die §6 auch für die Reichweite
-    verlangt: was fehlt, ist weggepruned und nicht bloß ungeladen.
-    """
-    trenn = "&" if "?" in ziel else "?"
-    return (f'<div class="more"><a class="cta" '
-            f'href="{ziel}{trenn}limit={limit}&offset={offset}">[ LOAD MORE ]</a></div>')
+# Hier stand `_load_more()` — der Nachlade-Knopf der bibi4-Listen. Die
+# v5-Lauf-Liste laedt ueber `reach`/`weiter` nach (FE §5.3) und rendert ihren
+# Knopf selbst; dieser hier hatte seit dem Umbau keinen Aufrufer mehr und auch
+# keinen Test. Entfernt mit `#100`.
 
 
 def job_attrs_page_v5(*, slug: str, spec: dict, defaults: dict, now: float,
