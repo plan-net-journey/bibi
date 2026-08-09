@@ -248,8 +248,22 @@ class Synchronizer:
             oks.append(ok)
             kinds.append(kind)
             did["pulled"] = True
-            activity.emit(log, logging.INFO, "sync.pull",
-                          role="synchronizer", ok=ok, kind=kind)
+            # Ein Pull ohne Ergebnis ist kein Ereignis (m.rau/bibi#109).
+            # ``kind=null`` heißt: gepullt, nichts geändert — alle drei Minuten,
+            # rund um die Uhr. Auf ``/-/live`` waren 28 von 30 Zeilen genau das,
+            # und der Live-Log ist die Stelle, an der man nachsieht, *wenn etwas
+            # nicht stimmt*.
+            #
+            # ``DEBUG`` statt gar nicht: der Log führt dieselben Ereignisse mit
+            # Historie (FE-Spezifikation §7). Die Auskunft bleibt, sie tritt nur
+            # eine Stufe zurück.
+            #
+            # **Auf ``ok`` prüfen, nicht nur auf ``kind``:** ein fehlgeschlagener
+            # Pull trägt ebenfalls kein ``kind``, und ihn zu verstecken hieße,
+            # genau den Fall zu verlieren, für den es diesen Log gibt.
+            ohne_ergebnis = ok and kind is None
+            activity.emit(log, logging.DEBUG if ohne_ergebnis else logging.INFO,
+                          "sync.pull", role="synchronizer", ok=ok, kind=kind)
 
         self._resolve_conflict(oks, kinds)
         self._merge_sweep()

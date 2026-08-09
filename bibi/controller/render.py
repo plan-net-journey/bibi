@@ -179,15 +179,6 @@ td { padding: .4rem .5rem; border-bottom: 1px solid var(--line); }
 .role-box { font-size: 1rem; }
 .role-box.on { color: var(--green); }
 .role-box.off { color: var(--faint); opacity: .45; }
-/* Time-Toggle (Bibi4-Iteration, User-Fund: "Time: abs./rel./both" für die
-   last/since- und next-Spalten) — alle drei Varianten stehen serverseitig
-   immer im Markup, data-timeformat auf <html> blendet per CSS genau eine
-   ein, kein Re-Render pro Klick nötig. Default (per _TIME_JS) ist "both". */
-:root[data-timeformat="abs"] .tt-relonly,
-:root[data-timeformat="abs"] .tt-relboth,
-:root[data-timeformat="both"] .tt-relonly,
-:root[data-timeformat="rel"] .tt-abs,
-:root[data-timeformat="rel"] .tt-relboth { display: none; }
 /* Links tragen die Marke — bis #68 hatten sie ueberhaupt keine eigene Farbe
    und erbten den Browser-Standard (im Light-Mode ein dunkles Lila). Das war
    schon einmal ein Lesbarkeitsproblem und wurde in der Logbox punktuell
@@ -196,8 +187,6 @@ td { padding: .4rem .5rem; border-bottom: 1px solid var(--line); }
    Zustandsstelle vergeben. */
 a.slug { font-weight: 600; text-decoration: none; color: var(--brand); }
 a.slug:hover { text-decoration: underline; }
-a.rowlink { color: inherit; text-decoration: none; }
-a.rowlink:hover { text-decoration: underline; }
 h2 { font-size: .95rem; color: var(--dim); margin: 1.5rem 0 .4rem; font-weight: 600; }
 .back { color: var(--dim); text-decoration: none; font-size: .85rem; }
 .tab-active { font-weight: 600; border-bottom: 2px solid currentColor; }
@@ -285,10 +274,6 @@ button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnlin
    schmal 4x1. Mit `repeat(auto-fit, minmax(9rem, 1fr))` entschied der Browser,
    wie viele Spalten es gibt, und ergab je nach Fensterbreite auch 3+1 — genau
    die Anordnung, die die Anforderung ausschliesst. */
-.statuscards { display: grid; grid-template-columns: repeat(4, 1fr);
-               gap: .6rem; margin-bottom: 1.2rem; }
-@media (max-width: 60rem) { .statuscards { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 32rem) { .statuscards { grid-template-columns: 1fr; } }
 /* Header, zwei Bloecke nach Herkunft (bibi5, FE-Spezifikation §2). Kein
    Kasten, nur eine Haarlinie darunter — Layout "Kontenblatt": der Header ist
    Rahmen, kein Inhalt, und soll sich nicht wie eine Karte anfuehlen. */
@@ -359,46 +344,6 @@ table.jobs th.sortiert { color: var(--text); }
    man klicken kann. Die aktive Spalte traegt zusaetzlich den Pfeil. */
 th a { color: inherit; text-decoration: none; cursor: pointer; }
 th a:hover { text-decoration: underline; }
-th.sorted { font-weight: 700; }
-.card { border: 1px solid var(--line); border-radius: .4rem; padding: .55rem .7rem; }
-.card .label { font-size: .72rem; color: var(--faint); text-transform: uppercase; letter-spacing: .03em; }
-.card .value { font-size: 1.05rem; font-weight: 600; margin-top: .1rem; }
-.card .value.ok { color: var(--green); }
-.card .value.bad { color: var(--red); }
-.card .sub { font-size: .75rem; color: var(--dim); margin-top: .15rem; }
-/* Mehrzeilige Karten (PLAN-19 Befund 4, User-Entscheidung: Git UND Mode im
-   selben 3-Zeilen-Stil, kein Trenner-Punkt mehr) — Host/Mode/Git ersetzen die
-   bisherigen 6 Kacheln des Feed-Headers. */
-.card .cardline { font-size: 1.05rem; font-weight: 600; margin-top: .1rem; }
-.card .cardline.ok, .card a.ok { color: var(--green); }
-.card .cardline.bad, .card a.bad { color: var(--red); }
-.card a { text-decoration: none; }
-.card a:hover { text-decoration: underline; }
-/* Key/Value als echtes 2-Spalten-Grid (PLAN-21 Befund 7, User-Fund: "als
-   Grid" mit `| KEY | value |`-Codeblock-Beispiel — löst das PLAN-20-Befund-2-
-   Muster ab, bei dem Label+Wert zwar beschriftet, aber nicht spaltenweise
-   ausgerichtet waren). Werte einer Karte richten sich jetzt untereinander
-   aus (Mode-/Git-Karte); Host/Client bleiben bei `.cardline` (freie Zeile,
-   kein Key/Value-Paar). */
-.card .kvgrid { display: grid; grid-template-columns: auto 1fr; row-gap: .2rem;
-                column-gap: .6em; margin-top: .15rem; }
-.card .kvgrid .k { font-size: .72rem; font-weight: 400; color: var(--faint);
-                   text-transform: uppercase; letter-spacing: .03em; align-self: center; }
-.card .kvgrid .v { font-size: 1.05rem; font-weight: 600; }
-.card .kvgrid .v.ok { color: var(--green); }
-.card .kvgrid .v.bad { color: var(--red); }
-/* Job-Status-Matrix (Bibi4-Iteration, User-Fund: "Apps enden nicht" — eigene
-   Spalte je Kind statt der bisherigen 2x2-Aggregation ohne Kind-Aufschlüsselung,
-   löst .kvgrid2 ab). 4 Spalten: Label + job/claude/app, row-major befüllt
-   (Header-Zeile, dann Waiting/Running/Stopped). */
-.card .jobstatus-grid { display: grid; grid-template-columns: auto repeat(3, minmax(2.2rem, auto));
-                        row-gap: .2rem; column-gap: .6em; margin-top: .15rem; }
-.card .jobstatus-grid .jsg-h { font-size: .68rem; font-weight: 400; color: var(--faint);
-                               text-transform: uppercase; letter-spacing: .03em; text-align: right; }
-.card .jobstatus-grid .jsg-k { font-size: .72rem; font-weight: 400; color: var(--faint);
-                               text-transform: uppercase; letter-spacing: .03em; align-self: center; }
-.card .jobstatus-grid .jsg-v { font-size: 1.0rem; font-weight: 600; text-align: right; }
-.side-empty { color: var(--dim); font-size: .82rem; }
 .chip { font-family: ui-monospace, monospace; font-size: .7rem; font-weight: 700;
         padding: .1rem .45rem; border-radius: .3rem; display: inline-block; white-space: nowrap; }
 /* Git-Status je Job-MD (PLAN-21 Befund 10) — löst die vorherige Lokal/Remote-
@@ -687,35 +632,6 @@ def _abs_datetime(ts: float | None, now: float) -> str:
     if dt.date() == datetime.datetime.fromtimestamp(now).date():
         return dt.strftime("%H:%M")
     return dt.strftime("%d.%m. %H:%M")
-
-
-def _time_abs_full(ts: float | None) -> str:
-    """Volles absolutes Format für den Time-Toggle (Bibi4-Iteration, User-
-    Beispiel ``2026-07-18 23:18``) — mit Jahr, anders als das knappere
-    ``_abs_datetime()`` (nur TT.MM., für die kompakte Journal-Spalte gedacht,
-    wo das Jahr praktisch nie mehrdeutig ist)."""
-    if ts is None:
-        return "—"
-    import datetime
-    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-
-
-def _time_toggle_cell(ts: float | None, now: float, *, rel_fn=_ago) -> str:
-    """Rendert alle drei Time-Toggle-Varianten (abs/rel/beides) auf einmal vor
-    — CSS blendet über ``data-timeformat`` auf ``<html>`` genau eine Variante
-    ein (Bibi4-Iteration, User-Fund: Toggle "Time: abs./rel./both" für die
-    last/since- und next-Spalten). Kein Re-Render bei einem Toggle-Klick
-    nötig, kein eigener Client-Tick für die relative Anzeige — die betroffenen
-    Tabellen pollen ohnehin schon (2s Schedules/Jobs), das reicht für die
-    Aktualität. ``rel_fn`` ist ``_ago`` (Vergangenheit, "last/since") oder
-    ``_until`` (Zukunft, "next", trägt schon den "asap"-Sonderfall)."""
-    if ts is None:
-        return "—"
-    abs_s = _e(_time_abs_full(ts))
-    rel_s = _e(rel_fn(ts, now))
-    return (f'<span class="tt-abs">{abs_s}</span>'
-           f'<span class="tt-relonly">{rel_s}</span>'
-           f'<span class="tt-relboth"> ({rel_s})</span>')
 
 
 def _e(v) -> str:
@@ -1167,7 +1083,6 @@ def clients_page(workers: list[dict], now: float | None = None, *,
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -1239,58 +1154,6 @@ _RESOLUTION_LABEL = {1440: "24h/1m", 480: "8h/1w", 180: "3h/3d", 120: "2h/2d",
 # zurück (#95). Sie ist mit den Spalten nicht mitgewachsen: `24h` fehlte,
 # `runtime` stand darin, obwohl es nie ein klickbarer Kopf war. Die Whitelist
 # leitet sich jetzt aus `_SORTIERBAR` ab — siehe `sortierbare_schluessel()`.
-
-
-def _sortable_head(columns: list[tuple[str, str | None]], *, sort: str | None,
-                   direction: str | None, url: str, target: str) -> str:
-    """``<thead>`` mit klickbaren Spalten (m.rau/bibi#66).
-
-    Ein Klick auf die aktive Spalte dreht die Richtung um, ein Klick auf eine
-    andere startet aufsteigend — das ist die Erwartung, die jede Tabelle
-    irgendeiner Oberfläche bedient, und eine Abweichung davon müsste man
-    erklären.
-
-    Spalten ohne Schlüssel (``None``) bleiben gewöhnliche Köpfe — ein
-    Sortier-Link auf etwas Unsortierbares wäre ein Angebot, das nichts
-    einlöst.
-    """
-    cells = []
-    for label, key in columns:
-        if key is None:
-            cells.append(f"<th>{_e(label)}</th>")
-            continue
-        active = key == sort
-        nxt = "desc" if active and (direction or "asc") == "asc" else "asc"
-        arrow = "" if not active else (" ▾" if (direction or "asc") == "desc" else " ▴")
-        cls = ' class="sorted"' if active else ""
-        href = f"{url}{'&' if '?' in url else '?'}sort={key}&dir={nxt}"
-        cells.append(
-            f'<th{cls}><a href="#" hx-get="{_e(href)}" hx-target="{_e(target)}" '
-            f'hx-swap="outerHTML" hx-include="[name=\'typ\'],[name=\'status\']">'
-            f"{_e(label)}{arrow}</a></th>")
-    return "<thead><tr>" + "".join(cells) + "</tr></thead>"
-
-
-def client_row_status(row: dict, local_runs: dict[str, dict]) -> str | None:
-    """Der Status, den eine Client-Zeile **anzeigt** (m.rau/bibi#65).
-
-    Dieselbe dreistufige Ermittlung wie in ``_jobs_row()``, nur an einer Stelle
-    statt an zweien: ein laufender Job schlägt den letzten Lauf, sonst gilt der
-    letzte Lauf, sonst gibt es keinen Status ("noch nie lokal gelaufen").
-
-    **Warum das eine eigene Funktion ist und keine Kopie:** Anzeige und Filter
-    müssen denselben Wert benutzen. Täten sie es nicht, filterte der Nutzer
-    nach etwas anderem, als er sieht — und das fiele erst auf, wenn eine Zeile
-    unerklärlich verschwindet. Genau deshalb ruft ``_jobs_row()`` sie ebenfalls
-    auf, statt die Logik ein zweites Mal zu schreiben.
-    """
-    live = row.get("live")
-    if live:
-        # Ein Live-Eintrag ohne eigenen Status heisst laufend — dieselbe
-        # Auslegung wie in der Statuszelle.
-        return live.get("status") or "running"
-    lr = local_runs.get(row.get("slug"))
-    return lr.get("status") if lr else None
 
 
 #: Die fünf Screens, in der Reihenfolge der App-Bar. Feed und Jobs sind die
@@ -1566,7 +1429,7 @@ def _theme_toggle() -> str:
 
 #: DARK/LIGHT-Toggle: überschreibt ``color-scheme`` explizit via ``data-theme``
 #: auf <html> (s. _CSS), Default = System-Präferenz (``prefers-color-scheme``),
-#: persistiert in localStorage — analog zu _TIME_JS. Symbol statt Text
+#: persistiert in localStorage. Symbol statt Text
 #: (PLAN-21 Befund 1): ☀ (hell → Klick wechselt zu dunkel) / ☾ (dunkel →
 #: Klick wechselt zu hell), zeigt also das jeweils erreichbare Ziel-Theme.
 _THEME_JS = """
@@ -1589,44 +1452,6 @@ _THEME_JS = """
 """
 
 
-def _time_toggle() -> str:
-    """Time-Toggle (Bibi4-Iteration, User-Fund: "Time: abs./rel./both" für
-    die last/since- und next-Spalten) — 3-State-Zyklus abs → rel → both → abs,
-    analog zum ☾/☀-Symbolwechsel von ``_theme_toggle()``. Startsymbol/-titel
-    per ``_TIME_JS`` gesetzt (Default "both"), damit hier kein serverseitiger
-    State nötig ist. Die drei Icons sind bewusst plain-Unicode (Geometric
-    Shapes, wie ☾/☀ kein Emoji-Rendering) statt Uhr-Symbolen aus dem Emoji-
-    Bereich, die auf den meisten Systemen farbig statt monochrom rendern."""
-    return '<button id="time" class="toggle" onclick="bibiToggleTime()">◒</button>'
-
-
-#: Time-Toggle: schaltet data-timeformat auf <html> zwischen "abs"/"rel"/"both"
-#: um (s. _CSS für die .tt-abs/.tt-relonly/.tt-relboth-Sichtbarkeitsregeln),
-#: persistiert in localStorage — analog zu _THEME_JS. Icons: ◐ (abs) / ◑ (rel)
-#: / ◒ (both, Default).
-_TIME_JS = """
-(function(){
-  const KEY = 'bibiTimeFormat';
-  const ORDER = ['abs', 'rel', 'both'];
-  const ICON = {abs: '◐', rel: '◑', both: '◒'};
-  const TITLE = {abs: 'Time: absolute', rel: 'Time: relative', both: 'Time: absolute + relative'};
-  const root = document.documentElement;
-  function apply(mode){
-    root.setAttribute('data-timeformat', mode);
-    const b = document.getElementById('time');
-    if (b) { b.textContent = ICON[mode]; b.title = TITLE[mode]; }
-  }
-  window.bibiToggleTime = function(){
-    const cur = root.getAttribute('data-timeformat') || 'both';
-    const next = ORDER[(ORDER.indexOf(cur) + 1) % ORDER.length];
-    localStorage.setItem(KEY, next);
-    apply(next);
-  };
-  apply(localStorage.getItem(KEY) || 'both');
-})();
-"""
-
-
 def _header(active: str, status: dict | None = None, *,
             scheduler: dict | None = None, sub: bool = False,
             scheduler_now: float | None = None, now: float | None = None) -> str:
@@ -1643,7 +1468,7 @@ def _header(active: str, status: dict | None = None, *,
     left = f'<h1>bibi</h1>{_screen_nav(active, roles, sub=sub)}'
     # Die Uhr zeigt die Zeit des Schedulers, nicht die eigene — deshalb reisen
     # sein `now` und der Renderzeitpunkt bis hierher durch.
-    right = (f'{_ops_handles(status, scheduler=scheduler)}{_time_toggle()}'
+    right = (f'{_ops_handles(status, scheduler=scheduler)}'
             f'{_live_clock(scheduler_now, now)}{_theme_toggle()}')
     return (f'<header><div class="nav-left">{left}</div>'
             f'<div class="nav-right">{right}</div></header>')
@@ -1762,269 +1587,14 @@ def log_page(daemon_status: dict | None = None, *, git_status: dict | None = Non
         f"{_log_panel()}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
 
 
-def _uptime_label(started_at: float | None, now: float) -> str:
-    """Laufzeit seit Daemon-Start, grobkörnig (Tage/Stunden bzw. Stunden/Minuten)."""
-    if started_at is None:
-        return "—"
-    d = max(0, int(now - started_at))
-    days, rem = divmod(d, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes = rem // 60
-    if days:
-        return f"{days} T {hours} h"
-    if hours:
-        return f"{hours} h {minutes} min"
-    if minutes:
-        return f"{minutes} min"
-    return f"{d}s"
-
-
-def _card(label: str, value: str, sub: str = "", cls: str = "") -> str:
-    cls_attr = f" {cls}" if cls else ""
-    sub_html = f'<div class="sub">{_e(sub)}</div>' if sub else ""
-    return (f'<div class="card"><div class="label">{_e(label)}</div>'
-            f'<div class="value{cls_attr}">{_e(value)}</div>{sub_html}</div>')
-
-
-def _status_card_list(status: dict, now: float) -> list[str]:
-    """Die Rollen/Host-Verbindung/Auto-Sync/Maintenance/Uptime-Kacheln als
-    Liste (statt schon im ``.statuscards``-Wrapper) — Baustein von
-    ``_status_cards()`` (Daemon-Screen) UND ``_feed_status_cards()`` (PLAN-18
-    Stufe 18.3, hängt eine Git-Segment-Kachel dahinter)."""
-    cards = [_card("Rollen", ", ".join(status.get("roles") or []) or "—")]
-
-    conn = status.get("connect")
-    if conn is not None:
-        ok = conn.get("ok")
-        if ok is True:
-            value, cls = "connected", "ok"
-        elif ok is False:
-            value, cls = "disconnected", "bad"
-        else:
-            value, cls = "waiting…", ""
-        last_at = conn.get("last_at")
-        sub = f"Heartbeat {_ago(last_at, now)}" if last_at is not None else ""
-        cards.append(_card("Host connection", value, sub, cls))
-
-    auto_sync = bool(status.get("auto_sync"))
-    cards.append(_card("Auto-Sync", "an" if auto_sync else "aus", cls="ok" if auto_sync else ""))
-
-    maint = bool(status.get("maintenance"))
-    cards.append(_card("Maintenance", "an" if maint else "aus", cls="bad" if maint else ""))
-
-    cards.append(_card("Uptime", _uptime_label(status.get("started_at"), now)))
-    return cards
-
-
-def _status_cards(status: dict, now: float) -> str:
-    """Status-Kacheln (PLAN-17 Stufe 17.0): Rollen, Host-Verbindung (nur wenn
-    ``connect`` im Status steckt — s. ``Heartbeat``, PLAN-17-Vorarbeit
-    2026-07-05), Auto-Sync, Maintenance, Uptime."""
-    return '<div class="statuscards">' + "".join(_status_card_list(status, now)) + "</div>"
-
-
 _TREE_LABEL_CLASS = {"clean": "tree-clean", "modified": "tree-modified"}
 _SYNC_LABEL_CLASS = {"synced": "sync-synced", "ahead": "sync-ahead",
                      "behind": "sync-behind", "diverged": "sync-conflict"}
-
-
-def _lines_card(label: str, lines: list[str], sub: str | list[str] = "") -> str:
-    """Karte mit mehreren linksbündigen Zeilen statt einem einzelnen Wert
-    (PLAN-19 Befund 4) — ``lines`` sind bereits fertiges HTML (Farb-Spans/
-    Links), werden hier nicht mehr escaped. Baustein für Host/Mode/Git im
-    neuen 3-Karten-Feed-Header.
-
-    ``sub`` ist entweder eine einzelne Zeile (str, wie bisher) oder mehrere
-    (list[str], Bibi4-Iteration — Host-Kachel braucht jetzt drei eigene
-    Zeilen statt einer " · "-verketteten) — jede wird als eigenes
-    ``.sub``-Div gerendert, leere Einträge fallen weg."""
-    subs = [sub] if isinstance(sub, str) else sub
-    sub_html = "".join(f'<div class="sub">{_e(s)}</div>' for s in subs if s)
-    body = "".join(f'<div class="cardline">{ln}</div>' for ln in lines)
-    return f'<div class="card"><div class="label">{_e(label)}</div>{body}{sub_html}</div>'
-
-
-def _engine_update_line(status: dict) -> str:
-    """NEED-UPDATE-Zeile für den **eigenen** Knoten (m.rau/bibi#43).
-
-    Beantwortet die Frage „muss ich hier noch etwas tun?", die man sonst nur
-    durch Vergleichen zweier Dateien beantwortet.
-
-    **Wie laut?** Ein Chip in der Kopf-Kachel, kein durchgehender roter Balken —
-    und nur, wenn Soll und Ist wirklich auseinanderlaufen. Der Mismatch ist nach
-    jedem Deploy-Push der Normalzustand, bis der Neustart kommt; ein Alarm dafür
-    wäre Lärm, und Lärm wird weggeklickt. Dass die Kachel auf jedem Screen
-    steht, macht die dezente Form ausreichend.
-
-    Der Knopf löst den Neustart **lokal über 127.0.0.1** aus — also unabhängig
-    davon, ob dieser Knoten von außen erreichbar ist. Genau daran scheiterte der
-    Restart-Knopf im Nodes-Screen beim Mac (Schwester-Issue): die Bind-Adresse.
-    """
-    eng = status.get("engine") or {}
-    if not eng.get("needs_update"):
-        return ""
-    running = eng.get("running") or "?"
-    expected = eng.get("expected") or "?"
-    return (
-        f'<span class="chip conflict">NEED UPDATE</span> '
-        f'<span class="ts-dim">{_e(running)} → {_e(expected)}</span> '
-        f'<button class="startbtn" hx-post="/-/ui/self/update" '
-        f'hx-confirm="Fetch the new revision and restart this node?" '
-        f'hx-target="#feedstatus" hx-swap="outerHTML" hx-disabled-elt="this">'
-        f'Update{_BTN_SPINNER}</button>'
-    )
-
-
-def _host_card(status: dict, host_url: str | None, now: float) -> str:
-    """Host- vs. Client-Karte, unterschieden nach Rolle (PLAN-21 Befund 6,
-    revidiert PLAN-20 Befund 4 — User-Fund per Screenshot: der bisherige
-    "lokal"-Platzhalter auf dem Host selbst war nicht gewollt, "beim Host
-    anzeigen: Host > Hostname"; auf einem Client soll die Karte "Client"
-    heißen statt "Host", Rendering (Hostname-Link + Heartbeat) unverändert).
-
-    ``status["connect"]`` fehlt genau dann, wenn dieser Knoten keine
-    connect-Rolle aktiv hat (``app.py``: nur gesetzt ``if heartbeat is not
-    None``) — das ist die Host-Rolle, zeigt jetzt ``status["hostname"]``
-    (eigener ``socket.gethostname()``, PLAN-21 neu im ``/-/status``-Payload).
-    Mit ``connect`` ist es die Client-Rolle: Hostname aus der Scheduler-URL
-    abgeleitet (dieselbe, die auch der Jobs-Screen-Hostlink nutzt,
-    ``_scheduler_url()``, keine neue Datenquelle), grün wenn verbunden,
-    verlinkt zum Host-eigenen `/-/`."""
-    conn = status.get("connect")
-    if conn is None:
-        own = status.get("hostname")
-        # Bibi4-Iteration, User-Fund: "next in ..." wandert von der Job-
-        # Status-Kachel hierher, plus Anzahl verbundener Clients (Connected-
-        # Clients-Screen, Stufe 2), später ergänzt um den Complete-Zähler
-        # (zweite Iteration, User-Fund: "nur beim Host gehört 785 complete
-        # ebenfalls nach HOST, sarasate, next in 2 min - 2 clients
-        # connected") — alle drei ausschließlich eine Host-Perspektive,
-        # deshalb nur in diesem Zweig, nicht bei "Client" unten. Zwei Zeilen
-        # (dritte Iteration, User-Fund: "schreib '2 clients connected' in
-        # der ersten Zeile und 'next Job in 1 min, 11 complete' in der
-        # zweiten Zeile" — next/complete auf eine Zeile zusammengelegt).
-        job_stats = status.get("job_stats") or {}
-        workers = status.get("workers") or []
-        n_clients = sum(1 for w in workers if not w.get("stale"))
-        complete = job_stats.get("complete_since_uptime", 0)
-        subs = [
-            f"{n_clients} clients connected",
-            f"next Job {_until(job_stats.get('next_due_at'), now)}, {complete} complete",
-        ]
-        lines = [_e(own)] if own else ["—"]
-        update = _engine_update_line(status)
-        if update:
-            lines.append(update)
-        return _lines_card("Host", lines, sub=subs)
-    hostname = None
-    if host_url:
-        from urllib.parse import urlparse
-        hostname = urlparse(host_url).hostname
-    if hostname is None:
-        return _lines_card("Client", ["—"])
-    ok = conn.get("ok")
-    cls = "ok" if ok else ("bad" if ok is False else "")
-    href = _e(host_url.rstrip("/") + "/-/")
-    link = f'<a class="{cls}" href="{href}" target="_blank" rel="noopener">{_e(hostname)}</a>'
-    sub = ""
-    if conn.get("last_at") is not None:
-        sub = f"Heartbeat {_ago(conn['last_at'], now)}"
-    lines = [link]
-    # Auf einem Client wiegt die Anzeige schwerer als auf dem Host: er wird
-    # nicht bedient, er läuft mit — und ein hostloser Knoten hat gar keinen
-    # Nodes-Screen, auf dem der Rückstand sonst auffiele (m.rau/bibi#43).
-    update = _engine_update_line(status)
-    if update:
-        lines.append(update)
-    return _lines_card("Client", lines, sub=sub)
-
-
-def _kv_card(label: str, rows: list[tuple[str, str, str]], sub: str = "") -> str:
-    """Karte mit Key/Value-Zeilen als echtes 2-Spalten-Grid (PLAN-21 Befund 7)
-    — anders als ``_lines_card()``s freien Zeilen richten sich die Werte
-    mehrerer Zeilen hier untereinander aus. ``rows``: ``(key, value,
-    value_css_class)``, ``value`` wird escaped (immer Klartext bei Mode/Git,
-    kein HTML nötig)."""
-    sub_html = f'<div class="sub">{_e(sub)}</div>' if sub else ""
-    body = "".join(
-        f'<div class="k">{_e(k)}</div><div class="v {cls}">{_e(v)}</div>'
-        for k, v, cls in rows
-    )
-    return (f'<div class="card"><div class="label">{_e(label)}</div>'
-            f'<div class="kvgrid">{body}</div>{sub_html}</div>')
-
-
-def _mode_card(status: dict, now: float) -> str:
-    """MODE-Kachel: Auto-Sync + Maintenance als Key/Value-Grid + Uptime als
-    Sub-Zeile (PLAN-19 Befund 4, verfeinert PLAN-21 Befund 7: Grid-Optik statt
-    gestapelter Label/Wert-Zeilen, User-Fund mit Codeblock-Beispiel)."""
-    auto_sync = bool(status.get("auto_sync"))
-    maint = bool(status.get("maintenance"))
-    rows = [
-        ("Auto-Sync", "an" if auto_sync else "aus", "ok" if auto_sync else ""),
-        ("Maintenance", "an" if maint else "aus", "bad" if maint else ""),
-    ]
-    return _kv_card("Mode", rows,
-                    sub=f"Uptime {_uptime_label(status.get('started_at'), now)}")
-
-
-def _format_sync_value(sync: str, oid: str | None, ahead: int, behind: int) -> str:
-    """SYNC-Zeilenwert inkl. Commit-Hash (PLAN-25 Befund 8-Nachtrag, User-Fund:
-    "Release-Stand — Commit-Hash und Anzahl commits behind — reporten"),
-    Format je Zustand final geklärt: ``synced: <hash>``, ``behind: <hash> (N)``,
-    ``ahead: <hash> (N)``, ``diverged: <hash> (+N, -M)`` — ahead UND behind
-    zugleich > 0, kein unaufgelöster Merge-Konflikt mit ``<<<<<<<``-Markern
-    (``git_status.working_tree_status()``). Hieß bis Batch 7 Stufe 3
-    ``"conflict"`` — umbenannt (User-Fund: "ich verstehe die Bedeutung von
-    conflict und sync: !conflict nicht"), derselbe Wert reist unverändert bis
-    in die CLI-Statuszeile (``statusline_cmd.py``s ``_SYNC_COLOR``) — beide
-    Oberflächen lesen denselben ``WorkingTreeStatus.sync``-Wert, keine
-    getrennte Semantik. Ohne ``oid`` (ältere Aufrufer/Tests) bleibt es beim
-    reinen Zustandswort."""
-    if not oid:
-        return sync
-    short = oid[:7]
-    if sync == "behind":
-        return f"{sync}: {short} ({behind})"
-    if sync == "ahead":
-        return f"{sync}: {short} ({ahead})"
-    if sync == "diverged":
-        return f"{sync}: {short} (+{ahead}, -{behind})"
-    return f"{sync}: {short}"
-
-
-def _git_segment_card(git_status: dict | None) -> str:
-    """Git-Kachel: Tree + Sync als Key/Value-Grid, Branch als Sub-Zeile
-    (PLAN-19 Befund 4, verfeinert PLAN-21 Befund 7: Grid-Optik statt
-    gestapelter Zeilen). ``git_status`` ist bereits ein Dict (``{"tree",
-    "sync", "branch", "oid", "ahead", "behind"}``, aus
-    ``bibi.git_status.working_tree_status()`` — rein lokal, kein Heartbeat/
-    Netzwerk nötig). ``None`` (kein Git-Repo) → leere Kachel mit „—".
-
-    Dritte Zeile "Konflikte" (PLAN-30 Ebene 3), nur wenn ``git_status["stuck"]``
-    > 0 — die Anzahl der Job-Branches, die nach 3 Fehlschlägen aus dem
-    automatischen Merge-back-Retry eskaliert wurden (``merge_quarantine.py``).
-    Happy Path bleibt unverändert zweizeilig (+ Branch-Sub-Zeile)."""
-    if git_status is None:
-        return _lines_card("Git", ["—"])
-    tree, sync = git_status["tree"], git_status["sync"]
-    sync_value = _format_sync_value(
-        sync, git_status.get("oid"), git_status.get("ahead", 0), git_status.get("behind", 0))
-    rows = [
-        ("Tree", tree, _TREE_LABEL_CLASS[tree]),
-        ("Sync", sync_value, _SYNC_LABEL_CLASS[sync]),
-    ]
-    stuck = git_status.get("stuck", 0)
-    if stuck:
-        rows.append(("Konflikte", str(stuck), "sync-conflict"))
-    branch = git_status.get("branch")
-    return _kv_card("Git", rows, sub=f"Branch {branch}" if branch else "")
 
 
 _JOB_STATUS_WAITING = ("pending", "deferred", "failed")
@@ -2036,59 +1606,6 @@ _JOB_STATUS_ROWS = (("Waiting", _JOB_STATUS_WAITING), ("Running", _JOB_STATUS_RU
 _JOB_STATUS_KINDS = (("job", "Job"), ("claude", "Claude"), ("app", "App"))
 
 
-def _job_status_card(job_stats: dict, now: float) -> str:
-    """Job-Status-Kachel (PLAN-26 Befund 3) — 4. Kachel neben Host/Mode/Git,
-    nur gerendert wenn ``job_stats`` vorhanden ist (``scheduler``-Rolle, wie
-    ``job_stats`` selbst — Client-Darstellung laut User bewusst "später").
-
-    Matrix statt der bisherigen 2x2-Aggregation (Bibi4-Iteration, User-Fund:
-    "Apps enden nicht" — fachlich eigene Kategorie, siehe ``models.display_kind()``):
-    3 Zeilen Waiting/Running/Stopped x 3 Spalten job/claude/app, aus
-    ``job_stats["counts_by_kind"]`` (``job_db.status_counts_by_kind()``).
-
-    Keine Fußzeile mehr (zweite Bibi4-Iteration, User-Fund: "nur beim Host
-    gehört 785 complete ebenfalls nach HOST, sarasate, next in 2 min - 2
-    clients connected") — der Complete-Zähler ist zur Host-Kachel gewandert,
-    zusammen mit dem schon vorher dorthin verschobenen "next ..." (s.
-    ``_host_card()``). Damit ist diese Kachel jetzt reine Matrix ohne Sub-
-    Zeile, symmetrisch zu ``_client_job_status_card()``.
-
-    Kein eigener Titel mehr (Bibi4-Iteration, User-Fund: "entferne die
-    Überschrift Job Status und beginne ganz oben mit JOB CLAUDE APP") — die
-    Kopfzeile der Matrix trägt die Beschriftung jetzt selbst, spart eine Zeile
-    Höhe gegenüber Mode/Git."""
-    by_kind = job_stats.get("counts_by_kind") or {}
-
-    def cell(kind: str, statuses: tuple[str, ...]) -> int:
-        counts = by_kind.get(kind) or {}
-        return sum(counts.get(s, 0) for s in statuses)
-
-    header = '<div class="jsg-h"></div>' + "".join(
-        f'<div class="jsg-h">{label}</div>' for _, label in _JOB_STATUS_KINDS)
-    rows = "".join(
-        f'<div class="jsg-k">{row_label}</div>' + "".join(
-            f'<div class="jsg-v">{cell(kind, statuses)}</div>' for kind, _ in _JOB_STATUS_KINDS)
-        for row_label, statuses in _JOB_STATUS_ROWS)
-    return f'<div class="card"><div class="jobstatus-grid">{header}{rows}</div></div>'
-
-
-def job_status_fragment(job_stats: dict | None, now: float) -> str:
-    """Eigenständige Job-Status-Kachel (Bibi4-Iteration, User-Fund: "Job
-    Status ändert sich oft, und eine häufigere Abfrage wäre gut") — eigenes
-    Element neben dem ``feed_status_fragment()``-Bundle, seit PLAN-36 Stufe
-    36.3 bus-getrieben statt 2s-Poll: das Target ``jobs`` feuert bei jeder
-    Job-Zustandsänderung, die Kachel refetcht dann ``/-/ui/feed/jobstatus``
-    (dieselbe billige ``job_db``-SQLite-Abfrage wie vorher, nur ereignisgenau
-    statt taktweise). Nur gerendert, wenn ``job_stats`` vorhanden ist
-    (``scheduler``-Rolle, wie bisher PLAN-26 Befund 3) — sonst leerer String,
-    kein leerer Bus-Container."""
-    if job_stats is None:
-        return ""
-    attrs = ('id="jobstatuscard" data-bus="jobs" '
-             'data-bus-refetch="/-/ui/feed/jobstatus"')
-    return f'<div {attrs}>{_job_status_card(job_stats, now)}</div>'
-
-
 #: Zeilen der Client-Matrix — dieselbe Form wie _JOB_STATUS_ROWS (Label,
 #: Menge matchender git_status-Werte), nur git-Gesundheit statt Lifecycle.
 #: "clean" bewusst keine eigene Zeile (etablierte Konvention: der stille
@@ -2096,37 +1613,6 @@ def job_status_fragment(job_stats: dict | None, now: float) -> str:
 #: bei _JOB_STATUS_ROWS sind diese drei Zeilen NICHT erschöpfend für "alle
 #: Jobs", sondern zeigen nur die vom Normalzustand abweichenden.
 _CLIENT_STATUS_ROWS = (("New", ("new",)), ("Modified", ("modified",)), ("Conflict", ("conflict",)))
-
-
-def _client_job_status_card(rows: list[dict]) -> str:
-    """4. Stat-Karte für den Client (Bibi4-Iteration, User-Brainstorm: "was
-    zeigen wir an Stelle der Host Job Status Card beim Client?") — Gegenstück
-    zu ``_job_status_card()``, aber mit Repo-Struktur- statt Live-Scheduling-
-    Daten: ``job_stats``/``counts_by_kind`` existiert nur für die
-    ``scheduler``-Rolle (job_db-gestützt); der Client hat stattdessen die
-    ohnehin schon geladene Discovery-Liste (dieselbe wie ``_jobs_table()``).
-
-    Echte Matrix seit der Bibi4-Iteration (User-Fund: "mir gefällt die
-    schnöde Zusammenfassung nicht, ich hätte gerne die Matrix immer wie beim
-    Host") — löst die vorherige, auf eine Fließtext-Subline reduzierte
-    Fassung ab: 3 Zeilen (New/Modified/Conflict, **immer alle drei gezeigt,
-    auch bei 0** — explizite User-Entscheidung, analog zu ``_JOB_STATUS_ROWS``,
-    das WAITING/RUNNING/STOPPED ebenfalls unbedingt zeigt) x 3 Spalten
-    (Job/Claude/App). Keine Fußzeile mehr — "next in ..."/Client-Count
-    wanderten in die Host-Kachel (``_host_card()``)."""
-    def cell(kind: str, statuses: tuple[str, ...]) -> int:
-        return sum(
-            1 for r in rows
-            if models.display_kind(r.get("payload"), r.get("app_port")) == kind
-            and r.get("git_status", "clean") in statuses
-        )
-    header = '<div class="jsg-h"></div>' + "".join(
-        f'<div class="jsg-h">{label}</div>' for _, label in _JOB_STATUS_KINDS)
-    body = "".join(
-        f'<div class="jsg-k">{row_label}</div>' + "".join(
-            f'<div class="jsg-v">{cell(kind, statuses)}</div>' for kind, _ in _JOB_STATUS_KINDS)
-        for row_label, statuses in _CLIENT_STATUS_ROWS)
-    return f'<div class="card"><div class="jobstatus-grid">{header}{body}</div></div>'
 
 
 def feed_status_fragment(
@@ -2191,29 +1677,6 @@ def feed_status_fragment(
     return f'<div {attrs}>{body}</div>'
 
 
-def daemon_page(daemon_status: dict | None = None, now: float | None = None) -> str:
-    """Daemon-Screen (PLAN-17 Stufe 17.0): Status-Kacheln + dasselbe Live-Log wie
-    ``log_page()`` (geteilter ``_log_panel()``-Baustein) — additiv neben
-    Live-Log, ersetzt es nicht (kein Migrationsrisiko für bestehende Links)."""
-    now = time.time() if now is None else now
-    status = daemon_status or {}
-    return (
-        "<!DOCTYPE html>\n"
-        '<html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>bibi · Daemon</title>"
-        f"<style>{_CSS}</style></head><body>"
-        f"{_header('Daemon', status)}"
-        f"<script>{_CLOCK_JS}</script>"
-        f"{_status_cards(status, now)}"
-        f"{_log_panel()}"
-        f"<script>{_OPS_HANDLES_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
-        f"<script>{_THEME_JS}</script>"
-        "</body></html>"
-    )
-
-
 # ── Jobs-Screen (PLAN-17 Stufe 17.1/17.2, PLAN-21 Befund 10) ─────────────────
 
 #: Git-Status je lokaler Job-MD (PLAN-21 Befund 10, User-Fund: "die Jobs im
@@ -2261,305 +1724,11 @@ def _jobs_type_cell(row: dict, public_host: str, *, link: bool = True) -> str:
     return f'<a href="{href}" target="_blank" rel="noopener">app :{app_port}</a>'
 
 
-def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
-              *, public_host: str = "localhost", index: int = 0) -> str:
-    """Eine Zeile: Slug(+Git-Chip)/Type/Status/last-since/Runtime (Bibi4-
-    Iteration, User-Fund: "Slug/Type/Status/last-since/Runtime" — löst die
-    vorherige 7-Spalten-Form (eigene Git-Spalte, getrennte Start/Ende-Spalten)
-    ab, analog zur Host-Schedules-Tabelle. Slug verlinkt auf die lokale Job-
-    Detailseite; Status verlinkt auf den konkreten letzten Lauf
-    (/-/ui/run/{jid}), sofern schon mal gelaufen. ``row["live"]`` (PLAN-21
-    Befund 10, 2. Nachtrag): läuft der Job gerade, geht der Status-Link auf
-    die Detailseite (dort lebt der Live-Output), last/Runtime zeigen den
-    laufenden Versuch (Laufzeit bis ``now``) statt des letzten
-    ABGESCHLOSSENEN Laufs.
-
-    last/since ist EINE Spalte (nicht mehr getrennt Start/Ende), analog zu
-    ``_sched_row()``s ``last_run_at``: laufend → Start des aktuellen Versuchs,
-    sonst → Ende des letzten abgeschlossenen Laufs — dieselbe „ein Zeitpunkt,
-    zwei Bedeutungen je nach Status"-Logik, die die Host-Tabelle längst hat.
-
-    Git-Status (Bibi4-Iteration, User-Fund: "sind sie lokal modifiziert,
-    konfliktär, fehlen?", präzisiert: "es genügt new/modified/clean, wobei
-    clean als Chip gar nicht angezeigt wird" + "plus konfliktär") sitzt jetzt
-    als Chip direkt am Slug statt in einer eigenen Spalte — "clean" (der
-    Normalzustand, laut User bewusst der leise Default) zeigt gar keinen
-    Chip, "fehlen" bleibt bewusst außen vor (frühere Entscheidung, s.
-    ``local_files_status()``-Docstring, git_status.py)."""
-    slug = row["slug"]
-    s = _e(slug)
-    live = row.get("live")
-    lr = local_runs.get(slug)
-    jid = lr.get("id") if lr else None
-
-    slug_cell = f'<a class="slug" href="/-/ui/jobs/detail/{s}">{s}</a>'
-    git_status = row.get("git_status", "clean")
-    if git_status != "clean":
-        cls, label = _GIT_STATUS_LABEL.get(git_status, ("chip", _e(str(git_status))))
-        slug_cell += f' <span class="{cls}">{label}</span>'
-
-    # m.rau/bibi#65: derselbe Wert, nach dem die Filterleiste filtert —
-    # client_row_status() ist die eine Quelle fuer beide.
-    if live:
-        # PLAN-27 Befund 4, User-Fund: "der Status awaiting wird in /ui/jobs
-        # nicht angezeigt" — live["status"] kommt jetzt aus local_runs_live()
-        # (worker.py), analog zu _local_job_meta()s Fallunterscheidung.
-        #
-        # Bugfix (User-Fund: "angezeigt wird RUNNING, nicht FAILED" / "DEFERRED
-        # nie im Dashboard gesehen"): dieselbe Kollabierung wie in
-        # _local_job_view() — jeder Live-Status außer awaiting wurde hart zu
-        # "running", obwohl live["status"] den echten Wert (deferred/failed,
-        # seit dem _PINNED_LIVE_STATUSES-Fix hier überhaupt erst sichtbar)
-        # längst trägt.
-        st = client_row_status(row, local_runs) or "running"
-        status_cell = (f'<a class="rowlink" href="/-/ui/jobs/detail/{s}">'
-                       f'<span class="st {st}">{st}</span></a>')
-        started_at = live.get("started_at")
-        last_cell = _time_toggle_cell(started_at, now, rel_fn=_ago)
-        runtime_cell = _human_duration(now - started_at) if started_at is not None else "—"
-    elif jid is not None:
-        status_cell = (f'<a class="rowlink" href="/-/ui/run/{jid}">'
-                       f'<span class="st {_e(lr["status"])}">{_e(lr["status"])}</span></a>')
-        last_cell = _time_toggle_cell(lr.get("finished_at"), now, rel_fn=_ago)
-        runtime_cell = _duration_cell(lr)
-    else:
-        status_cell = '<span class="side-empty">never run locally</span>'
-        last_cell = runtime_cell = "—"
-
-    type_cell = _jobs_type_cell(row, public_host)
-
-    return (f"<tr><td>{slug_cell}</td><td>{type_cell}</td><td>{status_cell}</td>"
-            f"<td>{last_cell}</td><td>{runtime_cell}</td><td></td></tr>")
-
-
-def _jobs_table(rows: list[dict], local_runs: dict[str, dict], now: float,
-                *, public_host: str = "localhost",
-                sort: str | None = None, direction: str | None = None,
-                sort_url: str = "/-/ui/jobs/board",
-                sort_target: str = "#jobsboard") -> str:
-    if not rows:
-        return '<p class="out-empty">— no job markdown found in this repository —</p>'
-    body = "".join(_jobs_row(r, local_runs, now, public_host=public_host, index=i)
-                  for i, r in enumerate(rows))
-    head = _sortable_head(
-        [("Slug", "slug"), ("Type", "type"), ("Status", "status"),
-         ("last / since", "last"), ("Runtime", "runtime"), ("Activity", None)],
-        sort=sort, direction=direction, url=sort_url, target=sort_target)
-    return f"<table>{head}<tbody>{body}</tbody></table>"
-
-
-# ── Lokale Job-Detailseite (PLAN-21 Befund 10-Nachtrag; PLAN-29 Befund 3+5) ──
-#
-# User-Fund 2026-07-09: der Jobs-Screen (Client) verlinkte bisher direkt von
-# der Liste auf den letzten EINZELNEN Lauf, ohne Zwischenseite "dieser Job,
-# alle lokalen Läufe" — anders als der Host, wo /-/ui/schedule/{slug} genau
-# das leistet. Diese Seite ist das Gegenstück.
-#
-# PLAN-29 Befund 3+5 (User-Entscheidung: "(2) sehr gerne", Vereinheitlichung
-# statt Parallel-Renderer): war bis 2026-07-14 ein bewusster Nicht-Clone von
-# schedule_detail_page() (eigene Buttons/Icons, keine Attribute-Seite) — vor
-# PLAN-28 auch nötig, weil lokale /run-Läufe keine echte jobs-Zeile hatten.
-# Seit PLAN-28 sind gepinnte Läufe echte jobs-Zeilen (nur in der eigenen
-# lokalen jobs.sqlite statt einer geteilten DB, s. dort), die Darstellung
-# nutzt jetzt deshalb dieselben Bausteine wie der Host: _action_bar()/
-# _live_panel() (mit base="/-/ui/jobs/detail", target="#jobsdetail-live",
-# raw_stream_base=None — der rohe SSE-Link existiert auf einem reinen Client
-# nicht, s. _live_panel()-Docstring) statt eigener Icon-Buttons/Output-Box.
-# _local_job_view() unten ist der Adapter: baut aus der lokalen MD-Discovery
-# + eigener /run-Journal-Historie + Live-Status dasselbe job-shaped Dict, das
-# _action_bar()/_live_panel() erwarten (Gegenstück zu _detail_data()s
-# Scheduler-DB-Lookup auf dem Host — die einzige echte Quelle des
-# Unterschieds ist WO die Zeile lebt, nicht WIE sie aussieht, exakt wie
-# gegen execute_reservation() als gemeinsamen Ausführungskern verifiziert).
-# Die Journal-Tabelle (Historie, Löschen, Detail-Link) war schon vorher
-# **derselbe** Baustein wie beim Host (journal_fragment() mit
-# base="/-/ui/jobs/detail").
-
-
-def _local_job_view(local: dict, last_run: dict | None, live: dict | None) -> dict | None:
-    """Adapter (PLAN-29 Befund 3+5): normalisiert die lokal ohnehin schon
-    vorhandenen Datenquellen auf dasselbe job-shaped Dict, das
-    _action_bar()/_live_panel() erwarten — ``id``/``status`` (Button-
-    Aktivierung), ``started_at``/``finished_at``/``reason`` (Meta-Zeile),
-    ``app_port`` (Link, aus der MD-Discovery — job-Attribut, nicht
-    laufabhängig) und im Live-Fall ``app_url`` (HITL-Signal). Gibt ``None``
-    zurück, wenn der Job auf diesem Knoten noch nie lief UND gerade nichts
-    live ist — _action_bar() rendert dafür trotzdem eine Start-only-Leiste
-    (s. dortiger Aufrufer), _live_panel() bleibt dann bewusst leer (kein
-    "letzter Lauf"/"aktiver Lauf"-Kasten ohne jeden Lauf)."""
-    app_port = local.get("app_port")
-    if live:
-        # Ausbau User-Fund 2026-07-10: lokale App-Jobs melden jetzt auch
-        # awaiting über den Signal-Kanal (worker.local_run_signal_state()) —
-        # ohne explizites Signal gilt ein live-Eintrag als "running" (dieselbe
-        # Fallunterscheidung wie _jobs_row()/vormals _local_job_meta()).
-        #
-        # Bugfix (User-Fund: "angezeigt wird RUNNING, nicht FAILED" / "DEFERRED
-        # nie im Dashboard gesehen"): die alte "awaiting sonst running"-Regel
-        # kollabierte JEDEN anderen Live-Status (deferred, failed — beide seit
-        # dem _PINNED_LIVE_STATUSES-Fix hier überhaupt erst ankommend) hart auf
-        # "running". live["status"] (worker.local_run_live(), DB-Spalte direkt)
-        # trägt den echten Wert längst mit — der wurde hier nur nie benutzt.
-        status = live.get("status") or "running"
-        return {"id": live.get("id"), "status": status,
-                "started_at": live.get("started_at"), "app_port": app_port,
-                "app_url": live.get("app_url")}
-    if last_run:
-        return {"id": last_run.get("id"), "status": last_run.get("status"),
-                "started_at": last_run.get("started_at"),
-                "finished_at": last_run.get("finished_at"),
-                "reason": last_run.get("reason"), "app_port": app_port}
-    return None
-
-
 #: (PLAN-36 Stufe 36.2: das frühere ``_JOBS_LIVE_AUTOREFRESH_JS`` — der
 #: running→terminal-Fingerprint-Vergleich, der ``#journal`` nachlud — ist
 #: durch die ``journal:``-Zustands-Events des Bus ersetzt, s. ``_EVENTS_JS``.
-#: ``data-running``/``data-journal-url`` an ``#jobsdetail-live`` bleiben als
-#: Diagnose-Attribute erhalten.)
-
-
-def _local_job_meta_line(local: dict, *, public_host: str = "localhost",
-                         include_app_link: bool = True) -> str:
-    """Typ/Trigger/Git-Zeile der Client-Job-Detailseite — reine MD-Discovery-
-    Info ohne 1:1-Host-Entsprechung (dessen Meta-Zeile, ``live_fragment()``,
-    zeigt Kind/Trigger/letzten-Status/nächsten-Lauf aus der Scheduler-DB,
-    kennt aber keinen Git-Status je Datei). Status selbst steht bewusst NICHT
-    hier (anders als beim Host), sondern ausschließlich im Status-Badge von
-    ``_live_panel()`` direkt darunter — keine doppelte Anzeige.
-
-    Wrapper seit dem Seitenabgleich (Batch 8) ``<div class="meta">`` statt
-    ``<p class="muted">`` — dasselbe Markup wie ``live_fragment()`` (Host) für
-    dieselbe Rolle im Layout, auch wenn der Inhalt rollenspezifisch bleibt
-    (Host: letzter/nächster Lauf aus der Scheduler-DB; Client: Git-Status +
-    App-Link, die der Host so nicht kennt).
-
-    App-Link hier als Fallback zu ``_live_panel()`` (Bibi4-Iteration, User-Fund:
-    "der fehlt"): ``_local_job_view()`` gibt ``None`` zurück, wenn der Job auf
-    diesem Knoten noch nie lief UND nichts live ist — dann bleibt
-    ``_live_panel()`` komplett leer, obwohl ``local["app_port"]`` (statische
-    MD-Frontmatter) längst bekannt ist. Auf dem Host gibt es diese Lücke nicht
-    (jede Schedule bekommt beim Rescan sofort eine ``job_db``-Zeile samt
-    ``app_port``, unabhängig vom ersten Lauf). ``include_app_link=False``
-    (vom Aufrufer gesetzt, sobald ``job`` nicht ``None`` ist) verhindert die
-    doppelte Anzeige, wenn ``_live_panel()`` den Link ohnehin schon zeigt."""
-    # `_jobs_type_cell()` statt `_effective_sched_type()` (#96): letzteres
-    # ruft `models.effective_kind()` **ohne** `app_port` und schrieb deshalb
-    # `job` — zwei Zeilen weiter unten liest derselbe Block `app_port` fuer
-    # den "Open app →"-Link. Ein Codeblock, der weiss, dass es eine App ist,
-    # und trotzdem `job` schreibt. Nicht escapen: die Zelle liefert Markup.
-    kind = _jobs_type_cell(local, public_host)
-    trigger = _e(local.get("schedule") or local.get("at") or "—")
-    cls, git_label = _GIT_STATUS_LABEL.get(local.get("git_status", "clean"),
-                                           ("chip", _e(str(local.get("git_status", "—")))))
-    app_port = local.get("app_port") if include_app_link else None
-    app_link = (f' · <a href="http://{public_host}:{app_port}/" target="_blank" '
-               f'rel="noopener">Open app →</a>' if app_port else "")
-    return (f'<div class="meta">Type <b>{kind}</b> · '
-            f'Trigger <code>{trigger}</code> · Git <span class="{cls}">{git_label}</span>'
-            f'{app_link}</div>')
-
-
-def jobs_detail_live_fragment(slug: str, live: dict | None, local: dict | None,
-                              last_run: dict | None, *,
-                              last_run_output: dict | None = None,
-                              public_host: str = "localhost",
-                              now: float | None = None) -> str:
-    """Bus-getriebene Region (``#jobsdetail-live``): Meta-Zeile + Aktions-
-    Leiste + Live-/letzter-Lauf-Block — seit PLAN-29 Befund 3+5 dieselben
-    Bausteine wie beim Host (``_action_bar()``/``_live_panel()``, s. Modul-
-    Kommentar), nur mit lokal gespeisten Daten. Ziel = ``/-/ui/jobs/detail/
-    {slug}/live``. ``last_run_output`` (PLAN-28 User-Feedback): Fallback auf
-    den archivierten Output des letzten Laufs, solange nichts live ist."""
-    now = time.time() if now is None else now
-    local = local or {}
-    s = _e(slug)
-    running_flag = "1" if live else "0"
-    journal_url = f"/-/ui/jobs/detail/{s}/journal"
-    job = _local_job_view(local, last_run, live)
-    # _action_bar() rendert nichts ohne job["id"] — ein Client-Job kann aber
-    # echt noch nie gelaufen sein (anders als beim Host, s. _VERBS_FOR_STATUS
-    # "": Sentinel statt echtem Lauf, nur für die Button-Leiste).
-    action_job = job or {"id": "-", "status": ""}
-    live_output = live if live else last_run_output
-    body = (
-        # include_app_link=(job is None): sobald job existiert, zeigt
-        # _live_panel() den App-Link bereits selbst — sonst stünde er doppelt.
-        _local_job_meta_line(local, public_host=public_host, include_app_link=job is None)
-        + _action_bar(slug, action_job, local.get("exec_mode"),
-                     base="/-/ui/jobs/detail", target="#jobsdetail-live")
-        + _live_panel(job, now, live_output, slug=slug, public_host=public_host,
-                     raw_stream_base=None)
-    )
-    # PLAN-36 Stufe 36.3: einziger Update-Weg ist der Bus (data-bus/-refetch)
-    # — das 36.2er-Sicherheitsnetz-Poll und der awaiting-2s-Sonderfall sind
-    # zurückgebaut (jeder awaiting-Übergang ist eine Job-Statusänderung, der
-    # Collector feuert das live:-Event ereignisgenau; den Still-gestorbener-
-    # Strom-Fall deckt der Ping-Watchdog in _EVENTS_JS).
-    attrs = (f'id="jobsdetail-live" data-running="{running_flag}" '
-            f'data-journal-url="{journal_url}" '
-            f'data-bus="live:{s}" '
-            f'data-bus-refetch="/-/ui/jobs/detail/{s}/live"')
-    return f"<div {attrs}>{body}</div>"
-
-
-def jobs_detail_inner(slug: str, local: dict, last_run: dict | None,
-                      runs: list[dict], now: float | None = None,
-                      *, live: dict | None = None,
-                      last_run_output: dict | None = None,
-                      public_host: str = "localhost") -> str:
-    now = time.time() if now is None else now
-    return (
-        jobs_detail_live_fragment(slug, live, local, last_run,
-                                  last_run_output=last_run_output,
-                                  public_host=public_host, now=now)
-        + journal_fragment(runs, slug, now, base="/-/ui/jobs/detail",
-                          live_job=live, live_anchor="#jobsdetail-live")
-    )
-
-
-def jobs_detail_page(slug: str, local: dict | None, last_run: dict | None,
-                     runs: list[dict], now: float | None = None,
-                     *, daemon_status: dict | None = None, live: dict | None = None,
-                     last_run_output: dict | None = None,
-                     public_host: str = "localhost") -> str:
-    """Lokale Job-Detailseite (ein Slug, nur lokale /run-Läufe dieses Knotens)
-    — seit PLAN-29 Befund 3+5 dieselben Bausteine wie schedule_detail_page()
-    (Host), s. Modul-Kommentar. "Attribute →" verlinkt auf die neue, lokal
-    gespeiste jobs_detail_attrs_page() (Gegenstück zu schedule_attrs_page(),
-    die auf einem Client mangels Scheduler-Rolle nur leere Platzhalter
-    zeigen würde, s. dortiger PLAN-29-Befund).
-
-    Kein "← Jobs"-Link mehr (zweite Bibi4-Iteration, User-Fund: derselbe
-    Seitenabgleich-Wunsch, der schedule_detail_page() den "← zurück"-Link
-    genommen hat, gilt explizit auch hier) — die Nav-Leiste trägt schon
-    einen Jobs-Tab dorthin zurück, der Link war redundant."""
-    now = time.time() if now is None else now
-    local = local or {}
-    s = _e(slug)
-    inner = jobs_detail_inner(slug, local, last_run, runs, now, live=live,
-                              last_run_output=last_run_output, public_host=public_host)
-    return (
-        "<!DOCTYPE html>\n"
-        '<html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f"<title>bibi · {s}</title>"
-        f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
-        f"<style>{_CSS}</style></head><body>"
-        f"{_header('', daemon_status)}"
-        f'<div style="display:flex;gap:.75rem;align-items:baseline">'
-        f'<a class="back" href="/-/ui/jobs/detail/{s}/attrs">Attribute →</a>'
-        f'</div>'
-        f'<h1>{s}</h1>'
-        f"{inner}"
-        f"<script>{_CLOCK_JS}</script>"
-        f"<script>{_OPS_HANDLES_JS}</script>"
-        f"<script>{_EVENTS_JS}</script>"
-        f"<script>{_SCROLL_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
-        f"<script>{_THEME_JS}</script>"
-        "</body></html>"
-    )
+#: ``data-running``/``data-journal-url`` bleiben als Diagnose-Attribute
+#: erhalten.)
 
 
 # ── Feed-Screen (PLAN-18 Stufe 18.3) — jetzt Home (``/-/``) ──────────────────
@@ -2750,7 +1919,6 @@ def feed_page(
         f"{feed_fragment(feed_data, days=days, now=now)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -2970,6 +2138,14 @@ def _event_line(e: dict) -> str:
     # beim Anschluss an den Formatter (m.rau/bibi#99) waere die zweite Form
     # sonst still auf leere Zeilen gefallen.
     line = _e(_strip_ansi(e.get("line") or e.get("text") or ""))
+    # Ein Ereignis ohne Inhalt bekommt keine Uhrzeit (m.rau/bibi#107). Der
+    # Formatter liefert Events mit leerem `line`; im Rohtext war eine leere
+    # Zeile eine leere Zeile, mit Präfix wird daraus eine, die aussieht, als
+    # hätte zu diesem Zeitpunkt etwas stattgefunden. Die Leerzeile selbst
+    # bleibt — sie trennt Absätze und ist Inhalt; was verschwindet, ist die
+    # Behauptung eines Ereignisses.
+    if not line.strip():
+        return "<span></span>"
     s = e.get("s")
     # "phase" (User-Feedback 2026-07-03): Worker-/Wrapper-Startup-Zeilen (Worktree,
     # Container, Prozess-Spawn) — optisch als System-Info abgesetzt, kein Job-Output.
@@ -3018,21 +2194,27 @@ def _falte_thinking(events: list[dict]) -> str:
     sich den Zustand ohnehin nicht über einen Swap hinweg.
     """
     teile: list[str] = []
-    block: list[str] = []
+    block: list[dict] = []
 
     def _schliessen() -> None:
         if not block:
             return
-        n = len(block)
+        # Gezählt werden **Zeilen, nicht Events** (m.rau/bibi#107). Live stand
+        # dort `thinking (1 line)` über fünfzehn sichtbaren Zeilen: die
+        # Token-Deltas eines Denkabschnitts sind nach `_merge_deltas()` **ein**
+        # Event, dessen `line` die Umbrüche trägt. Die Angabe war damit für
+        # jeden zusammenhängenden Abschnitt dieselbe und widersprach sichtbar
+        # dem, was darunter stand — genau das darf eine Zusammenfassung nicht.
+        n = sum(1 + (e.get("line") or e.get("text") or "").count("\n") for e in block)
         teile.append(
             f'<details class="think" open><summary>thinking '
             f'({n} {"line" if n == 1 else "lines"})</summary>'
-            + "\n".join(block) + "</details>")
+            + "\n".join(_event_line(e) for e in block) + "</details>")
         block.clear()
 
     for e in events:
         if e.get("s") == "thinking":
-            block.append(_event_line(e))
+            block.append(e)
             continue
         _schliessen()
         teile.append(_event_line(e))
@@ -3248,12 +2430,12 @@ _EVENTS_JS = """
 #: _LIVE_JS, PLAN-36 Stufe 36.2) — Swaps kommen jetzt vom Bus-Refetch und dem
 #: gestreckten Sicherheitsnetz-Poll, das Problem bleibt dasselbe: ein frisch
 #: eingehaengtes Element hat scrollTop=0. Beide Regionen abgedeckt (#live Host,
-#: #jobsdetail-live Client — letzterer bekommt durch den Bus erstmals lebende
+#: — die Region bekommt durch den Bus erstmals lebende
 #: Output-Boxen, s. FE-Live-Update-Briefing Befund 1).
 _SCROLL_JS = """
 (function(){
-  const isLiveRegion = (t) => t && (t.id === 'live' || t.id === 'jobsdetail-live');
-  const region = () => document.getElementById('live') || document.getElementById('jobsdetail-live');
+  const isLiveRegion = (t) => t && t.id === 'live';
+  const region = () => document.getElementById('live');
   // .liveclamp (awaiting/terminal): absolute Position wiederherstellen.
   let saved = null;
   document.body.addEventListener('htmx:beforeSwap', (ev) => {
@@ -3277,8 +2459,8 @@ _SCROLL_JS = """
 // restauriert — vorher fehlte dieser else-Zweig, der browserseitige Reset auf 0
 // beim Wiedereinhaengen blieb stehen.
 (function(){
-  const isLiveRegion = (t) => t && (t.id === 'live' || t.id === 'jobsdetail-live');
-  const region = () => document.getElementById('live') || document.getElementById('jobsdetail-live');
+  const isLiveRegion = (t) => t && t.id === 'live';
+  const region = () => document.getElementById('live');
   let wasAtBottom = null, savedTop = null;
   document.body.addEventListener('htmx:beforeSwap', (ev) => {
     const t = ev.detail && ev.detail.target;
@@ -3319,27 +2501,27 @@ def _duration_cell(r: dict) -> str:
 _JOURNAL_PAGE_SIZE = 50
 
 
-#: Basis-Pfad der Journal-Bausteine — Default = Schedule-Detailseite (Host).
-#: Die lokale Jobs-Detailseite (PLAN-21 Befund 10-Nachtrag) übergibt
-#: "/-/ui/jobs/detail" an dieselben Funktionen, um Pagination/Löschen gegen
-#: ihre eigenen (rollenunabhängigen) Routen zu verdrahten — sonst identischer
-#: Baustein, kein Fork nötig.
+#: Basis-Pfad der Journal-Bausteine. Bis `#100` war er ein Parameter, weil
+#: die abgelöste Client-Detailseite dieselben Bausteine gegen ihre eigenen
+#: Routen verdrahtete. Mit ihr ist der zweite Wert entfallen — und ein
+#: Parameter, der überall denselben Wert trägt, ist keine Wahl mehr, sondern
+#: eine Stelle, an der jemand eine vermutet.
 _JOURNAL_BASE = "/-/ui/schedule"
 
 
-def _journal_sentinel_row(slug: str, offset: int, *, base: str = _JOURNAL_BASE) -> str:
+def _journal_sentinel_row(slug: str, offset: int) -> str:
     """Trigger-Zeile für Infinite Scroll: sichtbar (``revealed``) lädt sie die
     nächste Batch nach und ersetzt sich selbst (outerHTML) — mit neuer Batch +
     ggf. frischer Sentinel-Zeile, oder ganz ohne, wenn das Ende erreicht ist."""
     s = _e(slug)
     return (
-        f'<tr id="journal-more" hx-get="{base}/{s}/runs?offset={offset}" '
+        f'<tr id="journal-more" hx-get="{_JOURNAL_BASE}/{s}/runs?offset={offset}" '
         f'hx-trigger="revealed" hx-swap="outerHTML">'
         f'<td colspan="7" class="muted">loading more runs…</td></tr>'
     )
 
 
-def _live_placeholder_row(job: dict | None, now: float, *, anchor: str) -> str:
+def _live_placeholder_row(job: dict | None, now: float) -> str:
     """Rein zur Anzeige eingeblendete oberste Journal-Zeile für einen noch
     nicht abgeschlossenen Lauf — kein echter Journal-Eintrag (``_write_journal()``
     schreibt unverändert erst beim Terminal-Übergang, Job-Lifecycle-Redesign,
@@ -3356,14 +2538,14 @@ def _live_placeholder_row(job: dict | None, now: float, *, anchor: str) -> str:
     zeigte diese Zeile "läuft" für einen Job, der noch gar nicht losgelaufen
     ist. Kachel und diese Zeile dürfen nie auseinanderlaufen, sonst zeigt die
     eine "läuft noch", während die andere schon den letzten abgeschlossenen
-    Lauf zeigt. ``anchor`` verlinkt zurück auf die Live-Region (``#live``
-    Host, ``#jobsdetail-live`` Client) — ein reiner In-Page-Sprung, keine neue
-    Route nötig.
+    Lauf zeigt. Der Rückverweis zeigt auf die Live-Region ``#live`` — ein
+    reiner In-Page-Sprung, keine neue Route nötig. Bis `#100` war er wählbar,
+    weil die abgelöste Client-Detailseite ``#jobsdetail-live`` hieß; mit ihr
+    ist die zweite Region entfallen und mit ihr die Wahl.
 
     ``status or "running"`` (nicht bloß ``status``): das Client-``live``-Dict
     (``worker.local_run_live()``) trug historisch nicht immer ein explizites
-    ``status``-Feld — ``_local_job_view()`` (die Quelle von Block 1 auf der
-    Client-Seite) fängt genau das mit demselben Default ab. Ohne diesen
+    ``status``-Feld. Ohne diesen
     Default hier könnte diese Zeile ausbleiben, während die Kachel oben
     trotzdem "running" zeigt — der Host-``job``-Dict hat ``status`` dagegen
     immer gesetzt (NOT NULL-Spalte), dort ist der Default ein No-op."""
@@ -3379,18 +2561,18 @@ def _live_placeholder_row(job: dict | None, now: float, *, anchor: str) -> str:
         f"<td>{t_abs}</td>"
         f'<td class="st {st}">{st}</td>'
         "<td>—</td><td>—</td><td>—</td><td>—</td>"
-        f'<td><a class="back" href="{anchor}">↑ live</a></td>'
+        f'<td><a class="back" href="#live">↑ live</a></td>'
         "</tr>"
     )
 
 
 def _journal_table_html(runs: list[dict], slug: str, now: float, *, offset: int = 0,
-                        base: str = _JOURNAL_BASE, live_row: str = "") -> str:
+                        live_row: str = "") -> str:
     if not runs and not live_row:
         return '<p class="out-empty">— no runs yet —</p>'
-    rows = live_row + _run_rows(runs, slug, now, base=base)
+    rows = live_row + _run_rows(runs, slug, now)
     if len(runs) == _JOURNAL_PAGE_SIZE:
-        rows += _journal_sentinel_row(slug, offset + _JOURNAL_PAGE_SIZE, base=base)
+        rows += _journal_sentinel_row(slug, offset + _JOURNAL_PAGE_SIZE)
     return (
         '<table><thead><tr><th>TIME</th><th>STATUS</th><th>REASON</th>'
         '<th>EXIT</th><th>RUNTIME</th><th>COMMIT</th><th></th></tr></thead>'
@@ -3399,8 +2581,7 @@ def _journal_table_html(runs: list[dict], slug: str, now: float, *, offset: int 
 
 
 def journal_fragment(runs: list[dict], slug: str, now: float, *, oob: bool = False,
-                     base: str = _JOURNAL_BASE, live_job: dict | None = None,
-                     live_anchor: str = "#live") -> str:
+                     live_job: dict | None = None) -> str:
     """Eigenständige, nicht selbst-pollende Region (``#journal``) — wächst nur
     durch nutzergetriggertes Infinite-Scroll-Nachladen (kein 2s-Poll, der die
     nachgeladenen Zeilen sonst wieder plattmachen würde). ``.panel-card``-Rahmen
@@ -3423,28 +2604,28 @@ def journal_fragment(runs: list[dict], slug: str, now: float, *, oob: bool = Fal
     Region über ihre eigene Refresh-Route — ersetzt beide früheren
     Fingerprint-Autorefresh-Skripte."""
     oob_attr = ' hx-swap-oob="true"' if oob else ""
-    live_row = _live_placeholder_row(live_job, now, anchor=live_anchor)
+    live_row = _live_placeholder_row(live_job, now)
     s = _e(slug)
     return (
         f'<div id="journal"{oob_attr} class="panel-card" '
-        f'data-bus="journal:{s}" data-bus-refetch="{base}/{s}/journal">'
+        f'data-bus="journal:{s}" data-bus-refetch="{_JOURNAL_BASE}/{s}/journal">'
         "<h2>Journal</h2>"
-        f"{_journal_table_html(runs, slug, now, base=base, live_row=live_row)}"
+        f"{_journal_table_html(runs, slug, now, live_row=live_row)}"
         "</div>"
     )
 
 
 def journal_runs_fragment(runs: list[dict], slug: str, now: float, offset: int,
-                          *, base: str = _JOURNAL_BASE) -> str:
+                          ) -> str:
     """Nächste Batch für ``GET .../runs?offset=N`` — ersetzt die Sentinel-Zeile
     (outerHTML) durch die neuen Zeilen + ggf. eine frische Sentinel-Zeile."""
-    rows = _run_rows(runs, slug, now, base=base)
+    rows = _run_rows(runs, slug, now)
     if len(runs) == _JOURNAL_PAGE_SIZE:
-        rows += _journal_sentinel_row(slug, offset + _JOURNAL_PAGE_SIZE, base=base)
+        rows += _journal_sentinel_row(slug, offset + _JOURNAL_PAGE_SIZE)
     return rows
 
 
-def _run_rows(runs: list[dict], slug: str, now: float, *, base: str = _JOURNAL_BASE) -> str:
+def _run_rows(runs: list[dict], slug: str, now: float) -> str:
     # Follow-up (User-Feedback): "Output entfällt" für Journal-Zeilen — kein
     # Inline-Toggle mehr, nur Detail/Löschen. Der Output (formatiert + roh)
     # lebt auf der Execution-Detail-Seite ("→ Detail").
@@ -3467,7 +2648,7 @@ def _run_rows(runs: list[dict], slug: str, now: float, *, base: str = _JOURNAL_B
             f"<td>{_duration_cell(r)}</td>"
             f"<td>{_commit_cell(r)}</td>"
             f'<td><a class="back" href="/-/ui/run/{rid}">→ Detail</a> '
-            f'<button hx-delete="{base}/{s}/run/{rid}" hx-target="#journal" '
+            f'<button hx-delete="{_JOURNAL_BASE}/{s}/run/{rid}" hx-target="#journal" '
             f'hx-swap="outerHTML" hx-confirm="Delete this run record?">Delete</button></td>'
             "</tr>"
         )
@@ -3636,24 +2817,25 @@ _BTN_SPINNER = '<span class="btn-spinner" aria-hidden="true"></span>'
 
 
 def _action_bar(slug: str, job: dict | None, exec_mode: str | None = None,
-                *, base: str = "/-/ui/schedule", target: str = "#live") -> str:
-    """``base``/``target`` (PLAN-29 Befund 3+5, User-Entscheidung: Vereinheitlichung
-    statt Parallel-Renderer) — Default reproduziert exakt das bisherige Host-
-    Verhalten (``/-/ui/schedule/{slug}/{verb}`` → ``#live``); die Client-
-    Job-Detailseite ruft mit ``base="/-/ui/jobs/detail"``, ``target="#jobsdetail-live"``."""
+                ) -> str:
+    """Die Aktions-Leiste: ``/-/ui/schedule/{slug}/{verb}`` → ``#live``.
+
+    Ziel und Basis waren bis `#100` Parameter (PLAN-29 Befund 3+5,
+    Vereinheitlichung statt Parallel-Renderer) — die zweite Gegenstelle war
+    die Client-Detailseite und ist mit ihr entfallen."""
     if not job or not job.get("id"):
         return ""
     s = _e(slug)
     status = job.get("status", "")
     enabled = _VERBS_FOR_STATUS.get(status, ())
     btns = "".join(
-        f'<button hx-post="{base}/{s}/{v}" hx-target="{target}" '
+        f'<button hx-post="{_JOURNAL_BASE}/{s}/{v}" hx-target="#live" '
         f'hx-swap="outerHTML" hx-disabled-elt="this"'
         f'{"" if v in enabled else " disabled"}>{v.upper()}{_BTN_SPINNER}</button> '
         for v in _VERBS
     )
     if (exec_mode or "host").strip().lower() == "container":
-        btns += (f'<button hx-post="{base}/{s}/rebuild" hx-target="{target}" '
+        btns += (f'<button hx-post="{_JOURNAL_BASE}/{s}/rebuild" hx-target="#live" '
                  f'hx-swap="outerHTML" hx-disabled-elt="this" '
                  f'title="Discards the per-job image; the next run starts '
                  f'from the default image">REBUILD{_BTN_SPINNER}</button> ')
@@ -3755,7 +2937,6 @@ def schedule_detail_page(
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_SCROLL_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -3941,7 +3122,6 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -4021,45 +3201,6 @@ def schedule_attrs_page(slug: str, data: dict, now: float | None = None) -> str:
         f'<h1><span class="st {st}">{name}</span> · Attribute</h1>'
         f"{config_html}"
         f"{runtime_html}"
-        f"<script>{_TIME_JS}</script>"
-        f"<script>{_THEME_JS}</script>"
-        "</body></html>"
-    )
-
-
-def jobs_detail_attrs_page(slug: str, local: dict | None) -> str:
-    """Attribute-Seite für einen lokal entdeckten Job (PLAN-29 Befund 3+5) —
-    Gegenstück zu ``schedule_attrs_page()`` (Host), aber aus der lokalen MD-
-    Discovery gespeist (``_local_schedules()``) statt der Scheduler-DB, die
-    ein reiner Client strukturell nicht hat (live geprüft: ``client.
-    schedule_config()`` liefert dort still ``{}`` statt eines Fehlers, s.
-    PLAN-29 Befund 3+5 — dieselbe Seite mit denselben Scheduler-Daten würde
-    auf einem Client also nur Platzhalter zeigen). Nur "Konfiguration"
-    (``_ATTRS_CONFIG_ORDER``) — "Scheduling" (``id``/``next_fire_at``/
-    ``fire``) ist Scheduler-Laufzeitstand, den es für einen rein lokal
-    entdeckten Job nicht gibt."""
-    name = _e(slug)
-    data = {**(local or {}), "slug": slug, "kind": "job"}
-    config_html = _attrs_section("Konfiguration", _ATTRS_CONFIG_ORDER, data)
-    return (
-        "<!DOCTYPE html>\n"
-        '<html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f"<title>bibi · {name} · Attribute</title>"
-        f"<style>{_CSS}"
-        ".attrtable { width: auto; margin: .4rem 0 1rem; font-size: .85rem; }"
-        ".attrtable td:first-child { padding-right: 1.5rem; white-space: nowrap; }"
-        ".attrtable td { padding: .2rem .3rem; vertical-align: top; }"
-        ".attrtable code { font-family: ui-monospace, monospace; font-size: .85em; }"
-        ".attrtable a { color: inherit; word-break: break-all; }"
-        "</style></head><body>"
-        f'<div style="display:flex;gap:.75rem;align-items:baseline">'
-        f'<a class="back" href="/-/jobs">← Jobs</a>'
-        f'<a class="back" href="/-/ui/jobs/detail/{name}">← Detail</a>'
-        f'</div>'
-        f'<h1>{name} · Attribute</h1>'
-        f"{config_html}"
-        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -4493,7 +3634,6 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -5080,7 +4220,7 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
     # Job, nicht für einen Lauf — eine Kachel beschreibt einen Slot und wäre
     # der falsche Ort für etwas, das auch ohne jeden Lauf gilt. Der Screen
     # führte den Link bisher überhaupt nicht; die Bedingung, die das Ticket
-    # verdächtigte, sitzt im alten Detail unter `/-/ui/jobs/detail/…`.
+    # verdächtigte, sass in der alten Client-Detailseite (entfallen mit #100).
     # **Kein `[APP]`-CTA mehr im Kopf** (m.rau/bibi#104). `#145` hatte ihn
     # hierher gelegt, mit der richtigen Begruendung, dass `app_port` fuer den
     # Job gilt und nicht fuer einen Lauf. Uebersehen wurde, dass das fuer den
@@ -5141,7 +4281,6 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOB_DETAIL_JS}</script>"
         f"<script>{_SLOT_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )
@@ -5217,7 +4356,6 @@ def job_attrs_page_v5(*, slug: str, spec: dict, defaults: dict, now: float,
         f'<div class="attrs">{"".join(zeilen)}</div>'
         f"<script>{_CLOCK_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
-        f"<script>{_TIME_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
     )

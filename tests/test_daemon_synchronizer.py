@@ -58,7 +58,8 @@ def test_debounce_clean_tree_never_pushes():
 
 # ── Synchronizer-Tick (injizierte Git-IO + Clock) ───────────────────────────
 
-def _mk(push=False, pull=False, stat=("x", 10), push_kind=None, calls=None):
+def _mk(push=False, pull=False, stat=("x", 10), push_kind=None, calls=None,
+        pull_ok=True, pull_kind=None):
     calls = calls if calls is not None else {"push": 0, "pull": 0}
 
     def diff_stat():
@@ -70,7 +71,7 @@ def _mk(push=False, pull=False, stat=("x", 10), push_kind=None, calls=None):
 
     def pull_fn():
         calls["pull"] += 1
-        return (True, None)
+        return (pull_ok, pull_kind)
 
     s = Synchronizer(
         push=push, pull=pull, diff_stat=diff_stat, push_fn=push_fn, pull_fn=pull_fn,
@@ -538,3 +539,60 @@ def test_tick_worktree_sweep_never_removes_unmerged_work(tmp_path):
 
     assert wt.is_ahead(repo_root=root, branch="agent/ghost", trunk="trunk")  # Merge blieb Konflikt
     assert p.exists()  # trotz fehlender jobs-Zeile nicht entfernt — ungemergte Arbeit
+
+
+# ── Ein Vorgang ohne Ergebnis ist kein Ereignis (#109) ──────────────────────
+
+
+def _pull_satz(caplog):
+    return next(r for r in caplog.records
+                if getattr(r, "bibi", {}).get("event") == "sync.pull")
+
+
+def test_a_pull_that_changed_nothing_stays_out_of_the_live_log(team_repo, caplog):
+    """**Der Rot-Schritt von `#109`.**
+
+    Dreissig sichtbare Zeilen auf `/-/live`, davon achtundzwanzig
+    `sync.pull ok=true kind=null` — alle drei Minuten, seit Stunden. Information
+    trugen genau zwei.
+
+    `kind=null` heisst: gepullt, nichts geaendert. Ein Vorgang ohne Ergebnis,
+    auf `INFO`. Der Live-Log ist die Stelle, an der man nachsieht, *wenn etwas
+    nicht stimmt* — ein Signal-Rausch-Verhaeltnis von 1:14 macht ihn genau dann
+    unbrauchbar, wenn er gebraucht wird.
+
+    `DEBUG` statt gar nicht: der Log fuehrt dieselben Ereignisse mit Details
+    auf `DEBUG` und mit Historie (FE-Spezifikation §7). Wegzulassen hiesse,
+    die Auskunft zu verlieren statt sie einzuordnen.
+    """
+    import logging as _logging
+
+    s, _ = _mk(pull=True, pull_ok=True, pull_kind=None)
+    with caplog.at_level(_logging.DEBUG, logger="bibi.daemon.synchronizer"):
+        s.tick(0.0)
+    assert _pull_satz(caplog).levelno == _logging.DEBUG, (
+        "ein ergebnisloser Pull steht auf INFO und uebertoent den Live-Log (#109)")
+
+
+def test_a_pull_that_changed_something_stays_visible(team_repo, caplog):
+    """Die Gegenprobe, erste Haelfte: wo etwas passiert ist, bleibt es sichtbar."""
+    import logging as _logging
+
+    s, _ = _mk(pull=True, pull_ok=True, pull_kind="fast-forward")
+    with caplog.at_level(_logging.DEBUG, logger="bibi.daemon.synchronizer"):
+        s.tick(0.0)
+    assert _pull_satz(caplog).levelno == _logging.INFO
+
+
+def test_a_failed_pull_stays_visible_even_without_a_kind(team_repo, caplog):
+    """Die Gegenprobe, zweite Haelfte — und die wichtigere.
+
+    Ein fehlgeschlagener Pull traegt ebenfalls kein `kind`. Wer nur auf `kind`
+    prueft, versteckt genau den Fall, fuer den der Live-Log da ist.
+    """
+    import logging as _logging
+
+    s, _ = _mk(pull=True, pull_ok=False, pull_kind=None)
+    with caplog.at_level(_logging.DEBUG, logger="bibi.daemon.synchronizer"):
+        s.tick(0.0)
+    assert _pull_satz(caplog).levelno == _logging.INFO

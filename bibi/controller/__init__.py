@@ -261,8 +261,8 @@ def _local_schedules() -> dict[str, dict]:
             # bei Apps den Port als Link zeigen — bisher fehlten app_port/
             # app_prefix hier komplett, obwohl ScheduleSpec beide trägt.
             "app_port": pr.spec.app_port, "app_prefix": pr.spec.app_prefix,
-            # PLAN-29 Befund 3+5: Grundlage für jobs_detail_attrs_page() —
-            # alles hier ist statische Frontmatter (ScheduleSpec), keine
+            # PLAN-29 Befund 3+5: Grundlage für die Attribut-Seite — alles
+            # hier ist statische Frontmatter (ScheduleSpec), keine
             # Scheduler-Laufzeit, deshalb genauso read-only verfügbar wie
             # die Felder oben, unabhängig von einer scheduler-Rolle.
             "priority": pr.spec.priority, "model": pr.spec.model,
@@ -446,46 +446,6 @@ def add_controller_routes(
             _status(), _feed_git_status(), _scheduler_url(), time.time(),
             client_rows=_client_rows_for_status(),
             scheduler=sched, scheduler_stale_since=stale))
-
-    @app.post("/-/ui/self/update", include_in_schema=False)
-    def self_update():
-        """Diesen Knoten auf den Soll-Stand bringen (m.rau/bibi#43).
-
-        Über ``127.0.0.1``, nicht über die von außen gemeldete Adresse: der
-        Knopf sitzt in der eigenen Oberfläche dieses Knotens, und ob er von
-        außen erreichbar ist, spielt dafür keine Rolle. Genau daran scheiterte
-        der Restart-Knopf im Nodes-Screen beim Mac — an der Bind-Adresse.
-
-        ``deployment=True``: erst pullen, dann neu starten. Ohne den Pull wäre
-        der Neustart nur Ausfallzeit — der Knoten käme auf demselben Stand
-        zurück, und der Knopf verspricht das Gegenteil. Schlägt der Pull fehl,
-        antwortet ``/-/restart`` mit 409 und startet **nicht** neu; dann bleibt
-        es beim alten Stand und die Kachel sagt weiterhin NEED UPDATE — was
-        dann auch stimmt.
-        """
-        from bibi import config as config_mod
-        try:
-            client.restart_node("127.0.0.1", config_mod.daemon_port(),
-                                deployment=True)
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            pass
-        # Kurz warten, damit die neu gerenderte Kachel nicht noch den alten
-        # Zustand zeigt und der Knopf folgenlos wirkt (wie bei den Node-Verben).
-        time.sleep(1.0)
-        sched, stale = _scheduler_status()
-        return HTMLResponse(render.feed_status_fragment(
-            _status(), _feed_git_status(), _scheduler_url(), time.time(),
-            client_rows=_client_rows_for_status(),
-            scheduler=sched, scheduler_stale_since=stale))
-
-    @app.get("/-/ui/feed/jobstatus", include_in_schema=False)
-    def feed_jobstatus():
-        # Bus-Refetch-Ziel von #jobstatuscard (Target "jobs") — eigenes
-        # Element neben #feedstatus: _status() liefert job_stats aus einer
-        # reinen job_db-SQLite-Abfrage, ohne den git-status-Subprozess
-        # der anderen drei Karten (der bleibt bei _feed_git_status()/#feedstatus).
-        return HTMLResponse(render.job_status_fragment(
-            _status().get("job_stats"), time.time()))
 
     #: 180 Tage — eine Ansichtswahl ist eine UI-Präferenz und kein Sitzungswert.
     _VIEW_COOKIE_MAX_AGE = 60 * 60 * 24 * 180
@@ -836,189 +796,6 @@ def add_controller_routes(
             return client.run_journal(limit=200)
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             return []
-
-    def _job_detail_data(slug: str):
-        # Gegenstück zu _detail_data() (Host), aber lokal gespeist (PLAN-21
-        # Befund 10-Nachtrag) — MD-Discovery + Git-Status statt Scheduler-DB,
-        # run_journal(slug=...) statt journal(slug=...) für die Historie.
-        from bibi import repo
-        from bibi.git_status import local_files_status
-        local = _local_schedules().get(slug)
-        if local is not None:
-            try:
-                git_by_path = local_files_status(repo.root(), [local["repo_path"]])
-                local = {**local, "git_status": git_by_path.get(local["repo_path"], "clean")}
-            except Exception:  # noqa: BLE001 — defensiv (§2.7)
-                local = {**local, "git_status": "clean"}
-        try:
-            runs = client.run_journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=0)
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            runs = []
-        last_run = runs[0] if runs else None
-        return local, last_run, runs
-
-    def _job_live(slug: str) -> dict | None:
-        # PLAN-21 Befund 10, 2. Nachtrag: /-/run/live/{slug} 404t, wenn gerade
-        # nichts läuft — HTTPError, wie überall sonst in diesem Client (§2.7).
-        try:
-            return client.run_live(slug)
-        except Exception:  # noqa: BLE001
-            return None
-
-    def _job_last_run_output(last_run: dict | None) -> dict | None:
-        # PLAN-28 User-Feedback: "bei terminalen Status wurde der Output
-        # entfernt... beim Host wird der Output des letzten Laufes immer
-        # oben angezeigt bis RESET oder START" — rollenunabhängig über
-        # dieselbe Route wie die Run-Detailseite (/-/run/journal/{id}/output).
-        if last_run is None:
-            return None
-        try:
-            return client.local_run_output(last_run["id"])
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            return None
-
-    @app.get("/-/ui/jobs/detail/{slug}", include_in_schema=False)
-    def jobs_detail(slug: str):
-        from bibi import config
-        local, last_run, runs = _job_detail_data(slug)
-        live = _job_live(slug)
-        return HTMLResponse(render.jobs_detail_page(
-            slug, local, last_run, runs, daemon_status=_status(), live=live,
-            last_run_output=None if live else _job_last_run_output(last_run),
-            public_host=config.public_host()))
-
-    @app.get("/-/ui/jobs/detail/{slug}/attrs", include_in_schema=False)
-    def jobs_detail_attrs(slug: str):
-        # PLAN-29 Befund 3+5: Gegenstück zu schedule_attrs()/schedule_config()
-        # (Host) — lokal gespeist statt scheduler-gated, funktioniert deshalb
-        # auch auf einem reinen Client (dort läuft schedule_attrs() heute
-        # still ins Leere, s. render.jobs_detail_attrs_page()-Docstring).
-        local = _local_schedules().get(slug)
-        return HTMLResponse(render.jobs_detail_attrs_page(slug, local))
-
-    @app.get("/-/ui/jobs/detail/{slug}/live", include_in_schema=False)
-    def jobs_detail_live_fragment(slug: str):
-        # Self-Poll-Ziel von #jobsdetail-live (wie #live bei Schedules).
-        from bibi import config
-        local, last_run, _runs = _job_detail_data(slug)
-        live = _job_live(slug)
-        return HTMLResponse(render.jobs_detail_live_fragment(
-            slug, live, local, last_run,
-            last_run_output=None if live else _job_last_run_output(last_run),
-            public_host=config.public_host()))
-
-    @app.post("/-/ui/jobs/detail/{slug}/kill", include_in_schema=False)
-    def jobs_detail_kill(slug: str):
-        # User-Fund 2026-07-10: "natürlich müssen wir kill können" — Analogon
-        # zu schedule_action()s KILL-Verb (Host), aber lokal (client.run_live_kill()).
-        from bibi import config
-        try:
-            client.run_live_kill(slug)
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            pass
-        local, last_run, _runs = _job_detail_data(slug)
-        live = _job_live(slug)
-        return HTMLResponse(render.jobs_detail_live_fragment(
-            slug, live, local, last_run,
-            last_run_output=None if live else _job_last_run_output(last_run),
-            public_host=config.public_host()))
-
-    @app.post("/-/ui/jobs/detail/{slug}/reset", include_in_schema=False)
-    def jobs_detail_reset(slug: str):
-        # User-Feedback 2026-07-13: "warum nicht START, RESET und KILL wie
-        # auf Host" — Not-Aus für eine hängen gebliebene Live-Anzeige,
-        # analog zu jobs_detail_kill(), aber lokal (client.run_live_reset()).
-        from bibi import config
-        try:
-            client.run_live_reset(slug)
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            pass
-        local, last_run, _runs = _job_detail_data(slug)
-        live = _job_live(slug)
-        return HTMLResponse(render.jobs_detail_live_fragment(
-            slug, live, local, last_run,
-            last_run_output=None if live else _job_last_run_output(last_run),
-            public_host=config.public_host()))
-
-    @app.post("/-/ui/jobs/detail/{slug}/rebuild", include_in_schema=False)
-    def jobs_detail_rebuild(slug: str):
-        # User-Fund 2026-07-13: "REBUILD müsste doch auch beim Client
-        # notwendig sein, oder?" — Analogon zu schedule_action()s REBUILD-Verb
-        # (Host), aber lokal (client.run_rebuild()). Anders als KILL/RESET
-        # hängt REBUILD an keiner Live-Zeile, deshalb kein _job_live()-Bezug
-        # nötig — nur Fragment neu rendern.
-        from bibi import config
-        try:
-            client.run_rebuild(slug)
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            pass
-        local, last_run, _runs = _job_detail_data(slug)
-        live = _job_live(slug)
-        return HTMLResponse(render.jobs_detail_live_fragment(
-            slug, live, local, last_run,
-            last_run_output=None if live else _job_last_run_output(last_run),
-            public_host=config.public_host()))
-
-    @app.post("/-/ui/jobs/detail/{slug}/start", include_in_schema=False)
-    def jobs_detail_start(slug: str):
-        # Bug gefunden beim Bau des Kill-Buttons (2026-07-10): der Start-Button
-        # auf der Detailseite postete bisher an die generische, rollenweit
-        # geteilte /-/ui/jobs/start/{slug} (Ziel #jobsboard, inzwischen mit
-        # dem Start-CTA der Übersicht selbst entfernt, PLAN-28 User-Feedback)
-        # — deren Antwort hätte #jobsdetail-live per outerHTML mit einem
-        # #jobsboard-Fragment überschrieben (falsche id, falsches Self-Poll-
-        # Ziel). Eigene Route, analog zu jobs_detail_kill(), gibt das
-        # richtige Fragment zurück.
-        from bibi import config
-        try:
-            client.run(slug=slug)
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            pass
-        local, last_run, _runs = _job_detail_data(slug)
-        live = _job_live(slug)
-        return HTMLResponse(render.jobs_detail_live_fragment(
-            slug, live, local, last_run,
-            last_run_output=None if live else _job_last_run_output(last_run),
-            public_host=config.public_host()))
-
-    @app.get("/-/ui/jobs/detail/{slug}/runs", include_in_schema=False)
-    def jobs_detail_runs_fragment(slug: str, offset: int = 0):
-        # Nächste Journal-Batch fürs Infinite Scroll — Analogon zu
-        # schedule_runs_fragment(), gegen die lokale Route/base.
-        try:
-            runs = client.run_journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=offset)
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            runs = []
-        return HTMLResponse(render.journal_runs_fragment(
-            runs, slug, time.time(), offset, base="/-/ui/jobs/detail"))
-
-    @app.get("/-/ui/jobs/detail/{slug}/journal", include_in_schema=False)
-    def jobs_detail_journal_fragment(slug: str):
-        # Refetch-Ziel der journal:-Zustands-Events des Bus (PLAN-36 Stufe
-        # 36.2; vorher Ziel des Fingerprint-Autorefresh-Skripts). live=…
-        # mitgeben: der Bus meldet journal:-dirty jetzt bei JEDEM Status-
-        # wechsel — ein Refetch während des Laufs muss die Live-Platzhalter-
-        # zeile erhalten, sonst verschwände sie beim ersten Bus-Refresh.
-        try:
-            runs = client.run_journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=0)
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            runs = []
-        return HTMLResponse(render.journal_fragment(
-            runs, slug, time.time(), base="/-/ui/jobs/detail",
-            live_job=_job_live(slug), live_anchor="#jobsdetail-live"))
-
-    @app.delete("/-/ui/jobs/detail/{slug}/run/{jid}", include_in_schema=False)
-    def jobs_detail_run_delete(slug: str, jid: int):
-        # Analogon zu run_delete() (Host), aber local_run_delete() (nur
-        # domain="local" — rollenunabhängig, s. client.py/app.py).
-        try:
-            client.local_run_delete(jid)
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            pass
-        _, _, runs = _job_detail_data(slug)
-        return HTMLResponse(render.journal_fragment(
-            runs, slug, time.time(), base="/-/ui/jobs/detail",
-            live_job=_job_live(slug), live_anchor="#jobsdetail-live"))
 
     def _detail_data(slug: str):
         """Die Daten der Job-Detailseite — **vom Scheduler** (m.rau/bibi#86).
@@ -2274,10 +2051,19 @@ def add_controller_routes(
 
     @app.get("/-/live", include_in_schema=False)
     def screen_live():
-        # Noch derselbe Inhalt wie `Log` — die Trennung (Live ohne Gedächtnis,
-        # SSE; Log mit Historie, HTTP) kommt in Bauschritt 4. Bis dahin ist der
-        # Tab erreichbar statt tot: ein 404 hinter einem sichtbaren Tab ist die
-        # schlechtere Zwischenlösung.
+        # Noch derselbe Inhalt wie `Log`. Die Trennung — Live ohne Gedächtnis
+        # (SSE, ganze englische Sätze), Log mit Historie (HTTP, Paging, Details
+        # auf DEBUG) — ist in FE-Spezifikation §7 ausgearbeitet und steht als
+        # m.rau/bibi#109 am Board.
+        #
+        # **Hier stand bis zum 2026-08-09 „kommt in Bauschritt 4".** Diesen
+        # Bauschritt gab es nirgends sonst: kein Ticket, kein Eintrag im Vault,
+        # keine Fundstelle außer diesem Kommentar. Eine Absicht, die nur im Code
+        # steht, sieht niemand, der das Board liest — sie hat keinen Termin,
+        # keinen Zuschnitt und keinen Ort, an dem ihr Fehlen auffiele.
+        #
+        # Bis dahin ist der Tab erreichbar statt tot: ein 404 hinter einem
+        # sichtbaren Tab ist die schlechtere Zwischenlösung.
         return logs_page()
 
     @app.get("/-/log", include_in_schema=False)

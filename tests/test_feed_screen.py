@@ -257,10 +257,11 @@ _CSS_OHNE_MARKUP = {
     # `" dimmed" if stale`, `"role-box on"`, `"fltr{an}"`, `"run run-in-slot"`.
     "chip-on", "dimmed", "role-box", "fltr", "run-in-slot", "off", "on", "ok",
     "warn", "conn-dot",
-    # Element-qualifizierte Regeln (`td.v`, `.card .value`, `.st` …): der
-    # Bezeichner steht im Selektor, das Markup traegt ihn an anderer Stelle
-    # oder setzt ihn zusammen.
-    "st", "v", "value", "kind",
+    # Element-qualifizierte Regeln (`td.v`, `.st` …): der Bezeichner steht im
+    # Selektor, das Markup traegt ihn an anderer Stelle oder setzt ihn
+    # zusammen. `v` und `value` sind am 2026-08-09 ausgetragen — sie gehoerten
+    # zu den Kachel-Regeln, die mit `#100` entfallen sind.
+    "st", "kind",
 }
 
 

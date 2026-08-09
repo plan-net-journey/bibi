@@ -1723,26 +1723,6 @@ def test_the_v5_detail_names_an_app_an_app():
         f"demselben Spec (#96)")
 
 
-def test_the_fallback_meta_line_names_an_app_an_app():
-    """**Der Rot-Schritt der dritten Fundstelle von `#96`.**
-
-    `_local_job_meta_line()` greift, wenn der Job auf diesem Knoten noch nie
-    lief und nichts live ist. Dort läuft `_effective_sched_type()`, also
-    `models.effective_kind()` **ohne** `app_port` — zwei Zeilen darunter wird
-    `app_port` für den "Open app →"-Link gelesen. Derselbe Codeblock weiß,
-    dass es eine App ist, und schreibt trotzdem `job`.
-
-    Live am 2026-08-09 auf `/-/ui/jobs/detail/burndown-app`: `Type <b>job<`
-    neben einem `Open app`.
-    """
-    from bibi.controller import render
-    html = render._local_job_meta_line(
-        {"slug": "burndown-app", "schedule": "on_demand", "app_port": 9110},
-        public_host="Mac.fritz.box")
-    assert "app :9110" in html, (
-        "die Fallback-Meta-Zeile nennt eine App 'job' (#96)")
-
-
 # ── Der App-Link gehört an den Knoten, der die App fährt (#104) ─────────────
 
 
@@ -1884,3 +1864,57 @@ def test_plain_output_stays_unfolded():
     html = r.output_block(evs, "claude")
     assert "fertig" in html
     assert "<details" not in html
+
+
+# ── Die Zusammenfassung sagt, was darunter steht (#107) ─────────────────────
+
+
+def test_the_fold_counts_lines_not_events():
+    """**Der Rot-Schritt von `#107`, erste Haelfte.**
+
+    Live an einem `Witz`-Lauf: der Block sagte `thinking (1 line)` und zeigte
+    fuenfzehn. Beides war fuer sich richtig — `_merge_deltas()` fuegt die
+    Token-Deltas zu **einem** Event zusammen, und dessen `line` traegt die
+    Umbrueche; gezaehlt wurden die Events.
+
+    Fuer einen zusammenhaengenden Denkabschnitt stand dort deshalb **immer**
+    `1 line`, unabhaengig von seiner Laenge. Eine Zusammenfassung, die dem
+    widerspricht, was sichtbar darunter steht, ist schlimmer als keine.
+    """
+    from bibi.controller import render as r
+
+    evs = [{"t": 1, "s": "thinking", "line": "erste Zeile"},
+           {"t": 1, "s": "thinking", "line": "\nzweite Zeile", "delta": True}]
+    html = r.output_block(evs, "claude")
+    assert "(2 lines)" in html, (
+        "die Zusammenfassung zaehlt Events statt Zeilen (#107)")
+
+
+def test_a_single_line_stays_singular():
+    """Die Gegenprobe: eine Zeile bleibt eine — der Zaehler darf die Mehrzahl
+    nicht zur Regel machen, nur weil er jetzt anders zaehlt."""
+    from bibi.controller import render as r
+
+    html = r.output_block([{"t": 1, "s": "thinking", "line": "nur ein Gedanke"}],
+                          "claude")
+    assert "(1 line)" in html
+
+
+def test_an_empty_event_gets_no_timestamp_of_its_own():
+    """**Der Rot-Schritt von `#107`, zweite Haelfte.**
+
+    Im selben Lauf bestanden zwei von drei Zeilen **nur** aus der Uhrzeit: der
+    Formatter liefert Events mit leerem `line`, und `_event_line()` rendert
+    fuer jedes brav ein Praefix samt leerem `<span>`.
+
+    Im Rohtext fiel das nicht auf, weil dort eine leere Zeile eine leere Zeile
+    war. Mit Praefix wird daraus eine Zeile, die aussieht, als haette zu diesem
+    Zeitpunkt etwas stattgefunden — der Zeitstempel behauptet ein Ereignis.
+    """
+    from bibi.controller import render as r
+
+    html = r.output_block([{"t": 1, "s": "out", "line": ""},
+                           {"t": 1, "s": "out", "line": "echt"}], "job")
+    assert "echt" in html
+    assert html.count('class="lts"') == 1, (
+        "eine leere Zeile traegt eine Uhrzeit ohne Text (#107)")

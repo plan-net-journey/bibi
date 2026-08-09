@@ -8,6 +8,7 @@ ist. Genau das braucht ein hostloses Team.
 
 from __future__ import annotations
 
+import pathlib
 from pathlib import Path
 
 import pytest
@@ -170,32 +171,44 @@ def test_status_survives_a_broken_pyproject(team_repo: Path):
 # ── Die Anzeige ─────────────────────────────────────────────────────────────
 
 
-def test_host_card_shows_need_update_with_a_button():
-    html = render._host_card(
-        {"hostname": "sarasate",
-         "engine": {"needs_update": True, "running": "v0.3.0", "expected": "v0.4.0"}},
-        None, 0.0)
-    assert "NEED UPDATE" in html
-    assert "v0.3.0 → v0.4.0" in html
-    # Der Knopf läuft lokal über 127.0.0.1 — genau daran scheiterte der
-    # Restart-Knopf im Nodes-Screen beim Mac.
-    assert 'hx-post="/-/ui/self/update"' in html
+def _header(engine: dict) -> str:
+    return render.status_header({"hostname": "sarasate", "engine": engine}, {},
+                                now=0.0, scheduler_host="sarasate")
 
 
-def test_host_card_stays_quiet_when_current():
-    html = render._host_card(
-        {"hostname": "sarasate", "engine": {"needs_update": False}}, None, 0.0)
-    assert "NEED UPDATE" not in html
+def test_a_node_in_arrears_says_so_in_its_own_header():
+    """Der Umzug von `_host_card()` in den Header (`#100`).
+
+    Die Karte trug `NEED UPDATE`, `v0.3.0 → v0.4.0` und einen Knopf, der den
+    Neustart lokal über `127.0.0.1` auslöste. Der Header trägt davon die
+    **Aussage**, nicht den Knopf: die FE-Spezifikation §2 führt die `bibi`-Zeile
+    als *„laufende Version, dahinter `requires upgrade` nur wenn abweichend"*,
+    und die Nodes-Ausarbeitung vom 2026-08-05 lässt **alle** Neustart- und
+    Deploy-Knöpfe entfallen, weil das Ausrollen von selbst geschieht (`#103`).
+
+    **Was hier steht, ist deshalb die Hälfte, die bleibt** — und sie braucht
+    diesen Test, weil sie bisher keinen hatte: die Karte war getestet, ihr
+    Nachfolger nicht. Genau der Abstand, um den es in `#100` geht.
+    """
+    html = _header({"needs_update": True, "running": "v0.3.0", "expected": "v0.4.0"})
+    assert "v0.3.0" in html
+    assert "requires upgrade" in html
 
 
-def test_client_card_shows_need_update():
-    # Auf einem Client wiegt es schwerer: er wird nicht bedient, er läuft mit —
-    # und ein hostloser Knoten hat gar keinen Nodes-Screen.
-    html = render._host_card(
-        {"connect": {"ok": True, "last_at": 0.0},
-         "engine": {"needs_update": True, "running": "v0.3.0", "expected": "v0.4.0"}},
-        "http://sarasate:8780", 0.0)
-    assert "NEED UPDATE" in html
+def test_a_current_node_stays_quiet():
+    html = _header({"needs_update": False, "running": "v0.4.0"})
+    assert "requires upgrade" not in html
+
+
+def test_the_self_update_button_is_gone_with_its_route():
+    """Ein Knopf ohne Route wäre schlimmer als keiner — er verspricht etwas.
+
+    `/-/ui/self/update` war die letzte Adresse, die nur aus der abgelösten
+    Kachel heraus erreichbar war. Sie ist mit ihr entfallen; das Ausrollen
+    hängt ab `#103` am gesetzten SOLL-Stand, nicht an einem zweiten Klick.
+    """
+    quelle = pathlib.Path(render.__file__).read_text(encoding="utf-8")
+    assert "/-/ui/self/update" not in quelle
 
 
 def test_node_engine_cell_flags_an_outdated_node():

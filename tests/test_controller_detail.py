@@ -646,14 +646,13 @@ def test_detail_awaiting_needs_no_poll_special_case():
 
 
 def test_journal_fragment_carries_bus_address():
-    # PLAN-36 Stufe 36.2: ein journal:-Zustands-Event refetcht die Region
-    # ueber ihre eigene Refresh-Route — Host- und Client-Basis unterscheiden
-    # sich, deshalb traegt jedes Fragment seine eigene Refetch-URL.
-    host = render.journal_fragment([], "a", now=1.0)
-    assert 'data-bus="journal:a"' in host
-    assert 'data-bus-refetch="/-/ui/schedule/a/journal"' in host
-    local = render.journal_fragment([], "a", now=1.0, base="/-/ui/jobs/detail")
-    assert 'data-bus-refetch="/-/ui/jobs/detail/a/journal"' in local
+    # PLAN-36 Stufe 36.2: ein journal:-Zustands-Event refetcht die Region ueber
+    # ihre eigene Refresh-Route. Bis `#100` gab es zwei Basen (Host und die
+    # abgeloeste Client-Detailseite); geblieben ist die eine, gegen die sie
+    # wirkt.
+    html = render.journal_fragment([], "a", now=1.0)
+    assert 'data-bus="journal:a"' in html
+    assert 'data-bus-refetch="/-/ui/schedule/a/journal"' in html
 
 
 def test_live_panel_shows_output_expanded():
@@ -811,14 +810,6 @@ def test_journal_fragment_live_placeholder_sits_above_real_runs():
     placeholder_idx = html.index("↑ live")
     real_row_idx = html.index("→ Detail")
     assert placeholder_idx < real_row_idx
-
-
-def test_journal_fragment_live_placeholder_custom_anchor():
-    # Client-Seite nutzt #jobsdetail-live statt des Host-Defaults #live.
-    job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0}
-    html = render.journal_fragment([], "a", now=5.0, live_job=job,
-                                   live_anchor="#jobsdetail-live")
-    assert '<a class="back" href="#jobsdetail-live">↑ live</a>' in html
 
 
 def test_journal_fragment_live_placeholder_defaults_missing_status_to_running():
