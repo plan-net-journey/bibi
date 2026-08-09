@@ -45,8 +45,15 @@ def _running(ref: str) -> EngineInfo:
 
 
 def test_pending_on_session_node_behind_pin(team_repo: Path):
-    """Der Fall, um den es geht: Sitzungs-Daemon, gepinnt neuer als laufend."""
-    portfile.write(9001, session=True)
+    """Der Fall, um den es geht: Sitzungs-Daemon, gepinnt neuer als laufend.
+
+    ``engine=`` in der Portdatei ist seit m.rau/bibi#81 die **laufende** Seite
+    des Vergleichs, ``info`` bleibt die installierte. Solange beide zusammen-
+    fallen — wie hier — ändert das am Ergebnis nichts; gestellt werden müssen
+    jetzt aber beide, sonst mischt sich die echte Installation des Testrechners
+    ein. Der Fall, in dem sie auseinanderlaufen, steht in
+    ``test_upgrade_notice_running.py``."""
+    portfile.write(9001, session=True, engine="v0.5.3")
     _pin(team_repo, "v0.6.0")
     st = upgrade_notice.pending(info=_running("v0.5.3"))
     assert st is not None
@@ -57,7 +64,7 @@ def test_pending_on_session_node_behind_pin(team_repo: Path):
 def test_silent_when_current(team_repo: Path):
     """Eine Sitzung auf aktuellem Stand zeigt nichts — sonst nervt es bei
     jedem Start, und ein Hinweis, der immer da ist, wird nicht gelesen."""
-    portfile.write(9001, session=True)
+    portfile.write(9001, session=True, engine="v0.6.0")
     _pin(team_repo, "v0.6.0")
     assert upgrade_notice.pending(info=_running("v0.6.0")) is None
 

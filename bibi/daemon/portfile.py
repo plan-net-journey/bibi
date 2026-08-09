@@ -102,7 +102,8 @@ def read_port(root: Path | None = None) -> int | None:
 
 
 def write(port: int, *, host: str | None = None, roles: str | None = None,
-          session: bool = False, root: Path | None = None) -> Path | None:
+          session: bool = False, root: Path | None = None,
+          engine: str | None = None) -> Path | None:
     """Den tatsächlichen Bind-Port ablegen. ``None``, wenn **nicht geschrieben**
     wurde: kein Repo, oder ein lebender Fremdeintrag steht im Weg.
 
@@ -135,11 +136,34 @@ def write(port: int, *, host: str | None = None, roles: str | None = None,
         return None
     p.parent.mkdir(parents=True, exist_ok=True)
     payload = {"port": int(port), "pid": os.getpid(), "host": host,
-               "roles": roles, "session": bool(session), "started_at": time.time()}
+               "roles": roles, "session": bool(session), "started_at": time.time(),
+               # **Welchen Stand dieser Prozess geladen hat** (m.rau/bibi#81).
+               # Dieselbe Erwägung wie bei ``session``: nur der startende
+               # Prozess weiß es sicher. Von außen sieht man ausschließlich das
+               # venv, und das kann sich seit dem Start geändert haben — genau
+               # dann fiel der Upgrade-Hinweis aus, weil er die installierte
+               # Version für die laufende hielt.
+               #
+               # ``engine`` explizit setzbar, damit ein Test die Ist-Seite
+               # stellen kann, ohne die echte Installation zu befragen.
+               "engine": engine if engine is not None else _engine_label()}
     tmp = p.with_suffix(p.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(p)
     return p
+
+
+def _engine_label() -> str | None:
+    """Die Engine-Bezeichnung dieses Prozesses, oder ``None``.
+
+    Defensiv: die Portdatei trägt den Port, und daran hängt, ob überhaupt
+    jemand mit diesem Daemon reden kann. Eine Beigabe darf das nie kosten.
+    """
+    try:
+        from bibi.engine_info import engine_info
+        return engine_info().label()
+    except Exception:  # noqa: BLE001 — defensiv (§2.7)
+        return None
 
 
 def clear(root: Path | None = None) -> None:
