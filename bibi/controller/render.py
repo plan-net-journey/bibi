@@ -2138,6 +2138,14 @@ def _event_line(e: dict) -> str:
     # beim Anschluss an den Formatter (m.rau/bibi#99) waere die zweite Form
     # sonst still auf leere Zeilen gefallen.
     line = _e(_strip_ansi(e.get("line") or e.get("text") or ""))
+    # Ein Ereignis ohne Inhalt bekommt keine Uhrzeit (m.rau/bibi#107). Der
+    # Formatter liefert Events mit leerem `line`; im Rohtext war eine leere
+    # Zeile eine leere Zeile, mit Präfix wird daraus eine, die aussieht, als
+    # hätte zu diesem Zeitpunkt etwas stattgefunden. Die Leerzeile selbst
+    # bleibt — sie trennt Absätze und ist Inhalt; was verschwindet, ist die
+    # Behauptung eines Ereignisses.
+    if not line.strip():
+        return "<span></span>"
     s = e.get("s")
     # "phase" (User-Feedback 2026-07-03): Worker-/Wrapper-Startup-Zeilen (Worktree,
     # Container, Prozess-Spawn) — optisch als System-Info abgesetzt, kein Job-Output.
@@ -2186,21 +2194,27 @@ def _falte_thinking(events: list[dict]) -> str:
     sich den Zustand ohnehin nicht über einen Swap hinweg.
     """
     teile: list[str] = []
-    block: list[str] = []
+    block: list[dict] = []
 
     def _schliessen() -> None:
         if not block:
             return
-        n = len(block)
+        # Gezählt werden **Zeilen, nicht Events** (m.rau/bibi#107). Live stand
+        # dort `thinking (1 line)` über fünfzehn sichtbaren Zeilen: die
+        # Token-Deltas eines Denkabschnitts sind nach `_merge_deltas()` **ein**
+        # Event, dessen `line` die Umbrüche trägt. Die Angabe war damit für
+        # jeden zusammenhängenden Abschnitt dieselbe und widersprach sichtbar
+        # dem, was darunter stand — genau das darf eine Zusammenfassung nicht.
+        n = sum(1 + (e.get("line") or e.get("text") or "").count("\n") for e in block)
         teile.append(
             f'<details class="think" open><summary>thinking '
             f'({n} {"line" if n == 1 else "lines"})</summary>'
-            + "\n".join(block) + "</details>")
+            + "\n".join(_event_line(e) for e in block) + "</details>")
         block.clear()
 
     for e in events:
         if e.get("s") == "thinking":
-            block.append(_event_line(e))
+            block.append(e)
             continue
         _schliessen()
         teile.append(_event_line(e))
