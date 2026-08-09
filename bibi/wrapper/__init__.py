@@ -587,7 +587,11 @@ def _report_terminal(env: dict[str, str], *, status: str, reason: str | None = N
     job_id = env.get("BIBI_JOB_ID")
     if not job_id:
         return
-    worker = env.get("BIBI_WORKER_NAME")
+    # m.rau/bibi#90: die Engine schreibt den Namen unter ``BIBI_NODE_NAME`` —
+    # dieselbe Schreibweise, die PLAN-34 fuer den Konfigurations-Schluessel
+    # eingefuehrt hat. Das Paar ist geschlossen: ``worker.py`` schreibt, dieser
+    # Leser nimmt, beide Seiten laufen aus demselben Release.
+    worker = env.get("BIBI_NODE_NAME")
     host_name = env.get("BIBI_HOST")
 
     db_path_str = env.get("BIBI_SCHEDULER_DB_PATH")

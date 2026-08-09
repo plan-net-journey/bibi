@@ -174,6 +174,24 @@ def _job_is_container(db_path: Path | None, job_id: str) -> bool:
     return _is_container()
 
 
+def base_job_env() -> dict[str, str]:
+    """Die Grundumgebung jedes Jobs: die Sitzung, abzüglich dessen, was sie
+    nicht weitergeben darf (m.rau/bibi#89).
+
+    ``VIRTUAL_ENV`` reiste über ``os.environ.copy()`` mit. Den Zweck aus `#76`
+    — dass ein Job das venv der Engine findet — trägt der ``PATH`` allein; die
+    Variable war die Zugabe. Sie kostet drei Warnungen pro ``BrowserCI``-Lauf,
+    weil jedes ``uv`` in einem *fremden* Checkout sie meldet, und jede sieht
+    bei einer Fehlersuche nach einer Spur aus, die keine ist.
+
+    Gestrichen wird eine Variable, nicht eine Klasse davon: ``HOME``, ``PATH``
+    und die verteilten ``BIBI_JOB_ENV_*``-Werte bleiben, ein Job braucht sie.
+    """
+    env = os.environ.copy()
+    env.pop("VIRTUAL_ENV", None)
+    return env
+
+
 def _docker_env() -> dict[str, str]:
     # docker-bin-Dir in den PATH (Cred-Helper docker-credential-*).
     bin_ = exec_backend.resolve_docker_bin({**os.environ, **config.read_env()})
@@ -444,7 +462,7 @@ def _run_wrapper(
     activity.emit(log, logging.DEBUG, "worktree.prepare", role="worker",
                   slug=slug, run_id=out_run_id, path=str(wt_path), in_place=in_place)
 
-    env = os.environ.copy()
+    env = base_job_env()
     env["BIBI_JOB_ID"] = job_id
     # PLAN-24 Befund 5: der Wrapper-Prozess braucht den Slug fürs per-Job-Image
     # (exec_backend.finalize_container()/job_image_tag()) — vorher stand
@@ -538,7 +556,18 @@ def _run_wrapper(
     if silence_timeout is not None:
         env["BIBI_SILENCE_TIMEOUT"] = str(silence_timeout)
     if worker_name:
-        env["BIBI_WORKER_NAME"] = worker_name
+        # **``BIBI_NODE_NAME``, nicht ``BIBI_WORKER_NAME``** (m.rau/bibi#90).
+        # PLAN-34 hat den Konfigurations-Schlüssel umbenannt und die
+        # Laufzeit-Variable unbenannt gelassen — die Engine schrieb damit in
+        # jeden Job denselben Namen, den ``doctor`` als ``legacy-node-name``
+        # anmahnt, sobald ein Mensch ihn in seine Config setzt.
+        #
+        # Das Paar ist geschlossen: hier geschrieben, in ``wrapper`` gelesen,
+        # beide Seiten aus demselben Release. Die drei Fallback-Stellen in
+        # ``hygiene.py``, ``node_info.py`` und ``daemon_cmd.py`` bleiben —
+        # sie lesen, was ein *Mensch* gesetzt hat, und das ist
+        # Bestandskompatibilität, keine Altlast.
+        env["BIBI_NODE_NAME"] = worker_name
     if host:
         env["BIBI_HOST"] = host
     env["BIBI_ATTEMPT"] = str(attempt)
