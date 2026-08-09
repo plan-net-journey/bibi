@@ -489,6 +489,10 @@ th.sorted { font-weight: 700; }
         border: 1px solid var(--line-hard); border-radius: .4rem; }
 .tile-head { font-weight: 700; font-size: .78rem; letter-spacing: .03em;
              color: var(--hdr-key); }
+/* Der Weg zum Dienst, an der Kachel des Knotens, der ihn faehrt
+   (m.rau/bibi#104). Normal gewichtet neben der fetten Kopfzeile: die Kachel
+   sagt zuerst, WO sie steht — der Link ist ein Angebot, keine Ueberschrift. */
+.tile-app { font-weight: 400; margin-left: .4rem; }
 .tile-state { font-family: ui-monospace, monospace; font-size: .85rem; }
 /* Gesperrte Kachel (m.rau/bibi#146): sichtbar, aber erkennbar nicht bedienbar
    — dieselbe Behandlung wie der offline-Header, der gedimmt wird und seine
@@ -2222,22 +2226,32 @@ _GIT_STATUS_LABEL = {
 _SPARK_W, _SPARK_H = 72, 20
 
 
-def _jobs_type_cell(row: dict, public_host: str) -> str:
-    """Type-Zelle nur für die Jobs-Tabelle (PLAN-29 Befund 2, User-Fund:
-    "Type, bei Apps mit Port und als Link (auch wenn die App down ist)").
+def _jobs_type_cell(row: dict, public_host: str, *, link: bool = True) -> str:
+    """Type-Zelle: ``job``/``claude``, bei Apps ``app :PORT`` (PLAN-29 Befund 2,
+    User-Fund: "Type, bei Apps mit Port").
+
     Bewusst **eigenständig** von ``_effective_sched_type()``/
     ``models.effective_kind()`` — PLAN-25 Befund 7 entfernte "app" dort
     absichtlich aus Schedules-Übersicht/Filter (User-Entscheidung: "Jobs mit
-    Port und Prefix sollen einfach als Jobs erscheinen"). Hier, in der
-    separaten Jobs-Tabelle, soll ein App-Job weiterhin als "app" + Link
-    erkennbar sein — rührt an der PLAN-25-Vereinfachung nicht. Der Link steht
-    unbedingt (kein Live-Check), auch wenn die App gerade nicht läuft."""
+    Port und Prefix sollen einfach als Jobs erscheinen"). Hier soll ein
+    App-Job weiterhin als "app" erkennbar sein — rührt an der
+    PLAN-25-Vereinfachung nicht.
+
+    **``link=False`` gibt denselben Text ohne Adresse** (m.rau/bibi#104). Der
+    Port ist eine Job-Eigenschaft und darf überall stehen; die **Adresse** ist
+    es nicht — sie braucht den Knoten, der die App fährt, und ``public_host``
+    ist der des Betrachters. Wo der ausführende Knoten nicht bekannt ist (die
+    Jobs-Tabelle führt zwei Seiten in einer Zeile), gehört deshalb der Port
+    hin und der Link nicht. Verlinkt wird in den Slot-Kacheln, die ihren
+    Knoten über ``Tile.host`` kennen."""
     app_port = row.get("app_port")
     kind = models.display_kind(row.get("payload"), app_port)
-    if kind == "app":
-        href = _e(f"http://{public_host}:{app_port}/")
-        return f'<a href="{href}" target="_blank" rel="noopener">app :{app_port}</a>'
-    return kind
+    if kind != "app":
+        return kind
+    if not link:
+        return f"app :{_e(str(app_port))}"
+    href = _e(f"http://{public_host}:{app_port}/")
+    return f'<a href="{href}" target="_blank" rel="noopener">app :{app_port}</a>'
 
 
 def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
@@ -4047,13 +4061,16 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
         # `@` = Oneshot, ein `next` daneben = Rhythmus, keins von beidem =
         # adhoc. Genau daran haengt der Unterschied zwischen „Gruppierung
         # entfernen" und „Gruppierung ausblenden".
-        # Der Typ kommt aus `_jobs_type_cell()`, nicht aus `display_kind()`
-        # direkt (#96): ein App-Job traegt seinen Link, und zwar hier zuerst
-        # ("Eigentlich schon auf der Jobs Seite", m.rau 2026-08-09). Die Zelle
-        # war gebaut und hiess in ihrem Docstring "nur fuer die Jobs-Tabelle" —
-        # genau dort rief sie seit dem v5-Umbau niemand mehr auf.
+        # Typ samt Port, aber **ohne Link** (m.rau/bibi#104). `#96` hatte hier
+        # `_jobs_type_cell()` eingesetzt und damit korrekt verlinkt — mit
+        # `public_host()`, also dem Knoten des BETRACHTERS. Im Mac-FE standen
+        # danach fuenf Links auf `localhost:91xx`, wo nichts laeuft, waehrend
+        # die Apps auf sarasate liefen: ein bestehender Fehler, vervielfacht
+        # und dadurch sichtbar geworden. Der Typ war der unstrittige Teil und
+        # bleibt; die Adresse braucht den ausfuehrenden Knoten und lebt in den
+        # Slot-Kacheln, die ihn ueber `Tile.host` kennen.
         f'<td>{"@" if row.oneshot else ""}'
-        f'{_jobs_type_cell(row.spec, public_host)}</td>'
+        f'{_jobs_type_cell(row.spec, public_host, link=False)}</td>'
         # Client zuerst (m.rau/bibi#147) — dieselbe Ordnung wie im Header und in
         # den Kacheln des Job-Details. `status` heisst dieses Feld in der
         # lokalen Job-DB; in den Scheduler-Zeilen heisst es `row_status` (live
@@ -4616,6 +4633,19 @@ def _slot_kachel(kachel, *, now: float) -> str:
     ziel = "scheduler" if kachel.quelle == "SCHEDULER" else "client"
     client = ziel == "client"
     titel = kachel.quelle + (f" &middot; {_e(kachel.host)}" if kachel.host else "")
+    # Der Weg zum Dienst gehoert an die Kachel (m.rau/bibi#104, Entscheidung
+    # 2026-08-09) und **kehrt #145 um**, das ihn ausdruecklich in den Kopf
+    # gelegt hatte. Die Begruendung dort war richtig und ist es noch: `app_port`
+    # gilt fuer den Job, nicht fuer einen Lauf. Sie uebersah nur, dass die
+    # ADRESSE nicht dem Job gehoert — derselbe Port meint auf zwei Knoten zwei
+    # Dienste, und welcher gemeint ist, weiss ausschliesslich die Kachel ueber
+    # ihren `host`. Der Kopf hatte dafuer nur `config.public_host()`, also den
+    # Knoten des BETRACHTERS: im Mac-FE zeigte der Link auf `localhost:9110`,
+    # wo nichts laeuft, waehrend die App auf sarasate lief.
+    app = (f' <a class="tile-app" href="http://{_e(str(kachel.host))}:'
+           f'{_e(str(kachel.app_port))}/" target="_blank" rel="noopener">'
+           f'app :{_e(str(kachel.app_port))}</a>'
+           if getattr(kachel, "app_port", None) and kachel.host else "")
     if kachel.disabled:
         # Gesperrt, nicht verborgen (m.rau/bibi#146). Der Grund steht **im**
         # Text und nicht im `title`: auf einem Touch-Gerät gibt es kein Hover,
@@ -4624,7 +4654,7 @@ def _slot_kachel(kachel, *, now: float) -> str:
         # ein Knopf, der nur grau aussieht und trotzdem postet, verspricht eine
         # Wirkung, die es nicht gibt.
         return (
-            f'<div class="tile tile-off"><div class="tile-head">{titel}</div>'
+            f'<div class="tile tile-off"><div class="tile-head">{titel}{app}</div>'
             f'<div class="tile-state">{_e(kachel.disabled)}</div>'
             "</div>"
         )
@@ -4666,7 +4696,7 @@ def _slot_kachel(kachel, *, now: float) -> str:
             teile.append(_human_duration((beendet if beendet is not None else now) - begonnen))
         zustand = " &middot; ".join(teile)
     return (
-        f'<div class="tile"><div class="tile-head">{titel}</div>'
+        f'<div class="tile"><div class="tile-head">{titel}{app}</div>'
         f'<div class="tile-state">{zustand}</div>'
         f'{_slot_leiste(kachel.aktionen, job_id=kachel.slot.get("id"), ziel=ziel, rebuild=_ist_container(kachel.slot))}'
         "</div>"
@@ -4968,9 +4998,16 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
     # der falsche Ort für etwas, das auch ohne jeden Lauf gilt. Der Screen
     # führte den Link bisher überhaupt nicht; die Bedingung, die das Ticket
     # verdächtigte, sitzt im alten Detail unter `/-/ui/jobs/detail/…`.
-    app_port = spec.get("app_port")
-    app_cta = (f'<a class="cta" href="http://{_e(str(public_host))}:{_e(str(app_port))}/" '
-               f'target="_blank" rel="noopener">[APP]</a>') if app_port else ""
+    # **Kein `[APP]`-CTA mehr im Kopf** (m.rau/bibi#104). `#145` hatte ihn
+    # hierher gelegt, mit der richtigen Begruendung, dass `app_port` fuer den
+    # Job gilt und nicht fuer einen Lauf. Uebersehen wurde, dass das fuer den
+    # PORT stimmt und fuer die ADRESSE nicht: derselbe Port meint auf zwei
+    # Knoten zwei Dienste. Der Kopf hatte dafuer nur `config.public_host()`,
+    # den Knoten des Betrachters — im Mac-FE zeigte der Link auf
+    # `localhost:9110`, wo nichts lief. Die Slot-Kacheln kennen ihren Knoten
+    # ueber `Tile.host` und tragen den Link jetzt; ein zweiter, falscher
+    # daneben waere schlechter als keiner.
+    app_cta = ""
     kopf = (
         '<div class="jd-head">'
         '<a class="back" href="/-/jobs">&#9666; jobs</a>'

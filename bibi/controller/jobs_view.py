@@ -543,6 +543,12 @@ class Tile:
     #: lief. Der Client-Slot zeigt damit zurück, wo der Scheduler-Slot nach vorn
     #: zeigt (``next_fire_at``) — siehe ``render._slot_kachel()``.
     last_at: float | None = None
+    #: Port der App, falls es eine ist (m.rau/bibi#104). Gehört an die Kachel
+    #: und nicht an die Seite, weil erst ``host`` daneben eine Adresse ergibt:
+    #: derselbe Port meint auf zwei Knoten zwei verschiedene Dienste. Der
+    #: frühere Weg über ``config.public_host()`` konnte das nicht — er kennt
+    #: nur den Knoten, der die Seite *rendert*, nicht den, der die App *fährt*.
+    app_port: int | None = None
     #: Warum diese Seite gerade nichts anbietet, oder ``None`` (m.rau/bibi#146).
     #: Gesetzt heißt: **Kachel zeigen, aber gesperrt** — ein Element, das fehlt,
     #: ist von einem, das es nie gab, nicht zu unterscheiden. Der Text wird
@@ -576,7 +582,8 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
                    client_total: int | None = None,
                    oneshot: bool = False,
                    scheduler_offline: bool = False,
-                   client_slug: str | None = None) -> RunList:
+                   client_slug: str | None = None,
+                   app_port: int | None = None) -> RunList:
     """Kacheln und die eine Lauf-Liste (FE §5.1–§5.3, m.rau/bibi#131).
 
     **Oben, die Kacheln: was ich tun kann. Unten, die Liste: was geschehen
@@ -646,7 +653,8 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
             zeile, gesperrt = None, "scheduler offline"
         if gesperrt is not None:
             tiles.append(Tile(quelle=quelle, host=host, slot={}, status=None,
-                              aktionen=frozenset(), disabled=gesperrt))
+                              aktionen=frozenset(), disabled=gesperrt,
+                              app_port=app_port))
         elif zeile is None and quelle == "CLIENT" and client_slug:
             # **Ein Platz ohne Zeile** (m.rau/bibi#87). Kein Zustand zu lesen,
             # kein Lauf zu beenden — aber startbar, und das ist der Sinn der
@@ -659,7 +667,8 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
             # entstuenden zwei Kacheln, eine gesperrte und eine startbare.
             tiles.append(Tile(quelle=quelle, host=host,
                               slot={"id": client_slug}, status="",
-                              aktionen=slot_mod.actions("")))
+                              aktionen=slot_mod.actions(""),
+                              app_port=app_port))
         status = None
         if zeile is not None:
             # `row_status` zuerst: so heißt das Feld in den Scheduler-Zeilen aus
@@ -678,7 +687,8 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
                      if r.get("finished_at") is not None]
             tiles.append(Tile(quelle=quelle, host=host, slot=zeile,
                               status=status, aktionen=aktionen,
-                              last_at=max(enden) if enden else None))
+                              last_at=max(enden) if enden else None,
+                              app_port=app_port))
         eigene = [{**r, "src": src, "sort_at": r.get("finished_at")} for r in journal]
         im_slot = slot_run(zeile, src=src, now=now) if zeile is not None else None
         if im_slot is not None:

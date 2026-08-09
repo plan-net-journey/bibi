@@ -1569,13 +1569,19 @@ def test_an_app_job_offers_the_link_to_its_app():
     MD-Frontmatter und gilt für den Job, nicht für einen Lauf. Eine Kachel
     beschreibt einen Slot und wäre der falsche Ort für etwas, das auch ohne
     jeden Lauf gilt.
+
+    **Umgezogen mit `#104`** (2026-08-09): der Link steht nicht mehr im Kopf,
+    sondern in den Slot-Kacheln. Die Anforderung ist dieselbe geblieben — eine
+    App stellt ihren Link bereit —, nur der Ort hat sich geändert, weil erst
+    die Kachel den Knoten kennt, auf dem die App läuft. Der Test prüft deshalb
+    weiter die Fähigkeit und nicht mehr die alte Stelle.
     """
-    from bibi.controller import render
-    html = render.job_detail_page_v5(
-        slug="burndown-app", now=1_754_100_000.0,
-        spec={"slug": "burndown-app", "kind": "app", "schedule": "adhoc",
-              "app_port": 8899})
-    assert 'href="http://localhost:8899/"' in html, "kein App-Link im Kopf"
+    from bibi.controller import render as r
+    liste = _liste(scheduler_slot={"status": "complete"}, app_port=8899)
+    html = r.job_tiles_fragment(liste.tiles, now=1_754_100_000.0,
+                                slug="burndown-app", job_uid="u1")
+    assert 'href="http://sarasate:8899/"' in html, (
+        "kein App-Link an der Kachel des ausführenden Knotens")
 
 
 def test_a_plain_job_offers_no_app_link():
@@ -1592,12 +1598,20 @@ def test_a_plain_job_offers_no_app_link():
 def test_the_app_link_uses_the_public_host_not_localhost():
     """Auf einem Client zeigt `localhost` auf den falschen Rechner, sobald
     jemand das FE aus dem Tailnet aufruft. `config.public_host()` ist die
-    Quelle, die auch jedes andere Fragment benutzt."""
-    from bibi.controller import render
-    html = render.job_detail_page_v5(
-        slug="burndown-app", now=1_754_100_000.0,
-        spec={"slug": "burndown-app", "kind": "app", "app_port": 8899},
-        public_host="Mac.fritz.box")
+    Quelle, die auch jedes andere Fragment benutzt.
+
+    **`#104` hat gezeigt, dass `public_host()` dafür die falsche Quelle war:**
+    es ist der Knoten, der die *Seite rendert*, nicht der, auf dem die App
+    *läuft*. Die Kachel kennt den richtigen über `Tile.host`. Der Test prüft
+    seither, dass jede Seite ihren eigenen Knoten verlinkt — die schärfere
+    Fassung derselben Frage.
+    """
+    from bibi.controller import render as r
+    liste = _liste(scheduler_slot={"status": "complete"},
+                   client_slot={"status": "complete"}, app_port=8899)
+    html = r.job_tiles_fragment(liste.tiles, now=1_754_100_000.0,
+                                slug="burndown-app", job_uid="u1")
+    assert 'href="http://sarasate:8899/"' in html
     assert 'href="http://Mac.fritz.box:8899/"' in html
 
 
@@ -1727,3 +1741,65 @@ def test_the_fallback_meta_line_names_an_app_an_app():
         public_host="Mac.fritz.box")
     assert "app :9110" in html, (
         "die Fallback-Meta-Zeile nennt eine App 'job' (#96)")
+
+
+# ── Der App-Link gehört an den Knoten, der die App fährt (#104) ─────────────
+
+
+def test_each_tile_links_the_app_on_its_own_node():
+    """**Der Rot-Schritt von `#104`.**
+
+    Der App-Link trug bisher `config.public_host()` — den Hostnamen des
+    Knotens, der die *Seite rendert*, nicht den, auf dem die App *läuft*.
+    Live am 2026-08-09: dieselbe App, im Mac-FE `localhost:9110` (dort läuft
+    nichts), im Client-FE `sarasate…:9110` (richtig, aber nur weil Betrachter
+    und Ausführender zufällig derselbe Rechner sind).
+
+    **Die Kachel kann es besser, und zwar ohne neue Angabe:** sie beschreibt
+    *einen* Slot und trägt dessen Knoten längst in `Tile.host` — genau die
+    Information, die `public_host()` per Bauart nicht hat. Entscheidung m.rau,
+    2026-08-09: *„in die Kacheln der Detailseite"*.
+    """
+    from bibi.controller import render as r
+    liste = _liste(scheduler_slot={"status": "complete"},
+                   client_slot={"status": "complete"},
+                   app_port=9110)
+    html = r.job_tiles_fragment(liste.tiles, now=1_754_100_000.0,
+                                slug="burndown-app", job_uid="u1")
+    assert 'href="http://sarasate:9110/"' in html, (
+        "die Scheduler-Kachel verlinkt die App nicht auf ihrem Knoten (#104)")
+    assert 'href="http://Mac.fritz.box:9110/"' in html, (
+        "die Client-Kachel verlinkt die App nicht auf ihrem Knoten (#104)")
+
+
+def test_a_tile_without_an_app_port_has_no_link():
+    """Die Gegenprobe: der Link hängt an `app_port`. Ein Job ohne Port bekommt
+    keinen — ein Link ins Leere ist schlechter als keiner."""
+    from bibi.controller import render as r
+    liste = _liste(scheduler_slot={"status": "complete"})
+    html = r.job_tiles_fragment(liste.tiles, now=1_754_100_000.0,
+                                slug="normal", job_uid="u2")
+    assert 'class="tile' in html, "Absicherung: es gibt überhaupt eine Kachel"
+    assert "http://sarasate:" not in html
+
+
+def test_the_jobs_table_names_the_port_without_linking_it():
+    """**Die Rücknahme meiner eigenen Regression aus `#96`.**
+
+    `#96` hat die Type-Zelle korrekt verlinkt — und damit einen bestehenden
+    Fehler vervielfacht: im Mac-FE standen danach fünf tote Links
+    (`localhost:9100`–`9110`). Vor `#96` stand dort schmuckloser Text und der
+    Fehler steckte nur im `[APP]`-CTA der Detailseite.
+
+    Der Typ bleibt richtig — das war der unstrittige Teil von `#96`. Der Link
+    zieht in die Kacheln, wo der Knoten bekannt ist.
+    """
+    from bibi.controller import render as r
+    zeilen = jobs_view.build_rows(
+        local=[{"slug": "app1", "schedule": "0 * * * *", "payload": "echo hi",
+                "repo_path": "case/x/app1.md", "app_port": 9100}],
+        scheduler=[], journal=[], now=1_754_100_000.0)
+    html = r.jobs_screen(zeilen, now=1_754_100_000.0, public_host="Mac.fritz.box")
+    assert "app :9100" in html, "der Typ samt Port bleibt sichtbar (#96)"
+    assert "href=\"http://Mac.fritz.box:9100/\"" not in html, (
+        "die Jobs-Tabelle verlinkt die App auf den Betrachter-Host (#104)")

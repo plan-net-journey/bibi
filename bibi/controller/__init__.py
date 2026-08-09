@@ -1603,6 +1603,12 @@ def add_controller_routes(
         # MD sagt dasselbe ueber `at`, aber sie fehlt bei einem geloeschten Job.
         einmalig = bool((sched_slot or {}).get("oneshot")) or any(
             md.get("slug") == slug and md.get("at") for md in _local_job_mds())
+        # Der Port fuer die Kacheln (m.rau/bibi#104): aus der MD, ersatzweise
+        # aus dem Scheduler-Slot — ein geloeschter Job hat keine MD mehr, seine
+        # Kachel aber weiterhin einen Knoten und damit eine gueltige Adresse.
+        app_port = next((md.get("app_port") for md in _local_job_mds()
+                         if md.get("slug") == slug and md.get("app_port")),
+                        None) or (sched_slot or {}).get("app_port")
         lokal_slot = None
         sched_runs: list = []
         lokal_runs: list = []
@@ -1653,6 +1659,10 @@ def add_controller_routes(
             scheduler_total=len(sched_runs), client_total=len(lokal_runs),
             scheduler_host=(_scheduler_url() or "").split("//")[-1].split(":")[0] or None,
             client_host=_status().get("host"), oneshot=einmalig,
+            # Der Port gehoert an die Kacheln, weil erst ihr `host` daneben
+            # eine Adresse ergibt (m.rau/bibi#104). Aus derselben Quelle wie
+            # `einmalig` oben — die Funktion kennt nur den Slug, nicht das Spec.
+            app_port=app_port,
             # Der Platz ohne Zeile (m.rau/bibi#87): kennt dieser Knoten die MD,
             # kann der Job hier laufen — auch wenn ihm nie jemand eine Zeile
             # angelegt hat. Nur die MD, nicht der Scheduler-Eintrag: was dort
