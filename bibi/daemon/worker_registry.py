@@ -26,6 +26,7 @@ class WorkerRegistry:
         role: str | None = None, port: int | None = None, now: float | None = None,
         engine: str | None = None, engine_tree: str | None = None,
         git_commit: str | None = None, session: bool | None = None,
+        sync_conflict: bool | None = None, auto_sync: bool | None = None,
     ) -> dict:
         """``node_id`` (Bibi4-Iteration, User-Fund: derselbe physische Client
         tauchte je nach Netzwerk mit unterschiedlichem ``worker``-Namen auf,
@@ -53,7 +54,20 @@ class WorkerRegistry:
         (kein Supervisor) oder einer Unit. ``None`` heißt *unbekannt* — ein
         Client, der es nicht sendet, ist älter als diese Änderung; der
         Nodes-Screen verhält sich für ihn wie bisher, statt eine Herkunft zu
-        behaupten, die er nicht kennt."""
+        behaupten, die er nicht kennt.
+
+        ``sync_conflict``/``auto_sync`` (m.rau/bibi#74): **ob dieser Knoten
+        seine Arbeit überhaupt loswird.** Beide Werte wurden bis zum 2026-08-09
+        ausschließlich lokal gelesen — von der Oberfläche desselben Knotens,
+        von ``bibi-ctrl status``, von der Statusleiste. Ein blockierter
+        Synchronizer konnte seinen Zustand damit niemandem mitteilen:
+        ``sarasate-client`` hing 43 Stunden fest und meldete es 102-mal an
+        eine Weboberfläche, die im Normalbetrieb niemand öffnet. Aufgefallen
+        ist es erst, weil ein Rollout zufällig danach fragte — und ein Rollout
+        ist kein Überwachungswerkzeug.
+
+        ``None`` heißt auch hier *unbekannt*, nicht *in Ordnung*: ein Knoten,
+        der nichts sendet, darf nicht als gesund gelten."""
         now = time.time() if now is None else now
         key = node_id or worker
         with self._lock:
@@ -62,6 +76,7 @@ class WorkerRegistry:
                          node_id=node_id, git_user=git_user, role=role, port=port,
                          engine=engine, engine_tree=engine_tree,
                          git_commit=git_commit, session=session,
+                         sync_conflict=sync_conflict, auto_sync=auto_sync,
                          last_heartbeat=now)
             self._w[key] = entry
             return dict(entry)

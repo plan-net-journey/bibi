@@ -1021,11 +1021,21 @@ def reserve_next(
     """
     now = time.time() if now is None else now
     host = host or socket.gethostname()
+    # **Unter beiden Namen dieses Knotens** (m.rau/bibi#88): neue gepinnte
+    # Zeilen tragen die stabile ``node_id``, der Bestand einen Hostnamen — und
+    # angefragt wird unter dem Hostnamen (``WorkerLoop.host``). Verglichen der
+    # Loop nur den einen, bliebe jede von ``run_pinned()`` neu geschriebene
+    # Zeile für immer ``pending``: geschrieben unter der ID, gesucht unter dem
+    # Namen. Ein **fremder** Pin bleibt tabu, er steht unter keinem der beiden.
+    from bibi.daemon.worker import pin_lookup_ids
+    pin_ids = pin_lookup_ids(host)
+    pin_params = {f"pin{i}": v for i, v in enumerate(pin_ids)}
+    pin_liste = ", ".join(f":{k}" for k in pin_params)
+    pin_clause = (f"pinned_host IN ({pin_liste})" if pinned_only
+                  else f"(pinned_host IS NULL OR pinned_host IN ({pin_liste}))")
     conn.execute("BEGIN IMMEDIATE")
     try:
         offset = _get_offset(conn)
-        pin_clause = ("pinned_host = :host" if pinned_only
-                     else "(pinned_host IS NULL OR pinned_host = :host)")
         # Eligibel nur, was **fällig** ist (§5.2): pending feuert erst, wenn
         # next_fire_at gesetzt UND erreicht ist (`now` ⇒ sofort, `at:`/cron ⇒ zur
         # Zeit, `never` ⇒ next_fire_at NULL ⇒ nie). Dazu retriable failed (Backoff
@@ -1062,7 +1072,7 @@ def reserve_next(
             "  OR (status='deferred' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='complete' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             ")",
-            {"now": now, "host": host},
+            {"now": now, "host": host, **pin_params},
         ).fetchall()
         chosen, new_offset = dispatcher.select([dict(r) for r in rows], offset)
         if chosen is None:
@@ -1432,16 +1442,24 @@ def wipe_job_data(job_id: str) -> None:
             shutil.rmtree(d, ignore_errors=True)
 
 
-def list_pinned(conn: sqlite3.Connection, host: str) -> list[dict]:
+def list_pinned(conn: sqlite3.Connection, host: str | None = None) -> list[dict]:
     """``bibi-ctrl run list`` (PLAN-32 Stufe 32.3, User-Fund): ``/run``-gepinnte
     Jobs sind der Scheduler-HTTP-API (``/-/job*``, Scheduler-Rolle-gated)
     unerreichbar — ein reiner Client-Knoten (z. B. dieser Mac, kein
     ``--scheduler``) hat also gar keinen API-Weg, sie zu sehen/verwalten.
     Direkter, rollen-unabhängiger DB-Zugriff auf genau diesen Host schließt
-    die Lücke, ohne den Scheduler-HTTP-Pfad anzufassen."""
+    die Lücke, ohne den Scheduler-HTTP-Pfad anzufassen.
+
+    **Unter beiden Namen dieses Knotens** (m.rau/bibi#88), aus demselben Grund
+    wie in ``reserve_next()``: neue Zeilen tragen die stabile ``node_id``, der
+    Bestand einen Hostnamen. Wer nur einen vergleicht, bekommt „(keine lokal
+    gepinnten Jobs)" — auf einem Knoten, der gerade welche laufen hat."""
+    from bibi.daemon.worker import pin_lookup_ids
+    ids = pin_lookup_ids(host)
+    platzhalter = ",".join("?" * len(ids))
     rows = conn.execute(
-        "SELECT id, slug, status, kind, payload FROM jobs "
-        "WHERE pinned_host=? ORDER BY enqueued_at DESC", (host,),
+        f"SELECT id, slug, status, kind, payload FROM jobs "
+        f"WHERE pinned_host IN ({platzhalter}) ORDER BY enqueued_at DESC", ids,
     ).fetchall()
     return [dict(r) for r in rows]
 

@@ -79,9 +79,41 @@ def _refuse_ambiguous_scope() -> int:
     return 2
 
 
+def _has_changes_to_gather() -> bool:
+    """Gäbe es überhaupt fremde Arbeit einzusammeln? (m.rau/bibi#66)
+
+    **Sperrt im Zweifel**, und das ist die entgegengesetzte Defensivrichtung zu
+    :func:`_dirty_count`. Dessen Docstring sagt ausdrücklich, die Zahl sei
+    „Auskunft, kein Vertrag — sie darf ein ``save`` nie kosten", weshalb es
+    jede Exception zu ``0`` verschluckt.
+
+    Den Guard daran zu hängen wäre die Umkehrung des Schutzes: bei einem
+    git-Fehler meldete es „nichts zu tun", der Guard ließe durch, und der
+    Repo-Commit sammelte fremde Arbeit ein — in genau der Lage, vor der er
+    schützen soll. Antwortet git nicht, gilt hier deshalb „es könnte etwas
+    geben".
+    """
+    try:
+        return bool(git_ops.dirty_paths())
+    except Exception:  # noqa: BLE001 — kein Befund heißt hier: sperren
+        return True
+
+
 def run(args: argparse.Namespace) -> int:
     path = None if args.repo else state.get_path()  # vault-relativ oder None
-    if path is None and not args.repo and state.foreign_parks():
+    # **Erst fragen, ob es etwas zu entscheiden gibt** (m.rau/bibi#66). Der
+    # Guard stand vor dieser Erhebung und verweigerte damit auch dann, wenn der
+    # Commit null Dateien angefasst hätte. Seine Begründung — „ein Repo-weiter
+    # Commit nimmt fremde, halbfertige Arbeit mit" — setzt voraus, dass es
+    # solche Arbeit *gibt*; bei sauberem Baum ist die Menge leer, und er
+    # schützt vor einem Schaden, der nicht eintreten kann.
+    #
+    # Nach jeder Wiederverbindung ist genau das der Normalfall: die Session-ID
+    # wechselt, die alte Marke bleibt liegen, und wer nur noch pushen will,
+    # zahlt jedes Mal einen Fehlversuch. Der Guard ist damit nicht ausgehebelt,
+    # nur auf die Lage eingeschränkt, für die seine Begründung gilt.
+    if (path is None and not args.repo and state.foreign_parks()
+            and _has_changes_to_gather()):
         return _refuse_ambiguous_scope()
 
     if path:

@@ -93,6 +93,18 @@ _ACTIONS: dict[str, frozenset[Verb]] = {
     # Wer den Oneshot erneut laufen lassen will, legt eine neue ``at``-Datei an
     # oder macht ihn zu einem ``adhoc``-Job.
     DONE: frozenset(),
+    # **Ein Platz ohne Zeile** (m.rau/bibi#87). Auf einem reinen Client gibt es
+    # zu einem Job oft gar keine ``jobs``-Zeile: Basis-Zeilen legt nur
+    # ``job_db.rescan()`` an, und der Rescanner hängt an der ``scheduler``-
+    # Rolle. Der Job kann dort trotzdem laufen — seine MD liegt im Vault, und
+    # ``/-/run`` nimmt ohnehin den Slug.
+    #
+    # START ist deshalb nutzbar, KILL und RESET sind es nicht: es gibt keinen
+    # Lauf zu beenden und keinen Zustand zurückzusetzen. ``render``s
+    # ``_VERBS_FOR_STATUS`` führte diesen Fall schon seit PLAN-29; das Modell
+    # kannte ihn bis zum 2026-08-09 nicht, weshalb ``actions("")`` ihn als
+    # Tippfehler behandelt hätte.
+    "": frozenset({Verb.START}),
 }
 
 

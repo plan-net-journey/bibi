@@ -174,6 +174,24 @@ def _job_is_container(db_path: Path | None, job_id: str) -> bool:
     return _is_container()
 
 
+def base_job_env() -> dict[str, str]:
+    """Die Grundumgebung jedes Jobs: die Sitzung, abzüglich dessen, was sie
+    nicht weitergeben darf (m.rau/bibi#89).
+
+    ``VIRTUAL_ENV`` reiste über ``os.environ.copy()`` mit. Den Zweck aus `#76`
+    — dass ein Job das venv der Engine findet — trägt der ``PATH`` allein; die
+    Variable war die Zugabe. Sie kostet drei Warnungen pro ``BrowserCI``-Lauf,
+    weil jedes ``uv`` in einem *fremden* Checkout sie meldet, und jede sieht
+    bei einer Fehlersuche nach einer Spur aus, die keine ist.
+
+    Gestrichen wird eine Variable, nicht eine Klasse davon: ``HOME``, ``PATH``
+    und die verteilten ``BIBI_JOB_ENV_*``-Werte bleiben, ein Job braucht sie.
+    """
+    env = os.environ.copy()
+    env.pop("VIRTUAL_ENV", None)
+    return env
+
+
 def _docker_env() -> dict[str, str]:
     # docker-bin-Dir in den PATH (Cred-Helper docker-credential-*).
     bin_ = exec_backend.resolve_docker_bin({**os.environ, **config.read_env()})
@@ -444,7 +462,7 @@ def _run_wrapper(
     activity.emit(log, logging.DEBUG, "worktree.prepare", role="worker",
                   slug=slug, run_id=out_run_id, path=str(wt_path), in_place=in_place)
 
-    env = os.environ.copy()
+    env = base_job_env()
     env["BIBI_JOB_ID"] = job_id
     # PLAN-24 Befund 5: der Wrapper-Prozess braucht den Slug fürs per-Job-Image
     # (exec_backend.finalize_container()/job_image_tag()) — vorher stand
@@ -538,7 +556,18 @@ def _run_wrapper(
     if silence_timeout is not None:
         env["BIBI_SILENCE_TIMEOUT"] = str(silence_timeout)
     if worker_name:
-        env["BIBI_WORKER_NAME"] = worker_name
+        # **``BIBI_NODE_NAME``, nicht ``BIBI_WORKER_NAME``** (m.rau/bibi#90).
+        # PLAN-34 hat den Konfigurations-Schlüssel umbenannt und die
+        # Laufzeit-Variable unbenannt gelassen — die Engine schrieb damit in
+        # jeden Job denselben Namen, den ``doctor`` als ``legacy-node-name``
+        # anmahnt, sobald ein Mensch ihn in seine Config setzt.
+        #
+        # Das Paar ist geschlossen: hier geschrieben, in ``wrapper`` gelesen,
+        # beide Seiten aus demselben Release. Die drei Fallback-Stellen in
+        # ``hygiene.py``, ``node_info.py`` und ``daemon_cmd.py`` bleiben —
+        # sie lesen, was ein *Mensch* gesetzt hat, und das ist
+        # Bestandskompatibilität, keine Altlast.
+        env["BIBI_NODE_NAME"] = worker_name
     if host:
         env["BIBI_HOST"] = host
     env["BIBI_ATTEMPT"] = str(attempt)
@@ -802,6 +831,59 @@ def local_schedule_exec_mode(slug: str, *, repo_root: Path | None = None) -> str
 _PINNED_LIVE_STATUSES = ("running", "awaiting", "deferred", "failed")
 
 
+def pin_identity() -> str:
+    """Unter welchem Namen dieser Knoten seine ``/run``-Läufe pinnt (#88).
+
+    ``jobs.pinned_host`` ist die Zusage „diese Zeile gehört genau diesem
+    Knoten" — sie entscheidet, wer den Lauf reservieren darf und wessen Läufe
+    die Detailseite zeigt. Gespeichert wurde dafür ``socket.gethostname()``,
+    also ein **Anzeigename**.
+
+    Dieser Mac wechselt ihn im Betrieb (``Air2024.local`` gegen
+    ``Mac.fritz.box``, gemessen sogar während eines einzelnen Laufs). Mit dem
+    Namen wechselt der Schlüssel, und die eigenen Läufe werden unsichtbar —
+    keine Kachel, keine Zeile, keine Ausgabe, obwohl alles in der Datenbank
+    steht.
+
+    ``config.node_id()`` ist die stabile Identität: eine generierte UUID in der
+    ``env``-Datei, self-healing und vom Hostnamen unabhängig. Sie existierte
+    längst und wurde an dieser Stelle nur nicht benutzt.
+
+    Der Rückfall auf den Hostnamen greift nur, wenn die ``env`` unlesbar ist —
+    dann ist das bisherige Verhalten immer noch besser als ein Abbruch.
+    """
+    from bibi import config
+    try:
+        return config.node_id() or socket.gethostname()
+    except Exception:  # noqa: BLE001 — defensiv (§2.7)
+        return socket.gethostname()
+
+
+def pin_lookup_ids(host: str | None = None) -> tuple[str, ...]:
+    """Unter welchen Namen eigene gepinnte Zeilen liegen können (#88).
+
+    **Zwei, und der zweite ist der Bestand.** Neue Zeilen tragen
+    :func:`pin_identity`; die rund 130 bereits vorhandenen auf diesem Mac
+    tragen einen Hostnamen. Ein harter Tausch machte sie auf einen Schlag
+    unauffindbar — die Historie wäre da und unerreichbar.
+
+    ``host`` ist der Name, unter dem gefragt wird (``WorkerLoop.host``, oder
+    ein Testwert). Er kommt **zusätzlich** zur Identität in den Vergleich, denn
+    ein Knoten fragt unter seinem Anzeigenamen an, während seine Zeilen die ID
+    tragen. Ohne beides schriebe ``run_pinned()`` eine Zeile, die anschließend
+    niemand reservieren kann — der Lauf bliebe für immer ``pending``.
+
+    Die Pin-Zusage bleibt in beide Richtungen gültig: was einem anderen Knoten
+    gehört, steht unter dessen Namen und ist in keiner der beiden Angaben
+    enthalten.
+    """
+    ids = [host or "", pin_identity(), socket.gethostname()]
+    # ``dict.fromkeys`` statt ``set``: die Reihenfolge bleibt stabil, und damit
+    # bleiben es auch die SQL-Parameter — sonst wanderten sie zwischen zwei
+    # Läufen, ohne dass sich etwas geändert hätte.
+    return tuple(dict.fromkeys(i for i in ids if i))
+
+
 def _pinned_row(slug: str, *, db_path: Path | None = None, host: str | None = None,
                 statuses: tuple[str, ...] | None = None) -> sqlite3.Row | None:
     """Die jüngste ``jobs``-Zeile für den **Bucket-Slug** ``slug`` an diesem
@@ -823,11 +905,15 @@ def _pinned_row(slug: str, *, db_path: Path | None = None, host: str | None = No
     ``run_pinned()``) — das feste 8-Zeichen-Muster (dieselbe Konvention wie
     ``job_db.list_journal()``s Slug-Filter) schließt so etwas per Länge aus,
     ein offenes ``%`` nicht."""
-    host = host or socket.gethostname()
+    # Beide Namen (m.rau/bibi#88): neue Zeilen tragen die stabile Identitaet,
+    # der Bestand einen Hostnamen. Wer nur einen vergleicht, verliert die eine
+    # oder die andere Haelfte — und zwar unsichtbar.
+    ids = pin_lookup_ids(host)
     conn = job_db.connect(db_path)
     try:
-        sql = "SELECT * FROM jobs WHERE pinned_host=? AND slug LIKE ?"
-        params: list = [host, f"{slug}-________"]
+        platzhalter = ",".join("?" * len(ids))
+        sql = f"SELECT * FROM jobs WHERE pinned_host IN ({platzhalter}) AND slug LIKE ?"
+        params: list = [*ids, f"{slug}-________"]
         if statuses:
             placeholders = ",".join("?" * len(statuses))
             sql += f" AND status IN ({placeholders})"
@@ -898,14 +984,15 @@ def local_runs_live(*, db_path: Path | None = None, host: str | None = None) -> 
     ``status`` kommt jetzt direkt aus der DB-Zeile, kein extra Output-Read
     mehr nötig, anders als das frühere ``local_run_signal_state()``-basierte
     Verfahren)."""
-    host = host or socket.gethostname()
+    ids = pin_lookup_ids(host)   # beide Namen, s. pin_lookup_ids() (#88)
     conn = job_db.connect(db_path)
     try:
         placeholders = ",".join("?" * len(_PINNED_LIVE_STATUSES))
+        id_platzhalter = ",".join("?" * len(ids))
         rows = conn.execute(
             f"SELECT slug, id, started_at, status FROM jobs "
-            f"WHERE pinned_host=? AND status IN ({placeholders})",
-            (host, *_PINNED_LIVE_STATUSES),
+            f"WHERE pinned_host IN ({id_platzhalter}) AND status IN ({placeholders})",
+            (*ids, *_PINNED_LIVE_STATUSES),
         ).fetchall()
     finally:
         conn.close()
@@ -1023,6 +1110,12 @@ def run_pinned(
     work_dir = work_dir or (repo_root / "data" / "worktrees")
     host = host or socket.gethostname()
     worker_name = worker_name or host
+    # **Was in `pinned_host` landet, ist die Identitaet, nicht der Anzeigename**
+    # (m.rau/bibi#88). `host`/`worker_name` bleiben der Hostname — sie stehen im
+    # FE und in der Worker-Liste, dort ist der lesbare Name richtig. Der
+    # Schluessel, an dem die Zeile wiedergefunden wird, darf sich dagegen nicht
+    # aendern, wenn der Rechner seinen Namen wechselt.
+    pin_host = pin_identity()
     eff_soul = eff_session = None
     eff_schedule_ref: str | None = None
     eff_app_port = eff_app_prefix = eff_exec_mode = eff_image = None
@@ -1124,7 +1217,7 @@ def run_pinned(
              "exec_mode": eff_exec_mode, "image": eff_image,
              "silence_timeout": eff_silence_timeout, "wall_time": eff_wall_time, "now": now,
              "attempts": attempts, "backoff": eff_backoff, "defer_time": eff_defer_time,
-             "error_time": eff_error_time, "pinned_host": host},
+             "error_time": eff_error_time, "pinned_host": pin_host},
         )
         reservation = job_db.reserve_next(conn, host=host, pinned_only=True, now=now)
     finally:

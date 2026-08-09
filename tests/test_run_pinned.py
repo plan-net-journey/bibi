@@ -55,7 +55,14 @@ def test_run_pinned_with_cmd_creates_pinned_row_and_dispatches(gitrepo, monkeypa
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     row = conn.execute("SELECT * FROM jobs WHERE id=?", (res["id"],)).fetchone()
     conn.close()
-    assert row["pinned_host"] == "mac"
+    # **Die Identitaet, nicht der Anzeigename** (m.rau/bibi#88). Hier stand
+    # `== "mac"`, also der durchgereichte `host` — genau die Verwechslung, die
+    # eigene /run-Laeufe unsichtbar machte, sobald der Rechner seinen Namen
+    # wechselte. `host` bleibt der lesbare Name und steht weiterhin im FE und
+    # in der Worker-Liste; der Schluessel, an dem die Zeile wiedergefunden
+    # wird, ist jetzt stabil.
+    from bibi.daemon.worker import pin_identity
+    assert row["pinned_host"] == pin_identity()
     assert row["status"] == "running"  # sofort reserviert + dispatcht
     assert row["payload"] == "echo hi"
     # attempts=0 (nicht 1!) ist "kein Retry" — der Wrapper prüft attempt_cur
@@ -74,9 +81,10 @@ def test_run_pinned_with_slug_resolves_existing_schedule(gitrepo, monkeypatch):
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     row = conn.execute("SELECT * FROM jobs WHERE id=?", (res["id"],)).fetchone()
     conn.close()
+    from bibi.daemon.worker import pin_identity
     assert row["payload"] == "echo from md"
     assert row["schedule_ref"] == "myjob/README.md"
-    assert row["pinned_host"] == "mac"
+    assert row["pinned_host"] == pin_identity()   # m.rau/bibi#88, s. oben
 
 
 def test_run_pinned_unknown_slug_raises_lookup_error(gitrepo):
@@ -94,12 +102,29 @@ def test_run_pinned_without_slug_or_cmd_raises_value_error(gitrepo):
 
 
 def test_list_pinned_returns_only_this_hosts_rows(gitrepo, monkeypatch):
+    """**Die Fremdzeile entsteht jetzt in der Datenbank, nicht per Aufruf.**
+
+    Hier stand zweimal ``run_pinned()``, einmal mit ``host="other-host"`` — und
+    das war schon vor m.rau/bibi#88 eine Fiktion: ``run_pinned()`` laeuft immer
+    auf *diesem* Knoten, egal welchen Anzeigenamen man ihm mitgibt. Ein anderer
+    Rechner ruft die Funktion in seinem eigenen Prozess auf; seine Zeile kommt
+    hier nur ueber den Sync an.
+
+    Seit `#88` faellt die Fiktion auf: beide Aufrufe schreiben dieselbe stabile
+    Identitaet, weil beide derselbe Knoten sind. Die Zeile eines fremden Knotens
+    wird deshalb direkt geschrieben — so, wie sie tatsaechlich entsteht.
+    """
     import bibi.daemon.worker as W
     monkeypatch.setattr(W, "_run_wrapper", _fake_run_wrapper(gitrepo))
     res_mac = run_pinned(cmd="echo a", repo_root=gitrepo, host="mac")
-    run_pinned(cmd="echo b", repo_root=gitrepo, host="other-host")
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
-    rows = job_db.list_pinned(conn, "mac")
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, "
+        "enqueued_at, pinned_host) "
+        "VALUES ('fremd1','fremd-11223344','r','job','echo b','pending',1.0,"
+        "'sarasate-client')")
+    conn.commit()
+    rows = job_db.list_pinned(conn)
     conn.close()
     assert [r["id"] for r in rows] == [res_mac["id"]]
 

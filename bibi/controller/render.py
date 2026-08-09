@@ -808,6 +808,31 @@ def _node_git_status_chips(git_status: str | None) -> str:
             f'<span class="{sync_cls}">{_e(sync)}</span>')
 
 
+def _node_sync_state_chips(w: dict) -> str:
+    """Ob dieser Knoten seine Arbeit **loswird** (m.rau/bibi#74).
+
+    Die Git-Status-Chips daneben sagen, wie der Baum *aussieht*. Diese hier
+    sagen, ob er sich überhaupt noch bewegt — und das ist die Angabe, die 43
+    Stunden lang niemand hatte: ``sarasate-client`` hing in einem Sync-Konflikt
+    und meldete es 102-mal an eine Oberfläche, die im Normalbetrieb niemand
+    öffnet. Aufgefallen ist es erst, weil ein Rollout zufällig danach fragte.
+
+    **Stille ist der Normalfall.** Ein gesunder Knoten bekommt hier nichts —
+    eine Warnung, die immer leuchtet, wird nach dem zweiten Mal überlesen.
+    ``None`` (der Knoten sendet die Angabe nicht) ist ebenfalls still: das ist
+    *unbekannt*, und eine Behauptung wäre schlimmer als eine Lücke.
+    """
+    teile = []
+    if w.get("sync_conflict"):
+        teile.append('<span class="chip conflict" title="this node cannot push '
+                     'its work — resolve with /sync">sync blocked</span>')
+    if w.get("auto_sync") is False:
+        teile.append('<span class="chip modified" title="auto-sync is off — '
+                     'work stays local until someone syncs by hand">'
+                     'sync off</span>')
+    return (" " + " ".join(teile)) if teile else ""
+
+
 #: Aktualitäts-Chip der Engine-Zelle. Die Wörter sind bewusst die der
 #: Repo-Zelle (``synced``/``behind``) statt der internen Verdict-Namen aus
 #: ``deploy.update_state()`` — nebeneinander gelesen sollen beide Zeilen
@@ -989,6 +1014,9 @@ def _clients_table(workers: list[dict], now: float,
             f"<td>{_e(w.get('git_user') or '—')}</td>"
             f"<td>{_node_git_status_chips(w.get('git_status'))}"
             + (f' <code>{_e(w["git_commit"])}</code>' if w.get("git_commit") else "")
+            # m.rau/bibi#74: neben „wie sieht der Baum aus" jetzt auch „bewegt
+            # er sich noch". Dieselbe Spalte, weil es dieselbe Frage ist.
+            + _node_sync_state_chips(w)
             + "</td>"
             f"<td>{status_html}</td>"
             f"<td>{_node_approval_cell(w.get('node_id'), w.get('approval_status', 'pending'))}</td>"

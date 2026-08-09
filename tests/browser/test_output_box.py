@@ -60,38 +60,38 @@ _STILLE_S = 9.0
 
 
 def _knoten_mit_laufender_box(fabrik):
-    """Ein Knoten, auf dem eine Box mit **eigenem Strom** entsteht, samt Lauf.
+    """Der **Client** eines Paars, auf dessen Scheduler ein Lauf läuft.
 
-    **Die Rollenwahl ist hier der halbe Test, und sie ist unbequem.** Eine Box
-    mit ``data-stream`` entsteht nur, wenn ``_output_stream_url()`` eine URL
-    liefert — und das verlangt zweierlei: einen laufenden Lauf, den
-    ``client.jobs()`` **sieht**, und eine gesetzte ``BIBI_SCHEDULER_URL``. Der
-    ``ControllerClient`` fragt dafür den eigenen Daemon (``/-/job``), und diese
-    Route hat nur ein Knoten mit Scheduler-Rolle. Auf einem reinen Client
-    antwortet sie mit dem eingefrorenen ``501``-Stub — dort gibt es die Box
-    also gar nicht.
+    **Bis zum 2026-08-09 stand hier ein einzelner Knoten**, und die Begründung
+    dafür war selbst schon ein Befund: eine Box mit ``data-stream`` entstand
+    nur in der Konstellation ``scheduler+worker+controller`` mit einer
+    Scheduler-Adresse auf sich selbst. Auf einem reinen Client gab es sie gar
+    nicht — ``_detail_data()`` fragte den eigenen Daemon, und dessen ``/-/job``
+    antwortet ohne Scheduler-Rolle mit dem eingefrorenen ``501``-Stub.
 
-    Der Aufbau hier ist folglich das Profil ``scheduler+worker`` **mit**
-    Oberfläche (``profile_roles(..., with_ui=True)``, gedacht für den ersten
-    Knoten eines Teams) und einer Scheduler-Adresse, die auf ihn selbst zeigt —
-    genau die Konstellation, die `d2c03bc` auf sarasate vorfand.
+    **Diese eine Konstellation war die falsche**
+    ([`#86`](https://github.com/plan-net-journey/bibi/issues/86)). Sie ist seit
+    dem Rollenwechsel am 2026-08-04 in der Produktion nirgends mehr im Einsatz,
+    und sie schickte ihre Box über einen Durchreicher zu sich selbst — obwohl
+    der Docstring von ``_output_stream_url()`` genau das ausschloss. Seit der
+    Fix die **Rolle** prüft statt der Adresse, gibt es dort keinen zweiten
+    Strom mehr, und das ist richtig: der globale Bus reicht.
 
-    **Dass das die einzige ist, in der es die Box gibt, ist ein Befund und kein
-    Testdetail** — er steht in
-    [`#86`](https://github.com/plan-net-journey/bibi/issues/86).
+    Was bleibt, ist die Topologie, für die der zweite Strom überhaupt gebaut
+    wurde — der Lauf beim Scheduler, die Oberfläche beim Client. Genau die
+    verlangt das Ticket auch als Prüfgrundlage.
     """
-    root = fabrik.repo("knoten")
-    job_md(root, "lang", payload=_SPRECHENDER_LAUF)
-    k = fabrik.starte(root, rollen="--synchronizer --scheduler --worker --controller",
-                      scheduler_ist_selbst=True)
-    zeilen = warte_bis(lambda: [j for j in k.get_json("/-/job")
+    from .browserlib import paar
+
+    host, client = paar(fabrik, job="lang", payload=_SPRECHENDER_LAUF)
+    zeilen = warte_bis(lambda: [j for j in host.get_json("/-/job")
                                 if j.get("slug") == "lang"],
                        frist=20, was="der Job tauchte beim Scheduler nicht auf")
-    k.post(f"/-/job/{zeilen[0]['id']}/start")
+    host.post(f"/-/job/{zeilen[0]['id']}/start")
     warte_bis(lambda: any(j.get("status") == "running"
-                          for j in k.get_json("/-/job") if j.get("slug") == "lang"),
+                          for j in host.get_json("/-/job") if j.get("slug") == "lang"),
               frist=30, was="der Lauf kam nie in den Zustand running")
-    return k
+    return client
 
 
 def _box(seite):
@@ -230,3 +230,4 @@ def test_the_box_stream_survives_a_silent_stretch(fabrik, seite):
         f"{_STILLE_S:.0f}s, in denen der Lauf nur mit Pausen sprach — der "
         "Durchreicher wirft die Verbindung weg, bevor der Output-Strom pingt "
         f"(#78). {jetzt}")
+

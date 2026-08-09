@@ -181,7 +181,22 @@ def update_status(root: Path | None = None, info=None) -> dict:
     from bibi.engine_info import engine_info
     info = engine_info() if info is None else info
     expected = current_ref(root)
-    out = {"expected": expected, "running": info.label(),
+    # **``installed``, nicht ``running``** (m.rau/bibi#81). Was hier gelesen
+    # wird, ist ``direct_url.json`` im venv — also der Stand auf der PLATTE,
+    # nicht der, den ein Prozess geladen hat. Das Feld hiess bis zum 2026-08-09
+    # ``running`` und war genau so lange harmlos, wie niemand den Unterschied
+    # brauchte: nach einem ``uv sync`` ohne Neustart fallen die beiden
+    # auseinander, und das ist per Definition die Lage des Sitzungs-Knotens,
+    # fuer den ``upgrade_notice`` ueberhaupt existiert. Der Hinweis erlosch
+    # dort, waehrend der alte Code weiterlief.
+    #
+    # ``running`` bleibt als Feld und traegt jetzt, was der Name sagt: den
+    # Stand DIESES Prozesses. In einem frisch gestarteten CLI-Aufruf ist das
+    # dasselbe wie ``installed``; in einem langlebigen Daemon sein Startstand.
+    # Wer die laufende Version eines FREMDEN Prozesses braucht, findet sie in
+    # der Portdatei (``portfile.read()["engine"]``).
+    out = {"expected": expected, "installed": info.label(),
+           "running": info.label(),
            "needs_update": False, "verdict": "unknown"}
     if info.editable:
         out["verdict"] = "editable"

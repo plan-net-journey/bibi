@@ -130,6 +130,32 @@ class Heartbeat:
         config.write_env({**werte, "BIBI_BOOTSTRAP_TOKEN": ""})
         os.environ.pop("BIBI_BOOTSTRAP_TOKEN", None)
 
+    def _sync_state(self) -> dict:
+        """Ob dieser Knoten seine Arbeit loswird (m.rau/bibi#74).
+
+        **Der teuerste Meldeweg ist der, den es nicht gibt.**
+        ``sync_conflict`` wurde ausschließlich lokal gelesen: von der
+        Oberfläche desselben Knotens, von ``bibi-ctrl status``, von der
+        Statusleiste. ``sarasate-client`` hing damit vom 2026-08-05 bis zum
+        2026-08-07 fest und meldete es 102-mal alle drei Minuten an niemanden —
+        in eine Weboberfläche auf Port 8781, die im Normalbetrieb niemand
+        öffnet. Aufgefallen ist es, weil ein Rollout zufällig danach fragte.
+
+        ``auto_sync`` reist mit, weil es dieselbe Frage beantwortet: ein Knoten
+        mit abgeschaltetem Sync ist nicht kaputt, aber seine Arbeit bleibt
+        genauso liegen.
+
+        Scheitert das Lesen, bleiben beide ``None`` — *unbekannt*, nicht *in
+        Ordnung*. Ein Heartbeat darf daran nicht scheitern; die Angabe ist eine
+        Beigabe, nicht sein Zweck.
+        """
+        try:
+            from bibi import state
+            return {"sync_conflict": state.get_sync_conflict(),
+                    "auto_sync": state.get_auto_sync()}
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return {"sync_conflict": None, "auto_sync": None}
+
     def _beat(self) -> None:
         try:
             git_status, git_commit = self._tree_status()
@@ -152,6 +178,11 @@ class Heartbeat:
                 # m.rau/bibi#44: ob ein Neustart-Knopf für diesen Knoten
                 # überhaupt einen Neustart bedeutet.
                 session=self.session,
+                # m.rau/bibi#74: ob dieser Knoten seine Arbeit ueberhaupt
+                # loswird. Pro Beat frisch gelesen — das Flag kippt zwischen
+                # zwei Beats, und ein beim Start eingefrorener Wert waere
+                # schlimmer als keiner.
+                **self._sync_state(),
                 git_commit=git_commit,
                 # m.rau/bibi#141: nur beim allerersten Mal gesetzt — danach hat
                 # ``_forget_bootstrap_token()`` ihn aus der env gestrichen.

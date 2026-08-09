@@ -222,6 +222,13 @@ class WorkerHeartbeat(BaseModel):
     # Heartbeat eingeloest und verbraucht; danach schickt der Client ihn nicht
     # mehr, weil er ihn aus seiner env geloescht hat.
     bootstrap_token: str | None = None
+    # m.rau/bibi#74: ob dieser Knoten seine Arbeit ueberhaupt loswird. Beide
+    # Werte wurden bis zum 2026-08-09 nur lokal gelesen — ein blockierter
+    # Synchronizer konnte seinen Zustand niemandem mitteilen, und aufgefallen
+    # ist das erst, weil ein Rollout zufaellig danach fragte. ``None`` heisst
+    # *unbekannt*, nicht *in Ordnung*: wer nichts sendet, gilt nicht als gesund.
+    sync_conflict: bool | None = None
+    auto_sync: bool | None = None
 
 
 class RestartRequest(BaseModel):
@@ -261,6 +268,14 @@ class WorkerView(BaseModel):
     engine: str | None = None       # installierter Engine-Stand (#19)
     git_commit: str | None = None   # kurzer Commit des Team-Repos (#19)
     engine_tree: str | None = None  # clean/modified des Engine-Checkouts (#67)
+    # m.rau/bibi#74: ob dieser Knoten seine Arbeit loswird. ``session`` fehlte
+    # hier bis zum 2026-08-09 ebenfalls — die Registry fuehrte es, der
+    # Antwort-Vertrag verschwieg es, und ``response_model`` schnitt es
+    # stillschweigend weg. Genau die Fehlerform, um die es in diesem Ticket
+    # geht, eine Ebene weiter aussen.
+    session: bool | None = None
+    sync_conflict: bool | None = None
+    auto_sync: bool | None = None
 
 
 def _todo(endpoint: str) -> JSONResponse:

@@ -1599,3 +1599,79 @@ def test_the_app_link_uses_the_public_host_not_localhost():
         spec={"slug": "burndown-app", "kind": "app", "app_port": 8899},
         public_host="Mac.fritz.box")
     assert 'href="http://Mac.fritz.box:8899/"' in html
+
+
+# ── Der Client-Slug ohne Zeile (m.rau/bibi#87) ──────────────────────────────
+
+
+def test_a_client_tile_appears_for_a_locally_known_job_without_a_row():
+    """**Der Rot-Schritt von `#87`.**
+
+    Eine Kachel entstand nur aus einem *Slot*, und den Client-Slot beschaffte
+    `_job_lauf_liste()` aus zwei Quellen: der gepinnten Zeile eines
+    `bibi-ctrl run`-Laufs oder — als Rückfall — der Basis-Slug-Zeile. Basis-
+    Zeilen legt aber ausschliesslich `job_db.rescan()` an, und der Rescanner
+    haengt an der `scheduler`-Rolle. **Ein reiner Client bekommt deshalb nie
+    eine**, und der Rückfall greift dort nur fuer Slugs aus einer Zeit, in der
+    der Knoten selbst Scheduler war.
+
+    Damit kehrte sich die Begruendung des Rückfalls in ihr Gegenteil: er ist
+    dafuer da, dass ein Client, auf dem noch nie etwas lief, eine Kachel hat —
+    und genau dieser Fall trat dauerhaft nicht ein. Live gemessen am Mac
+    (`v0.7.9`, 2026-08-09): `BrowserCI` hatte keine CLIENT-Kachel, waehrend
+    drei aeltere Jobs eine hatten, weil dort einmal ein `/run`-Lauf gepinnt
+    wurde.
+
+    Das Henne-Ei dahinter: START ruft `/-/run`, also genau das, was
+    `bibi-ctrl run` tut. Der Knopf erschien erst, **nachdem** man den Job
+    einmal ohne ihn gestartet hatte.
+    """
+    kacheln = _liste(client_slug="BrowserCI").tiles
+    klient = [k for k in kacheln if k.quelle == "CLIENT"]
+    assert len(klient) == 1, "die lokal bekannte MD bekommt keine Kachel (#87)"
+    assert klient[0].status == ""
+    assert {v.value for v in klient[0].aktionen} == {"start"}, (
+        "eine Kachel ohne Zeile kann nur gestartet werden — KILL und RESET "
+        "haetten nichts, worauf sie wirken")
+
+
+def test_that_tile_carries_the_slug_so_start_can_reach_it():
+    """Ohne Kennung kein Knopf: `_slot_leiste()` zeichnet ein Verb nur mit
+    `job_id`. Der Client-Slot ist ohnehin slug-basiert — alle vier Verben
+    gehen ueber `/-/run` bzw. `/-/run/live/*`, und die ID ist dort nur ein
+    Umweg, um an den Slug zu kommen."""
+    klient = [k for k in _liste(client_slug="BrowserCI").tiles
+              if k.quelle == "CLIENT"][0]
+    assert klient.slot.get("id") == "BrowserCI"
+
+
+def test_without_a_local_md_there_is_still_no_client_tile():
+    """Die Gegenprobe, und sie traegt die Regel aus §5.1.1.
+
+    Ohne sie waere der Test oben auch dann gruen, wenn **jeder** Job eine
+    CLIENT-Kachel bekaeme — und der Screen boete einen Platz an, den es nicht
+    gibt. Ein Job, dessen MD hier nicht liegt, kann hier auch nicht laufen."""
+    assert [k.quelle for k in _liste(scheduler_slot={"row_status": "pending"}).tiles] \
+        == ["SCHEDULER"]
+
+
+def test_a_real_row_still_wins_over_the_bare_slug():
+    """Existiert eine Zeile, zaehlt sie — der Slug ist der Rückfall, nicht der
+    Vorrang. Sonst verlöre eine Kachel ihren Zustand, sobald der Slug bekannt
+    ist."""
+    klient = [k for k in _liste(client_slot={"status": "error"},
+                                client_slug="BrowserCI").tiles
+              if k.quelle == "CLIENT"][0]
+    assert klient.status == "error"
+    assert {v.value for v in klient.aktionen} == {"start", "reset"}
+
+
+def test_a_oneshot_stays_locked_even_when_the_md_is_local():
+    """Ein Oneshot hat keinen lokalen Platz (§5.1.1) — daran aendert eine
+    lokal liegende MD nichts. Die Sperre aus `#146` muss den neuen Weg
+    ueberleben, sonst bietet der Screen einen Start an, den `run_pinned()`
+    zwar ausfuehrte, den das Zustandsmodell aber nicht kennt."""
+    klient = [k for k in _liste(client_slug="einmal", oneshot=True).tiles
+              if k.quelle == "CLIENT"][0]
+    assert klient.disabled == "oneshots never run locally"
+    assert klient.aktionen == frozenset()
