@@ -493,6 +493,9 @@ class Collector:
         #: Registry die Knotenliste liest — kein Poll, eine Referenz.
         self.heartbeat = heartbeat
         self._jobs: dict[str, tuple] = {}    # job_id → (status, fire)
+        #: Fingerabdruck der FREMDEN Knotenliste (m.rau/bibi#106) — nur auf
+        #: einem Knoten ohne eigene Registry in Gebrauch.
+        self._fremde_knoten_snapshot: tuple | None = None
         self._journal_max: int | None = None
         self._tails: dict[str, dict] = {}    # job_id → {run_id, path, kind, sent}
         self._nodes_snapshot: tuple | None = None
@@ -918,7 +921,50 @@ class Collector:
             n = 1
         # Zweiter, feiner Fingerabdruck im selben Takt (m.rau/bibi#143) — er
         # bedient ein anderes Ziel und darf den Header deshalb nicht anfassen.
-        return n + self._diff_scheduler_jobs()
+        return n + self._diff_scheduler_jobs() + self._diff_fremde_knoten(s)
+
+    def _diff_fremde_knoten(self, status: dict | None) -> int:
+        """"nodes"-Trigger fuer einen Knoten **ohne eigene Registry**
+        (m.rau/bibi#106).
+
+        ``_diff_nodes()`` beobachtet ``self.registry`` und steigt bei ``None``
+        sofort aus — die Registry gibt es nur mit ``scheduler``-Rolle. Ein
+        Client feuert deshalb nie ein ``nodes``-Ereignis, und sein Nodes-Screen
+        steht still. Das ist genau dort der Fall, wo man ihn ansieht: auf dem
+        Scheduler entstuenden die Ereignisse, aber der hat seit dem 2026-08-04
+        kein FE mehr.
+
+        **Derselbe Schluss war fuer den Header schon gezogen** — siehe den
+        Docstring darueber: die lokalen Quellen aendern sich auf einem Client
+        nie. Fuer den Nodes-Screen blieb er aus.
+
+        Der Abruf ist ohnehin da; hier wird nur ein zweiter, eigener
+        Fingerabdruck darueber gelegt. **Eigen, nicht mitgezaehlt im
+        Header-Snapshot**: ein Heartbeat alle 10-30s je Knoten ist fuer die
+        "vor Xs"-Anzeigen dieses Screens die gewuenschte Frequenz und fuer den
+        Header Laerm — der haengt an einem git-Aufruf. Dieselbe Bauweise wie
+        ``_diff_scheduler_jobs()``.
+
+        Auf einem Scheduler laeuft das leer: dort feuert ``_diff_nodes()``
+        bereits, und ein zweites Ereignis je Heartbeat waere ein doppelter
+        Refetch.
+        """
+        if self.registry is not None:
+            return 0
+        if status is None:
+            snap: tuple | None = None
+        else:
+            snap = tuple(sorted(
+                (w.get("worker"), w.get("node_id"), w.get("last_beat"),
+                 w.get("stale"), w.get("git_status"), w.get("git_user"),
+                 w.get("engine"))
+                for w in (status.get("workers") or []) if isinstance(w, dict)))
+        changed = self._primed and snap != self._fremde_knoten_snapshot
+        self._fremde_knoten_snapshot = snap
+        if changed:
+            self.bus.publish_state("nodes")
+            return 1
+        return 0
 
     def _fetch_scheduler_jobs(self) -> list[dict] | None:
         """Job-Zeilen des konfigurierten Schedulers, oder ``None``.

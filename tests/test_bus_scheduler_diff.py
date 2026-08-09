@@ -62,7 +62,7 @@ def test_a_change_at_the_scheduler_publishes_feedstatus():
     _tick(c)          # erster Abruf: Fingerabdruck merken
     bus.published.clear()
     _tick(c)          # zweiter Client dazugekommen
-    assert bus.published == ["feedstatus"]
+    assert "feedstatus" in bus.published
 
 
 def test_no_change_publishes_nothing():
@@ -92,7 +92,10 @@ def test_the_fingerprint_covers_what_the_header_shows():
         _tick(c)
         bus.published.clear()
         _tick(c)
-        assert bus.published == ["feedstatus"], f"{feld} fehlt im Fingerabdruck"
+        # `in`, nicht `==`: eine Aenderung an `workers` bedient seit
+        # m.rau/bibi#106 zwei Ziele — den Header (Anzahl) und den Nodes-Screen
+        # (Inhalt). Beide sind richtig, und der Test prueft hier den Header.
+        assert "feedstatus" in bus.published, f"{feld} fehlt im Fingerabdruck"
 
     geaendert = dict(basis)
     geaendert["job_stats"] = {"counts": {"complete": 2}, "next_due_at": 10.0}
@@ -111,7 +114,7 @@ def test_an_unreachable_scheduler_is_a_change_too():
     _tick(c)
     bus.published.clear()
     _tick(c)
-    assert bus.published == ["feedstatus"]
+    assert "feedstatus" in bus.published
 
 
 def test_a_node_without_scheduler_url_does_not_poll():
@@ -201,7 +204,7 @@ def test_a_new_heartbeat_publishes_feedstatus():
     bus.published.clear()
     hb.last_at = 115.0          # der nächste Schlag, 15 s später
     assert c._diff_heartbeat() == 1
-    assert bus.published == ["feedstatus"]
+    assert "feedstatus" in bus.published
 
 
 def test_an_unchanged_heartbeat_stays_quiet():
@@ -401,3 +404,76 @@ def test_without_a_live_subscription_the_poll_still_runs():
     c._sched_jobs_snapshot = {"a": ("pending", 1)}
     assert c._diff_scheduler_jobs() > 0
     assert "live:a" in bus.published
+
+
+# ── Der Nodes-Screen eines Clients (m.rau/bibi#106) ─────────────────────────
+
+
+def test_a_client_publishes_nodes_when_the_federation_changes():
+    """**Der Rot-Schritt von `#106`.**
+
+    Beobachtung m.rau: *„Nodes Heartbeat — warum aktualisiert der nicht auf
+    `http://127.0.0.1:53911/-/nodes`?"*
+
+    `_diff_nodes()` steigt bei `registry is None` sofort aus, und die Registry
+    gibt es nur beim Scheduler (`worker_registry = WorkerRegistry() if
+    roles.scheduler else None`). **Ein Client feuert deshalb nie ein
+    `nodes`-Ereignis** — und der Screen steht genau dort still, wo man ihn
+    ansieht: auf `sarasate:8780` entstünden die Ereignisse, aber dort gibt es
+    seit dem 2026-08-04 kein FE mehr.
+
+    **Derselbe Schluss war für den Header schon gezogen worden.**
+    `_diff_scheduler()`s eigener Docstring sagt: *„`_diff_nodes()` und
+    `_diff_flags()` sehen ihn nicht: sie beobachten die lokale Registry und
+    die lokalen Flags, und auf einem reinen Client ändert sich dort nie
+    etwas."* Für den Nodes-Screen wurde er nicht gezogen.
+
+    Der Abruf ist ohnehin da — `_diff_scheduler()` holt `/-/status` samt
+    `workers`. Bisher zählte es davon nur die **Anzahl**; ein Knoten, der
+    `stale` wird oder seinen Git-Status ändert, blieb unsichtbar.
+    """
+    bus = _Bus()
+    c = _collector(bus, [
+        {"workers": [{"worker": "a", "node_id": "1", "last_beat": 10.0,
+                      "stale": False, "git_status": "clean"}],
+         "job_stats": {"counts": {}}},
+        {"workers": [{"worker": "a", "node_id": "1", "last_beat": 20.0,
+                      "stale": False, "git_status": "clean"}],
+         "job_stats": {"counts": {}}},
+    ])
+
+    _tick(c)
+    bus.published.clear()
+    _tick(c)
+
+    assert "nodes" in bus.published, (
+        "ein Client meldet den Knotenwechsel nicht — sein Nodes-Screen "
+        "aktualisiert nie (#106)")
+
+
+def test_the_header_stays_quiet_when_only_a_heartbeat_ticks():
+    """Die Gegenprobe, und sie ist der Grund für den zweiten Fingerabdruck.
+
+    Ein Heartbeat alle 10–30 s je Knoten ist genau die gewünschte Frequenz für
+    die „vor Xs"-Anzeigen im Nodes-Screen — für den **Header** wäre sie
+    Lärm: der hängt an einem git-Aufruf, und `_diff_scheduler()`s Docstring
+    warnt ausdrücklich davor, ihn „bei jeder Kleinigkeit dreckig" zu machen.
+
+    Beide Ziele im selben Takt, aber mit eigenem Fingerabdruck — dieselbe
+    Bauweise wie `_diff_scheduler_jobs()` (m.rau/bibi#143).
+    """
+    bus = _Bus()
+    c = _collector(bus, [
+        {"workers": [{"worker": "a", "node_id": "1", "last_beat": 10.0}],
+         "job_stats": {"counts": {}}},
+        {"workers": [{"worker": "a", "node_id": "1", "last_beat": 20.0}],
+         "job_stats": {"counts": {}}},
+    ])
+
+    _tick(c)
+    bus.published.clear()
+    _tick(c)
+
+    assert "feedstatus" not in bus.published, (
+        "ein reiner Heartbeat-Tick macht den Header dreckig — er haengt an "
+        "einem git-Aufruf")
