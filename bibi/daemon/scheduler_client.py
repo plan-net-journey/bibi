@@ -68,6 +68,9 @@ class LocalScheduler:
                  engine_tree: str | None = None,
                  session: bool | None = None,
                  git_commit: str | None = None,
+                 # m.rau/bibi#74: ob dieser Knoten seine Arbeit loswird.
+                 sync_conflict: bool | None = None,
+                 auto_sync: bool | None = None,
                  bootstrap_token: str | None = None) -> dict | None:
         return None  # Single-Node: keine Anmeldung, kein Bundle zu holen
 
@@ -122,6 +125,9 @@ class RemoteScheduler:
                  engine_tree: str | None = None,
                  session: bool | None = None,
                  git_commit: str | None = None,
+                 # m.rau/bibi#74: ob dieser Knoten seine Arbeit loswird.
+                 sync_conflict: bool | None = None,
+                 auto_sync: bool | None = None,
                  bootstrap_token: str | None = None) -> dict | None:
         # PLAN-32 Stufe 32.1/32.2: liefert jetzt die volle Host-Antwort zurück
         # (approval_status-Nebeneffekte + config_version/config_bundle) —
@@ -141,6 +147,11 @@ class RemoteScheduler:
             "engine_tree": engine_tree,
             # m.rau/bibi#44: Sitzungs-Daemon (kein Supervisor) oder Unit.
             "session": session,
+            # m.rau/bibi#74: ob dieser Knoten seine Arbeit ueberhaupt loswird.
+            # Ohne diese beiden Felder konnte ein blockierter Synchronizer
+            # seinen Zustand niemandem mitteilen.
+            "sync_conflict": sync_conflict,
+            "auto_sync": auto_sync,
             # m.rau/bibi#141: nur im allerersten Heartbeat dieses Knotens
             # gesetzt. Im Body und nicht in der URL — eine URL landet in
             # Bookmarks, Logs und Referrern.
