@@ -2422,7 +2422,12 @@ def _local_job_meta_line(local: dict, *, public_host: str = "localhost",
     ``app_port``, unabhängig vom ersten Lauf). ``include_app_link=False``
     (vom Aufrufer gesetzt, sobald ``job`` nicht ``None`` ist) verhindert die
     doppelte Anzeige, wenn ``_live_panel()`` den Link ohnehin schon zeigt."""
-    kind = _e(_effective_sched_type(local))
+    # `_jobs_type_cell()` statt `_effective_sched_type()` (#96): letzteres
+    # ruft `models.effective_kind()` **ohne** `app_port` und schrieb deshalb
+    # `job` — zwei Zeilen weiter unten liest derselbe Block `app_port` fuer
+    # den "Open app →"-Link. Ein Codeblock, der weiss, dass es eine App ist,
+    # und trotzdem `job` schreibt. Nicht escapen: die Zelle liefert Markup.
+    kind = _jobs_type_cell(local, public_host)
     trigger = _e(local.get("schedule") or local.get("at") or "—")
     cls, git_label = _GIT_STATUS_LABEL.get(local.get("git_status", "clean"),
                                            ("chip", _e(str(local.get("git_status", "—")))))
@@ -4020,7 +4025,7 @@ _LEER = {
 }
 
 
-def _jobs_zeile(row, now: float) -> str:
+def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
     """Eine Zeile: ein Slug, zwei Zustandsblöcke."""
     from bibi.schedule.models import job_uid
 
@@ -4042,8 +4047,13 @@ def _jobs_zeile(row, now: float) -> str:
         # `@` = Oneshot, ein `next` daneben = Rhythmus, keins von beidem =
         # adhoc. Genau daran haengt der Unterschied zwischen „Gruppierung
         # entfernen" und „Gruppierung ausblenden".
+        # Der Typ kommt aus `_jobs_type_cell()`, nicht aus `display_kind()`
+        # direkt (#96): ein App-Job traegt seinen Link, und zwar hier zuerst
+        # ("Eigentlich schon auf der Jobs Seite", m.rau 2026-08-09). Die Zelle
+        # war gebaut und hiess in ihrem Docstring "nur fuer die Jobs-Tabelle" —
+        # genau dort rief sie seit dem v5-Umbau niemand mehr auf.
         f'<td>{"@" if row.oneshot else ""}'
-        f'{models.display_kind(row.spec.get("payload"), row.spec.get("app_port"))}</td>'
+        f'{_jobs_type_cell(row.spec, public_host)}</td>'
         # Client zuerst (m.rau/bibi#147) — dieselbe Ordnung wie im Header und in
         # den Kacheln des Job-Details. `status` heisst dieses Feld in der
         # lokalen Job-DB; in den Scheduler-Zeilen heisst es `row_status` (live
@@ -4110,7 +4120,7 @@ def _sort_kopf(schluessel: str, label: str, sort: str | None, richtung: str) -> 
 def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
                 status: list[str] | None = None, journal: list[str] | None = None,
                 sort: str | None = None, direction: str = "asc",
-                group: bool = True) -> str:
+                group: bool = True, public_host: str = "localhost") -> str:
     """Die drei Bänder mit ihren Zeilen — oder eine Liste ohne Unterteilung.
 
     Alle drei stehen immer da, auch leer: sonst verschöbe sich das Layout je
@@ -4206,7 +4216,7 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
     if not group:
         # Eine Liste ohne Unterteilung. Die Sortierung wirkt damit über alles,
         # statt innerhalb jedes Bandes — genau der Zweck des Schalters.
-        zeilen = "".join(_jobs_zeile(r, now) for r in rows)
+        zeilen = "".join(_jobs_zeile(r, now, public_host=public_host) for r in rows)
         return f'{leiste}<table class="jobs">{kopf}<tbody>{zeilen}</tbody></table>'
 
     teile = []
@@ -4222,7 +4232,7 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
             f'<span class="muted">{len(drin)}</span>{eigene}</td></tr>'
         )
         if drin:
-            teile.extend(_jobs_zeile(r, now) for r in drin)
+            teile.extend(_jobs_zeile(r, now, public_host=public_host) for r in drin)
         else:
             teile.append(f'<tr class="leer-band"><td colspan="8">— {_LEER[seg]}</td></tr>')
 
@@ -4339,7 +4349,7 @@ def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
                        status: list[str] | None = None,
                        journal: list[str] | None = None,
                        sort: str | None = None, direction: str = "asc",
-                       group: bool = True) -> str:
+                       group: bool = True, public_host: str = "localhost") -> str:
     """Die Bänder **samt ihrem Bus-Wrapper** — das Nachlade-Ziel des Bus.
 
     Der Wrapper gehört ins Fragment, nicht nur in die Seite: ``_EVENTS_JS``
@@ -4367,7 +4377,8 @@ def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
                            direction=direction, group=group)
         + '">'
         + jobs_screen(rows, now, typ=typ, status=status, journal=journal,
-                      sort=sort, direction=direction, group=group)
+                      sort=sort, direction=direction, group=group,
+                      public_host=public_host)
         + "</div>"
     )
 
@@ -4379,7 +4390,7 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
                  typ: list[str] | None = None, status: list[str] | None = None,
                  journal: list[str] | None = None,
                  sort: str | None = None, direction: str = "asc",
-                 group: bool = True) -> str:
+                 group: bool = True, public_host: str = "localhost") -> str:
     """Die Jobs-Seite: Hülle plus die drei Bänder.
 
     Getrennt von :func:`jobs_screen`, weil die Bänder als Fragment nachgeladen
@@ -4401,7 +4412,7 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         # `hx-trigger="bibiJobsChanged"` ist entfallen: das Ereignis hat nie
         # jemand gefeuert (einzige Fundstelle im Repo war der Trigger selbst),
         # und mit `hx-swap="innerHTML"` widersprach es dem `outerHTML` des Bus.
-        f'{jobs_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group)}'
+        f'{jobs_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group, public_host=public_host)}'
         # Der Empfaenger zur Anmeldung darueber (m.rau/bibi#153): `data-bus`
         # allein bewirkt nichts, den Strom baut ausschliesslich `_EVENTS_JS`
         # auf. Beim Neubau der v5-Seiten blieb es aus — als einzige Screens.
@@ -4943,7 +4954,13 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
     from bibi.schedule.models import job_uid as _uid
 
     trigger = spec.get("schedule") or spec.get("at_iso") or "—"
-    typ = spec.get("kind") or "job"
+    # `display_kind()`, nicht `spec["kind"]` (#96, vierte Fundstelle): `kind`
+    # ist seit PLAN-10 (Unified Job Model) **immer** `"job"` und traegt keine
+    # Information mehr — s. `_effective_sched_type()`. Die Seite schrieb
+    # deshalb `job` direkt neben den `[APP]`-Link, den sie aus demselben Spec
+    # gerade gebaut hatte. Der Port bleibt dem CTA vorbehalten: zwei Links auf
+    # dieselbe Adresse waeren eine Doppelung, kein Gewinn.
+    typ = models.display_kind(spec.get("payload"), spec.get("app_port"))
     rel = f' <span class="rel">({_e(beziehung)})</span>' if beziehung else ""
     # Der Weg zum Dienst gehört in den Kopf und nicht in eine Kachel
     # (m.rau/bibi#145): `app_port` steht im MD-Frontmatter und gilt für den

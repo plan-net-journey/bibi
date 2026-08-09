@@ -1265,6 +1265,7 @@ def add_controller_routes(
         """
         import time as _t
 
+        from bibi import config
         from bibi.controller import jobs_view
         _sched = _scheduler_status()
         jetzt = _t.time()
@@ -1284,7 +1285,8 @@ def add_controller_routes(
             zeilen, now=jetzt, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), scheduler=_sched[0], scheduler_stale_since=_sched[1],
             typ=v["typ"], status=v["status"], journal=v["journal"],
-            sort=v["sort"], direction=v["direction"], group=v["group"]))
+            sort=v["sort"], direction=v["direction"], group=v["group"],
+            public_host=config.public_host()))
         _merke_jobs_view(resp, v)
         return resp
 
@@ -1497,6 +1499,7 @@ def add_controller_routes(
         """
         import time as _t
 
+        from bibi import config
         from bibi.controller import jobs_view
         jetzt = _t.time()
         historie = _journal_for_rows()
@@ -1515,7 +1518,7 @@ def add_controller_routes(
         resp = HTMLResponse(render.jobs_list_fragment(
             zeilen, jetzt, typ=v["typ"], status=v["status"],
             journal=v["journal"], sort=v["sort"], direction=v["direction"],
-            group=v["group"]))
+            group=v["group"], public_host=config.public_host()))
         # **Auch hier merken** (#83). Bis dahin las diese Route den Cookie und
         # schrieb ihn nie — und ein Filter-Klick geht auf genau sie. Die Wahl
         # ueberlebte damit jeden Bus-Refetch (dafuer traegt die Refetch-URL
