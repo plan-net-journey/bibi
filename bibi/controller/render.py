@@ -217,6 +217,15 @@ a.tab-active:hover { text-decoration: none; }
         font-size: .82rem; line-height: 1.45; white-space: pre-wrap; }
 .term .err { color: var(--red); }
 .term .thinking { color: var(--dim); font-style: italic; }
+/* Der Denkabschnitt eines claude-Laufs, einklappbar (m.rau/bibi#99). Die
+   Zusammenfassung tritt noch weiter zurueck als der Inhalt: sie ist eine
+   Handhabe, keine Aussage. */
+.term .think { display: block; }
+.term .think > summary { color: var(--faint); font-style: italic;
+                         cursor: pointer; list-style: none; }
+.term .think > summary::-webkit-details-marker { display: none; }
+.term .think > summary::before { content: "▾ "; }
+.term .think:not([open]) > summary::before { content: "▸ "; }
 .term .phase { color: var(--blue); font-style: italic; }
 .out-empty { color: var(--dim); font-size: .85rem; font-style: italic; }
 button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnline);
@@ -489,6 +498,10 @@ th.sorted { font-weight: 700; }
         border: 1px solid var(--line-hard); border-radius: .4rem; }
 .tile-head { font-weight: 700; font-size: .78rem; letter-spacing: .03em;
              color: var(--hdr-key); }
+/* Der Weg zum Dienst, an der Kachel des Knotens, der ihn faehrt
+   (m.rau/bibi#104). Normal gewichtet neben der fetten Kopfzeile: die Kachel
+   sagt zuerst, WO sie steht — der Link ist ein Angebot, keine Ueberschrift. */
+.tile-app { font-weight: 400; margin-left: .4rem; }
 .tile-state { font-family: ui-monospace, monospace; font-size: .85rem; }
 /* Gesperrte Kachel (m.rau/bibi#146): sichtbar, aber erkennbar nicht bedienbar
    — dieselbe Behandlung wie der offline-Header, der gedimmt wird und seine
@@ -593,10 +606,6 @@ th.sorted { font-weight: 700; }
 .more { display: flex; justify-content: flex-start; gap: .5rem; margin: .8rem 0 0; }
 
 """
-
-
-def _plural(n: int, sing: str, plur: str) -> str:
-    return sing if n == 1 else plur
 
 
 def _ago(ts: float | None, now: float) -> str:
@@ -1214,11 +1223,13 @@ _RESOLUTION_LABEL = {1440: "24h/1m", 480: "8h/1w", 180: "3h/3d", 120: "2h/2d",
 
 
 
-def _effective_sched_type(s: dict) -> str:
-    """Anzeige-/Filter-Typ ableiten — ``kind`` ist seit PLAN-10 (Unified Job
-    Model) immer ``"job"`` und trägt keine Information mehr (§5.3). Delegiert an
-    ``models.effective_kind`` (PLAN-12 Stufe 12.0 — einzige Quelle für alle Aufrufer)."""
-    return models.effective_kind(s.get("payload"))
+# Hier stand `_effective_sched_type()` — ein Ein-Zeilen-Delegator an
+# `models.effective_kind()`. Sein letzter Aufrufer war `_local_job_meta_line()`,
+# und der ist mit `#96` auf `_jobs_type_cell()` umgestellt worden, weil er den
+# `app_port` mitlesen muss. Damit war die Funktion aufrufer-los — eigene
+# Hinterlassenschaft desselben Tages, entfernt mit `#100`. Wer den Typ braucht,
+# ruft `models.effective_kind()` direkt; wer ihn anzeigen will,
+# `models.display_kind()` (mit `app_port`) oder `_jobs_type_cell()`.
 
 
 # Hier standen `_SORT_KEYS` und `sort_rows()` (m.rau/bibi#66) — der
@@ -2222,22 +2233,32 @@ _GIT_STATUS_LABEL = {
 _SPARK_W, _SPARK_H = 72, 20
 
 
-def _jobs_type_cell(row: dict, public_host: str) -> str:
-    """Type-Zelle nur für die Jobs-Tabelle (PLAN-29 Befund 2, User-Fund:
-    "Type, bei Apps mit Port und als Link (auch wenn die App down ist)").
+def _jobs_type_cell(row: dict, public_host: str, *, link: bool = True) -> str:
+    """Type-Zelle: ``job``/``claude``, bei Apps ``app :PORT`` (PLAN-29 Befund 2,
+    User-Fund: "Type, bei Apps mit Port").
+
     Bewusst **eigenständig** von ``_effective_sched_type()``/
     ``models.effective_kind()`` — PLAN-25 Befund 7 entfernte "app" dort
     absichtlich aus Schedules-Übersicht/Filter (User-Entscheidung: "Jobs mit
-    Port und Prefix sollen einfach als Jobs erscheinen"). Hier, in der
-    separaten Jobs-Tabelle, soll ein App-Job weiterhin als "app" + Link
-    erkennbar sein — rührt an der PLAN-25-Vereinfachung nicht. Der Link steht
-    unbedingt (kein Live-Check), auch wenn die App gerade nicht läuft."""
+    Port und Prefix sollen einfach als Jobs erscheinen"). Hier soll ein
+    App-Job weiterhin als "app" erkennbar sein — rührt an der
+    PLAN-25-Vereinfachung nicht.
+
+    **``link=False`` gibt denselben Text ohne Adresse** (m.rau/bibi#104). Der
+    Port ist eine Job-Eigenschaft und darf überall stehen; die **Adresse** ist
+    es nicht — sie braucht den Knoten, der die App fährt, und ``public_host``
+    ist der des Betrachters. Wo der ausführende Knoten nicht bekannt ist (die
+    Jobs-Tabelle führt zwei Seiten in einer Zeile), gehört deshalb der Port
+    hin und der Link nicht. Verlinkt wird in den Slot-Kacheln, die ihren
+    Knoten über ``Tile.host`` kennen."""
     app_port = row.get("app_port")
     kind = models.display_kind(row.get("payload"), app_port)
-    if kind == "app":
-        href = _e(f"http://{public_host}:{app_port}/")
-        return f'<a href="{href}" target="_blank" rel="noopener">app :{app_port}</a>'
-    return kind
+    if kind != "app":
+        return kind
+    if not link:
+        return f"app :{_e(str(app_port))}"
+    href = _e(f"http://{public_host}:{app_port}/")
+    return f'<a href="{href}" target="_blank" rel="noopener">app :{app_port}</a>'
 
 
 def _jobs_row(row: dict, local_runs: dict[str, dict], now: float,
@@ -2943,7 +2964,12 @@ def _event_line(e: dict) -> str:
         ts = _dt.datetime.fromtimestamp(float(e["t"])).strftime("%H:%M:%S")
     except Exception:
         ts = "--:--:--"
-    line = _e(_strip_ansi(e.get("line", "")))
+    # `line` **oder** `text`: die Formatter-Ausgabe nennt das Feld `line`, die
+    # Host-Antwort aus `/-/journal/{id}/output` `text`. Die abgeloeste
+    # Roh-Ausgabe der v5-Route las beide (`e.get("text") or e.get("line")`) —
+    # beim Anschluss an den Formatter (m.rau/bibi#99) waere die zweite Form
+    # sonst still auf leere Zeilen gefallen.
+    line = _e(_strip_ansi(e.get("line") or e.get("text") or ""))
     s = e.get("s")
     # "phase" (User-Feedback 2026-07-03): Worker-/Wrapper-Startup-Zeilen (Worktree,
     # Container, Prozess-Spawn) — optisch als System-Info abgesetzt, kein Job-Output.
@@ -2966,8 +2992,52 @@ def output_block(events: list[dict], kind: str) -> str:
     unterscheidet nicht mehr nach Job-Typ."""
     if not events:
         return '<div class="out-empty">— no output —</div>'
-    lines = "\n".join(_event_line(e) for e in _merge_deltas(events))
-    return f'<pre class="term">{lines}</pre>'
+    return f'<pre class="term">{_falte_thinking(_merge_deltas(events))}</pre>'
+
+
+def _falte_thinking(events: list[dict]) -> str:
+    """Zusammenhängendes ``thinking`` in ein ``<details>``, alles andere flach.
+
+    Vorgabe m.rau zu ``#104``s Nachbarn ``#99``: *„Streaming, zurück gesetzt,
+    **etwas** im Hintergrund · einklappbar"*. Die ersten beiden Punkte trägt
+    ``.term .thinking`` (gedimmt, kursiv) und tat es schon — sie kamen nur nie
+    an, weil die v5-Route den Formatter umging. Der dritte braucht diese
+    Klammer.
+
+    **Zusammenhängend, nicht je Zeile:** ein Denkabschnitt ist ein Gedanke und
+    keine Sammlung von Zeilen; je Zeile ein Aufklapper wäre unbedienbar. Ein
+    Block endet, sobald etwas anderes kommt — echte Ausgabe, eine Phase, ein
+    Fehler.
+
+    **Aufgeklappt (``open``), nicht zugeklappt.** Der Live-Fall und der
+    Archiv-Fall sind verschieden: während ein Lauf läuft, ist ``thinking`` oft
+    das Einzige, was sich bewegt, und eine zugeklappte Box zeigte dann nichts.
+    Für den Archiv-Fall wäre zu ohne weiteres besser — dafür müsste diese
+    Funktion aber wissen, ob der Lauf noch läuft, und das weiß sie nicht. Lieber
+    sichtbar und einklappbar als versteckt und vergessen; ``<details>`` merkt
+    sich den Zustand ohnehin nicht über einen Swap hinweg.
+    """
+    teile: list[str] = []
+    block: list[str] = []
+
+    def _schliessen() -> None:
+        if not block:
+            return
+        n = len(block)
+        teile.append(
+            f'<details class="think" open><summary>thinking '
+            f'({n} {"line" if n == 1 else "lines"})</summary>'
+            + "\n".join(block) + "</details>")
+        block.clear()
+
+    for e in events:
+        if e.get("s") == "thinking":
+            block.append(_event_line(e))
+            continue
+        _schliessen()
+        teile.append(_event_line(e))
+    _schliessen()
+    return "\n".join(teile)
 
 
 # ── Live-Output (SSE; Frontend-Plan §C.5) ────────────────────────────────────
@@ -4047,13 +4117,16 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
         # `@` = Oneshot, ein `next` daneben = Rhythmus, keins von beidem =
         # adhoc. Genau daran haengt der Unterschied zwischen „Gruppierung
         # entfernen" und „Gruppierung ausblenden".
-        # Der Typ kommt aus `_jobs_type_cell()`, nicht aus `display_kind()`
-        # direkt (#96): ein App-Job traegt seinen Link, und zwar hier zuerst
-        # ("Eigentlich schon auf der Jobs Seite", m.rau 2026-08-09). Die Zelle
-        # war gebaut und hiess in ihrem Docstring "nur fuer die Jobs-Tabelle" —
-        # genau dort rief sie seit dem v5-Umbau niemand mehr auf.
+        # Typ samt Port, aber **ohne Link** (m.rau/bibi#104). `#96` hatte hier
+        # `_jobs_type_cell()` eingesetzt und damit korrekt verlinkt — mit
+        # `public_host()`, also dem Knoten des BETRACHTERS. Im Mac-FE standen
+        # danach fuenf Links auf `localhost:91xx`, wo nichts laeuft, waehrend
+        # die Apps auf sarasate liefen: ein bestehender Fehler, vervielfacht
+        # und dadurch sichtbar geworden. Der Typ war der unstrittige Teil und
+        # bleibt; die Adresse braucht den ausfuehrenden Knoten und lebt in den
+        # Slot-Kacheln, die ihn ueber `Tile.host` kennen.
         f'<td>{"@" if row.oneshot else ""}'
-        f'{_jobs_type_cell(row.spec, public_host)}</td>'
+        f'{_jobs_type_cell(row.spec, public_host, link=False)}</td>'
         # Client zuerst (m.rau/bibi#147) — dieselbe Ordnung wie im Header und in
         # den Kacheln des Job-Details. `status` heisst dieses Feld in der
         # lokalen Job-DB; in den Scheduler-Zeilen heisst es `row_status` (live
@@ -4444,16 +4517,11 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
 _JOB_DETAIL_JS = """
 (() => {
   const SEITE = {S: 'scheduler', C: 'client'};
-  document.addEventListener('click', async (ev) => {
-    const show = ev.target.closest('.run-show');
-    if (!show) return;
-    const zeile = document.getElementById('run-' + show.dataset.run);
-    if (!zeile) return;
-    if (!zeile.hidden) { zeile.hidden = true; show.textContent = '[show]'; return; }
-    zeile.hidden = false;
-    show.textContent = '[hide]';
+  // Der Ladevorgang als eigene Funktion, weil ihn zwei Stellen brauchen: der
+  // Klick und der Retter nach einem Swap (m.rau/bibi#105).
+  const ladeOutput = async (zeile, show) => {
     const feld = zeile.querySelector('.out-body');
-    if (feld.dataset.geladen) return;
+    if (!feld || feld.dataset.geladen) return;
     feld.textContent = 'loading …';
     // Der Pfad ohne Query: `?days=90` gehoert zur Liste, nicht zum Lauf.
     const basis = location.pathname;
@@ -4462,11 +4530,27 @@ _JOB_DETAIL_JS = """
       : `${basis}/runs/${show.dataset.jid}/output`;
     try {
       const r = await fetch(ziel);
-      feld.textContent = r.ok ? await r.text() : 'output unavailable';
+      // `innerHTML`, nicht `textContent` (m.rau/bibi#99): die Antwort ist seit
+      // dem Formatter-Anschluss ausgezeichnetes Markup — Uhrzeit-Praefix,
+      // err/thinking-Klassen, der einklappbare Denkabschnitt. Als Text
+      // eingesetzt staende das Markup lesbar in der Box. Der Server escapt
+      // jede Zeile ueber `_e()`, bevor er sie einsetzt.
+      if (r.ok) feld.innerHTML = await r.text();
+      else feld.textContent = 'output unavailable';
       // Ein laufender Lauf ist noch nicht fertig — sein Output darf beim
       // naechsten Aufklappen nicht aus dem Cache kommen.
       if (r.ok && !show.dataset.slot) feld.dataset.geladen = '1';
     } catch (e) { feld.textContent = 'output unavailable'; }
+  };
+  document.addEventListener('click', async (ev) => {
+    const show = ev.target.closest('.run-show');
+    if (!show) return;
+    const zeile = document.getElementById('run-' + show.dataset.run);
+    if (!zeile) return;
+    if (!zeile.hidden) { zeile.hidden = true; show.textContent = '[show]'; return; }
+    zeile.hidden = false;
+    show.textContent = '[hide]';
+    await ladeOutput(zeile, show);
   });
   // Der Faltzustand ueberlebt einen Bus-Refetch (#44).
   //
@@ -4492,7 +4576,11 @@ _JOB_DETAIL_JS = """
     t.querySelectorAll('tr.out:not([hidden])').forEach((z) => {
       const feld = z.querySelector('.out-body');
       offen.push({run: z.id.slice(4),
-                  text: feld ? feld.textContent : '',
+                  // `innerHTML`, nicht `textContent`: die Antwort ist seit
+                  // #99 ausgezeichnetes Markup (Uhrzeit, thinking-Klassen,
+                  // der einklappbare Denkabschnitt). Als Text gesichert kaeme
+                  // er als Text zurueck und das Markup staende lesbar da.
+                  html: feld ? feld.innerHTML : '',
                   geladen: !!(feld && feld.dataset.geladen)});
     });
   });
@@ -4503,13 +4591,25 @@ _JOB_DETAIL_JS = """
       if (!z) continue;           // der Lauf ist aus dem Zeitfenster gefallen
       z.hidden = false;
       const feld = z.querySelector('.out-body');
-      if (feld) {
-        // Den Text mitretten statt neu zu holen: er ist schon da, und ein
-        // Roundtrip je Refetch waere bei einem laufenden Job der Sekundentakt.
-        feld.textContent = s.text;
-        if (s.geladen) feld.dataset.geladen = '1';
-      }
       const b = document.querySelector('.run-show[data-run="' + s.run + '"]');
+      if (feld) {
+        // **Zwei Faelle, und bis #105 wurden sie gleich behandelt.**
+        //
+        // Ist der Lauf archiviert (`geladen`), ist sein Output vollstaendig
+        // und unveraenderlich — der gerettete Stand ist der richtige, und ihn
+        // neu zu holen waere ein Roundtrip je Refetch ohne Gewinn. Das war
+        // die urspruengliche Begruendung und sie gilt hier weiter.
+        //
+        // Ist er es **nicht**, laeuft er noch — und dann ist der gerettete
+        // Stand per Definition unfertig. Genau hier lag der Fehler: wird der
+        // Lauf terminal, feuert der Bus, `#runs` wird getauscht, und der alte
+        // Text kam zurueck. Danach korrigiert ihn nichts mehr, weil kein
+        // weiteres Ereignis folgt. Sichtbar als: Status `complete`, letzte
+        // Zeile fehlt, erst ein Reload holt sie (Befund m.rau, 2026-08-09).
+        feld.innerHTML = s.html;
+        if (s.geladen) { feld.dataset.geladen = '1'; }
+        else if (b) { ladeOutput(z, b); }
+      }
       if (b) b.textContent = '[hide]';
     }
     offen = null;
@@ -4616,6 +4716,19 @@ def _slot_kachel(kachel, *, now: float) -> str:
     ziel = "scheduler" if kachel.quelle == "SCHEDULER" else "client"
     client = ziel == "client"
     titel = kachel.quelle + (f" &middot; {_e(kachel.host)}" if kachel.host else "")
+    # Der Weg zum Dienst gehoert an die Kachel (m.rau/bibi#104, Entscheidung
+    # 2026-08-09) und **kehrt #145 um**, das ihn ausdruecklich in den Kopf
+    # gelegt hatte. Die Begruendung dort war richtig und ist es noch: `app_port`
+    # gilt fuer den Job, nicht fuer einen Lauf. Sie uebersah nur, dass die
+    # ADRESSE nicht dem Job gehoert — derselbe Port meint auf zwei Knoten zwei
+    # Dienste, und welcher gemeint ist, weiss ausschliesslich die Kachel ueber
+    # ihren `host`. Der Kopf hatte dafuer nur `config.public_host()`, also den
+    # Knoten des BETRACHTERS: im Mac-FE zeigte der Link auf `localhost:9110`,
+    # wo nichts laeuft, waehrend die App auf sarasate lief.
+    app = (f' <a class="tile-app" href="http://{_e(str(kachel.host))}:'
+           f'{_e(str(kachel.app_port))}/" target="_blank" rel="noopener">'
+           f'app :{_e(str(kachel.app_port))}</a>'
+           if getattr(kachel, "app_port", None) and kachel.host else "")
     if kachel.disabled:
         # Gesperrt, nicht verborgen (m.rau/bibi#146). Der Grund steht **im**
         # Text und nicht im `title`: auf einem Touch-Gerät gibt es kein Hover,
@@ -4624,7 +4737,7 @@ def _slot_kachel(kachel, *, now: float) -> str:
         # ein Knopf, der nur grau aussieht und trotzdem postet, verspricht eine
         # Wirkung, die es nicht gibt.
         return (
-            f'<div class="tile tile-off"><div class="tile-head">{titel}</div>'
+            f'<div class="tile tile-off"><div class="tile-head">{titel}{app}</div>'
             f'<div class="tile-state">{_e(kachel.disabled)}</div>'
             "</div>"
         )
@@ -4666,7 +4779,7 @@ def _slot_kachel(kachel, *, now: float) -> str:
             teile.append(_human_duration((beendet if beendet is not None else now) - begonnen))
         zustand = " &middot; ".join(teile)
     return (
-        f'<div class="tile"><div class="tile-head">{titel}</div>'
+        f'<div class="tile"><div class="tile-head">{titel}{app}</div>'
         f'<div class="tile-state">{zustand}</div>'
         f'{_slot_leiste(kachel.aktionen, job_id=kachel.slot.get("id"), ziel=ziel, rebuild=_ist_container(kachel.slot))}'
         "</div>"
@@ -4968,9 +5081,16 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
     # der falsche Ort für etwas, das auch ohne jeden Lauf gilt. Der Screen
     # führte den Link bisher überhaupt nicht; die Bedingung, die das Ticket
     # verdächtigte, sitzt im alten Detail unter `/-/ui/jobs/detail/…`.
-    app_port = spec.get("app_port")
-    app_cta = (f'<a class="cta" href="http://{_e(str(public_host))}:{_e(str(app_port))}/" '
-               f'target="_blank" rel="noopener">[APP]</a>') if app_port else ""
+    # **Kein `[APP]`-CTA mehr im Kopf** (m.rau/bibi#104). `#145` hatte ihn
+    # hierher gelegt, mit der richtigen Begruendung, dass `app_port` fuer den
+    # Job gilt und nicht fuer einen Lauf. Uebersehen wurde, dass das fuer den
+    # PORT stimmt und fuer die ADRESSE nicht: derselbe Port meint auf zwei
+    # Knoten zwei Dienste. Der Kopf hatte dafuer nur `config.public_host()`,
+    # den Knoten des Betrachters — im Mac-FE zeigte der Link auf
+    # `localhost:9110`, wo nichts lief. Die Slot-Kacheln kennen ihren Knoten
+    # ueber `Tile.host` und tragen den Link jetzt; ein zweiter, falscher
+    # daneben waere schlechter als keiner.
+    app_cta = ""
     kopf = (
         '<div class="jd-head">'
         '<a class="back" href="/-/jobs">&#9666; jobs</a>'
@@ -5034,16 +5154,10 @@ _ATTR_FELDER = ("schedule", "at", "attempts", "backoff",
                 "wall_time", "hitl_timeout")
 
 
-def _load_more(ziel: str, offset: int, limit: int) -> str:
-    """Der Nachlade-Knopf. Er erscheint **nur**, wenn es wirklich mehr gibt.
-
-    Ein Knopf, der nichts mehr lädt, ist schlimmer als keiner — er sieht aus
-    wie ein Weg. Genau die Unterscheidung, die §6 auch für die Reichweite
-    verlangt: was fehlt, ist weggepruned und nicht bloß ungeladen.
-    """
-    trenn = "&" if "?" in ziel else "?"
-    return (f'<div class="more"><a class="cta" '
-            f'href="{ziel}{trenn}limit={limit}&offset={offset}">[ LOAD MORE ]</a></div>')
+# Hier stand `_load_more()` — der Nachlade-Knopf der bibi4-Listen. Die
+# v5-Lauf-Liste laedt ueber `reach`/`weiter` nach (FE §5.3) und rendert ihren
+# Knopf selbst; dieser hier hatte seit dem Umbau keinen Aufrufer mehr und auch
+# keinen Test. Entfernt mit `#100`.
 
 
 def job_attrs_page_v5(*, slug: str, spec: dict, defaults: dict, now: float,

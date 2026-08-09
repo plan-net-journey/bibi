@@ -231,3 +231,66 @@ def test_the_box_stream_survives_a_silent_stretch(fabrik, seite):
         "Durchreicher wirft die Verbindung weg, bevor der Output-Strom pingt "
         f"(#78). {jetzt}")
 
+
+
+#: Ein Lauf, dessen letzte Ausgabe unmittelbar vor dem Ende kommt. Genau diese
+#: Zeile fehlte m.rau am 2026-08-09 im FE, während der Status schon `complete`
+#: sagte — sie erschien erst nach einem manuellen Reload.
+_LAUF_MIT_SCHLUSSWORT = "job: bash -c 'echo ANFANG; sleep 2; echo ENDE'"
+
+
+def test_the_last_output_line_arrives_without_a_reload(fabrik, seite):
+    """**Der Rot-Schritt von `#105`.**
+
+    Beobachtung m.rau: *„Output wird bei lokalem Client immer noch nicht
+    aktualisiert! … Status Complete, ohne dass ich im Output `ENDE` sehe. Beim
+    Reload kommt das."*
+
+    **Es ist kein Race, sondern eine Entscheidung, die einen Fall nicht bedacht
+    hat.** Der Faltzustand-Retter aus `#44` sichert den Text der offenen Box vor
+    einem `#runs`-Swap und schreibt ihn danach zurück. Sein eigener Kommentar
+    nennt den Grund:
+
+        Den Text mitretten statt neu zu holen: er ist schon da, und ein
+        Roundtrip je Refetch waere bei einem laufenden Job der Sekundentakt.
+
+    Bei einem laufenden Job ist der Text aber **noch nicht fertig**. Wird der
+    Lauf terminal, feuert der Bus, `#runs` wird getauscht — und der Retter
+    schreibt den alten, unvollständigen Stand zurück. Danach kommt kein
+    Ereignis mehr, das ihn korrigieren könnte.
+
+    Der dritte Anlauf an dieser Stelle: `#78` hat den Strom durchgereicht,
+    `#86` die Box gebaut. Beide prüfen, **dass** etwas ankommt — keiner, dass
+    nichts fehlt, **wenn es vorbei ist**.
+    """
+    from .browserlib import paar
+    from bibi.schedule.models import job_uid
+
+    host, client = paar(fabrik, job="schluss", payload=_LAUF_MIT_SCHLUSSWORT)
+    zeilen = warte_bis(lambda: [j for j in host.get_json("/-/job")
+                                if j.get("slug") == "schluss"],
+                       frist=20, was="der Job tauchte beim Scheduler nicht auf")
+    host.post(f"/-/job/{zeilen[0]['id']}/start")
+
+    seite.goto(client.url + f"/-/jobs/{job_uid('schluss')}")
+
+    # Aufklappen, **waehrend** er laeuft — das ist die Lage, um die es geht.
+    knopf = warte_bis(lambda: seite.query_selector(".run-show"),
+                      frist=30, was="es erschien keine Lauf-Zeile")
+    knopf.click()
+    warte_bis(lambda: "ANFANG" in (seite.query_selector(".out-body").text_content() or ""),
+              frist=30, was="die Box zeigte nicht einmal den Anfang")
+
+    # Jetzt laeuft er zu Ende. Der Bus tauscht `#runs`, der Retter greift.
+    warte_bis(lambda: any(j.get("status") == "complete"
+                          for j in host.get_json("/-/job")
+                          if j.get("slug") == "schluss"),
+              frist=40, was="der Lauf wurde nie terminal")
+
+    warte_bis(
+        lambda: "ENDE" in (
+            (seite.query_selector(".out-body").text_content() or "")
+            if seite.query_selector(".out-body") else ""),
+        frist=20,
+        was="die letzte Ausgabezeile fehlt, obwohl der Lauf fertig ist — erst "
+            "ein Reload holt sie (#105)")

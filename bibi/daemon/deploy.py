@@ -190,13 +190,33 @@ def update_status(root: Path | None = None, info=None) -> dict:
     # fuer den ``upgrade_notice`` ueberhaupt existiert. Der Hinweis erlosch
     # dort, waehrend der alte Code weiterlief.
     #
-    # ``running`` bleibt als Feld und traegt jetzt, was der Name sagt: den
-    # Stand DIESES Prozesses. In einem frisch gestarteten CLI-Aufruf ist das
-    # dasselbe wie ``installed``; in einem langlebigen Daemon sein Startstand.
-    # Wer die laufende Version eines FREMDEN Prozesses braucht, findet sie in
-    # der Portdatei (``portfile.read()["engine"]``).
+    # ``running`` traegt, was der Name sagt: den Stand DIESES Prozesses.
+    #
+    # **Bis zum 2026-08-09 stand hier ``info.label()``** — dieselbe Quelle wie
+    # ``installed``, und damit tat das Feld genau das, wogegen #81 es trennen
+    # sollte (m.rau/bibi#102). Der Kommentar darueber beschrieb bereits den
+    # Startstand; der Code las die Platte, und zwar bei jedem Abruf frisch.
+    # Live: `sarasate:8780` lief seit 10:59:36 unveraendert, dazwischen ein
+    # `uv sync` — `/-/status` meldete `running: v0.7.11` und das FE den Chip
+    # `current`, waehrend der Prozess v0.7.10-Code fuhr.
+    #
+    # Die Angabe steht in der Portdatei, die der Daemon **beim Start** schreibt
+    # (``portfile.write(engine=…)``) — die einzige Stelle, an der der Startstand
+    # ueberhaupt festgehalten wird. ``upgrade_notice.pending()`` liest sie seit
+    # #81 genau dafuer; diese Funktion tat es nicht, obwohl sie den Wert an
+    # `/-/status` und den Nodes-Screen liefert.
+    #
+    # Ohne Portdatei bleibt es beim venv: in einem frisch gestarteten
+    # CLI-Aufruf ist das dasselbe, und ein fehlender Eintrag (Daemon aelter als
+    # diese Aenderung) ist kein Grund, die Auskunft ganz aufzugeben.
+    laufend = None
+    try:
+        from bibi.daemon import portfile
+        laufend = (portfile.read(root) or {}).get("engine")
+    except Exception:  # noqa: BLE001 — defensiv (§2.7): eine Auskunft, kein Tor
+        laufend = None
     out = {"expected": expected, "installed": info.label(),
-           "running": info.label(),
+           "running": laufend or info.label(),
            "needs_update": False, "verdict": "unknown"}
     if info.editable:
         out["verdict"] = "editable"

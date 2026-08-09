@@ -1263,29 +1263,88 @@ def test_every_clickable_column_survives_the_whitelist(app_with, team_repo: Path
 # ── Der App-Link in der Type-Zelle (#96) ───────────────────────────────────
 
 
-def test_an_app_row_carries_its_link_in_the_type_cell():
-    """**Der Rot-Schritt von `#96`.**
+def test_an_app_row_names_its_port_without_linking_it():
+    """`#96` hat hier einen Link eingesetzt, `#104` hat ihn wieder entfernt —
+    und beide hatten recht.
 
-    Ein App-Job stellt im FE immer seinen Link bereit — das ist der Grund, aus
-    dem der Typ `app` überhaupt wieder eingeführt wurde (m.rau, 2026-08-09:
-    "weil Apps im Frontend immer den Link bereitstellen sollen. Eigentlich
-    schon auf der Jobs Seite").
+    `#96` war richtig darin, dass der **Typ** samt Port sichtbar gehört; er
+    war seit dem v5-Umbau auf `job` zurückgefallen. Falsch war die **Adresse**:
+    sie entstand aus `public_host()`, dem Knoten des Betrachters, und zeigte
+    im Mac-FE auf `localhost:91xx`, wo nichts läuft (`#104`).
 
-    Die Fähigkeit ist gebaut und heißt `_jobs_type_cell()`. Ihr Docstring sagt
-    "nur für die Jobs-Tabelle" — genau dort ruft sie seit dem v5-Umbau
-    niemand mehr auf. `_jobs_zeile()` rendert `display_kind()` direkt: der Typ
-    stimmt, der Link blieb zurück.
+    Der Port ist eine Job-Eigenschaft und darf hier stehen. Die Adresse
+    braucht den ausführenden Knoten und lebt in den Slot-Kacheln, die ihn über
+    `Tile.host` kennen.
     """
     zeilen = _zeilen(local=[_md("app1", app_port=9100)])
     html = render.jobs_screen(zeilen, now=NOW, public_host="Mac.fritz.box")
-    assert 'href="http://Mac.fritz.box:9100/"' in html, (
-        "die Type-Zelle der Jobs-Tabelle führt keinen App-Link (#96)")
     assert "app :9100" in html, "der Port gehört sichtbar an den Typ (#96)"
+    assert "Mac.fritz.box:9100" not in html, (
+        "die Jobs-Tabelle verlinkt die App auf den Betrachter-Host (#104)")
 
 
 def test_a_plain_row_keeps_its_bare_type():
-    """Die Gegenprobe: der Link hängt an `app_port`. Ohne Port bleibt der Typ
-    ein Wort — ein Link ins Leere wäre schlechter als keiner."""
+    """Die Gegenprobe: ohne Port bleibt der Typ ein Wort."""
     zeilen = _zeilen(local=[_md("job1")])
     html = render.jobs_screen(zeilen, now=NOW, public_host="Mac.fritz.box")
     assert "Mac.fritz.box" not in html, "ein Job ohne Port bekommt keinen Link"
+    assert "app :" not in html, "ein Job ohne Port ist keine App"
+
+
+# ── Der Output eines claude-Laufs geht am Formatter vorbei (#99) ────────────
+
+
+def test_the_run_output_route_uses_the_formatter(app_with, team_repo: Path,
+                                                 seed_journal_row):
+    """**Der Rot-Schritt von `#99` auf Routen-Ebene — und der einzige, der ihn
+    findet.**
+
+    Die Bausteine sind alle gebaut und für sich grün: `format_events()`
+    typisiert die Token-Deltas, `_merge_deltas()` fügt sie zusammen,
+    `_event_line()` setzt `thinking` ab, `output_block()` verbindet die drei.
+    **`screen_job_run_output()` ruft keinen davon auf** — sie baut ihr eigenes
+    `"\\n".join(...)` über die Roh-Events.
+
+    Ein Test auf Bausteinebene hätte das nie gesehen: er prüft die Fähigkeit,
+    nicht ihren Aufruf. Genau die Konstellation aus `#95`, `#96` und `#102`.
+
+    Live am 2026-08-09 im aufgeklappten `Witz`-Lauf: `Der Benut` / `zer möchte`
+    — Umbruch mitten im Wort.
+    """
+    import json as _json
+    from bibi.daemon import job_db
+    from bibi.schedule.models import job_uid
+
+    _mit_job_md(team_repo, "w")
+    ref = "data/job/w/output.jsonl"
+    (team_repo / "data" / "job" / "w").mkdir(parents=True, exist_ok=True)
+    roh = [{"t": 1.0, "s": "out", "line": _json.dumps(
+        {"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "thinking"}}})}]
+    for i, c in enumerate(("Der Benut", "zer möchte")):
+        roh.append({"t": 2.0 + i, "s": "out", "line": _json.dumps(
+            {"type": "stream_event", "event": {
+                "type": "content_block_delta", "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": c}}})})
+    (team_repo / ref).write_text(
+        "\n".join(_json.dumps(e) for e in roh) + "\n", encoding="utf-8")
+
+    app = app_with({"roles": ["controller"]})
+    conn = job_db.connect()
+    try:
+        seed_journal_row(conn, run_id="r1", slug="w", kind="job",
+                         status="complete", exit_code=0, output_ref=ref,
+                         host="h", worker="h", started_at=1.0, finished_at=3.0,
+                         payload="claude: hi")
+        conn.commit()
+        jid = conn.execute("SELECT id FROM journal WHERE slug='w'").fetchone()["id"]
+    finally:
+        conn.close()
+
+    with TestClient(app) as c:
+        r = c.get(f"/-/jobs/{job_uid('w')}/runs/{jid}/output")
+
+    assert r.status_code == 200, r.text[:200]
+    assert "Der Benutzer möchte" in r.text, (
+        "die Route umgeht den Formatter — die Token-Deltas bleiben zerrissen (#99)")

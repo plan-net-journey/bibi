@@ -1603,6 +1603,12 @@ def add_controller_routes(
         # MD sagt dasselbe ueber `at`, aber sie fehlt bei einem geloeschten Job.
         einmalig = bool((sched_slot or {}).get("oneshot")) or any(
             md.get("slug") == slug and md.get("at") for md in _local_job_mds())
+        # Der Port fuer die Kacheln (m.rau/bibi#104): aus der MD, ersatzweise
+        # aus dem Scheduler-Slot — ein geloeschter Job hat keine MD mehr, seine
+        # Kachel aber weiterhin einen Knoten und damit eine gueltige Adresse.
+        app_port = next((md.get("app_port") for md in _local_job_mds()
+                         if md.get("slug") == slug and md.get("app_port")),
+                        None) or (sched_slot or {}).get("app_port")
         lokal_slot = None
         sched_runs: list = []
         lokal_runs: list = []
@@ -1653,6 +1659,10 @@ def add_controller_routes(
             scheduler_total=len(sched_runs), client_total=len(lokal_runs),
             scheduler_host=(_scheduler_url() or "").split("//")[-1].split(":")[0] or None,
             client_host=_status().get("host"), oneshot=einmalig,
+            # Der Port gehoert an die Kacheln, weil erst ihr `host` daneben
+            # eine Adresse ergibt (m.rau/bibi#104). Aus derselben Quelle wie
+            # `einmalig` oben — die Funktion kennt nur den Slug, nicht das Spec.
+            app_port=app_port,
             # Der Platz ohne Zeile (m.rau/bibi#87): kennt dieser Knoten die MD,
             # kann der Job hier laufen — auch wenn ihm nie jemand eine Zeile
             # angelegt hat. Nur die MD, nicht der Scheduler-Eintrag: was dort
@@ -2017,8 +2027,11 @@ def add_controller_routes(
             ereignisse = antwort.get("events") or []
             if not ereignisse:
                 return PlainTextResponse("", status_code=404)
-            return PlainTextResponse("\n".join(
-                str(e.get("text") or e.get("line") or "") for e in ereignisse))
+            # Der Host formatiert bereits (`app.py` ruft `format_events`);
+            # zusammengefuegt und ausgezeichnet wird hier — dieselbe
+            # Darstellung wie fuer einen lokalen Lauf (m.rau/bibi#99).
+            return HTMLResponse(render.output_block(
+                ereignisse, antwort.get("kind") or "job"))
         from bibi.daemon import job_db
         conn = job_db.connect()
         try:
@@ -2046,8 +2059,22 @@ def add_controller_routes(
             # Kein Output ist eine Aussage, kein Fehler: ein Job kann
             # schweigend laufen — gerade am Anfang ist das der Normalfall.
             return PlainTextResponse("(no output yet)")
-        return PlainTextResponse(
-            "\n".join(str(e.get("text") or e.get("line") or "") for e in zeilen))
+        # **Durch den Formatter, nicht daran vorbei** (m.rau/bibi#99). Hier
+        # stand ein eigenes `"\n".join(...)` ueber die Roh-Events: jeder
+        # Token-Delta wurde eine eigene Zeile, und im FE stand `Der Benut` /
+        # `zer moechte` — Umbruch mitten im Wort, dazu das rohe Stream-JSON.
+        # Alle drei Bausteine dagegen waren gebaut und wurden anderswo benutzt:
+        # `format_events()` typisiert die Deltas (`s: "thinking"`),
+        # `_merge_deltas()` fuegt sie zusammen, `_event_line()` setzt sie ab.
+        # `output_block()` verbindet die drei — dieselbe Funktion, die der
+        # Host-Screen seit jeher verwendet.
+        from bibi.daemon import output_format as _of
+        from bibi.schedule import models as _models
+        # `zeile` ist je nach Pfad ein `sqlite3.Row` — der kennt kein `.get()`.
+        _row = dict(zeile) if zeile is not None else {}
+        _kind = _models.effective_kind(_row.get("payload"))
+        return HTMLResponse(render.output_block(
+            _of.format_events(zeilen, _kind), _kind))
 
     @app.get("/-/jobs/{job_uid}/runs/{jid}/output", include_in_schema=False)
     def screen_job_run_output(request: Request, job_uid: str, jid: int):  # noqa: ARG001
@@ -2080,8 +2107,11 @@ def add_controller_routes(
             ereignisse = antwort.get("events") or []
             if not ereignisse:
                 return PlainTextResponse("", status_code=404)
-            return PlainTextResponse("\n".join(
-                str(e.get("text") or e.get("line") or "") for e in ereignisse))
+            # Der Host formatiert bereits (`app.py` ruft `format_events`);
+            # zusammengefuegt und ausgezeichnet wird hier — dieselbe
+            # Darstellung wie fuer einen lokalen Lauf (m.rau/bibi#99).
+            return HTMLResponse(render.output_block(
+                ereignisse, antwort.get("kind") or "job"))
         from bibi import repo as repo_mod
         pfad = repo_mod.root() / (zeile.get("output_ref") or "")
         try:
@@ -2093,8 +2123,22 @@ def add_controller_routes(
             # Kein Output ist eine Aussage, kein Fehler: ein Job kann
             # schweigend durchlaufen.
             return PlainTextResponse("(no output)")
-        return PlainTextResponse(
-            "\n".join(str(e.get("text") or e.get("line") or "") for e in zeilen))
+        # **Durch den Formatter, nicht daran vorbei** (m.rau/bibi#99). Hier
+        # stand ein eigenes `"\n".join(...)` ueber die Roh-Events: jeder
+        # Token-Delta wurde eine eigene Zeile, und im FE stand `Der Benut` /
+        # `zer moechte` — Umbruch mitten im Wort, dazu das rohe Stream-JSON.
+        # Alle drei Bausteine dagegen waren gebaut und wurden anderswo benutzt:
+        # `format_events()` typisiert die Deltas (`s: "thinking"`),
+        # `_merge_deltas()` fuegt sie zusammen, `_event_line()` setzt sie ab.
+        # `output_block()` verbindet die drei — dieselbe Funktion, die der
+        # Host-Screen seit jeher verwendet.
+        from bibi.daemon import output_format as _of
+        from bibi.schedule import models as _models
+        # `zeile` ist je nach Pfad ein `sqlite3.Row` — der kennt kein `.get()`.
+        _row = dict(zeile) if zeile is not None else {}
+        _kind = _models.effective_kind(_row.get("payload"))
+        return HTMLResponse(render.output_block(
+            _of.format_events(zeilen, _kind), _kind))
 
     @app.get("/-/jobs/{job_uid}/runs", include_in_schema=False)
     def screen_job_runs(request: Request, job_uid: str,  # noqa: ARG001
