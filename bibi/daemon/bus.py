@@ -462,6 +462,28 @@ class SchedulerEvents:
             self._thread = None
 
 
+def _letzter_beat(w: dict) -> float | None:
+    """Der Heartbeat-Zeitstempel einer Knotenzeile.
+
+    **Das Feld heisst ``last_heartbeat``** — so in ``WorkerRegistry.list()``
+    und so in der ``/-/status``-Antwort. Beide Fingerabdruecke hier lasen bis
+    zum 2026-08-09 ``last_beat``, ein Feld, das es **nirgends** gibt: der Wert
+    war immer ``None``, und damit fehlte genau die eine Angabe, die sich
+    haeufig aendert. Uebrig blieben ``stale`` und der Git-Status, die sich
+    selten ruehren — der Nodes-Screen aktualisierte praktisch nie.
+
+    Gefunden im Akzeptanz-Durchgang zu ``v0.7.12``, nicht von einem Test: am
+    laufenden System kamen in 20 Sekunden 8 ``feedstatus``-Ereignisse an und
+    null ``nodes``. Der Unit-Test war gruen, weil er die Datenstruktur selbst
+    erfunden hatte und ``last_beat`` in seine eigenen Testdaten schrieb.
+
+    ``last_beat`` wird weiterhin gelesen, falls eine aeltere Gegenstelle es
+    doch schickt — kostenlos, und eine Fehlannahme weniger.
+    """
+    v = w.get("last_heartbeat")
+    return v if v is not None else w.get("last_beat")
+
+
 class Collector:
     """Der eine Poller des Knotens — s. Modul-Docstring und PLAN-36 E4.
 
@@ -621,14 +643,14 @@ class Collector:
         """"nodes"-Sammel-Target: Fingerprint über die WorkerRegistry —
         jeder Heartbeat, jeder stale-Übergang, jede Git-Status-Änderung eines
         Knotens macht den Nodes-Screen einmal dreckig (statt des früheren
-        10s-Polls pro Tab). Zeitstempel-Felder (last_beat …) bleiben bewusst
+        10s-Polls pro Tab). Zeitstempel-Felder (``last_heartbeat``) bleiben bewusst
         Teil des Fingerprints: ein Heartbeat alle ~10-30s je Knoten ist genau
         die gewünschte Update-Frequenz der "vor Xs"-Anzeigen dort."""
         if self.registry is None:
             return 0
         try:
             snap = tuple(sorted(
-                (w.get("worker"), w.get("node_id"), w.get("last_beat"),
+                (w.get("worker"), w.get("node_id"), _letzter_beat(w),
                  w.get("stale"), w.get("git_status"), w.get("git_user"))
                 for w in self.registry.list()))
         except Exception:
@@ -955,7 +977,7 @@ class Collector:
             snap: tuple | None = None
         else:
             snap = tuple(sorted(
-                (w.get("worker"), w.get("node_id"), w.get("last_beat"),
+                (w.get("worker"), w.get("node_id"), _letzter_beat(w),
                  w.get("stale"), w.get("git_status"), w.get("git_user"),
                  w.get("engine"))
                 for w in (status.get("workers") or []) if isinstance(w, dict)))

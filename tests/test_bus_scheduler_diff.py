@@ -477,3 +477,82 @@ def test_the_header_stays_quiet_when_only_a_heartbeat_ticks():
     assert "feedstatus" not in bus.published, (
         "ein reiner Heartbeat-Tick macht den Header dreckig — er haengt an "
         "einem git-Aufruf")
+
+
+def test_the_fingerprint_reads_the_field_that_actually_exists():
+    """**Der Rot-Schritt des Akzeptanz-Befunds vom 2026-08-09.**
+
+    `#106` war gebaut, sein Unit-Test grün — und im Betrieb feuerte nichts. In
+    20 Sekunden am laufenden System: **8× `feedstatus`, 0× `nodes`**.
+
+    Der Grund: der Fingerabdruck las `last_beat`. **Dieses Feld gibt es
+    nirgends.** Die Registry führt `last_heartbeat` (`worker_registry.list()`),
+    die `/-/status`-Antwort ebenso. `w.get("last_beat")` war damit immer
+    `None` — und genau der eine Wert fehlte, der sich häufig ändert. Übrig
+    blieben `stale` und der Git-Status, die sich selten rühren.
+
+    **Mein Test hat das nicht gesehen, weil er die Datenstruktur selbst
+    erfunden hat** — er schrieb `last_beat` in die Testdaten und prüfte gegen
+    dieselbe Erfindung. Das ist die `#88`-Lehre, diesmal an mir selbst.
+
+    **Derselbe Fehler steckt seit jeher im Scheduler-Zweig** `_diff_nodes()`,
+    dessen Docstring das Gegenteil verspricht: *„jeder Heartbeat … macht den
+    Nodes-Screen einmal dreckig … Zeitstempel-Felder (last_beat …) bleiben
+    bewusst Teil des Fingerprints"*. Das Versprechen war leer.
+
+    Dieser Test benutzt die **echten** Feldnamen. Er ist damit auch die
+    Absicherung gegen die Wiederholung: wer den Fingerabdruck umbaut, muss ihn
+    gegen eine Struktur prüfen, die es wirklich gibt.
+    """
+    bus = _Bus()
+    c = _collector(bus, [
+        {"workers": [{"worker": "a", "node_id": "1", "last_heartbeat": 10.0,
+                      "stale": False, "git_status": "trunk · clean"}],
+         "job_stats": {"counts": {}}},
+        {"workers": [{"worker": "a", "node_id": "1", "last_heartbeat": 25.0,
+                      "stale": False, "git_status": "trunk · clean"}],
+         "job_stats": {"counts": {}}},
+    ])
+
+    _tick(c)
+    bus.published.clear()
+    _tick(c)
+
+    assert "nodes" in bus.published, (
+        "ein Heartbeat aendert den Fingerabdruck nicht — er liest ein Feld, "
+        "das es nicht gibt (Akzeptanz-Befund zu #106)")
+
+
+def test_the_fingerprint_fields_exist_in_the_real_registry_shape():
+    """**Die Absicherung gegen die Wiederholung.**
+
+    Der Test darüber fängt den heutigen Fall. Dieser hier fängt den nächsten:
+    ein Fingerabdruck, der ein Feld liest, das die echte Struktur nicht führt,
+    ist still wirkungslos — er wirft nicht, er vergleicht `None` mit `None`.
+
+    **Genau daran ist `#106` gescheitert, obwohl sein Unit-Test grün war**:
+    beide erfanden dieselbe Struktur. Ein Test, der seine Eingabe selbst
+    erfindet, prüft die Erfindung.
+
+    Geprüft wird deshalb gegen eine Zeile, wie `WorkerRegistry.list()` sie
+    wirklich baut — der Registry-Eintrag plus das dort ergänzte `stale`.
+    """
+    from bibi.daemon.bus import _letzter_beat
+
+    # So sieht eine Zeile aus: `list()` gibt `{**eintrag, "stale": …}` zurueck,
+    # und der Eintrag entsteht aus dem Heartbeat-Payload (node_info.self_entry).
+    echt = {
+        "worker": "sarasate-client", "node_id": "1116a05e", "host": "sarasate",
+        "last_heartbeat": 1_786_302_450.58, "stale": False,
+        "git_status": "trunk · clean · synced", "git_user": "m.rau",
+        "engine": "v0.7.12", "port": 8781, "role": "synchronizer,controller",
+    }
+
+    assert _letzter_beat(echt) == 1_786_302_450.58, (
+        "der Heartbeat-Zeitstempel wird aus der echten Zeile nicht gelesen")
+
+    # Und die Gegenprobe: ein Feldname, den es nicht gibt, liefert still None —
+    # das ist der Mechanismus, der den Fehler so lange verborgen hat.
+    assert echt.get("last_beat") is None, (
+        "wenn es `last_beat` doch gibt, ist dieser Test veraltet — dann bitte "
+        "beide Namen pruefen statt einen zu raten")
