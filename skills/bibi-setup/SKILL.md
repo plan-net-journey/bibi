@@ -175,6 +175,34 @@ it as the first check, and on the 2026-08-07 run it answered
 Following the instruction would have skipped the installation and driven every
 step below, `init` included, through a foreign checkout.
 
+**Read the `bibi-ctrl` symlink *before* installing anything** (m.rau/bibi#65).
+The `#62` fix could not see its own trigger case: the check used to run *after*
+`uv venv`, and a dangling link pointing at **this** repo's `.venv` is healed by
+that very step. At measuring time the target exists again, so it reported
+`OK: zeigt schon hierher` — true in that moment, and actively misleading about
+the state the run started in. The point of the check is not the healing (that
+happens anyway) but the **evidence**: the link lives outside both repos, so a
+repo-shaped reset cannot reach it, and a dangling one says the reset hit the
+repo and missed the link.
+
+Same shape as the `#60` reproduction attempt: a check whose precondition
+disappears between setup and measurement is green without having checked
+anything. So read first, install second, write last:
+
+```bash
+link=~/.local/bin/bibi-ctrl
+if [ -L "$link" ]; then
+  alt=$(readlink "$link")
+  if [ ! -e "$link" ]; then    echo "TOT:   zeigt auf $alt — dieses Ziel gibt es nicht mehr"
+  elif [ "$alt" != "$PWD/.venv/bin/bibi-ctrl" ]; then
+                               echo "FREMD: zeigt auf $alt"
+  else                         echo "OK:    zeigt schon hierher"
+  fi
+elif [ -e "$link" ]; then      echo "FREMD: $link ist kein Symlink, sondern eine echte Datei"
+else                           echo "NEU:   $link gibt es noch nicht"
+fi
+```
+
 If it is not installed:
 
 ```bash
@@ -201,19 +229,12 @@ resolved path.** Claude Code's own hooks and statusline from this repo's
 conversation — they fail with `bibi-ctrl: not found` regardless of how
 carefully the steps below qualify the command:
 
+The state was read above, before the install could change it. Act on what it
+said, then write the link:
+
 ```bash
 mkdir -p ~/.local/bin
-link=~/.local/bin/bibi-ctrl
-if [ -L "$link" ]; then
-  alt=$(readlink "$link")
-  if [ ! -e "$link" ]; then    echo "TOT:   zeigt auf $alt — dieses Ziel gibt es nicht mehr"
-  elif [ "$alt" != "$PWD/.venv/bin/bibi-ctrl" ]; then
-                               echo "FREMD: zeigt auf $alt"
-  else                         echo "OK:    zeigt schon hierher"
-  fi
-elif [ -e "$link" ]; then      echo "FREMD: $link ist kein Symlink, sondern eine echte Datei"
-fi
-ln -sf "$PWD/.venv/bin/bibi-ctrl" "$link"
+ln -sf "$PWD/.venv/bin/bibi-ctrl" ~/.local/bin/bibi-ctrl
 ```
 
 **Look before you overwrite.** That symlink is global and single-valued: on a
@@ -223,14 +244,11 @@ it already aimed at the *other* repo — set there by this very skill, days
 earlier. If it points elsewhere, say so and let the human decide; a `PATH` entry
 that quietly changes meaning is worse than one that is missing.
 
-**The three answers are not the same answer** (m.rau/bibi#62). This check used
-to ask only *"does it point somewhere else?"*, never *"does it point anywhere
-at all?"* — so a **dangling** link was healed in silence. It is worth saying
-out loud because it is evidence about the reset that preceded the run: the
-link lives outside both repos, so a repo-shaped reset cannot reach it, and in
-the 2026-08-07 run it had been left aimed at a deleted `.venv`. Handle the
-three cases differently: **dangling** → name it and heal it, nothing is lost.
-**Foreign** → name it and let the human decide. **Already ours** → say so and
+**The four answers are not the same answer** (m.rau/bibi#62, #65). The check
+above used to ask only *"does it point somewhere else?"*, never *"does it point
+anywhere at all?"* — so a **dangling** link was healed in silence. Handle them
+differently: **dangling** → name it and heal it, nothing is lost. **Foreign** →
+name it and let the human decide. **Already ours** or **missing** → say so and
 move on.
 
 The ttyd-container onboarding has always done this (PLAN-33 stages
