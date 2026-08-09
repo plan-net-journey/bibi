@@ -124,7 +124,12 @@ def run_list(args: argparse.Namespace) -> int:
     nötig, genau wie ``run_pinned()`` selbst."""
     conn = job_db.connect()
     try:
-        rows = job_db.list_pinned(conn, socket.gethostname())
+        # Ohne Namen: ``list_pinned()`` nimmt beide Identitaeten dieses Knotens
+        # (m.rau/bibi#88) — die stabile ``node_id`` neuer Zeilen und den
+        # Hostnamen des Bestands. Mit ``gethostname()`` allein meldete die
+        # Liste „(keine lokal gepinnten Jobs)" auf einem Knoten, der gerade
+        # welche laufen hat.
+        rows = job_db.list_pinned(conn)
     finally:
         conn.close()
     if not rows:
