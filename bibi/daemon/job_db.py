@@ -516,7 +516,13 @@ def upsert_schedule(conn: sqlite3.Connection, pr: ParseResult, now: float) -> st
         conn.execute(f"INSERT INTO jobs ({names}) VALUES ({placeholders})", fields)
         return job_id
     if existing["status"] in _FROZEN_UNTIL_USER_ACTION:
-        cols.pop("next_fire_at", None)
+        # **Löschen ja, setzen nein** (#97). Bis dahin stand hier ein `pop()`,
+        # also "nichts anfassen" — der Schutz galt damit jedem Wert, auch
+        # einem falschen. Ein Job, der terminal wurde, *bevor* report_status()
+        # die Karteileichen-Regel bekam, behielt seinen Termin für immer, und
+        # zwar gerade weil ihn niemand mehr anfassen durfte. Der ursprüngliche
+        # Zweck bleibt: ein Rescan gibt einer Sackgasse keinen frischen Tick.
+        cols["next_fire_at"] = None
     elif existing["status"] == "complete" and cols.get("schedule") is None:
         # PLAN-23 Befund 1: ein abgeschlossener oneshot (`at:`, schedule=None)
         # darf beim Rescan nicht "geheilt" werden — compute_next_fire() hat für
@@ -543,6 +549,40 @@ def deactivate_slugs(conn: sqlite3.Connection, slugs: set[str]) -> int:
             "UPDATE jobs SET active=0 WHERE slug=? AND active=1", (slug,))
         n += cur.rowcount
     return n
+
+
+def _sweep_karteileichen(conn: sqlite3.Connection) -> int:
+    """Stehengebliebene Termine terminaler Jobs wegräumen (#97).
+
+    ``report_status()`` löscht den ``next_fire_at`` einer Sackgasse beim
+    **Übergang** und nennt ihn selbst eine *Karteileiche*. Wer terminal wurde,
+    bevor es diese Regel gab (vor dem 2026-07-05), behielt seinen Termin —
+    ``upsert_schedule()`` schützte ihn seither, weil der Schutz jedem Wert
+    galt, auch einem falschen. Dessen Verschärfung oben erreicht aber nur
+    Zeilen, deren MD noch im Vault liegt.
+
+    **Der einzige nachgewiesene Bestandsfall ist genau der andere:**
+    ``20260702.at-080500-aa2b`` stand am 2026-08-09 live als ``(deleted)`` mit
+    NEXT ``02/07 08:05`` — 38 Tage alt. Für so eine Zeile läuft nie wieder ein
+    ``upsert_schedule()``, und ``deactivate_slugs()`` fasst ``next_fire_at``
+    nicht an (und greift ohnehin nur bei ``active=1``, ist für den Altbestand
+    also längst verbraucht).
+
+    Deshalb ein Sweep über **alle** Zeilen statt einer Migration: er heilt den
+    heutigen Bestand *und* schließt die Lücke dauerhaft — dieselbe Karteileiche
+    kann sonst morgen aus einem anderen Pfad wieder entstehen. Idempotent, kein
+    Schema-Schritt, und damit ohne den teuren Rückweg, den eine Migration
+    kostet.
+
+    Setzt nur auf ``NULL``, nie auf einen Wert: ein Rescan gibt einer Sackgasse
+    weiterhin keinen frischen Termin.
+    """
+    platzhalter = ", ".join("?" * len(_FROZEN_UNTIL_USER_ACTION))
+    cur = conn.execute(
+        f"UPDATE jobs SET next_fire_at=NULL "  # noqa: S608 — Platzhalter aus Konstante
+        f"WHERE status IN ({platzhalter}) AND next_fire_at IS NOT NULL",
+        tuple(sorted(_FROZEN_UNTIL_USER_ACTION)))
+    return cur.rowcount
 
 
 def active_worktree_slugs(conn: sqlite3.Connection) -> set[str]:
@@ -934,6 +974,7 @@ def rescan(conn: sqlite3.Connection, vault_root: Path | None = None) -> dict:
     # active=0) — Feldname aus Kompatibilität zu bibi/ctrl/job_cmd.py,
     # bibi/daemon/rescanner.py unverändert belassen (nur Logging, kein Branch).
     removed = deactivate_slugs(conn, existing - discovered)
+    _sweep_karteileichen(conn)
     conn.commit()
 
     return {

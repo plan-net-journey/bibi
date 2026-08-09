@@ -1221,56 +1221,13 @@ def _effective_sched_type(s: dict) -> str:
     return models.effective_kind(s.get("payload"))
 
 
-#: Sortierschlüssel → wie der Wert aus einer Zeile kommt (m.rau/bibi#66).
-#: Die Schlüssel sind bewusst die Spalten**bedeutungen**, nicht Feldnamen: Host-
-#: und Client-Zeilen tragen dieselbe Information unter teils anderen Namen, und
-#: der Nutzer sortiert nach dem, was in der Spalte steht.
-_SORT_KEYS: dict[str, "callable"] = {
-    "slug": lambda r: (r.get("slug") or "").lower(),
-    # Nach dem *angezeigten* Typ, nicht nach dem rohen Payload — sonst
-    # sortierte die Spalte nach etwas anderem, als in ihr steht.
-    "type": lambda r: _effective_sched_type(r),
-    "status": lambda r: (r.get("last_status") or r.get("row_status") or ""),
-    "last": lambda r: r.get("finished_at") if r.get("finished_at") is not None
-                      else r.get("started_at"),
-    "runtime": lambda r: r.get("runtime"),
-    "next": lambda r: r.get("next_fire_at"),
-}
-
-
-def sort_rows(rows: list[dict], sort: str | None,
-              direction: str | None = "asc") -> list[dict]:
-    """Zeilen serverseitig sortieren (m.rau/bibi#66).
-
-    **Serverseitig und nicht in JS**, weil der Event-Bus die Region neu rendert:
-    eine clientseitige Sortierung wäre beim nächsten Refetch weg. Das Issue
-    nennt genau diesen Grund, und er wiegt schwerer als der Geschwindigkeits-
-    vorteil — die Tabellen haben Dutzende Zeilen, nicht Tausende.
-
-    Ein unbekannter Schlüssel lässt die Reihenfolge unangetastet, statt zu
-    werfen oder zu leeren: er kann aus einem alten Cookie oder einer von Hand
-    zusammengesetzten URL kommen, und beides darf keinen Screen kosten.
-
-    ``None``-Werte landen **immer am Ende**, in beide Richtungen. „Kein Wert"
-    heisst *gibt es nicht*, nicht *ganz früh* — beim Umdrehen füllten sie sonst
-    den Anfang und verdrängten genau das, wonach jemand gerade sucht.
-    """
-    fn = _SORT_KEYS.get(sort or "")
-    if fn is None:
-        return rows
-    rev = (direction or "asc") == "desc"
-
-    def _key(r: dict):
-        v = fn(r)
-        if v is None:
-            # Erstes Tupelglied: fehlende Werte hinten, unabhängig von rev.
-            return (1, 0) if not rev else (-1, 0)
-        return (0, v) if not rev else (0, v)
-
-    missing = [r for r in rows if fn(r) is None]
-    present = [r for r in rows if fn(r) is not None]
-    present.sort(key=fn, reverse=rev)
-    return present + missing
+# Hier standen `_SORT_KEYS` und `sort_rows()` (m.rau/bibi#66) — der
+# serverseitige Sortierpfad des bibi4-Screens. Der Jobs-Screen sortiert seit
+# dem v5-Umbau über `jobs_view.sortiere()`; `sort_rows()` hatte danach keinen
+# Aufrufer mehr, `_SORT_KEYS` blieb als Whitelist für den `sort`-Parameter
+# zurück (#95). Sie ist mit den Spalten nicht mitgewachsen: `24h` fehlte,
+# `runtime` stand darin, obwohl es nie ein klickbarer Kopf war. Die Whitelist
+# leitet sich jetzt aus `_SORTIERBAR` ab — siehe `sortierbare_schluessel()`.
 
 
 def _sortable_head(columns: list[tuple[str, str | None]], *, sort: str | None,
@@ -2465,7 +2422,12 @@ def _local_job_meta_line(local: dict, *, public_host: str = "localhost",
     ``app_port``, unabhängig vom ersten Lauf). ``include_app_link=False``
     (vom Aufrufer gesetzt, sobald ``job`` nicht ``None`` ist) verhindert die
     doppelte Anzeige, wenn ``_live_panel()`` den Link ohnehin schon zeigt."""
-    kind = _e(_effective_sched_type(local))
+    # `_jobs_type_cell()` statt `_effective_sched_type()` (#96): letzteres
+    # ruft `models.effective_kind()` **ohne** `app_port` und schrieb deshalb
+    # `job` — zwei Zeilen weiter unten liest derselbe Block `app_port` fuer
+    # den "Open app →"-Link. Ein Codeblock, der weiss, dass es eine App ist,
+    # und trotzdem `job` schreibt. Nicht escapen: die Zelle liefert Markup.
+    kind = _jobs_type_cell(local, public_host)
     trigger = _e(local.get("schedule") or local.get("at") or "—")
     cls, git_label = _GIT_STATUS_LABEL.get(local.get("git_status", "clean"),
                                            ("chip", _e(str(local.get("git_status", "—")))))
@@ -4063,7 +4025,7 @@ _LEER = {
 }
 
 
-def _jobs_zeile(row, now: float) -> str:
+def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
     """Eine Zeile: ein Slug, zwei Zustandsblöcke."""
     from bibi.schedule.models import job_uid
 
@@ -4085,8 +4047,13 @@ def _jobs_zeile(row, now: float) -> str:
         # `@` = Oneshot, ein `next` daneben = Rhythmus, keins von beidem =
         # adhoc. Genau daran haengt der Unterschied zwischen „Gruppierung
         # entfernen" und „Gruppierung ausblenden".
+        # Der Typ kommt aus `_jobs_type_cell()`, nicht aus `display_kind()`
+        # direkt (#96): ein App-Job traegt seinen Link, und zwar hier zuerst
+        # ("Eigentlich schon auf der Jobs Seite", m.rau 2026-08-09). Die Zelle
+        # war gebaut und hiess in ihrem Docstring "nur fuer die Jobs-Tabelle" —
+        # genau dort rief sie seit dem v5-Umbau niemand mehr auf.
         f'<td>{"@" if row.oneshot else ""}'
-        f'{models.display_kind(row.spec.get("payload"), row.spec.get("app_port"))}</td>'
+        f'{_jobs_type_cell(row.spec, public_host)}</td>'
         # Client zuerst (m.rau/bibi#147) — dieselbe Ordnung wie im Header und in
         # den Kacheln des Job-Details. `status` heisst dieses Feld in der
         # lokalen Job-DB; in den Scheduler-Zeilen heisst es `row_status` (live
@@ -4117,6 +4084,21 @@ _SORTIERBAR = (("slug", "SLUG"), ("type", "TYPE"), ("status", "STATUS"),
                ("last", "LAST"), ("next", "NEXT"), ("24h", "24H"))
 
 
+def sortierbare_schluessel() -> frozenset[str]:
+    """Welche ``sort``-Werte die Route annehmen darf (#95).
+
+    **Abgeleitet statt aufgezählt.** Die Vorgängerin war eine zweite, von Hand
+    gepflegte Liste (``_SORT_KEYS``), und sie lief auseinander: ``24h`` war
+    klickbar, kam aber nicht durch die Prüfung — der Kopf setzte den Parameter,
+    die Route warf ihn weg, und niemand sah einen Fehler, nur eine Spalte, die
+    auf Klicks nicht reagierte.
+
+    Eine neue klickbare Spalte kann diesen Fehler nicht wiederholen: sie steht
+    in ``_SORTIERBAR`` und ist damit hier drin.
+    """
+    return frozenset(k for k, _ in _SORTIERBAR)
+
+
 def _filter_knopf(wert: str, aktiv: list[str]) -> str:
     an = " on" if wert in aktiv else ""
     return f'<button class="fltr{an}" data-filter="{wert}">{wert}</button>'
@@ -4138,7 +4120,7 @@ def _sort_kopf(schluessel: str, label: str, sort: str | None, richtung: str) -> 
 def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
                 status: list[str] | None = None, journal: list[str] | None = None,
                 sort: str | None = None, direction: str = "asc",
-                group: bool = True) -> str:
+                group: bool = True, public_host: str = "localhost") -> str:
     """Die drei Bänder mit ihren Zeilen — oder eine Liste ohne Unterteilung.
 
     Alle drei stehen immer da, auch leer: sonst verschöbe sich das Layout je
@@ -4234,7 +4216,7 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
     if not group:
         # Eine Liste ohne Unterteilung. Die Sortierung wirkt damit über alles,
         # statt innerhalb jedes Bandes — genau der Zweck des Schalters.
-        zeilen = "".join(_jobs_zeile(r, now) for r in rows)
+        zeilen = "".join(_jobs_zeile(r, now, public_host=public_host) for r in rows)
         return f'{leiste}<table class="jobs">{kopf}<tbody>{zeilen}</tbody></table>'
 
     teile = []
@@ -4250,7 +4232,7 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
             f'<span class="muted">{len(drin)}</span>{eigene}</td></tr>'
         )
         if drin:
-            teile.extend(_jobs_zeile(r, now) for r in drin)
+            teile.extend(_jobs_zeile(r, now, public_host=public_host) for r in drin)
         else:
             teile.append(f'<tr class="leer-band"><td colspan="8">— {_LEER[seg]}</td></tr>')
 
@@ -4367,7 +4349,7 @@ def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
                        status: list[str] | None = None,
                        journal: list[str] | None = None,
                        sort: str | None = None, direction: str = "asc",
-                       group: bool = True) -> str:
+                       group: bool = True, public_host: str = "localhost") -> str:
     """Die Bänder **samt ihrem Bus-Wrapper** — das Nachlade-Ziel des Bus.
 
     Der Wrapper gehört ins Fragment, nicht nur in die Seite: ``_EVENTS_JS``
@@ -4395,7 +4377,8 @@ def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
                            direction=direction, group=group)
         + '">'
         + jobs_screen(rows, now, typ=typ, status=status, journal=journal,
-                      sort=sort, direction=direction, group=group)
+                      sort=sort, direction=direction, group=group,
+                      public_host=public_host)
         + "</div>"
     )
 
@@ -4407,7 +4390,7 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
                  typ: list[str] | None = None, status: list[str] | None = None,
                  journal: list[str] | None = None,
                  sort: str | None = None, direction: str = "asc",
-                 group: bool = True) -> str:
+                 group: bool = True, public_host: str = "localhost") -> str:
     """Die Jobs-Seite: Hülle plus die drei Bänder.
 
     Getrennt von :func:`jobs_screen`, weil die Bänder als Fragment nachgeladen
@@ -4429,7 +4412,7 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         # `hx-trigger="bibiJobsChanged"` ist entfallen: das Ereignis hat nie
         # jemand gefeuert (einzige Fundstelle im Repo war der Trigger selbst),
         # und mit `hx-swap="innerHTML"` widersprach es dem `outerHTML` des Bus.
-        f'{jobs_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group)}'
+        f'{jobs_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group, public_host=public_host)}'
         # Der Empfaenger zur Anmeldung darueber (m.rau/bibi#153): `data-bus`
         # allein bewirkt nichts, den Strom baut ausschliesslich `_EVENTS_JS`
         # auf. Beim Neubau der v5-Seiten blieb es aus — als einzige Screens.
@@ -4971,7 +4954,13 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
     from bibi.schedule.models import job_uid as _uid
 
     trigger = spec.get("schedule") or spec.get("at_iso") or "—"
-    typ = spec.get("kind") or "job"
+    # `display_kind()`, nicht `spec["kind"]` (#96, vierte Fundstelle): `kind`
+    # ist seit PLAN-10 (Unified Job Model) **immer** `"job"` und traegt keine
+    # Information mehr — s. `_effective_sched_type()`. Die Seite schrieb
+    # deshalb `job` direkt neben den `[APP]`-Link, den sie aus demselben Spec
+    # gerade gebaut hatte. Der Port bleibt dem CTA vorbehalten: zwei Links auf
+    # dieselbe Adresse waeren eine Doppelung, kein Gewinn.
+    typ = models.display_kind(spec.get("payload"), spec.get("app_port"))
     rel = f' <span class="rel">({_e(beziehung)})</span>' if beziehung else ""
     # Der Weg zum Dienst gehört in den Kopf und nicht in eine Kachel
     # (m.rau/bibi#145): `app_port` steht im MD-Frontmatter und gilt für den

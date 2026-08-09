@@ -1675,3 +1675,55 @@ def test_a_oneshot_stays_locked_even_when_the_md_is_local():
               if k.quelle == "CLIENT"][0]
     assert klient.disabled == "oneshots never run locally"
     assert klient.aktionen == frozenset()
+
+
+def test_the_v5_detail_names_an_app_an_app():
+    """**Der Rot-Schritt der vierten Fundstelle von `#96`** — die das Ticket
+    nicht kannte, weil sie live gefunden wurde statt im Code.
+
+    `job_detail_page_v5()` liest `spec["kind"]` roh. `kind` ist aber seit
+    PLAN-10 (Unified Job Model) **immer** `"job"` und trägt keine Information
+    mehr — das sagt `_effective_sched_type()` in seinem eigenen Docstring.
+    Die Seite schreibt deshalb `job` direkt neben den `[APP]`-Link, den sie
+    aus demselben `spec` gerade gebaut hat.
+
+    Live am 2026-08-09 auf `/-/jobs/8f2d8fd7…`:
+
+        jd-meta">job &middot; on_demand<
+        class="cta" href="http://localhost:9110/"
+
+    **Warum der bestehende Test das nicht sah:** `test_an_app_job_offers_the_
+    link_to_its_app` gibt `kind: "app"` im Spec mit — einen Wert, den die
+    echte DB nicht mehr liefert. Ein Test, dessen Aufbau einen Zustand
+    herstellt, den es nicht gibt, ist auch dann grün, wenn er nichts prüft
+    (die `#88`-Lehre). Dieser Test lässt `kind` deshalb weg.
+    """
+    from bibi.controller import render
+    html = render.job_detail_page_v5(
+        slug="burndown-app", now=1_754_100_000.0,
+        spec={"slug": "burndown-app", "schedule": "on_demand",
+              "app_port": 9110})
+    meta = [z for z in html.split('jd-meta">') if z][1][:40]
+    assert "app" in meta, (
+        f"der Typ sagt {meta!r} statt 'app' — neben dem App-Link aus "
+        f"demselben Spec (#96)")
+
+
+def test_the_fallback_meta_line_names_an_app_an_app():
+    """**Der Rot-Schritt der dritten Fundstelle von `#96`.**
+
+    `_local_job_meta_line()` greift, wenn der Job auf diesem Knoten noch nie
+    lief und nichts live ist. Dort läuft `_effective_sched_type()`, also
+    `models.effective_kind()` **ohne** `app_port` — zwei Zeilen darunter wird
+    `app_port` für den "Open app →"-Link gelesen. Derselbe Codeblock weiß,
+    dass es eine App ist, und schreibt trotzdem `job`.
+
+    Live am 2026-08-09 auf `/-/ui/jobs/detail/burndown-app`: `Type <b>job<`
+    neben einem `Open app`.
+    """
+    from bibi.controller import render
+    html = render._local_job_meta_line(
+        {"slug": "burndown-app", "schedule": "on_demand", "app_port": 9110},
+        public_host="Mac.fritz.box")
+    assert "app :9110" in html, (
+        "die Fallback-Meta-Zeile nennt eine App 'job' (#96)")

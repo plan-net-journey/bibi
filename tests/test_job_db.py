@@ -1369,3 +1369,66 @@ def test_list_schedules_carries_the_p90(conn):
         _lauf(conn, "a", float(i))
     zeile = next(s for s in job_db.list_schedules(conn) if s["slug"] == "a")
     assert zeile["runtime_p90"] == 27.0
+
+
+def test_rescan_clears_a_leftover_next_fire_at_on_a_frozen_job(conn, tmp_path: Path):
+    """**Der Rot-Schritt von `#97`, erste Hälfte** — die Zeile mit MD.
+
+    `report_status()` löscht den Termin einer Sackgasse und nennt ihn selbst
+    eine *Karteileiche*. Die Regel greift aber nur **beim Übergang**: wer
+    terminal wurde, *bevor* es sie gab, behält seinen Termin — und zwar
+    gerade deshalb, weil `upsert_schedule()` ihn seither schützt. Der Schutz
+    gilt jedem Wert, auch einem falschen.
+
+    **Der Aufbau stellt einen historischen Zustand her, keinen unmöglichen**
+    (der Unterschied ist die `#88`-Lehre vom Vortag): `status='error'` mit
+    gesetztem `next_fire_at` erzeugt die heutige Engine nicht mehr — der
+    Bestand von vor dem 2026-07-05 trägt ihn aber, live nachgewiesen am
+    2026-08-09 an `20260702.at-080500-aa2b` (NEXT `02/07 08:05`, 38 Tage alt).
+    """
+    _write(tmp_path / "case" / "leiche" / "README.md",
+           '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    # Der historische Zustand: terminal UND mit Termin.
+    conn.execute("UPDATE jobs SET status='error', next_fire_at=? WHERE slug='leiche'",
+                 (time.time() - 86_400,))
+    conn.commit()
+
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+
+    row = conn.execute("SELECT next_fire_at FROM jobs WHERE slug='leiche'").fetchone()
+    assert row["next_fire_at"] is None, (
+        "der stehengebliebene Termin einer Sackgasse überlebt den Rescan (#97)")
+
+
+def test_rescan_clears_a_leftover_next_fire_at_even_without_its_md(conn, tmp_path: Path):
+    """**Der Rot-Schritt von `#97`, zweite Hälfte** — und der Grund, warum die
+    Empfehlung des Tickets allein nicht reicht.
+
+    Das Ticket empfiehlt Weg 1: `upsert_schedule()` von "nichts anfassen" auf
+    "nur nicht setzen" verschärfen. **Der einzige bekannte Bestandsfall wird
+    davon nicht erreicht:** `20260702.at-080500-aa2b` steht live als
+    `(deleted)` — seine MD ist aus dem Vault verschwunden. Für so eine Zeile
+    läuft nie wieder `upsert_schedule()`, sondern `deactivate_slugs()`, und
+    das setzt nur `active=0` und rührt `next_fire_at` nicht an. Zudem greift
+    es nur bei `active=1`, ist für den Altbestand also schon verbraucht.
+
+    Ein Fix, der den einzigen nachweisbaren Fall stehen lässt, erfüllt das
+    "unabhängig davon, wann er dorthin geriet" des Tickets nicht.
+    """
+    _write(tmp_path / "case" / "weg" / "README.md",
+           '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+    (tmp_path / "case" / "weg" / "README.md").unlink()
+    job_db.rescan(conn, vault_root=tmp_path / "case")  # -> active=0
+    # Der Live-Zustand: MD weg, Zeile terminal, Termin steht noch.
+    conn.execute("UPDATE jobs SET status='error', next_fire_at=? WHERE slug='weg'",
+                 (time.time() - 86_400,))
+    conn.commit()
+
+    job_db.rescan(conn, vault_root=tmp_path / "case")
+
+    row = conn.execute("SELECT next_fire_at, active FROM jobs WHERE slug='weg'").fetchone()
+    assert row["active"] == 0, "Absicherung: die Zeile ist der (deleted)-Fall"
+    assert row["next_fire_at"] is None, (
+        "eine Karteileiche ohne MD wird von keinem Pfad mehr geheilt (#97)")

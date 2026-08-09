@@ -1205,3 +1205,87 @@ def test_the_view_handles_are_delegated_not_bound_per_element():
                 "document.querySelectorAll('th[data-sort]')"):
         assert tot not in js, (
             f"{tot} bindet an Elemente, die der Swap ersetzt — das war #85")
+
+
+# ── Die Sortier-Whitelist kennt dieselben Spalten wie die Köpfe (#95) ──────
+
+
+def test_the_24h_column_actually_sorts(app_with, team_repo: Path):
+    """**Ein klickbarer Spaltenkopf, dessen Schlüssel die Route wegwirft.**
+
+    `24H` steht in `_SORTIERBAR` und in `jobs_view._sortwert()`, aber nicht in
+    `render._SORT_KEYS` — und genau die fragt `controller/__init__.py` ab,
+    bevor irgendetwas sortiert wird. Ein Klick auf die Spalte setzt `sort=24h`,
+    die Whitelist verwirft ihn, `_sort_kopf()` markiert nichts. Live gefunden
+    am 2026-08-09 gegen den Client-Daemon.
+
+    Die Konstante gehört zum toten Pfad `render.sort_rows()`, der keinen
+    Aufrufer mehr hat. Sie blieb als Whitelist zurück und ist mit den Spalten
+    nicht mitgewachsen.
+
+    Die zweite Zusicherung ist die Absicherung, ohne die ein Fehlschlag
+    nichts bewiese: **kam die Route überhaupt so weit?** Bricht sie vorher ab,
+    fehlt auch `slug`, und der erste Assert wäre aus dem falschen Grund rot.
+    """
+    _mit_job_md(team_repo, "a")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        h24 = c.get("/-/jobs?sort=24h&dir=desc", headers={"accept": "text/html"}).text
+        hslug = c.get("/-/jobs?sort=slug&dir=desc", headers={"accept": "text/html"}).text
+
+    assert 'class="sortiert" data-sort="slug"' in hslug, (
+        "Absicherung: die Route rendert die Tabelle überhaupt — ohne das "
+        "prüft der Assert unten nichts")
+    assert 'class="sortiert" data-sort="24h"' in h24, (
+        "sort=24h erreicht den Renderer nicht — die Whitelist in "
+        "controller/__init__.py kennt den Schlüssel nicht (#95)")
+
+
+def test_every_clickable_column_survives_the_whitelist(app_with, team_repo: Path):
+    """Die Verallgemeinerung: **jeder** Kopf aus `_SORTIERBAR` muss durch.
+
+    Der Test darüber fängt den heutigen Fall. Dieser hier fängt den nächsten —
+    eine siebte klickbare Spalte, deren Schlüssel wieder an einer zweiten
+    Liste vorbeigeht. Das ist der eigentliche Fehler: zwei Wahrheiten über
+    dieselbe Menge.
+    """
+    _mit_job_md(team_repo, "a")
+    app = app_with({"roles": ["controller"]})
+    with TestClient(app) as c:
+        for schluessel, _label in render._SORTIERBAR:
+            html = c.get(f"/-/jobs?sort={schluessel}&dir=asc",
+                         headers={"accept": "text/html"}).text
+            assert f'class="sortiert" data-sort="{schluessel}"' in html, (
+                f"{schluessel} ist klickbar, kommt aber nicht durch die "
+                f"Whitelist (#95)")
+
+
+# ── Der App-Link in der Type-Zelle (#96) ───────────────────────────────────
+
+
+def test_an_app_row_carries_its_link_in_the_type_cell():
+    """**Der Rot-Schritt von `#96`.**
+
+    Ein App-Job stellt im FE immer seinen Link bereit — das ist der Grund, aus
+    dem der Typ `app` überhaupt wieder eingeführt wurde (m.rau, 2026-08-09:
+    "weil Apps im Frontend immer den Link bereitstellen sollen. Eigentlich
+    schon auf der Jobs Seite").
+
+    Die Fähigkeit ist gebaut und heißt `_jobs_type_cell()`. Ihr Docstring sagt
+    "nur für die Jobs-Tabelle" — genau dort ruft sie seit dem v5-Umbau
+    niemand mehr auf. `_jobs_zeile()` rendert `display_kind()` direkt: der Typ
+    stimmt, der Link blieb zurück.
+    """
+    zeilen = _zeilen(local=[_md("app1", app_port=9100)])
+    html = render.jobs_screen(zeilen, now=NOW, public_host="Mac.fritz.box")
+    assert 'href="http://Mac.fritz.box:9100/"' in html, (
+        "die Type-Zelle der Jobs-Tabelle führt keinen App-Link (#96)")
+    assert "app :9100" in html, "der Port gehört sichtbar an den Typ (#96)"
+
+
+def test_a_plain_row_keeps_its_bare_type():
+    """Die Gegenprobe: der Link hängt an `app_port`. Ohne Port bleibt der Typ
+    ein Wort — ein Link ins Leere wäre schlechter als keiner."""
+    zeilen = _zeilen(local=[_md("job1")])
+    html = render.jobs_screen(zeilen, now=NOW, public_host="Mac.fritz.box")
+    assert "Mac.fritz.box" not in html, "ein Job ohne Port bekommt keinen Link"
