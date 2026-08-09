@@ -1803,3 +1803,84 @@ def test_the_jobs_table_names_the_port_without_linking_it():
     assert "app :9100" in html, "der Typ samt Port bleibt sichtbar (#96)"
     assert "href=\"http://Mac.fritz.box:9100/\"" not in html, (
         "die Jobs-Tabelle verlinkt die App auf den Betrachter-Host (#104)")
+
+
+# ── Die Output-Box eines claude-Laufs (#99) ─────────────────────────────────
+
+
+def _claude_stream(*chunks, kind="thinking"):
+    """Roh-Events wie sie `--include-partial-messages` liefert: ein
+    `content_block_start`, dann Token-Deltas."""
+    import json as _json
+    evs = [{"t": 1.0, "s": "out", "line": _json.dumps(
+        {"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": kind}}})}]
+    feld = "thinking" if kind == "thinking" else "text"
+    for i, c in enumerate(chunks):
+        evs.append({"t": 1.0 + i, "s": "out", "line": _json.dumps(
+            {"type": "stream_event", "event": {
+                "type": "content_block_delta", "index": 0,
+                "delta": {"type": f"{kind}_delta", feld: c}}})})
+    return evs
+
+
+def test_the_run_output_joins_token_deltas():
+    """**Der Rot-Schritt von `#99`.**
+
+    Live am 2026-08-09, ein `Witz`-Lauf aufgeklappt über `[show]`:
+
+        Der Benut
+        zer möchte
+        , dass ich:
+
+    Umbruch mitten im Wort — jeder Token-Delta wurde eine eigene Zeile.
+
+    **Alle drei Bausteine dagegen sind gebaut:** `output_format.format_events()`
+    typisiert die Deltas, `_merge_deltas()` fügt sie zusammen, `_event_line()`
+    setzt `thinking` per CSS-Klasse ab. `output_block()` verbindet die drei zu
+    genau dieser Antwort. Die v5-Route `screen_job_run_output()` benutzt keins
+    davon — sie baut ihr eigenes `"\\n".join(...)` über die Roh-Events.
+    """
+    from bibi.controller import render as r
+    from bibi.daemon import output_format
+
+    evs = output_format.format_events(
+        _claude_stream("Der Benut", "zer möchte", ", dass ich:"), "claude")
+    html = r.output_block(evs, "claude")
+
+    assert "Der Benutzer möchte, dass ich:" in html, (
+        "die Token-Deltas werden nicht zusammengefügt (#99)")
+
+
+def test_thinking_is_set_apart_and_collapsible():
+    """m.raus Vorgabe zu `#99`: *„Streaming, zurück gesetzt, **etwas** im
+    Hintergrund · einklappbar"*.
+
+    Die ersten beiden Punkte trägt `.term .thinking` (gedimmt, kursiv) — schon
+    vorhanden, nur nie angewendet. Der dritte braucht eine eigene Struktur:
+    zusammenhängendes `thinking` steht in einem `<details>`, damit es
+    zusammengefaltet erreichbar bleibt statt weggeworfen zu werden.
+    """
+    from bibi.controller import render as r
+    from bibi.daemon import output_format
+
+    evs = output_format.format_events(
+        _claude_stream("Ich überlege", " kurz."), "claude")
+    html = r.output_block(evs, "claude")
+
+    assert "<details" in html, "thinking ist nicht einklappbar (#99)"
+    assert 'class="thinking"' in html, "thinking ist nicht abgesetzt (#99)"
+
+
+def test_plain_output_stays_unfolded():
+    """Die Gegenprobe: gewöhnlicher Output wird nicht eingeklappt — nur das
+    Denken tritt zurück, das Ergebnis nicht."""
+    from bibi.controller import render as r
+    from bibi.daemon import output_format
+
+    evs = output_format.format_events(
+        _claude_stream("fertig", kind="text"), "claude")
+    html = r.output_block(evs, "claude")
+    assert "fertig" in html
+    assert "<details" not in html

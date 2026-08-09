@@ -217,6 +217,15 @@ a.tab-active:hover { text-decoration: none; }
         font-size: .82rem; line-height: 1.45; white-space: pre-wrap; }
 .term .err { color: var(--red); }
 .term .thinking { color: var(--dim); font-style: italic; }
+/* Der Denkabschnitt eines claude-Laufs, einklappbar (m.rau/bibi#99). Die
+   Zusammenfassung tritt noch weiter zurueck als der Inhalt: sie ist eine
+   Handhabe, keine Aussage. */
+.term .think { display: block; }
+.term .think > summary { color: var(--faint); font-style: italic;
+                         cursor: pointer; list-style: none; }
+.term .think > summary::-webkit-details-marker { display: none; }
+.term .think > summary::before { content: "▾ "; }
+.term .think:not([open]) > summary::before { content: "▸ "; }
 .term .phase { color: var(--blue); font-style: italic; }
 .out-empty { color: var(--dim); font-size: .85rem; font-style: italic; }
 button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnline);
@@ -2957,7 +2966,12 @@ def _event_line(e: dict) -> str:
         ts = _dt.datetime.fromtimestamp(float(e["t"])).strftime("%H:%M:%S")
     except Exception:
         ts = "--:--:--"
-    line = _e(_strip_ansi(e.get("line", "")))
+    # `line` **oder** `text`: die Formatter-Ausgabe nennt das Feld `line`, die
+    # Host-Antwort aus `/-/journal/{id}/output` `text`. Die abgeloeste
+    # Roh-Ausgabe der v5-Route las beide (`e.get("text") or e.get("line")`) —
+    # beim Anschluss an den Formatter (m.rau/bibi#99) waere die zweite Form
+    # sonst still auf leere Zeilen gefallen.
+    line = _e(_strip_ansi(e.get("line") or e.get("text") or ""))
     s = e.get("s")
     # "phase" (User-Feedback 2026-07-03): Worker-/Wrapper-Startup-Zeilen (Worktree,
     # Container, Prozess-Spawn) — optisch als System-Info abgesetzt, kein Job-Output.
@@ -2980,8 +2994,52 @@ def output_block(events: list[dict], kind: str) -> str:
     unterscheidet nicht mehr nach Job-Typ."""
     if not events:
         return '<div class="out-empty">— no output —</div>'
-    lines = "\n".join(_event_line(e) for e in _merge_deltas(events))
-    return f'<pre class="term">{lines}</pre>'
+    return f'<pre class="term">{_falte_thinking(_merge_deltas(events))}</pre>'
+
+
+def _falte_thinking(events: list[dict]) -> str:
+    """Zusammenhängendes ``thinking`` in ein ``<details>``, alles andere flach.
+
+    Vorgabe m.rau zu ``#104``s Nachbarn ``#99``: *„Streaming, zurück gesetzt,
+    **etwas** im Hintergrund · einklappbar"*. Die ersten beiden Punkte trägt
+    ``.term .thinking`` (gedimmt, kursiv) und tat es schon — sie kamen nur nie
+    an, weil die v5-Route den Formatter umging. Der dritte braucht diese
+    Klammer.
+
+    **Zusammenhängend, nicht je Zeile:** ein Denkabschnitt ist ein Gedanke und
+    keine Sammlung von Zeilen; je Zeile ein Aufklapper wäre unbedienbar. Ein
+    Block endet, sobald etwas anderes kommt — echte Ausgabe, eine Phase, ein
+    Fehler.
+
+    **Aufgeklappt (``open``), nicht zugeklappt.** Der Live-Fall und der
+    Archiv-Fall sind verschieden: während ein Lauf läuft, ist ``thinking`` oft
+    das Einzige, was sich bewegt, und eine zugeklappte Box zeigte dann nichts.
+    Für den Archiv-Fall wäre zu ohne weiteres besser — dafür müsste diese
+    Funktion aber wissen, ob der Lauf noch läuft, und das weiß sie nicht. Lieber
+    sichtbar und einklappbar als versteckt und vergessen; ``<details>`` merkt
+    sich den Zustand ohnehin nicht über einen Swap hinweg.
+    """
+    teile: list[str] = []
+    block: list[str] = []
+
+    def _schliessen() -> None:
+        if not block:
+            return
+        n = len(block)
+        teile.append(
+            f'<details class="think" open><summary>thinking '
+            f'({n} {"line" if n == 1 else "lines"})</summary>'
+            + "\n".join(block) + "</details>")
+        block.clear()
+
+    for e in events:
+        if e.get("s") == "thinking":
+            block.append(_event_line(e))
+            continue
+        _schliessen()
+        teile.append(_event_line(e))
+    _schliessen()
+    return "\n".join(teile)
 
 
 # ── Live-Output (SSE; Frontend-Plan §C.5) ────────────────────────────────────
@@ -4479,7 +4537,13 @@ _JOB_DETAIL_JS = """
       : `${basis}/runs/${show.dataset.jid}/output`;
     try {
       const r = await fetch(ziel);
-      feld.textContent = r.ok ? await r.text() : 'output unavailable';
+      // `innerHTML`, nicht `textContent` (m.rau/bibi#99): die Antwort ist seit
+      // dem Formatter-Anschluss ausgezeichnetes Markup — Uhrzeit-Praefix,
+      // err/thinking-Klassen, der einklappbare Denkabschnitt. Als Text
+      // eingesetzt staende das Markup lesbar in der Box. Der Server escapt
+      // jede Zeile ueber `_e()`, bevor er sie einsetzt.
+      if (r.ok) feld.innerHTML = await r.text();
+      else feld.textContent = 'output unavailable';
       // Ein laufender Lauf ist noch nicht fertig — sein Output darf beim
       // naechsten Aufklappen nicht aus dem Cache kommen.
       if (r.ok && !show.dataset.slot) feld.dataset.geladen = '1';

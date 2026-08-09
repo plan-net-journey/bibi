@@ -2027,8 +2027,11 @@ def add_controller_routes(
             ereignisse = antwort.get("events") or []
             if not ereignisse:
                 return PlainTextResponse("", status_code=404)
-            return PlainTextResponse("\n".join(
-                str(e.get("text") or e.get("line") or "") for e in ereignisse))
+            # Der Host formatiert bereits (`app.py` ruft `format_events`);
+            # zusammengefuegt und ausgezeichnet wird hier — dieselbe
+            # Darstellung wie fuer einen lokalen Lauf (m.rau/bibi#99).
+            return HTMLResponse(render.output_block(
+                ereignisse, antwort.get("kind") or "job"))
         from bibi.daemon import job_db
         conn = job_db.connect()
         try:
@@ -2056,8 +2059,22 @@ def add_controller_routes(
             # Kein Output ist eine Aussage, kein Fehler: ein Job kann
             # schweigend laufen — gerade am Anfang ist das der Normalfall.
             return PlainTextResponse("(no output yet)")
-        return PlainTextResponse(
-            "\n".join(str(e.get("text") or e.get("line") or "") for e in zeilen))
+        # **Durch den Formatter, nicht daran vorbei** (m.rau/bibi#99). Hier
+        # stand ein eigenes `"\n".join(...)` ueber die Roh-Events: jeder
+        # Token-Delta wurde eine eigene Zeile, und im FE stand `Der Benut` /
+        # `zer moechte` — Umbruch mitten im Wort, dazu das rohe Stream-JSON.
+        # Alle drei Bausteine dagegen waren gebaut und wurden anderswo benutzt:
+        # `format_events()` typisiert die Deltas (`s: "thinking"`),
+        # `_merge_deltas()` fuegt sie zusammen, `_event_line()` setzt sie ab.
+        # `output_block()` verbindet die drei — dieselbe Funktion, die der
+        # Host-Screen seit jeher verwendet.
+        from bibi.daemon import output_format as _of
+        from bibi.schedule import models as _models
+        # `zeile` ist je nach Pfad ein `sqlite3.Row` — der kennt kein `.get()`.
+        _row = dict(zeile) if zeile is not None else {}
+        _kind = _models.effective_kind(_row.get("payload"))
+        return HTMLResponse(render.output_block(
+            _of.format_events(zeilen, _kind), _kind))
 
     @app.get("/-/jobs/{job_uid}/runs/{jid}/output", include_in_schema=False)
     def screen_job_run_output(request: Request, job_uid: str, jid: int):  # noqa: ARG001
@@ -2090,8 +2107,11 @@ def add_controller_routes(
             ereignisse = antwort.get("events") or []
             if not ereignisse:
                 return PlainTextResponse("", status_code=404)
-            return PlainTextResponse("\n".join(
-                str(e.get("text") or e.get("line") or "") for e in ereignisse))
+            # Der Host formatiert bereits (`app.py` ruft `format_events`);
+            # zusammengefuegt und ausgezeichnet wird hier — dieselbe
+            # Darstellung wie fuer einen lokalen Lauf (m.rau/bibi#99).
+            return HTMLResponse(render.output_block(
+                ereignisse, antwort.get("kind") or "job"))
         from bibi import repo as repo_mod
         pfad = repo_mod.root() / (zeile.get("output_ref") or "")
         try:
@@ -2103,8 +2123,22 @@ def add_controller_routes(
             # Kein Output ist eine Aussage, kein Fehler: ein Job kann
             # schweigend durchlaufen.
             return PlainTextResponse("(no output)")
-        return PlainTextResponse(
-            "\n".join(str(e.get("text") or e.get("line") or "") for e in zeilen))
+        # **Durch den Formatter, nicht daran vorbei** (m.rau/bibi#99). Hier
+        # stand ein eigenes `"\n".join(...)` ueber die Roh-Events: jeder
+        # Token-Delta wurde eine eigene Zeile, und im FE stand `Der Benut` /
+        # `zer moechte` — Umbruch mitten im Wort, dazu das rohe Stream-JSON.
+        # Alle drei Bausteine dagegen waren gebaut und wurden anderswo benutzt:
+        # `format_events()` typisiert die Deltas (`s: "thinking"`),
+        # `_merge_deltas()` fuegt sie zusammen, `_event_line()` setzt sie ab.
+        # `output_block()` verbindet die drei — dieselbe Funktion, die der
+        # Host-Screen seit jeher verwendet.
+        from bibi.daemon import output_format as _of
+        from bibi.schedule import models as _models
+        # `zeile` ist je nach Pfad ein `sqlite3.Row` — der kennt kein `.get()`.
+        _row = dict(zeile) if zeile is not None else {}
+        _kind = _models.effective_kind(_row.get("payload"))
+        return HTMLResponse(render.output_block(
+            _of.format_events(zeilen, _kind), _kind))
 
     @app.get("/-/jobs/{job_uid}/runs", include_in_schema=False)
     def screen_job_runs(request: Request, job_uid: str,  # noqa: ARG001
