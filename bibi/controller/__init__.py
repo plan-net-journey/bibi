@@ -1021,13 +1021,34 @@ def add_controller_routes(
             live_job=_job_live(slug), live_anchor="#jobsdetail-live"))
 
     def _detail_data(slug: str):
+        """Die Daten der Job-Detailseite — **vom Scheduler** (m.rau/bibi#86).
+
+        Bis zum 2026-08-09 ging das ueber ``client``, also den **eigenen**
+        Daemon. ``/-/job`` und ``/-/schedule`` gibt es aber nur unter
+        ``roles.scheduler``; auf einem reinen Client antworten sie mit dem
+        eingefrorenen ``501``-Stub bzw. ``404``, der defensive Fang unten
+        lieferte ``(None, [], None)``, und ohne ``job`` rendert
+        ``_live_panel()`` keine Box.
+
+        Seit dem Rollenwechsel am 2026-08-04 ist der Client der **einzige**
+        Knotentyp mit Oberflaeche — die Detailseite eines laufenden Jobs sah
+        dort also aus wie die eines nie gelaufenen, und der Durchreicher aus
+        `#78` lag auf einem Pfad, den kein Knoten erreicht.
+
+        ``_host_client()`` ist derselbe Weg, den ``_host_schedules()`` schon
+        geht; der Jobs-Screen desselben Clients zeigt Scheduler-Zeilen deshalb
+        seit jeher richtig. Traegt dieser Knoten die Scheduler-Rolle selbst,
+        gibt ``_host_client()`` den eigenen Client zurueck — fuer ihn aendert
+        sich nichts.
+        """
+        ziel = _host_client()
         try:
-            schedule = next((s for s in client.schedules()
+            schedule = next((s for s in ziel.schedules()
                              if s.get("slug") == slug), None)
             # Erste Seite der Journal-Historie — der Rest lädt per Infinite Scroll
             # nach (GET .../runs?offset=N, render.journal_runs_fragment).
-            runs = client.journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=0)
-            job = next((j for j in client.jobs() if j.get("slug") == slug), None)
+            runs = ziel.journal(slug=slug, limit=render._JOURNAL_PAGE_SIZE, offset=0)
+            job = next((j for j in ziel.jobs() if j.get("slug") == slug), None)
             # Batch 9 Punkt 2: job["app_port"] fehlte hier komplett (anders als
             # bei _local_schedules()/jobs_data() beim Client) — _live_panel()s
             # "Zur App →"-Link (app_link, render.py) blieb dadurch auf der Host-
@@ -1048,10 +1069,15 @@ def add_controller_routes(
         # für ÄLTERE Journal-Läufe (User-Feedback: stand sonst kontextlos nach
         # der ganzen Tabelle, jeder Lauf hat einheitlich nur seinen Detail-Link,
         # PLAN-11-Nacharbeit) — das bleibt unverändert.
+        # **Derselbe Adressat wie in _detail_data()** (m.rau/bibi#86): der Lauf
+        # liegt beim Scheduler, seine `output.jsonl` also auch. Ueber `client`
+        # gefragt, kaeme hier auf einem Client der 501-Stub — die Box haette
+        # ihren Strom, aber keinen Anfangsbestand, und der erste sichtbare
+        # Inhalt entstuende erst mit der naechsten gesendeten Zeile.
         live_output = None
         try:
             if job and job.get("id"):
-                live_output = client.job_output(job["id"])
+                live_output = _host_client().job_output(job["id"])
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
             pass
         return live_output
@@ -1066,10 +1092,20 @@ def add_controller_routes(
         Box ihren zweiten Strom.
 
         Auch ``None`` fuer jeden nicht laufenden Lauf: ein terminaler braucht
-        keinen Strom, dort bleibt der einmalige Abruf richtig."""
+        keinen Strom, dort bleibt der einmalige Abruf richtig.
+
+        **Geprueft wird die Rolle, nicht die Adresse** (m.rau/bibi#86). Bis zum
+        2026-08-09 stand hier ``if not _scheduler_url()`` — das begruendete
+        sein ``None`` mit „auf dem Host", verglich aber nur, **ob** eine
+        Adresse gesetzt ist, nicht ob sie woanders hinzeigt. Ein Scheduler,
+        dessen ``BIBI_SCHEDULER_URL`` auf ihn selbst zeigt (der Normalfall auf
+        sarasate, s. ``d2c03bc``), schickte seine Box deshalb ueber einen
+        Durchreicher zu sich selbst. Dieselbe Verwechslung, die ``d2c03bc``
+        fuer das Abonnement bereits korrigiert hat — die Antwort ist hier
+        dieselbe."""
         if not job or job.get("status") != "running" or not job.get("id"):
             return None
-        if not _scheduler_url():
+        if roles.scheduler:
             return None
         return f"/-/ui/jobs/{urllib.parse.quote(str(job['id']), safe='')}/output/stream"
 
@@ -1724,9 +1760,13 @@ def add_controller_routes(
         Wiederaufsetzen und das eindeutige Ende sind gebaut — sie hier neu zu
         erfinden hiesse, zwei Fassungen derselben Mechanik zu pflegen.
 
-        ``404`` ohne konfigurierten Scheduler: dann *ist* dieser Knoten einer,
-        und der eigene Strom (``/-/job/{id}/output/stream``) ist der richtige —
-        der Umweg ueber sich selbst waere keiner.
+        ``404`` auf einem Knoten mit **Scheduler-Rolle**: dort ist der eigene
+        Strom (``/-/job/{id}/output/stream``) der richtige, der Umweg ueber
+        sich selbst waere keiner. Bis zum 2026-08-09 stand hier stattdessen
+        „ohne konfigurierten Scheduler" — dieselbe Verwechslung von Adresse und
+        Rolle wie in ``_output_stream_url()`` (m.rau/bibi#86), und aus
+        demselben Grund korrigiert. Ohne Adresse gibt es ohnehin nichts
+        durchzureichen; auch das bleibt ``404``.
 
         **Nur fuer laufende Laeufe.** Ein terminaler braucht keinen Strom, dort
         bleibt der einmalige Abruf richtig (Klarstellung m.rau: *„Bei
@@ -1735,6 +1775,8 @@ def add_controller_routes(
         ``_live_panel()``.
         """
         global _output_proxies
+        if roles.scheduler:
+            return PlainTextResponse("", status_code=404)
         url = _scheduler_url()
         if not url:
             return PlainTextResponse("", status_code=404)

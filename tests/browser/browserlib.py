@@ -364,7 +364,8 @@ def warte_bis(bedingung, *, frist: float, takt: float = 0.2, was: str = ""):
     raise AssertionError(f"{was} (nach {frist:.0f}s, zuletzt: {letzter!r})")
 
 
-def paar(fabrik) -> tuple[Knoten, Knoten]:
+def paar(fabrik, *, job: str | None = None,
+         payload: str = "job: echo hi") -> tuple[Knoten, Knoten]:
     """Die Produktions-Topologie im Kleinen: ein Host, ein Client daran.
 
     **Warum zwei Knoten und nicht einer.** Beide Szenarien, die hier daran
@@ -379,12 +380,21 @@ def paar(fabrik) -> tuple[Knoten, Knoten]:
       sich seit `d2c03bc` nicht mehr selbst. Ohne Client gibt es nichts, was
       sich zu oft neu verbinden könnte.
 
+    ``job`` legt die MD in **beide** Repos — der Synchronizer täte im Betrieb
+    dasselbe. Der Host braucht sie, um den Lauf überhaupt zu haben; der Client,
+    damit der Slug ihm lokal bekannt ist. Ohne beides prüft ein Test über die
+    Detailseite eines Clients die falsche Hälfte.
+
     Gibt ``(host, client)`` zurück; der Client ist freigeschaltet.
     """
     host_root = fabrik.repo("host")
+    if job:
+        job_md(host_root, job, payload=payload)
     host = fabrik.starte(host_root, rollen="--synchronizer --scheduler --worker")
 
     client_root = fabrik.repo("client")
+    if job:
+        job_md(client_root, job, payload=payload)
     client = fabrik.starte(client_root,
                            rollen="--synchronizer --controller --connect",
                            env={"BIBI_SCHEDULER_URL": host.url})
