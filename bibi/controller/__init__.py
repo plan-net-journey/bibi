@@ -2051,10 +2051,19 @@ def add_controller_routes(
 
     @app.get("/-/live", include_in_schema=False)
     def screen_live():
-        # Noch derselbe Inhalt wie `Log` — die Trennung (Live ohne Gedächtnis,
-        # SSE; Log mit Historie, HTTP) kommt in Bauschritt 4. Bis dahin ist der
-        # Tab erreichbar statt tot: ein 404 hinter einem sichtbaren Tab ist die
-        # schlechtere Zwischenlösung.
+        # Noch derselbe Inhalt wie `Log`. Die Trennung — Live ohne Gedächtnis
+        # (SSE, ganze englische Sätze), Log mit Historie (HTTP, Paging, Details
+        # auf DEBUG) — ist in FE-Spezifikation §7 ausgearbeitet und steht als
+        # m.rau/bibi#109 am Board.
+        #
+        # **Hier stand bis zum 2026-08-09 „kommt in Bauschritt 4".** Diesen
+        # Bauschritt gab es nirgends sonst: kein Ticket, kein Eintrag im Vault,
+        # keine Fundstelle außer diesem Kommentar. Eine Absicht, die nur im Code
+        # steht, sieht niemand, der das Board liest — sie hat keinen Termin,
+        # keinen Zuschnitt und keinen Ort, an dem ihr Fehlen auffiele.
+        #
+        # Bis dahin ist der Tab erreichbar statt tot: ein 404 hinter einem
+        # sichtbaren Tab ist die schlechtere Zwischenlösung.
         return logs_page()
 
     @app.get("/-/log", include_in_schema=False)
