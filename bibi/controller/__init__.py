@@ -523,7 +523,7 @@ def add_controller_routes(
         if sort is None and not explizit:
             sort = request.cookies.get("bibi_jobs_sort") or None
             direction = direction or request.cookies.get("bibi_jobs_dir") or None
-        if sort not in render._SORT_KEYS:
+        if sort not in render.sortierbare_schluessel():
             sort = None              # alter Cookie / manipulierte URL
         if direction not in ("asc", "desc"):
             direction = "asc"

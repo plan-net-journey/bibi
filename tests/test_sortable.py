@@ -1,65 +1,21 @@
-"""Sortierbare Spalten in Jobs und Archive (m.rau/bibi#66).
+"""Die Spaltenköpfe der sortierbaren Spalten (m.rau/bibi#66).
 
 Sortierung gab es im FE nirgends. Die Entscheidung, die das Issue offen liess:
 server- oder clientseitig. **Serverseitig**, weil der Event-Bus die Region neu
 rendert — eine clientseitige Sortierung in JS wäre bei jedem Refetch weg, und
 das Issue nennt genau das als Grund.
 
-Aus demselben Grund braucht es Persistenz: ein Sortierzustand, der bei jedem
-Bus-Refetch zurückspringt, wäre ärgerlicher als keiner.
+**Die Tests der Sortierfunktion selbst standen bis zum 2026-08-09 hier und sind
+mit ``render.sort_rows()`` entfallen (#95).** Sie waren grün und prüften einen
+Pfad, den seit dem v5-Umbau niemand mehr betrat; die lebende Sortierung
+(``jobs_view.sortiere()``) hatten sie nie erreicht. Was von ihnen noch gebraucht
+wird, steht jetzt dort, wo es wirkt: ``test_jobs_screen.py`` prüft über die
+Route, dass jeder klickbare Kopf durchkommt.
 """
 
 from __future__ import annotations
 
 from bibi.controller import render
-
-
-# --- Die Sortierung selbst ---------------------------------------------------
-
-def _rows():
-    return [
-        {"slug": "beta", "payload": "echo", "last_status": "complete",
-         "finished_at": 300.0, "next_fire_at": 900.0},
-        {"slug": "alpha", "payload": "claude: x", "last_status": "failed",
-         "finished_at": 100.0, "next_fire_at": 700.0},
-        {"slug": "gamma", "payload": "echo", "last_status": "running",
-         "finished_at": 200.0, "next_fire_at": None},
-    ]
-
-
-def test_sort_by_slug_both_directions():
-    asc = [r["slug"] for r in render.sort_rows(_rows(), "slug", "asc")]
-    desc = [r["slug"] for r in render.sort_rows(_rows(), "slug", "desc")]
-    assert asc == ["alpha", "beta", "gamma"]
-    assert desc == ["gamma", "beta", "alpha"]
-
-
-def test_sort_by_type_uses_the_effective_kind():
-    """Nach dem angezeigten Typ, nicht nach dem rohen Payload — sonst sortierte
-    die Spalte nach etwas anderem, als in ihr steht."""
-    asc = [r["slug"] for r in render.sort_rows(_rows(), "type", "asc")]
-    assert asc[0] == "alpha"        # claude < job
-
-
-def test_sort_by_status():
-    asc = [r["slug"] for r in render.sort_rows(_rows(), "status", "asc")]
-    assert asc == ["beta", "alpha", "gamma"]   # complete < failed < running
-
-
-def test_sort_by_time_puts_missing_values_last_in_both_directions():
-    """``None`` heisst „gibt es nicht", nicht „ganz früh". Eine Zeile ohne Wert
-    gehört ans Ende — in beide Richtungen, sonst füllt sie beim Umdrehen den
-    Anfang und verdrängt das, wonach jemand gerade sucht."""
-    asc = [r["slug"] for r in render.sort_rows(_rows(), "next", "asc")]
-    desc = [r["slug"] for r in render.sort_rows(_rows(), "next", "desc")]
-    assert asc[-1] == "gamma" and desc[-1] == "gamma"
-
-
-def test_unknown_key_leaves_the_order_alone():
-    """Ein unbekannter Sortierschlüssel (alter Cookie, manipulierte URL) darf
-    die Liste nicht leeren oder werfen — er tut schlicht nichts."""
-    assert render.sort_rows(_rows(), "quatsch", "asc") == _rows()
-    assert render.sort_rows(_rows(), None, None) == _rows()
 
 
 # --- Die Spaltenköpfe --------------------------------------------------------

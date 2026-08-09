@@ -1221,56 +1221,13 @@ def _effective_sched_type(s: dict) -> str:
     return models.effective_kind(s.get("payload"))
 
 
-#: Sortierschlüssel → wie der Wert aus einer Zeile kommt (m.rau/bibi#66).
-#: Die Schlüssel sind bewusst die Spalten**bedeutungen**, nicht Feldnamen: Host-
-#: und Client-Zeilen tragen dieselbe Information unter teils anderen Namen, und
-#: der Nutzer sortiert nach dem, was in der Spalte steht.
-_SORT_KEYS: dict[str, "callable"] = {
-    "slug": lambda r: (r.get("slug") or "").lower(),
-    # Nach dem *angezeigten* Typ, nicht nach dem rohen Payload — sonst
-    # sortierte die Spalte nach etwas anderem, als in ihr steht.
-    "type": lambda r: _effective_sched_type(r),
-    "status": lambda r: (r.get("last_status") or r.get("row_status") or ""),
-    "last": lambda r: r.get("finished_at") if r.get("finished_at") is not None
-                      else r.get("started_at"),
-    "runtime": lambda r: r.get("runtime"),
-    "next": lambda r: r.get("next_fire_at"),
-}
-
-
-def sort_rows(rows: list[dict], sort: str | None,
-              direction: str | None = "asc") -> list[dict]:
-    """Zeilen serverseitig sortieren (m.rau/bibi#66).
-
-    **Serverseitig und nicht in JS**, weil der Event-Bus die Region neu rendert:
-    eine clientseitige Sortierung wäre beim nächsten Refetch weg. Das Issue
-    nennt genau diesen Grund, und er wiegt schwerer als der Geschwindigkeits-
-    vorteil — die Tabellen haben Dutzende Zeilen, nicht Tausende.
-
-    Ein unbekannter Schlüssel lässt die Reihenfolge unangetastet, statt zu
-    werfen oder zu leeren: er kann aus einem alten Cookie oder einer von Hand
-    zusammengesetzten URL kommen, und beides darf keinen Screen kosten.
-
-    ``None``-Werte landen **immer am Ende**, in beide Richtungen. „Kein Wert"
-    heisst *gibt es nicht*, nicht *ganz früh* — beim Umdrehen füllten sie sonst
-    den Anfang und verdrängten genau das, wonach jemand gerade sucht.
-    """
-    fn = _SORT_KEYS.get(sort or "")
-    if fn is None:
-        return rows
-    rev = (direction or "asc") == "desc"
-
-    def _key(r: dict):
-        v = fn(r)
-        if v is None:
-            # Erstes Tupelglied: fehlende Werte hinten, unabhängig von rev.
-            return (1, 0) if not rev else (-1, 0)
-        return (0, v) if not rev else (0, v)
-
-    missing = [r for r in rows if fn(r) is None]
-    present = [r for r in rows if fn(r) is not None]
-    present.sort(key=fn, reverse=rev)
-    return present + missing
+# Hier standen `_SORT_KEYS` und `sort_rows()` (m.rau/bibi#66) — der
+# serverseitige Sortierpfad des bibi4-Screens. Der Jobs-Screen sortiert seit
+# dem v5-Umbau über `jobs_view.sortiere()`; `sort_rows()` hatte danach keinen
+# Aufrufer mehr, `_SORT_KEYS` blieb als Whitelist für den `sort`-Parameter
+# zurück (#95). Sie ist mit den Spalten nicht mitgewachsen: `24h` fehlte,
+# `runtime` stand darin, obwohl es nie ein klickbarer Kopf war. Die Whitelist
+# leitet sich jetzt aus `_SORTIERBAR` ab — siehe `sortierbare_schluessel()`.
 
 
 def _sortable_head(columns: list[tuple[str, str | None]], *, sort: str | None,
@@ -4115,6 +4072,21 @@ _FILTER_JOURNAL = ("dropped", "oneshot", "local")
 #: Klickbare Spalten. Der Schlüssel ist zugleich der Query-Parameter.
 _SORTIERBAR = (("slug", "SLUG"), ("type", "TYPE"), ("status", "STATUS"),
                ("last", "LAST"), ("next", "NEXT"), ("24h", "24H"))
+
+
+def sortierbare_schluessel() -> frozenset[str]:
+    """Welche ``sort``-Werte die Route annehmen darf (#95).
+
+    **Abgeleitet statt aufgezählt.** Die Vorgängerin war eine zweite, von Hand
+    gepflegte Liste (``_SORT_KEYS``), und sie lief auseinander: ``24h`` war
+    klickbar, kam aber nicht durch die Prüfung — der Kopf setzte den Parameter,
+    die Route warf ihn weg, und niemand sah einen Fehler, nur eine Spalte, die
+    auf Klicks nicht reagierte.
+
+    Eine neue klickbare Spalte kann diesen Fehler nicht wiederholen: sie steht
+    in ``_SORTIERBAR`` und ist damit hier drin.
+    """
+    return frozenset(k for k, _ in _SORTIERBAR)
 
 
 def _filter_knopf(wert: str, aktiv: list[str]) -> str:
