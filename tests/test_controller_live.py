@@ -178,13 +178,14 @@ def test_events_js_scrolls_to_bottom_on_initial_bind():
 
 def test_scroll_js_preserves_liveclamp_scroll_across_swap():
     # Swaps kommen jetzt ausschliesslich vom Bus-Refetch (36.3) — das Problem
-    # (frisches Element hat scrollTop=0) bleibt dasselbe; beide Regionen
-    # (#live Host, #jobsdetail-live Client) sind abgedeckt.
+    # (frisches Element hat scrollTop=0) bleibt dasselbe. Bis `#100` waren es
+    # zwei Regionen (`#live` Host, `#jobsdetail-live` Client); die zweite ist
+    # mit der abgeloesten Client-Detailseite entfallen.
     js = render._SCROLL_JS
     assert "htmx:beforeSwap" in js and "htmx:afterSettle" in js
     assert ".liveclamp" in js
     assert "box.scrollTop = saved" in js
-    assert "jobsdetail-live" in js
+    assert "'live'" in js
 
 
 def test_scroll_js_resticks_liveterm_across_swap():

@@ -55,35 +55,6 @@ def test_until_exactly_now_is_asap():
 # ── Time-Toggle (Bibi4-Iteration, User-Fund: "Time: abs./rel./both") ────────
 
 
-def test_time_abs_full_includes_year():
-    import datetime
-    ts = datetime.datetime(2026, 7, 18, 23, 18).timestamp()
-    assert render._time_abs_full(ts) == "2026-07-18 23:18"
-
-
-def test_time_abs_full_none_is_dash():
-    assert render._time_abs_full(None) == "—"
-
-
-def test_time_toggle_cell_renders_all_three_variants():
-    html = render._time_toggle_cell(100.0, 300.0, rel_fn=render._ago)
-    assert '<span class="tt-abs">' in html
-    assert '<span class="tt-relonly">3 min ago</span>' in html
-    assert '<span class="tt-relboth"> (3 min ago)</span>' in html
-
-
-def test_time_toggle_cell_none_is_bare_dash():
-    # Kein Toggle-Markup für fehlende Zeitstempel — bleibt schlicht "—", wie
-    # zuvor bei _abs_time(None)/_ago(None).
-    assert render._time_toggle_cell(None, 300.0) == "—"
-
-
-def test_time_toggle_cell_uses_until_for_next_column():
-    # "next" ist zukunftsgerichtet — rel_fn=_until traegt den "asap"-Sonderfall.
-    html = render._time_toggle_cell(100.0, 300.0, rel_fn=render._until)
-    assert '<span class="tt-relonly">asap</span>' in html
-
-
 # ── Route ────────────────────────────────────────────────────────────────────
 
 

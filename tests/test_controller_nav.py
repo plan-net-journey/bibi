@@ -192,32 +192,6 @@ def test_theme_toggle_uses_symbol_not_text_label():
 # --- last/since- und next-Spalten) -----------------------------------------
 
 
-def test_time_toggle_uses_symbol_not_text_label():
-    html = render._time_toggle()
-    assert 'id="time"' in html and "bibiToggleTime" in html
-    assert "abs" not in html and "rel" not in html and "both" not in html
-
-
-def test_time_toggle_js_cycles_through_three_states():
-    js = render._TIME_JS
-    assert "ORDER = ['abs', 'rel', 'both']" in js
-    assert "bibiToggleTime" in js
-    assert "data-timeformat" in js
-
-
-def test_header_includes_time_toggle_in_right_group():
-    html = render._header("Schedules")
-    right = html.split('<div class="nav-right">')[1].split("</div>")[0]
-    assert 'id="time"' in right
-
-
-def test_time_toggle_css_hides_inactive_variants_per_mode():
-    css = render._CSS
-    assert 'data-timeformat="abs"] .tt-relonly' in css
-    assert 'data-timeformat="rel"] .tt-abs' in css
-    assert 'data-timeformat="both"] .tt-relonly' in css
-
-
 def test_live_clock_placeholder_includes_date():
     html = render._live_clock()
     assert "--.--.----" in html  # Datum-Platzhalter, vorher nur Uhrzeit

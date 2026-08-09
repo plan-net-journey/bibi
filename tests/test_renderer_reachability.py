@@ -1,106 +1,214 @@
-"""Renderer ohne Produktions-Aufrufer (m.rau/bibi#100).
+"""Was von einem Screen aus erreichbar ist — und was nur so aussieht (`#100`).
 
 **Warum es diesen Test gibt.** `#95`, `#96`, `#99`, `#102` und `#106` sind
-Ausprägungen einer Fehlerform: eine Fähigkeit wird beim Umbau nicht mitgenommen,
-**während ihre Tests am alten Pfad hängen bleiben und grün weiterlaufen**. Die
-Abdeckung bewacht dann den toten Pfad und lässt den lebenden unbewacht —
-`_jobs_type_cell()` war über `_jobs_table` 15-fach getestet und durchgehend
-grün, während die Fähigkeit, die sie prüft, im FE monatelang fehlte.
+Ausprägungen einer Fehlerform: eine Fähigkeit wird beim Umbau nicht
+mitgenommen, **während ihre Tests am alten Pfad hängen bleiben und grün
+weiterlaufen**. Die Abdeckung bewacht dann den toten Pfad und lässt den
+lebenden unbewacht — `_jobs_type_cell()` war über `_jobs_table` 15-fach
+getestet und durchgehend grün, während die Fähigkeit, die sie prüft, im FE
+monatelang fehlte.
 
 **Ein Test am toten Pfad ist schlimmer als kein Test**, weil er ein Signal
 erzeugt, das wie Abdeckung aussieht.
 
-Dieser Test misst die Menge und friert sie ein. Er findet nichts von selbst —
-er verhindert, dass die Zahl **wächst**, ohne dass jemand es merkt. Wer einen
-Renderer verwaisen lässt, muss ihn hier eintragen und damit begründen.
+**Die erste Fassung maß direkte Aufrufer und hat deshalb die Hälfte nicht
+gesehen.** Sie fand `_jobs_table` (niemand ruft es), aber nicht `_jobs_row`
+(`_jobs_table` ruft es) und schon gar nicht `jobs_detail_page` — dessen
+Aufrufer ist eine *Route*, und eine Route hat immer einen Aufrufer: FastAPI.
+Ein ganzer Screen konnte damit absterben, ohne dass eine einzige Zahl stieg.
+So sind `/-/ui/jobs/detail/…` (zehn Routen), `/-/ui/feed/jobstatus` und
+`/-/ui/self/update` durchgerutscht.
+
+Gemessen wird deshalb **Erreichbarkeit ab den fünf Screens** der App-Bar
+(`render.SCREENS`): ein Screen führt auf Routen, deren Handler rendern,
+und was gerendert wird, nennt die nächsten Routen. Was dieser Fixpunkt nicht
+erreicht, erreicht auch kein Mensch mit einem Browser.
+
+**Der Korpus besteht aus Zeichenketten, die wirklich ausgegeben werden** —
+nicht aus Quelltext. Kommentare und Docstrings zählen nicht mit, und das ist
+kein Detail: der erste Entwurf hielt `/-/ui/jobs/detail` für lebendig, weil
+der Docstring von `_action_bar()` die Adresse erwähnt. Dieselbe Falle hatte
+schon die Vorgängerfassung, dort als `grep` gegen einen Kommentar.
 """
 
 from __future__ import annotations
 
 import ast
-import collections
 import pathlib
 
-#: Der Bestand am 2026-08-09, nach dem Entfernen der drei aufrufer-losen
-#: Funktionen ohne Testabdeckung (`_plural`, `_effective_sched_type`,
-#: `_load_more` — letztere meine eigene Hinterlassenschaft aus `#96`).
+from bibi.controller import render
+
+#: Renderer, die statisch nicht erreichbar sind und es trotzdem sein dürfen.
 #:
-#: **Was hier steht, ist Schuld, keine Erlaubnis.** Alle sechs gehören zu
-#: abgelösten bibi4-Screens: `_jobs_table`/`_jobs_row` zum Jobs-Screen
-#: (PLAN-17), die vier Kacheln und `daemon_page` zum Dashboard (PLAN-19/20/21).
-#: Sie werden von 51 Test-Aufrufen am Leben gehalten. Der Abbau steht in
-#: `#100`; er braucht eine Entscheidung je Test — prüft er eine Fähigkeit, die
-#: es im v5-FE noch gibt (dann zieht er um), oder eine, die ersatzlos entfallen
-#: ist (dann geht er mit). Diese Entscheidung 78-mal zu treffen war der Grund,
-#: `#100` in `v0.7.12` nicht abzuschließen.
-_BEKANNT_OHNE_AUFRUFER = frozenset({
-    "_jobs_table",
-    "_host_card",
-    "_git_segment_card",
-    "_mode_card",
-    "_client_job_status_card",
-    "daemon_page",
-})
+#: **Was hier steht, ist Schuld, keine Erlaubnis** — und die Liste ist leer,
+#: seit `#100` abgeschlossen ist. Wer etwas einträgt, begründet es im Commit.
+_ERLAUBT_UNERREICHBAR: frozenset[str] = frozenset()
+
+#: Dasselbe für Routen. Ebenfalls leer.
+_ERLAUBT_TOTE_ROUTEN: frozenset[str] = frozenset()
+
+_WURZEL = pathlib.Path(render.__file__).resolve().parent.parent.parent
 
 
-def _aufrufe(pfade) -> collections.Counter:
-    """Echte Aufrufe per AST — Docstrings und Kommentare zählen nicht mit.
+def _quelle(name: str) -> tuple[str, ast.Module]:
+    p = _WURZEL / "bibi" / "controller" / name
+    text = p.read_text(encoding="utf-8")
+    return text, ast.parse(text)
 
-    Die erste Fassung dieser Erhebung war ein `grep` und zählte
-    `` `_jobs_table()` `` in einem Kommentar als Aufruf; `_jobs_table` fehlte
-    dadurch im Ergebnis. Der Unterschied ist der ganze Befund.
 
-    **Gemessen werden direkte Aufrufer, nicht Erreichbarkeit.** `_jobs_row()`
-    hat einen Aufrufer — `_jobs_table()`, das selbst tot ist. Es ist damit
-    transitiv unerreichbar, aber nicht aufrufer-los, und taucht hier nicht auf.
-    Das ist Absicht: eine transitive Analyse müsste einen Einstiegspunkt
-    definieren (welche Route zählt?), und genau darüber gibt es bei
-    `/-/ui/jobs/detail/…` gerade keine Einigkeit. Wer die Wurzel entfernt,
-    bekommt das Blatt beim nächsten Lauf gemeldet.
+def _funktionen(baum: ast.Module) -> dict[str, ast.AST]:
+    return {n.name: n for n in ast.walk(baum)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def _string_konstanten(baum: ast.Module) -> dict[str, str]:
+    """Modulweite String-Konstanten — die JS- und CSS-Blöcke.
+
+    Sie tragen einen guten Teil der Adressen (`_OPS_HANDLES_JS` nennt Rescan
+    und Maintenance, `_HTMX` den lokalen htmx-Pfad) und gehören deshalb in den
+    Korpus, sobald eine erreichbare Funktion sie einbindet.
     """
-    c: collections.Counter = collections.Counter()
-    for p in pfade:
-        try:
-            baum = ast.parse(p.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):
+    out: dict[str, str] = {}
+    for n in baum.body:
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant) \
+                and isinstance(n.value.value, str):
+            for ziel in n.targets:
+                if isinstance(ziel, ast.Name):
+                    out[ziel.id] = n.value.value
+    return out
+
+
+def _routen(baum: ast.Module) -> dict[str, str]:
+    """Pfad → Name des Handlers. Nur die FE-Routen; `controller/__init__.py`
+    führt keine Maschinen-API (die liegt in `daemon/`)."""
+    out: dict[str, str] = {}
+    for n in ast.walk(baum):
+        if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        for knoten in ast.walk(baum):
-            if isinstance(knoten, ast.Call):
-                name = (getattr(knoten.func, "id", None)
-                        or getattr(knoten.func, "attr", None))
-                if name:
-                    c[name] += 1
-    return c
+        for d in n.decorator_list:
+            if isinstance(d, ast.Call) and d.args \
+                    and isinstance(d.args[0], ast.Constant):
+                pfad = d.args[0].value
+                if isinstance(pfad, str) and pfad.startswith("/-/"):
+                    out.setdefault(pfad, n.name)
+    return out
 
 
-def _ohne_aufrufer() -> set[str]:
-    wurzel = pathlib.Path(__file__).resolve().parent.parent
-    render = wurzel / "bibi" / "controller" / "render.py"
-    defs = [n.name for n in ast.walk(ast.parse(render.read_text(encoding="utf-8")))
-            if isinstance(n, ast.FunctionDef)]
-    prod = _aufrufe((wurzel / "bibi").rglob("*.py"))
-    return {n for n in defs if prod[n] == 0}
+def _bezeichner(knoten: ast.AST) -> set[str]:
+    """Aufgerufene Funktionen und referenzierte Konstanten."""
+    out: set[str] = set()
+    for k in ast.walk(knoten):
+        if isinstance(k, ast.Call):
+            name = getattr(k.func, "id", None) or getattr(k.func, "attr", None)
+            if name:
+                out.add(name)
+        elif isinstance(k, ast.Name):
+            out.add(k.id)
+    return out
 
 
-def test_no_new_renderer_loses_its_caller():
-    """Ein Umbau, der einen Renderer verwaisen lässt, meldet sich hier."""
-    neu = _ohne_aufrufer() - _BEKANNT_OHNE_AUFRUFER
-    assert not neu, (
-        f"{len(neu)} Renderer ohne Produktions-Aufrufer sind dazugekommen: "
-        f"{sorted(neu)}. Entweder wieder aufrufen, entfernen — oder bewusst in "
-        f"_BEKANNT_OHNE_AUFRUFER eintragen und im Commit begründen. Ein Test, "
+def _ausgegebene_strings(knoten: ast.AST) -> str:
+    """Nur, was die Funktion tatsächlich ausgibt — ohne ihren Docstring.
+
+    Kommentare stehen ohnehin nicht im AST; der Docstring schon, und **genau
+    er** hat den ersten Entwurf getäuscht.
+    """
+    doc = ast.get_docstring(knoten, clean=False) \
+        if isinstance(knoten, (ast.FunctionDef, ast.AsyncFunctionDef)) else None
+    teile = [k.value for k in ast.walk(knoten)
+             if isinstance(k, ast.Constant) and isinstance(k.value, str)
+             and not (doc is not None and k.value == doc)]
+    return "\n".join(teile)
+
+
+def _rumpf(pfad: str) -> str:
+    """Der feste Anfang einer Route — `/-/jobs/{uid}/runs` → `/-/jobs`.
+
+    Weiter kommt man nicht: der Rest wird zur Laufzeit zusammengesetzt, und
+    ein Muster, das Platzhalter rät, meldet Treffer, die es nicht gibt.
+    """
+    i = pfad.find("{")
+    return (pfad[:i] if i > 0 else pfad).rstrip("/")
+
+
+def _erreichbar() -> tuple[set[str], set[str], dict[str, str], dict[str, ast.AST]]:
+    """Fixpunkt: Screens → Routen → Renderer → weitere Routen."""
+    ctrl_text, ctrl_baum = _quelle("__init__.py")
+    rend_text, rend_baum = _quelle("render.py")
+    ctrl_f, rend_f = _funktionen(ctrl_baum), _funktionen(rend_baum)
+    konst = _string_konstanten(rend_baum)
+    routen = _routen(ctrl_baum)
+    alle = {**ctrl_f, **rend_f}
+
+    def korpus_von(name: str) -> str:
+        if name in alle:
+            return _ausgegebene_strings(alle[name])
+        return konst.get(name, "")
+
+    namen: set[str] = set()
+    erreichte = {p for p in routen if p in {h for _, h in render.SCREENS}}
+    for _ in range(30):
+        vorher = (set(namen), set(erreichte))
+        namen |= {routen[p] for p in erreichte}
+        grenze = True
+        while grenze:
+            grenze = False
+            for n in list(namen):
+                if n not in alle:
+                    continue
+                neu = {x for x in _bezeichner(alle[n])
+                       if x in alle or x in konst} - namen
+                if neu:
+                    namen |= neu
+                    grenze = True
+        korpus = "\n".join(korpus_von(n) for n in namen)
+        for p in routen:
+            if p not in erreichte and _rumpf(p) and _rumpf(p) in korpus:
+                erreichte.add(p)
+        if (namen, erreichte) == vorher:
+            break
+    return erreichte, namen, routen, rend_f
+
+
+def test_every_route_can_be_reached_from_a_screen():
+    """Eine Route, auf die nichts zeigt, ist ein Screen ohne Tür.
+
+    Sie antwortet weiter mit `200`, ihre Tests bleiben grün, und niemand
+    merkt, dass der Weg dorthin beim letzten Umbau verschwunden ist. Genau so
+    hat `/-/ui/jobs/detail/…` einen Monat lang überlebt.
+    """
+    erreichte, _namen, routen, _ = _erreichbar()
+    tot = sorted(set(routen) - erreichte - _ERLAUBT_TOTE_ROUTEN)
+    assert not tot, (
+        f"{len(tot)} Routen sind von keinem Screen aus erreichbar: {tot}. "
+        f"Entweder verlinken, entfernen — oder bewusst in "
+        f"_ERLAUBT_TOTE_ROUTEN eintragen und im Commit begründen (#100).")
+
+
+def test_every_renderer_can_be_reached_from_a_screen():
+    """Die Gegenprobe auf derselben Messung: kein Renderer ohne Weg.
+
+    Sie schließt die Lücke der ersten Fassung, die nur direkte Aufrufer zählte
+    und deshalb weder Blätter (`_jobs_row`) noch ganze Route-Wurzeln
+    (`jobs_detail_page`) sah.
+    """
+    _erreichte, namen, _routen, rend_f = _erreichbar()
+    tot = sorted(set(rend_f) - namen - _ERLAUBT_UNERREICHBAR)
+    assert not tot, (
+        f"{len(tot)} Renderer sind von keinem Screen aus erreichbar: {tot}. "
+        f"Entweder wieder anschließen, entfernen — oder bewusst in "
+        f"_ERLAUBT_UNERREICHBAR eintragen und im Commit begründen. Ein Test, "
         f"der nur noch den toten Pfad prüft, sieht aus wie Abdeckung und ist "
         f"keine (#100).")
 
 
-def test_the_known_backlog_does_not_quietly_heal():
-    """Die Gegenrichtung: wer einen der bekannten wieder anschließt oder
-    entfernt, trägt ihn hier aus.
+def test_the_allowance_lists_stay_empty_unless_someone_argues():
+    """Die Gegenrichtung: eine Ausnahmeliste, die wächst, deckt jede neue
+    Leiche und nimmt den beiden Tests darüber ihre Schärfe.
 
-    Sonst wächst die Liste zu einem Friedhof, den niemand mehr liest — und der
-    Test oben verlöre seine Schärfe, weil die Ausnahme jede neue Leiche deckt.
+    Sie ist deshalb leer und soll es bleiben. Wer einträgt, begründet — und
+    dieser Test macht sichtbar, dass er es getan hat.
     """
-    verschwunden = _BEKANNT_OHNE_AUFRUFER - _ohne_aufrufer()
-    assert not verschwunden, (
-        f"{sorted(verschwunden)} hat/haben wieder einen Aufrufer oder sind "
-        f"entfernt — bitte aus _BEKANNT_OHNE_AUFRUFER austragen (#100)")
+    assert not _ERLAUBT_UNERREICHBAR and not _ERLAUBT_TOTE_ROUTEN, (
+        "Ausnahmen sind zugelassen, aber nie stillschweigend: dieser Test "
+        "gehört mit der Begründung angepasst, nicht die Liste allein.")

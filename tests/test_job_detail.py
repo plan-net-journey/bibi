@@ -1723,26 +1723,6 @@ def test_the_v5_detail_names_an_app_an_app():
         f"demselben Spec (#96)")
 
 
-def test_the_fallback_meta_line_names_an_app_an_app():
-    """**Der Rot-Schritt der dritten Fundstelle von `#96`.**
-
-    `_local_job_meta_line()` greift, wenn der Job auf diesem Knoten noch nie
-    lief und nichts live ist. Dort läuft `_effective_sched_type()`, also
-    `models.effective_kind()` **ohne** `app_port` — zwei Zeilen darunter wird
-    `app_port` für den "Open app →"-Link gelesen. Derselbe Codeblock weiß,
-    dass es eine App ist, und schreibt trotzdem `job`.
-
-    Live am 2026-08-09 auf `/-/ui/jobs/detail/burndown-app`: `Type <b>job<`
-    neben einem `Open app`.
-    """
-    from bibi.controller import render
-    html = render._local_job_meta_line(
-        {"slug": "burndown-app", "schedule": "on_demand", "app_port": 9110},
-        public_host="Mac.fritz.box")
-    assert "app :9110" in html, (
-        "die Fallback-Meta-Zeile nennt eine App 'job' (#96)")
-
-
 # ── Der App-Link gehört an den Knoten, der die App fährt (#104) ─────────────
 
 

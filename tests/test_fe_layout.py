@@ -16,20 +16,19 @@ from bibi.controller import render
 
 # --- #62: Kopf-Kacheln brechen in drei Stufen um -----------------------------
 
-def test_header_grid_has_three_breakpoints():
-    """m.rau: „sollte breit 1x4, schmal 2x2 und end 4x1 Spalten sein."
+def test_the_header_falls_to_one_column_when_it_gets_narrow():
+    """Der Nachfolger der Kachel-Umbruchstufen (`#100`).
 
-    Vorher stand dort ``repeat(auto-fit, minmax(9rem, 1fr))`` — der Browser
-    entschied, wie viele Spalten es gibt. Das ergibt je nach Fensterbreite auch
-    drei Kacheln nebeneinander und eine darunter, was die Anforderung
-    ausdrücklich nicht will.
+    Die alte Forderung lautete „breit 1x4, schmal 2x2 und eng 4x1 Spalten" und
+    galt den vier Status-Kacheln. Der Header hat sie mit zwei Blöcken abgelöst,
+    und damit braucht es nur noch **eine** Stufe: zwei Spalten nebeneinander
+    oder untereinander. Die Aussage bleibt — nebeneinanderstehende Blöcke
+    dürfen nicht überlaufen —, die Zahl der Stufen folgt der Anzahl der Blöcke.
     """
     css = render._CSS
-    assert "repeat(4, 1fr)" in css
-    assert "repeat(2, 1fr)" in css
-    # Zwei Media-Queries, die .statuscards umstellen — die zweite und dritte Stufe.
-    breakpoints = re.findall(r"@media[^{]*\{\s*\.statuscards", css)
-    assert len(breakpoints) == 2, f"erwartet: zwei Umbruchstufen, gefunden: {breakpoints}"
+    assert "grid-template-columns: 1fr 1fr" in css, "breit: die zwei Blöcke nebeneinander"
+    umbrueche = re.findall(r"@media[^{]*\{\s*\.hdr\s*\{", css)
+    assert len(umbrueche) == 1, f"erwartet: eine Umbruchstufe, gefunden: {umbrueche}"
 
 
 # --- #63: „mehr laden" gehört in die Karte, links unten ----------------------
@@ -68,36 +67,6 @@ def test_load_more_is_left_aligned():
 
 
 # --- #64: Type/Status-Filter gehört in die Schedules-Karte, links oben -------
-
-
-
-def test_client_status_follows_the_live_run_first():
-    """Dieselbe dreistufige Logik, die die Tabelle anzeigt — live schlägt den
-    letzten Lauf, sonst gibt es keinen Status."""
-    row = {"slug": "a", "live": {"status": "deferred"}}
-    assert render.client_row_status(row, {"a": {"status": "complete"}}) == "deferred"
-
-
-def test_client_status_falls_back_to_the_last_run():
-    assert render.client_row_status({"slug": "a"}, {"a": {"status": "failed"}}) == "failed"
-
-
-def test_client_status_is_none_when_never_run():
-    assert render.client_row_status({"slug": "a"}, {}) is None
-
-
-def test_client_live_without_status_reads_as_running():
-    """Ein Live-Eintrag ohne eigenes Statusfeld heisst laufend — genau wie in
-    der Zelle.
-
-    Ein **leeres** Dict ist dagegen kein Live-Eintrag: `_jobs_row()` prüft mit
-    `if live:`, und dort ist `{}` falsy. Die geteilte Funktion muss sich
-    genauso verhalten, sonst filtert der Screen anders, als er anzeigt — beim
-    Schreiben dieses Tests zunächst falsch angenommen.
-    """
-    assert render.client_row_status({"slug": "a", "live": {"started_at": 1.0}}, {}) == "running"
-    assert render.client_row_status({"slug": "a", "live": {}}, {}) is None
-
 
 
 

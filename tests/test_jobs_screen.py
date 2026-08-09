@@ -439,11 +439,35 @@ def test_the_old_screen_routes_are_gone(app_with):
         assert c.get("/-/jobs").status_code == 200
 
 
+def test_the_old_job_detail_is_off_not_merely_unlinked(app_with):
+    """Die Entscheidung aus `#100`, ausgesprochen statt abgewartet.
+
+    `/-/ui/jobs/detail/{slug}` antwortete mit `200`, während die einzigen
+    Einstiege im abgelösten `_jobs_row()` standen — **ein dritter Zustand, den
+    niemand gewollt hat**: nicht verlinkt, nicht abgeschaltet, aber getestet.
+    Zehn Routen und vier Renderer hingen daran, dazu 69 Tests, die grün einen
+    Screen bewachten, den kein Mensch mehr erreichte.
+
+    `/-/jobs/{uid}` hat ihn ersetzt. Abschalten statt verlinken, weil zwei
+    Detailseiten für denselben Job zwei Wahrheiten wären.
+    """
+    app = app_with({"roles": ["scheduler", "connect"]})
+    with TestClient(app) as c:
+        for pfad in ("/-/ui/jobs/detail/x", "/-/ui/jobs/detail/x/attrs",
+                     "/-/ui/jobs/detail/x/live", "/-/ui/jobs/detail/x/runs",
+                     "/-/ui/jobs/detail/x/journal"):
+            assert c.get(pfad).status_code == 404, pfad
+        for pfad in ("/-/ui/jobs/detail/x/kill", "/-/ui/jobs/detail/x/reset",
+                     "/-/ui/jobs/detail/x/rebuild", "/-/ui/jobs/detail/x/start"):
+            assert c.post(pfad).status_code == 404, pfad
+
+
 def test_nothing_links_to_the_old_routes_anymore():
     """Ein toter Link ist schlimmer als eine fehlende Route: er sieht aus wie
     ein Weg."""
     quelle = (Path(render.__file__)).read_text()
     assert '"/-/ui/jobs"' not in quelle
+    assert "/-/ui/jobs/detail" not in quelle
     assert '"/-/ui/schedules"' not in quelle
 
 
@@ -1348,3 +1372,100 @@ def test_the_run_output_route_uses_the_formatter(app_with, team_repo: Path,
     assert r.status_code == 200, r.text[:200]
     assert "Der Benutzer möchte" in r.text, (
         "die Route umgeht den Formatter — die Token-Deltas bleiben zerrissen (#99)")
+
+
+# ── Zugezogen aus `test_controller_jobs.py` (#100) ──────────────────────────
+#
+# Die Datei trug den bibi4-Jobs-Screen und ist mit ihm entfallen. Diese sechs
+# Tests prüften Bausteine, die den Umbau überlebt haben: `_human_duration()`
+# rendert die RUNTIME-Spalte dieses Screens, `_local_run_status_aus()` seine
+# Client-Seite, `_Backoff` seinen Scheduler-Abruf. Sie stehen jetzt dort, wo
+# das Geprüfte wirkt — genau die Umzugsregel, die `#100` verlangt.
+
+
+def test_human_duration_thresholds():
+    # Bibi4-Iteration, User-Fund: "Laufzeit soll human-readable sein ... je
+    # nach Dauer ein angepasstes Delta" — zwei Einheiten je Stufe.
+    assert render._human_duration(None) == "—"
+    assert render._human_duration(45) == "45s"
+    assert render._human_duration(192) == "3m 12s"
+    assert render._human_duration(5400) == "1h 30m"
+    assert render._human_duration(90000) == "1d 1h"
+
+
+def test_human_duration_keeps_one_decimal_below_ten_seconds():
+    """Die meisten Laeufe dauern zwei bis acht Sekunden — als ganze Zahl sehen
+    sie alle gleich aus. Ab zehn Sekunden traegt die Stelle nichts mehr, und
+    die Schwellen darueber bleiben unveraendert."""
+    assert render._human_duration(2.8007938861846924) == "2.8s"
+    assert render._human_duration(0.4) == "0.4s"
+    assert render._human_duration(9.9) == "9.9s"
+    assert render._human_duration(45) == "45s"
+
+
+def test_local_run_status_takes_the_newest_run_per_slug():
+    """Die Client-Spalte zeigt den **neuesten** lokalen Lauf, nicht irgendeinen.
+
+    Befund m.rau: *„wieso `6d 1h` bei gmail-transfer? Das muss ein Rechenfehler
+    sein."* In der echten DB nachgesehen: die Zahl stammte aus
+    `gmail-transfer-d03e0d2e` — einem gepinnten Lauf vom 14.07., der beim
+    Aufraeumen am 20.07. terminal gesetzt wurde. Die Rueckrechnung des Suffix
+    war da, aber `setdefault()` behielt den **zuerst gefundenen** Eintrag; die
+    Journal-Reihenfolge ist nicht die Zeitreihenfolge.
+
+    Rot war: `exec_runtime == 522318.5` statt `2.8`.
+    """
+    from bibi.controller import _local_run_status_aus  # reine Funktion
+    eintraege = [
+        {"slug": "gmail-transfer-d03e0d2e", "finished_at": 1_784_543_069.0,
+         "exec_runtime": 522_318.5, "status": "error"},
+        {"slug": "gmail-transfer", "finished_at": 1_785_833_522.0,
+         "exec_runtime": 2.8, "status": "complete"},
+    ]
+    aus = _local_run_status_aus(eintraege)
+    assert aus["gmail-transfer"]["exec_runtime"] == 2.8
+    assert aus["gmail-transfer"]["status"] == "complete"
+
+
+def test_local_run_status_folds_pinned_suffix_but_not_a_real_slug():
+    from bibi.controller import _local_run_status_aus
+    aus = _local_run_status_aus([
+        {"slug": "EngineCI-46ec57c7", "finished_at": 100.0, "exec_runtime": 1.0},
+        {"slug": "20260728.at-150738-81ec", "finished_at": 200.0, "exec_runtime": 2.0},
+    ])
+    assert "EngineCI" in aus
+    # Ein echter Slug darf auf acht Hex-Zeichen enden — hier wird nur
+    # zurueckgerechnet, wenn die Basis auch vorkommt.
+    assert "20260728.at-150738-81ec" in aus
+
+
+def test_scheduler_probe_backs_off_after_a_failure():
+    """Ein abwesender Scheduler darf den Seitenaufbau nicht blockieren.
+
+    Befund m.rau: *„Aber die Abfrage dauert lange. Der Disconnected Status
+    muss irgendwie geprueft werden, ja. Aber er darf die UX nicht stoeren."*
+    Der Client-Timeout steht auf 5 s, und die wartet **jeder** Seitenaufbau ab.
+
+    Nach dem ersten Fehlschlag wird deshalb eine Weile gar nicht erst
+    probiert — der Screen ist bei offline dann schneller als bei online, was
+    richtig ist: es gibt nichts zu holen.
+
+    Rot war: `versuche == 3` statt `1`.
+    """
+    from bibi.controller import _Backoff
+
+    b = _Backoff(pause=15.0)
+    assert b.darf(now=100.0), "der erste Versuch muss laufen"
+    b.fehlschlag(now=100.0)
+    assert not b.darf(now=101.0), "direkt danach wird nicht erneut probiert"
+    assert not b.darf(now=114.9)
+    assert b.darf(now=115.1), "nach der Pause wieder"
+
+
+def test_scheduler_probe_resets_after_success():
+    from bibi.controller import _Backoff
+
+    b = _Backoff(pause=15.0)
+    b.fehlschlag(now=100.0)
+    b.erfolg()
+    assert b.darf(now=101.0), "nach einer geglueckten Antwort keine Pause mehr"
