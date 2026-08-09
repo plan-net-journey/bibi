@@ -92,3 +92,106 @@ def test_without_push_the_intention_stays_local(proj: Path, monkeypatch):
 
     res = deploy.set_expected_version("v0.2.3", proj, push=False)
     assert res["ok"] and pushed == []
+
+
+def test_running_comes_from_the_portfile_not_the_disk(proj: Path):
+    """**Der Rot-Schritt von `#102`.**
+
+    `#81` hat `running` von `installed` getrennt, und der Kommentar daneben
+    sagt, was das Feld tragen soll: *„den Stand DIESES Prozesses … in einem
+    langlebigen Daemon sein Startstand."* Gesetzt wurde es aber auf
+    `info.label()` — dieselbe Quelle wie `installed`, also `direct_url.json`
+    im venv, und die liest bei jedem Abruf frisch von der Platte.
+
+    **Live am 2026-08-09:** `sarasate:8780` lief seit `10:59:36` unverändert,
+    ich hatte dazwischen `uv sync` ausgeführt. `/-/status` meldete
+    `running: v0.7.11`, das FE zeigte den Chip `current` — für einen Prozess,
+    der `v0.7.10`-Code ausführte. Der Gegenbeweis stand im selben System: die
+    `#97`-Karteileiche, die `v0.7.11` beim ersten Rescan gelöscht hätte, stand
+    unverändert.
+
+    **Die Portdatei führt die Angabe längst** (`portfile.write(engine=…)`,
+    beim Start geschrieben), und `upgrade_notice.pending()` benutzt sie seit
+    `#81` genau dafür. `update_status()` — die Quelle für `/-/status` und den
+    Nodes-Screen — tat es nicht: dieselbe Fähigkeit, gebaut und begründet, an
+    der zweiten Stelle nicht benutzt.
+    """
+    from bibi.daemon import portfile
+
+    class _Info:
+        """Das venv nach einem `uv sync`: schon auf dem neuen Stand."""
+
+        ref = label_ref = "v0.7.11"
+        editable = local = False
+
+        def label(self):
+            return "v0.7.11"
+
+    # Der Prozess ist mit dem alten Stand gestartet und laeuft unveraendert.
+    portfile.write(8780, root=proj, engine="v0.7.10")
+
+    st = deploy.update_status(proj, _Info())
+
+    assert st["installed"] == "v0.7.11", "die Platte ist aktuell — das ist richtig"
+    assert st["running"] == "v0.7.10", (
+        "running meldet die Platte statt den Startstand des Prozesses (#102)")
+
+
+def test_running_falls_back_to_the_disk_without_a_portfile(proj: Path):
+    """Die Gegenprobe: ohne Portdatei bleibt es beim venv.
+
+    In einem frisch gestarteten CLI-Aufruf ist das dasselbe, und ein fehlender
+    Eintrag (Daemon älter als diese Änderung) ist kein Grund, die Auskunft
+    ganz aufzugeben — dieselbe Regel, die `upgrade_notice` schon anwendet.
+    """
+    class _Info:
+        ref = label_ref = "v0.7.11"
+        editable = local = False
+
+        def label(self):
+            return "v0.7.11"
+
+    st = deploy.update_status(proj, _Info())
+    assert st["running"] == "v0.7.11"
+
+
+def test_the_heartbeat_reports_the_running_engine_not_the_disk(team_repo: Path, monkeypatch):
+    """**Die zweite Stelle von `#102`, und die sichtbare.**
+
+    `update_status()` speist `/-/status`. Den **Chip im Nodes-Screen** speist
+    etwas anderes: `node_info.self_entry()` legt `engine` in den Heartbeat, der
+    Scheduler merkt ihn sich, und `render._node_engine_cell()` fällt darüber
+    sein Urteil (`current` / `behind`). Auch dort stand `engine_info().label()`
+    — die Platte.
+
+    **Das war der Teil, den m.rau gesehen hat:** sein FE zeigte `sarasate:8780`
+    mit `v0.7.11` und dem Chip `current`, während der Prozess seit `10:59:36`
+    lief und `v0.7.10`-Code ausführte. Ein Fix nur in `update_status()` hätte
+    `/-/status` geheilt und den Chip weiter lügen lassen.
+
+    Ein Knoten berichtet hier über sich selbst — die Frage lautet „was läuft
+    dort", nicht „was liegt dort auf der Platte".
+    """
+    from bibi.daemon import node_info, portfile, roles as roles_mod
+
+    portfile.write(8780, root=team_repo, engine="v0.7.10")
+
+    class _Info:
+        ref = label_ref = "v0.7.11"
+        editable = local = False
+
+        def label(self):
+            return "v0.7.11"
+
+        def tree_status(self):
+            return None
+
+    import bibi.engine_info as ei_mod
+    monkeypatch.setattr(ei_mod, "engine_info", lambda *a, **k: _Info())
+
+    entry = node_info.self_entry(roles_mod.resolve({"controller"}))
+
+    assert entry["engine"] == "v0.7.10", (
+        "der Heartbeat meldet die Platte statt den laufenden Stand (#102) — "
+        "der Chip im Nodes-Screen sagt daraufhin 'current' für einen Prozess, "
+        "der alten Code faehrt")

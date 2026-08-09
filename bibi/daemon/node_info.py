@@ -56,6 +56,24 @@ def self_entry(roles) -> dict:
         engine, engine_tree = info.label(), info.tree_status()
     except Exception:  # noqa: BLE001 — defensiv (§2.7)
         pass
+    # **Der laufende Stand, nicht der auf der Platte** (m.rau/bibi#102).
+    # ``engine_info()`` liest ``direct_url.json`` im venv, und zwar bei jedem
+    # Aufruf frisch: nach einem ``uv sync`` ohne Neustart meldet ein Daemon
+    # sonst den neuen Stand, waehrend er den alten faehrt. Diese Angabe reist
+    # im Heartbeat zum Scheduler und wird dort zum Chip im Nodes-Screen — live
+    # am 2026-08-09 stand `sarasate:8780` mit `v0.7.11` und `current` da,
+    # waehrend der Prozess seit `10:59:36` v0.7.10-Code ausfuehrte.
+    #
+    # Die Portdatei haelt den Startstand fest (``portfile.write(engine=…)``)
+    # und ist die einzige Stelle, die das tut. Fehlt sie oder ihr Feld, bleibt
+    # es beim venv: unbekannt ist kein Grund, die Auskunft ganz aufzugeben.
+    try:
+        from bibi.daemon import portfile
+        laufend = (portfile.read() or {}).get("engine")
+        if laufend:
+            engine = laufend
+    except Exception:  # noqa: BLE001 — defensiv (§2.7)
+        pass
     raw_port = os.environ.get("BIBI_DAEMON_PORT")
     env = config.read_env()
     # m.rau/bibi#44: ob ein Neustart-Knopf für diesen Knoten überhaupt einen
