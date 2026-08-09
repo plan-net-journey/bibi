@@ -575,7 +575,8 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
                    scheduler_total: int | None = None,
                    client_total: int | None = None,
                    oneshot: bool = False,
-                   scheduler_offline: bool = False) -> RunList:
+                   scheduler_offline: bool = False,
+                   client_slug: str | None = None) -> RunList:
     """Kacheln und die eine Lauf-Liste (FE §5.1–§5.3, m.rau/bibi#131).
 
     **Oben, die Kacheln: was ich tun kann. Unten, die Liste: was geschehen
@@ -605,6 +606,20 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
     des Hosts ist dann *unbekannt*, nicht *leer*. Die **Läufe** bleiben in
     beiden Fällen in der Liste; es fehlt der Platz zum Bedienen, nicht die
     Historie.
+
+    **``client_slug`` ist der Platz ohne Zeile** (m.rau/bibi#87). Auf einem
+    reinen Client gibt es zu einem Job oft gar keine ``jobs``-Zeile: Basis-
+    Zeilen legt nur ``job_db.rescan()`` an, und der Rescanner hängt an der
+    ``scheduler``-Rolle. Ohne Zeile fehlte die Kachel — und damit der einzige
+    Weg, den Job hier zu starten, obwohl seine MD im Vault liegt und
+    ``bibi-ctrl run`` ihn ausführt. **Genau der Fall, für den ``""`` als
+    Zustand modelliert ist:** „ein Client-Job kann echt noch nie gelaufen
+    sein", START nutzbar, KILL/RESET tot.
+
+    Der Slug ist dabei die **Kennung** der Kachel, nicht bloß eine Beschriftung:
+    alle vier Client-Verben gehen über ``/-/run`` bzw. ``/-/run/live/*`` und
+    nehmen ohnehin einen Slug. Die Job-ID war dort immer nur ein Umweg, um an
+    ihn zu kommen.
     """
     from bibi.schedule import slot as slot_mod
 
@@ -632,6 +647,19 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
         if gesperrt is not None:
             tiles.append(Tile(quelle=quelle, host=host, slot={}, status=None,
                               aktionen=frozenset(), disabled=gesperrt))
+        elif zeile is None and quelle == "CLIENT" and client_slug:
+            # **Ein Platz ohne Zeile** (m.rau/bibi#87). Kein Zustand zu lesen,
+            # kein Lauf zu beenden — aber startbar, und das ist der Sinn der
+            # Kachel. Der Slug steht als `id`, weil der Client-Slot slug-basiert
+            # bedient wird; er ist damit nicht bloss Beschriftung, sondern die
+            # Kennung, an der der Knopf haengt.
+            #
+            # **Hinter `gesperrt`, nicht davor**: ein Oneshot hat auch dann
+            # keinen lokalen Platz, wenn seine MD hier liegt (FE §5.1.1) — sonst
+            # entstuenden zwei Kacheln, eine gesperrte und eine startbare.
+            tiles.append(Tile(quelle=quelle, host=host,
+                              slot={"id": client_slug}, status="",
+                              aktionen=slot_mod.actions("")))
         status = None
         if zeile is not None:
             # `row_status` zuerst: so heißt das Feld in den Scheduler-Zeilen aus

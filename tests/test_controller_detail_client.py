@@ -217,3 +217,47 @@ def test_a_scheduler_reads_its_own_bus_instead_of_proxying_to_itself(
     assert "data-stream=" not in r.text, (
         "ein Knoten mit Scheduler-Rolle reicht seinen eigenen Output an sich "
         "selbst durch, statt den lokalen Bus zu lesen (#86)")
+
+
+# ── Der Platz ohne Zeile (m.rau/bibi#87) ────────────────────────────────────
+
+
+def _lege_md(root, slug: str) -> None:
+    ordner = root / "vault" / "case" / "x"
+    ordner.mkdir(parents=True, exist_ok=True)
+    (ordner / f"{slug}.md").write_text(
+        f"---\nslug: {slug}\nschedule: adhoc\njob: echo hi\n---\n", encoding="utf-8")
+
+
+def test_start_reaches_a_locally_known_job_that_has_no_row(
+        team_repo, monkeypatch, scheduler, eigener_daemon):
+    """**Das Henne-Ei aus `#87`, an seiner zweiten Haelfte.**
+
+    Die Kachel traegt den Slug als Kennung, weil es keine Job-ID gibt. Die
+    Verb-Route schlug den Slug aber ueber ``SELECT ... FROM jobs WHERE id=?``
+    nach und antwortete ``404 job not found`` — der Knopf waere also da und
+    taete nichts.
+
+    Geprueft wird, dass die Route den Slug annimmt, nicht dass der Lauf
+    gelingt: was danach kommt, ist ``/-/run`` und damit derselbe Weg wie
+    ``bibi-ctrl run``.
+    """
+    _lege_md(team_repo, "BrowserCI")
+    app = _client_knoten(monkeypatch, scheduler, eigener_daemon)
+    with TestClient(app) as c:
+        r = c.post("/-/ui/jobs/verb/client/BrowserCI/start")
+    assert r.status_code != 404, (
+        "die Route findet den lokal bekannten Slug nicht — der START-Knopf der "
+        "Kachel ohne Zeile greift ins Leere (#87)")
+
+
+def test_an_unknown_slug_is_still_refused(
+        team_repo, monkeypatch, scheduler, eigener_daemon):
+    """Die Gegenprobe, und sie ist hier keine Formalie.
+
+    Ohne sie waere aus der Route ein Weg geworden, **jede** Zeichenkette als
+    Slug zu starten. Genommen wird nur, was als MD hier liegt."""
+    app = _client_knoten(monkeypatch, scheduler, eigener_daemon)
+    with TestClient(app) as c:
+        r = c.post("/-/ui/jobs/verb/client/gibt-es-nicht/start")
+    assert r.status_code == 404

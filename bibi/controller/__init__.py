@@ -1650,6 +1650,12 @@ def add_controller_routes(
             scheduler_total=len(sched_runs), client_total=len(lokal_runs),
             scheduler_host=(_scheduler_url() or "").split("//")[-1].split(":")[0] or None,
             client_host=_status().get("host"), oneshot=einmalig,
+            # Der Platz ohne Zeile (m.rau/bibi#87): kennt dieser Knoten die MD,
+            # kann der Job hier laufen — auch wenn ihm nie jemand eine Zeile
+            # angelegt hat. Nur die MD, nicht der Scheduler-Eintrag: was dort
+            # steht, sagt nichts darueber, ob es HIER laufen kann.
+            client_slug=slug if any(md.get("slug") == slug
+                                    for md in _local_job_mds()) else None,
             # Ohne erreichbaren Host ist sein Slot unbekannt, nicht leer — die
             # Kachel bleibt und sagt es (m.rau/bibi#146).
             scheduler_offline=not _scheduler_status()[0])
@@ -1896,6 +1902,18 @@ def add_controller_routes(
                                 content={"error": "unknown verb", "verb": verb})
         if ziel == "client":
             slug = _bucket_slug_of(job_id)
+            if slug is None and any(md.get("slug") == job_id
+                                    for md in _local_job_mds()):
+                # **Die Kachel ohne Zeile** (m.rau/bibi#87). Sie traegt den Slug
+                # als Kennung, weil es keine Job-ID gibt — auf einem reinen
+                # Client legt niemand eine Basis-Zeile an (der Rescanner haengt
+                # an der `scheduler`-Rolle). Der Weg dahinter ist derselbe:
+                # `_client_verb()` nimmt ohnehin einen Slug, die ID war immer
+                # nur ein Umweg, um an ihn zu kommen.
+                #
+                # Nur fuer **lokal bekannte** MDs, nicht fuer jede Zeichenkette:
+                # sonst waere die Route ein Weg, beliebige Slugs zu starten.
+                slug = job_id
             if slug is None:
                 return JSONResponse(status_code=404,
                                     content={"error": "job not found", "id": job_id})
