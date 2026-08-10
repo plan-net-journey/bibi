@@ -27,6 +27,7 @@ class WorkerRegistry:
         engine: str | None = None, engine_tree: str | None = None,
         git_commit: str | None = None, session: bool | None = None,
         sync_conflict: bool | None = None, auto_sync: bool | None = None,
+        merge_stuck: list[str] | None = None,
     ) -> dict:
         """``node_id`` (Bibi4-Iteration, User-Fund: derselbe physische Client
         tauchte je nach Netzwerk mit unterschiedlichem ``worker``-Namen auf,
@@ -67,7 +68,14 @@ class WorkerRegistry:
         ist kein Überwachungswerkzeug.
 
         ``None`` heißt auch hier *unbekannt*, nicht *in Ordnung*: ein Knoten,
-        der nichts sendet, darf nicht als gesund gelten."""
+        der nichts sendet, darf nicht als gesund gelten.
+
+        ``merge_stuck`` (m.rau/bibi#111): eskalierte ``agent/*``-Branches aus
+        der Merge-Quarantäne dieses Knotens (``data/merge_quarantine.json``) —
+        die zweite Konflikt-Sorte neben ``sync_conflict``: nicht "dieser Knoten
+        kommt mit origin nicht klar", sondern "die Arbeit eines Jobs kommt
+        nicht nach trunk". Reiste bisher nirgendwohin, sichtbar nur lokal in
+        ``bibi-ctrl status``/der Statusline desselben Knotens."""
         now = time.time() if now is None else now
         key = node_id or worker
         with self._lock:
@@ -77,6 +85,7 @@ class WorkerRegistry:
                          engine=engine, engine_tree=engine_tree,
                          git_commit=git_commit, session=session,
                          sync_conflict=sync_conflict, auto_sync=auto_sync,
+                         merge_stuck=merge_stuck,
                          last_heartbeat=now)
             self._w[key] = entry
             return dict(entry)

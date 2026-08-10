@@ -254,6 +254,7 @@ button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnlin
 .logbox .ln.warning { color: var(--amber); }
 .logbox .ln.error   { color: var(--red); }
 .logbox .ln.debug   { color: var(--dim); }
+.logbox .ln.idle    { color: var(--dim); font-style: italic; }
 /* Die Logbox ist theme-unabhaengig dunkel, ihre Links brauchen deshalb den
    Dark-Ton der Marke statt des Theme-Tons — im Light-Mode saesse sonst ein
    dunkles Terracotta auf Anthrazit. Der Anlass war urspruenglich ein anderer
@@ -708,7 +709,8 @@ def _node_link_cell(worker: str | None, host: str | None, port: int | None) -> s
     return f'<a href="{href}" target="_blank" rel="noopener">{name} :{port}</a>'
 
 
-_NODE_TREE_CHIP_CLASS = {"clean": "chip clean", "modified": "chip modified"}
+_NODE_TREE_CHIP_CLASS = {"clean": "chip clean", "modified": "chip modified",
+                         "conflict": "chip conflict"}
 _NODE_SYNC_CHIP_CLASS = {"synced": "chip synced", "ahead": "chip ahead",
                          "behind": "chip behind", "diverged": "chip diverged"}
 
@@ -755,6 +757,17 @@ def _node_sync_state_chips(w: dict) -> str:
         teile.append('<span class="chip modified" title="auto-sync is off — '
                      'work stays local until someone syncs by hand">'
                      'sync off</span>')
+    # m.rau/bibi#111: die zweite Konflikt-Sorte — nicht "dieser Knoten kommt
+    # mit origin nicht klar" (oben), sondern "die Arbeit eines Jobs kommt
+    # nicht nach trunk". Branch-Namen mit in den Chip, nicht nur eine Zahl:
+    # der Abnahmefall ist genau die Frage "welcher Branch", und eine Zahl
+    # allein hätte agent/Witz nicht benannt.
+    stuck = w.get("merge_stuck") or []
+    if stuck:
+        namen = html.escape(", ".join(stuck))
+        teile.append(f'<span class="chip conflict" title="merge-back cannot '
+                     f'land this work — resolve with /sync">merge stuck: '
+                     f'{namen}</span>')
     return (" " + " ".join(teile)) if teile else ""
 
 
@@ -1515,13 +1528,44 @@ function line(o){
 function autoscroll(){ if(!paused) box.scrollTop = box.scrollHeight; }
 function rerender(){
   box.innerHTML = '';
+  idleEl = null;                          // die alte Referenz ist mit box.innerHTML weg
   for (const o of buf){ if(passes(o)) box.appendChild(line(o)); }
   autoscroll();
+  refreshIdle();
 }
+// #112: leer sagte bisher nicht "ruhig", sondern nichts -- ununterscheidbar
+// von einem abgerissenen Strom oder einem Filter, der zu viel wegnimmt.
+// lastActivityAt zaehlt JEDES Ereignis, nicht nur das erste -- eine lange
+// Stille NACH einer Aktivitaet ist derselbe Fall wie eine Stille direkt nach
+// dem Laden.
+let lastActivityAt = Date.now();
+let idleEl = null;
+const IDLE_AFTER_MS = 20000;              // etwas ueber dem 15s-Ping-Rhythmus von _EVENTS_JS
+function fmtClock(ts){
+  return new Date(ts).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+function refreshIdle(){
+  const quietFor = Date.now() - lastActivityAt;
+  if (quietFor < IDLE_AFTER_MS){
+    if (idleEl){ idleEl.remove(); idleEl = null; }
+    return;
+  }
+  const txt = 'Connected — nothing has happened since ' + fmtClock(lastActivityAt) + '.';
+  if (!idleEl){
+    idleEl = document.createElement('div');
+    idleEl.className = 'ln idle';
+    box.appendChild(idleEl);
+    autoscroll();
+  }
+  if (idleEl.textContent !== txt) idleEl.textContent = txt;
+}
+setInterval(refreshIdle, 5000);
 function connect(){
   const es = new EventSource('/-/log/stream?n=200');
   es.onmessage = (e) => {
     let o; try { o = JSON.parse(e.data); } catch (_) { return; }
+    lastActivityAt = Date.now();
+    if (idleEl){ idleEl.remove(); idleEl = null; }
     buf.push(o);
     if (buf.length > 2000) buf.shift();
     if (passes(o)) { box.appendChild(line(o)); autoscroll(); }

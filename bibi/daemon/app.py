@@ -818,6 +818,8 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
                                     # m.rau/bibi#74
                                     sync_conflict=hb.sync_conflict,
                                     auto_sync=hb.auto_sync,
+                                    # m.rau/bibi#111
+                                    merge_stuck=hb.merge_stuck,
                                     git_commit=hb.git_commit)
         # PLAN-32 Stufe 32.2: Config-Bundle-Distribution huckepack auf
         # demselben Heartbeat-Roundtrip. config_version reist bei JEDEM

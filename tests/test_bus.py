@@ -250,6 +250,24 @@ def test_collector_job_change_publishes_collective_targets(collector):
     assert "archived" not in bus.states
 
 
+def test_collector_next_fire_at_change_publishes_jobs(collector):
+    """#110: der Jobs-Screen zeigte ein veraltetes NEXT, waehrend der Header
+    (der den Scheduler direkt abfragt) weiterlief. Ursache: der Diff verglich
+    nur (status, fire) — ein Job, der in seinem Status stehen bleibt (z. B.
+    weiterhin "failed", naechster Retry faellig) aber ein neues next_fire_at
+    bekommt, aenderte laut Diff "nichts", obwohl die NEXT-Spalte genau das
+    zeigt, was sich geaendert hat."""
+    col, bus, root = collector
+    conn = job_db.connect()
+    _insert_job(conn, status="failed")
+    conn.execute("UPDATE jobs SET next_fire_at=100 WHERE id='j1'")
+    col.tick_once()  # prime
+    conn.execute("UPDATE jobs SET next_fire_at=200 WHERE id='j1'")  # Status bleibt "failed"
+    col.tick_once()
+    conn.close()
+    assert "jobs" in bus.states
+
+
 def test_collector_publishes_archived_when_a_run_reaches_the_journal(collector):
     """m.rau/bibi#108: die einzige Verbindung zwischen Strom und Liste.
 

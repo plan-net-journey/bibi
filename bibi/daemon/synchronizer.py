@@ -254,9 +254,16 @@ class Synchronizer:
             # und der Live-Log ist die Stelle, an der man nachsieht, *wenn etwas
             # nicht stimmt*.
             #
-            # ``DEBUG`` statt gar nicht: der Log führt dieselben Ereignisse mit
-            # Historie (FE-Spezifikation §7). Die Auskunft bleibt, sie tritt nur
-            # eine Stufe zurück.
+            # ``DEBUG`` statt gar nicht — mit einer Einschränkung, die im
+            # Betrieb nachgemessen wurde und die erste Fassung dieses
+            # Kommentars widerlegt hat (m.rau/bibi#112): sie behauptete, die
+            # Auskunft trete nur „eine Stufe zurück". **Der Daemon läuft mit
+            # ``loglevel=INFO``**, also erreicht die Zeile den Strom gar nicht
+            # mehr. Wer sie sehen will, hebt das Log-Level des Daemons — es ist
+            # keine Filterfrage im Frontend.
+            #
+            # Der Verzicht bleibt richtig: die Zeile trug keine Information.
+            # Falsch war zu glauben, sie sei noch da.
             #
             # **Auf ``ok`` prüfen, nicht nur auf ``kind``:** ein fehlgeschlagener
             # Pull trägt ebenfalls kein ``kind``, und ihn zu verstecken hieße,

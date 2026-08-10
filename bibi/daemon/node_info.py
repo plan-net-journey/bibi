@@ -83,6 +83,29 @@ def self_entry(roles) -> dict:
         session = (portfile.read() or {}).get("session")
     except Exception:  # noqa: BLE001 — defensiv (§2.7)
         session = None
+    # #113: dieselben Felder, die Heartbeat._sync_state() fuer JEDEN ANDEREN
+    # Knoten schon traegt. Der Scheduler meldet sich nie bei sich selbst
+    # (s. Docstring oben) — ohne diese eigene Erhebung blieb seine Zeile im
+    # Nodes-Screen fuer sync_conflict/auto_sync fuer immer bei ``None``
+    # (unbekannt), unabhaengig vom tatsaechlichen Zustand.
+    try:
+        from bibi import state
+        sync_conflict = state.get_sync_conflict()
+        auto_sync = state.get_auto_sync()
+    except Exception:  # noqa: BLE001 — defensiv (§2.7)
+        sync_conflict = auto_sync = None
+    # #111: die zweite Konflikt-Sorte. sync_conflict/auto_sync sagen, ob DIESER
+    # Knoten mit origin klarkommt; eskalierte Merge-Quarantaene sagt, ob die
+    # Arbeit EINES JOBS nach trunk kommt — pro Branch in data/merge_quarantine.
+    # json, bisher nirgendwohin gereist. ``[]`` statt ``None`` bei einem Fehler:
+    # anders als sync_conflict (wo Stille "unbekannt" bedeuten soll) ist eine
+    # leere Liste hier keine falsche Behauptung — sie tritt exakt dann auf, wenn
+    # keine Escalation vorliegt, gleich aus welchem Grund die Erhebung ausblieb.
+    try:
+        from bibi.daemon import merge_quarantine
+        merge_stuck = merge_quarantine.escalated(repo_mod.root())
+    except Exception:  # noqa: BLE001 — defensiv (§2.7)
+        merge_stuck = []
     return {
         "session": session,
         "worker": (env.get("BIBI_NODE_NAME") or env.get("BIBI_WORKER_NAME")
@@ -96,6 +119,9 @@ def self_entry(roles) -> dict:
         "git_commit": git_commit,
         "engine": engine,
         "engine_tree": engine_tree,
+        "sync_conflict": sync_conflict,
+        "auto_sync": auto_sync,
+        "merge_stuck": merge_stuck,
         # Ein Knoten, der von sich selbst berichtet, ist per Definition
         # erreichbar — und er schaltet sich nicht selbst frei (kein eigener
         # approved_nodes-Eintrag, PLAN-32 Stufe 32.1).

@@ -15,7 +15,7 @@ from pathlib import Path
 
 @dataclass(frozen=True, slots=True)
 class WorkingTreeStatus:
-    tree: str            # "clean" | "modified"
+    tree: str            # "clean" | "modified" | "conflict"
     sync: str            # "synced" | "ahead" | "behind" | "diverged"
     branch: str | None   # None bei detached HEAD
     oid: str | None = None    # voller Commit-Hash (# branch.oid), None wenn unparsbar
@@ -37,7 +37,7 @@ def working_tree_status(root: Path | None = None) -> WorkingTreeStatus | None:
     branch: str | None = None
     oid: str | None = None
     ahead = behind = 0
-    dirty = False
+    dirty = conflict = False
     for line in proc.stdout.splitlines():
         if line.startswith("# branch.oid "):
             oid = line.split()[-1]
@@ -47,10 +47,21 @@ def working_tree_status(root: Path | None = None) -> WorkingTreeStatus | None:
         elif line.startswith("# branch.ab "):
             a, b = line.split()[-2:]
             ahead, behind = int(a.lstrip("+")), int(b.lstrip("-"))
+        elif line.startswith("u "):
+            # #114: unmerged (Porcelain v2) ist ein eigener Zustand, kein
+            # "modified" — dieselbe Unterscheidung, die dirty_files() elf
+            # Zeilen weiter unten schon trifft. Ein Knoten mitten in einem
+            # offenen Merge sah bisher aus wie einer mit einer editierten
+            # Datei; der sync_conflict-Chip faengt das nur ab, wenn der
+            # Konflikt durch bibi-ctrl selbst entstand (sync/save/lifecycle
+            # setzen das Flag) — ein von Hand geoeffneter Merge/Rebase tut das
+            # nicht, und dann ist dieses Feld die einzige Stelle, an der der
+            # Zustand ueberhaupt auftauchen kann.
+            conflict = True
         elif line and not line.startswith("#"):
             dirty = True
 
-    tree = "modified" if dirty else "clean"
+    tree = "conflict" if conflict else ("modified" if dirty else "clean")
     if ahead and behind:
         # Bibi4-Iteration (Batch 7 Stufe 3, User-Fund: "ich verstehe die
         # Bedeutung von conflict und sync: !conflict nicht") — "conflict"
