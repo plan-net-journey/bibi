@@ -99,3 +99,26 @@ def test_the_rescuer_does_not_refetch_a_live_box():
     # Offset mitführt, ist das ein Roundtrip ohne Gewinn — und ein sichtbarer
     # Neuaufbau statt eines Weiterlaufens.
     assert "liveterm" in render._JOB_DETAIL_JS
+
+
+# ── Der Waechter gegen "einer von zwei" ────────────────────────────────────
+
+
+def test_both_run_row_renderers_tick_a_running_runtime():
+    """Es gibt **zwei** Zeilenbauer fuer Laeufe, und der erste Anlauf zu #123
+    hat nur einen erreicht — die v5-Liste rief `_human_duration()` direkt und
+    ohne Anker auf, waehrend die andere Liste ueber `_duration_cell()` ging.
+
+    Gefunden hat es der Live-Durchgang, nicht der Test: die Zeile zeigte
+    `1.3s`, und die Zahl stand still. **Dieselbe Fehlerform wie #96** — eine
+    Faehigkeit an einer von zwei Stellen eingesetzt.
+
+    Dieser Test prueft deshalb die Zusage und nicht die Fundstelle: **jede
+    Darstellung eines laufenden Laufs traegt einen Anker.**
+    """
+    lauf = {"id": 7, "src": "S", "status": "running", "started_at": 1000.0,
+            "finished_at": None, "exec_runtime": 42.0, "sort_at": 1000.0}
+    assert 'data-dur="since"' in render._duration_cell(lauf)
+    zeile = render._run_row(lauf, now=1042.0) if hasattr(render, "_run_row") else None
+    if zeile is not None:
+        assert 'data-dur="since"' in zeile

@@ -1844,7 +1844,16 @@ def add_controller_routes(
                 return HTMLResponse(render.live_output_box(
                     str(job_id), ereignisse,
                     kind=antwort.get("kind") or "job",
-                    stream_url=f"/-/job/{job_id}/output/stream"))
+                    # **Nicht nachbauen, rufen.** Hier stand ein von Hand
+                    # zusammengesetzter Pfad, und er war zweifach falsch: die
+                    # Route heisst `/-/ui/jobs/{id}/output/stream`, und auf
+                    # einem Knoten mit eigener Scheduler-Rolle darf ueberhaupt
+                    # kein Durchreicher stehen — die Box waechst dort ueber den
+                    # globalen Bus (#86). Beides entscheidet
+                    # `_output_stream_url()` seit jeher; es nachzubauen war
+                    # genau die Fehlerform, gegen die dieses Ticket antritt.
+                    stream_url=_output_stream_url({"status": "running",
+                                                   "id": job_id})))
             return HTMLResponse(render.output_block(
                 ereignisse, antwort.get("kind") or "job"))
         from bibi.daemon import job_db
