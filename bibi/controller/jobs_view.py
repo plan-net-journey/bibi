@@ -575,6 +575,39 @@ class RunList:
     counts: dict[str, int]
 
 
+#: Adressen, die nur auf der Maschine etwas bedeuten, die sie ausspricht.
+#: ``0.0.0.0`` steht dabei nicht für einen Ort, sondern für „alle" — als Ziel
+#: eines Links ist es genauso unbrauchbar wie ``127.0.0.1``.
+_NUR_HIER = {"127.0.0.1", "::1", "localhost", "0.0.0.0", "[::1]"}
+
+
+def erreichbarer_host(*kandidaten: str | None) -> str | None:
+    """Der erste Kandidat, der auch von einem anderen Rechner aus etwas meint.
+
+    **Die Zusage, gegen die das gebaut ist:** was in einen Link geht, muss beim
+    Betrachter ankommen. ``m.rau/bibi#104`` und ``#145`` haben dieselbe
+    Verwechslung schon einmal behoben — dort für den Kopf des Screens —, und
+    #117 hat sie an der Kachel wieder eingeführt: der Scheduler-Host wurde aus
+    ``BIBI_SCHEDULER_URL`` geparst, und auf einem Knoten mit co-lokiertem
+    Scheduler und Client ist das absichtlich Loopback. Für den lokalen
+    API-Aufruf richtig, als Adresse für jemand anderen tot.
+
+    **Lieber keine Adresse als eine falsche.** Ohne erreichbaren Kandidaten
+    kommt ``None`` zurück, und die Kachel zeigt dann weder Host noch App-Link.
+    Ein fehlender Link ist als Mangel erkennbar; einer, der ins Leere führt,
+    kostet erst den Klick und dann das Vertrauen in die übrigen.
+
+    Die Reihenfolge der Kandidaten trägt die eigentliche Aussage: **wer den Lauf
+    ausgeführt hat, weiß besser, wo er erreichbar ist, als die Verbindung, über
+    die gerade jemand danach fragt.**
+    """
+    for kandidat in kandidaten:
+        wert = (kandidat or "").strip()
+        if wert and wert.lower() not in _NUR_HIER:
+            return wert
+    return None
+
+
 def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
                    scheduler_runs: list, client_runs: list, now: float,
                    scheduler_host: str | None = None, client_host: str | None = None,
@@ -651,8 +684,13 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
             # keins seiner Verben käme an. Die Kachel bleibt trotzdem stehen —
             # dieselbe Entscheidung wie beim gedimmten Header (FE §2).
             zeile, gesperrt = None, "scheduler offline"
+        # **Einmal für alle drei Kachel-Zweige, nicht dreimal einzeln** (#117).
+        # `#96` hat gezeigt, was passiert, wenn eine Fähigkeit an drei von vier
+        # Stellen eingesetzt wird: die vierte lebt unbemerkt weiter. Die Zeile
+        # steht deshalb vor der Verzweigung und nicht in ihr.
+        kachel_host = erreichbarer_host((zeile or {}).get("host"), host)
         if gesperrt is not None:
-            tiles.append(Tile(quelle=quelle, host=host, slot={}, status=None,
+            tiles.append(Tile(quelle=quelle, host=kachel_host, slot={}, status=None,
                               aktionen=frozenset(), disabled=gesperrt,
                               app_port=app_port))
         elif zeile is None and quelle == "CLIENT" and client_slug:
@@ -665,7 +703,7 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
             # **Hinter `gesperrt`, nicht davor**: ein Oneshot hat auch dann
             # keinen lokalen Platz, wenn seine MD hier liegt (FE §5.1.1) — sonst
             # entstuenden zwei Kacheln, eine gesperrte und eine startbare.
-            tiles.append(Tile(quelle=quelle, host=host,
+            tiles.append(Tile(quelle=quelle, host=kachel_host,
                               slot={"id": client_slug}, status="",
                               aktionen=slot_mod.actions(""),
                               app_port=app_port))
@@ -685,7 +723,7 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
             # nullt `finished_at`), und genau dort wird die Angabe gebraucht.
             enden = [r.get("finished_at") for r in journal
                      if r.get("finished_at") is not None]
-            tiles.append(Tile(quelle=quelle, host=host, slot=zeile,
+            tiles.append(Tile(quelle=quelle, host=kachel_host, slot=zeile,
                               status=status, aktionen=aktionen,
                               last_at=max(enden) if enden else None,
                               app_port=app_port))

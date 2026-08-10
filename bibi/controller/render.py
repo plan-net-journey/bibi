@@ -10,7 +10,7 @@ import json
 import re
 import time
 
-from bibi.controller.jobs_view import Segment
+from bibi.controller.jobs_view import Segment, erreichbarer_host
 from bibi.schedule import models
 
 # PLAN-36 Stufe 36.0: htmx lokal statt unpkg.com-CDN (Tailnet-only-Setup —
@@ -694,16 +694,31 @@ def _role_matrix_cells(role: str | None) -> str:
     return "".join(cells)
 
 
-def _node_link_cell(worker: str | None, host: str | None, port: int | None) -> str:
+def _node_link_cell(worker: str | None, host: str | None, port: int | None,
+                    role: str | None = None) -> str:
     """Name+Host zu einem Link kombiniert (Batch 9 Punkt 3, User-Fund:
     ``[{name} :{port}](http://{host}:{port}/-/)``) — die URL, wie der Knoten
     sich selbst kennt (sein eigener ``BIBI_DAEMON_PORT``), nicht wie ein
     anderer Knoten ihn erreichen würde; bewusst so, auch wenn das bei
     ``localhost`` verwirrend aussieht (User-Entscheidung, s. „## Clients
     Screen"). Ohne ``port`` (älterer Client vor dieser Änderung, oder erster
-    Heartbeat noch nicht durch) bleibt es reiner Text statt totem Link."""
+    Heartbeat noch nicht durch) bleibt es reiner Text statt totem Link.
+
+    **Ohne Controller-Rolle gibt es kein ``/-/``, und damit keinen Link**
+    (#118). Ein reiner Scheduler-Knoten ist seit der Entscheidung vom
+    2026-08-04 nur Backend — sein ``/-/`` antwortet planmäßig mit ``404``, und
+    ein Link dorthin ist nicht gelegentlich tot, sondern strukturell. Die Rolle
+    steht in derselben Zeile, die auch die ``CRON``/``CTRL``/``SYNC``/``WORK``-
+    Spalten füllt; die Auskunft war da, sie wurde nur nicht gelesen.
+
+    **Fehlt die Rolle, entsteht ebenfalls kein Link.** Ein älterer Client
+    heartbeatet ohne ``role``, und aus „weiß ich nicht" ein „hat ein Frontend"
+    zu machen wäre genau die Sorte Annahme, die diesen Befund erzeugt hat.
+    Derselbe Text-statt-Link-Pfad wie beim fehlenden Port darüber."""
     name = _e(worker or "—")
     if not host or not port:
+        return name
+    if "controller" not in {r.strip() for r in (role or "").split(",")}:
         return name
     href = _e(f"http://{host}:{port}/-/")
     return f'<a href="{href}" target="_blank" rel="noopener">{name} :{port}</a>'
@@ -946,7 +961,7 @@ def _clients_table(workers: list[dict], now: float,
                        else '<span class="chip clean">connected</span>')
         rows.append(
             "<tr>"
-            f"<td>{_node_link_cell(w.get('worker'), w.get('host'), w.get('port'))}</td>"
+            f"<td>{_node_link_cell(w.get('worker'), w.get('host'), w.get('port'), w.get('role'))}</td>"
             f"{_role_matrix_cells(w.get('role'))}"
             f"<td>{_node_engine_cell(w.get('engine'), expected, w.get('engine_tree'))}</td>"
             f"<td>{_e(w.get('git_user') or '—')}</td>"
@@ -2776,8 +2791,21 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
                + output_block(live_output["events"], live_output.get("kind", "job"))
                + "</div>")
     app_port = job.get("app_port") if job else None
-    app_link = (f' <a href="http://{public_host}:{app_port}/" target="_blank" '
-                f'style="font-size:.82rem">Open app →</a>' if app_port else "")
+    # Dieselbe Zusage wie in `live_fragment()` darueber: kein Link ohne
+    # erreichbaren Knoten. `public_host` kann hier `None` sein, und das ist
+    # die Aussage „ich weiss nicht, wo die App laeuft" — sie gehoert nicht in
+    # ein `href`.
+    if not app_port:
+        app_link = ""
+    elif public_host:
+        app_link = (f' <a href="http://{public_host}:{app_port}/" target="_blank" '
+                    f'style="font-size:.82rem">Open app →</a>')
+    else:
+        # **Der Port bleibt, die Adresse geht** — dieselbe Aufteilung, die
+        # `_jobs_type_cell(link=False)` seit m.rau/bibi#104 fuehrt. Ohne diesen
+        # Zweig haette der #117-Fix eine Auskunft mitgenommen, die er gar nicht
+        # meint: dass dieser Job ueberhaupt eine App ist.
+        app_link = f' <span style="font-size:.82rem">app :{app_port}</span>' 
     # PLAN-22 Befund 1: pending hat weder started_at noch Output — "aktiver
     # Lauf" suggerierte fälschlich, dass gerade schon etwas läuft.
     if is_terminal:
@@ -2900,7 +2928,17 @@ def live_fragment(
     now = time.time() if now is None else now
     s = schedule or {}
     name = _e(s.get("slug") or slug)
-    kind = _jobs_type_cell(s, public_host)
+    # **Die Adresse gehoert dem Knoten, der die App faehrt** — nicht dem, der
+    # die Seite rendert. `public_host` ist der des BETRACHTERS, und damit ist
+    # das hier wortgleich der Fehler aus m.rau/bibi#145, an einer Stelle, die
+    # #145 nicht angefasst hat: gefunden beim Absuchen nach weiteren
+    # Link-Erzeugern zu #117, live belegt (das Mac-FE verlinkte
+    # `localhost:9110`, waehrend die App auf sarasate lief).
+    #
+    # Ohne bekannten ausfuehrenden Knoten kein Link, nur der Port — genau der
+    # `link=False`-Pfad, den `_jobs_type_cell()` seit #104 dafuer schon fuehrt.
+    app_host = erreichbarer_host((job or {}).get("host"), s.get("host"))
+    kind = _jobs_type_cell(s, app_host or "", link=bool(app_host))
     trigger = _e(s.get("trigger"))
     # schedule_view.last_status gewinnt, wenn er TERMINAL ist — dann ist er das korrekte
     # Lauf-Ergebnis auch wenn der Journal-MAX-Eintrag (Dedup-Skip) veraltet ist.
@@ -2932,7 +2970,7 @@ def live_fragment(
         f"<h1>{name}</h1>"
         f'<div class="meta">{meta}</div>'
         f"{_action_bar(slug, job, exec_mode=s.get('exec_mode'))}"
-        f"{_live_panel(job, now, live_output, slug=slug, public_host=public_host, output_stream_url=output_stream_url)}"
+        f"{_live_panel(job, now, live_output, slug=slug, public_host=app_host, output_stream_url=output_stream_url)}"
         "</div>"
     )
 
