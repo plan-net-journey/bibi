@@ -32,7 +32,7 @@ def self_entry(roles) -> dict:
     verlieren.
     """
     from bibi import config, git_ops, repo as repo_mod
-    from bibi.engine_info import engine_info
+    from bibi.engine_state import engine_state
     from bibi.git_status import working_tree_status
 
     git_user = git_status = "—"
@@ -50,28 +50,17 @@ def self_entry(roles) -> dict:
     # ausgerechnet die Angabe, die fehlte, weil sein Eintrag nicht aus einem
     # Heartbeat entsteht. m.rau/bibi#67 ergänzt den Arbeitsbaum des
     # Engine-Checkouts (``None`` bei einem VCS-Pin, dann entfällt der Chip).
+    #
+    # **Der laufende Stand, nicht der auf der Platte** (m.rau/bibi#102) — und
+    # seit m.rau/bibi#125 aus der einen Quelle statt hier nachgebaut. Die
+    # Portdatei-Stufe stand bis dahin an drei Stellen einzeln, und an einer
+    # vierten fehlte sie: der Heartbeat meldete unverändert das venv, obwohl
+    # der Kommentar hier bereits behauptete, die Angabe reise mit ihm zum
+    # Scheduler. Jetzt tut sie das.
     engine = engine_tree = None
     try:
-        info = engine_info()
-        engine, engine_tree = info.label(), info.tree_status()
-    except Exception:  # noqa: BLE001 — defensiv (§2.7)
-        pass
-    # **Der laufende Stand, nicht der auf der Platte** (m.rau/bibi#102).
-    # ``engine_info()`` liest ``direct_url.json`` im venv, und zwar bei jedem
-    # Aufruf frisch: nach einem ``uv sync`` ohne Neustart meldet ein Daemon
-    # sonst den neuen Stand, waehrend er den alten faehrt. Diese Angabe reist
-    # im Heartbeat zum Scheduler und wird dort zum Chip im Nodes-Screen — live
-    # am 2026-08-09 stand `sarasate:8780` mit `v0.7.11` und `current` da,
-    # waehrend der Prozess seit `10:59:36` v0.7.10-Code ausfuehrte.
-    #
-    # Die Portdatei haelt den Startstand fest (``portfile.write(engine=…)``)
-    # und ist die einzige Stelle, die das tut. Fehlt sie oder ihr Feld, bleibt
-    # es beim venv: unbekannt ist kein Grund, die Auskunft ganz aufzugeben.
-    try:
-        from bibi.daemon import portfile
-        laufend = (portfile.read() or {}).get("engine")
-        if laufend:
-            engine = laufend
+        st = engine_state()
+        engine, engine_tree = st.running, st.tree_status()
     except Exception:  # noqa: BLE001 — defensiv (§2.7)
         pass
     raw_port = os.environ.get("BIBI_DAEMON_PORT")

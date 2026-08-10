@@ -21,7 +21,7 @@ from pathlib import Path
 
 from bibi import config, git_ops, repo
 from bibi.daemon import activity
-from bibi.engine_info import engine_info
+from bibi.engine_state import engine_state
 from bibi.git_status import working_tree_status
 
 log = logging.getLogger("bibi.heartbeat")
@@ -174,6 +174,12 @@ class Heartbeat:
     def _beat(self) -> None:
         try:
             git_status, git_commit = self._tree_status()
+            # m.rau/bibi#125: die drei Größen kommen aus der einen Quelle.
+            # Bis hierher stand hier ``engine_info().label()`` — die PLATTE,
+            # und damit meldete dieser Knoten nach einem ``uv sync`` einen
+            # Stand, den sein Prozess gar nicht fuhr. Live am 2026-08-10:
+            # ``/-/status`` sagte v0.7.17, seine Registry-Zeile v0.7.18.
+            engine = engine_state(self.repo_root)
             resp = self.client.register(
                 self.worker_name, self.host, git_status,
                 node_id=self.node_id,
@@ -184,12 +190,12 @@ class Heartbeat:
                 # Angabe konnte ein Deploy sein eigenes Ergebnis nicht prüfen —
                 # der letzte Nachweis lief über ein Verhaltensmerkmal des neuen
                 # Codes in einer Logzeile, also über Indizien.
-                engine=engine_info().label(),
+                engine=engine.running,
                 # m.rau/bibi#67: der Arbeitsbaum des Engine-Checkouts, damit
                 # die Engine-Zelle dieselbe dreiteilige Auskunft geben kann
                 # wie die Repo-Zelle. None bei einem VCS-Pin — dort gibt es
                 # keinen Arbeitsbaum, und der Chip entfaellt.
-                engine_tree=engine_info().tree_status(),
+                engine_tree=engine.tree_status(),
                 # m.rau/bibi#44: ob ein Neustart-Knopf für diesen Knoten
                 # überhaupt einen Neustart bedeutet.
                 session=self.session,
