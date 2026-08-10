@@ -1,3 +1,3 @@
 """bibi — deploybare Engine für Markdown-geführte Team-Repos."""
 
-__version__ = "0.7.15"
+__version__ = "0.7.16"
