@@ -708,7 +708,8 @@ def _node_link_cell(worker: str | None, host: str | None, port: int | None) -> s
     return f'<a href="{href}" target="_blank" rel="noopener">{name} :{port}</a>'
 
 
-_NODE_TREE_CHIP_CLASS = {"clean": "chip clean", "modified": "chip modified"}
+_NODE_TREE_CHIP_CLASS = {"clean": "chip clean", "modified": "chip modified",
+                         "conflict": "chip conflict"}
 _NODE_SYNC_CHIP_CLASS = {"synced": "chip synced", "ahead": "chip ahead",
                          "behind": "chip behind", "diverged": "chip diverged"}
 

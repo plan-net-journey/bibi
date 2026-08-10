@@ -91,6 +91,23 @@ def test_modified_tree_shown(repo_with_origin):
     assert "modified" in _render()
 
 
+def test_conflict_tree_shown(repo_with_origin):
+    """#114: working_tree_status() kann jetzt "conflict" liefern — die
+    Statusline darf dabei nicht mit KeyError absaufen (_TREE_COLOR/_git_segment)."""
+    import subprocess
+    root, _ = repo_with_origin
+    subprocess.run(["git", "checkout", "-q", "-b", "side"], cwd=root, check=True)
+    (root / "geteilt.md").write_text("side\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "side"], cwd=root, check=True)
+    subprocess.run(["git", "checkout", "-q", "trunk"], cwd=root, check=True)
+    (root / "geteilt.md").write_text("trunk\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "trunk"], cwd=root, check=True)
+    subprocess.run(["git", "merge", "side"], cwd=root, capture_output=True, check=False)
+    assert "conflict" in _render()
+
+
 def test_branch_shown(repo_with_origin):
     assert "trunk" in _render()
 

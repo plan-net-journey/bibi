@@ -54,6 +54,15 @@ def test_node_git_status_chips_falls_back_to_plain_text_on_unexpected_format():
     assert render._node_git_status_chips(None) == "—"
 
 
+def test_node_git_status_chips_shows_conflict_tree_with_its_own_class():
+    """#114: working_tree_status() kann jetzt "conflict" liefern (offener
+    Merge) — der Nodes-Screen darf dafuer nicht auf die generische Fallback-
+    Klasse "chip" zurueckfallen wie fuer ein wirklich unbekanntes Wort."""
+    html = render._node_git_status_chips("trunk · conflict · synced")
+    assert '<span class="chip conflict">conflict</span>' in html, (
+        f"conflict faellt auf die generische Chip-Klasse zurueck: {html!r}")
+
+
 def test_clients_table_shows_disconnected_chip_when_stale():
     workers = [{"worker": "gone", "host": "h", "stale": True,
                "connected_at": 0, "last_heartbeat": 0}]

@@ -61,7 +61,7 @@ def _color(text: str, code: str) -> str:
     return f"{code}{text}{R}"
 
 
-_TREE_COLOR = {"clean": GREEN, "modified": YELLOW}
+_TREE_COLOR = {"clean": GREEN, "modified": YELLOW, "conflict": RED}
 _SYNC_COLOR = {"synced": GREEN, "ahead": CYAN, "behind": RED, "diverged": RED}
 
 

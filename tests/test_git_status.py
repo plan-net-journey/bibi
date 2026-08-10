@@ -104,3 +104,29 @@ def test_diverged_both_ahead_and_behind(repo_with_origin, tmp_path):
 
 def test_none_outside_git_repo(tmp_path: Path):
     assert working_tree_status(tmp_path) is None
+
+
+def test_conflict_tree_is_its_own_state(repo_with_origin):
+    """#114: ein offener Merge sah wie eine editierte Datei aus.
+
+    ``working_tree_status()`` kannte nur "clean"/"modified" — jede
+    Nicht-Header-Zeile aus ``git status --porcelain=v2`` setzte pauschal
+    ``dirty = True``, unmerged ``u ``-Zeilen fielen in denselben Topf wie
+    ``1 `` (ordinary changed). ``dirty_files()`` unterscheidet das elf Zeilen
+    weiter unten in derselben Datei laengst richtig — hier wurde es nie
+    angewendet."""
+    root, _ = repo_with_origin
+    _sh(root, "checkout", "-q", "-b", "side")
+    (root / "geteilt.md").write_text("side\n", encoding="utf-8")
+    _sh(root, "add", "-A")
+    _sh(root, "commit", "-q", "-m", "side")
+    _sh(root, "checkout", "-q", "trunk")
+    (root / "geteilt.md").write_text("trunk\n", encoding="utf-8")
+    _sh(root, "add", "-A")
+    _sh(root, "commit", "-q", "-m", "trunk")
+    subprocess.run(["git", "merge", "side"], cwd=root, capture_output=True, text=True, check=False)
+
+    s = working_tree_status(root)
+    assert s.tree == "conflict", (
+        f"ein offener Merge zeigt '{s.tree}' statt 'conflict' — ununterscheidbar "
+        "von einer schlicht editierten Datei (#114)")
