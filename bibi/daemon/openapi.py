@@ -229,6 +229,10 @@ class WorkerHeartbeat(BaseModel):
     # *unbekannt*, nicht *in Ordnung*: wer nichts sendet, gilt nicht als gesund.
     sync_conflict: bool | None = None
     auto_sync: bool | None = None
+    # m.rau/bibi#111: die zweite Konflikt-Sorte — eskalierte agent/*-Branches
+    # aus der Merge-Quarantaene dieses Knotens, bisher nirgendwohin gereist.
+    # ``None``/fehlend bei einem aelteren Client (vor dieser Aenderung).
+    merge_stuck: list[str] | None = None
 
 
 class RestartRequest(BaseModel):
@@ -276,6 +280,10 @@ class WorkerView(BaseModel):
     session: bool | None = None
     sync_conflict: bool | None = None
     auto_sync: bool | None = None
+    # m.rau/bibi#111: die zweite Konflikt-Sorte — eskalierte agent/*-Branches
+    # aus der Merge-Quarantaene dieses Knotens, bisher nirgendwohin gereist.
+    # ``None``/fehlend bei einem aelteren Client (vor dieser Aenderung).
+    merge_stuck: list[str] | None = None
 
 
 def _todo(endpoint: str) -> JSONResponse:

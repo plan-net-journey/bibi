@@ -755,6 +755,17 @@ def _node_sync_state_chips(w: dict) -> str:
         teile.append('<span class="chip modified" title="auto-sync is off — '
                      'work stays local until someone syncs by hand">'
                      'sync off</span>')
+    # m.rau/bibi#111: die zweite Konflikt-Sorte — nicht "dieser Knoten kommt
+    # mit origin nicht klar" (oben), sondern "die Arbeit eines Jobs kommt
+    # nicht nach trunk". Branch-Namen mit in den Chip, nicht nur eine Zahl:
+    # der Abnahmefall ist genau die Frage "welcher Branch", und eine Zahl
+    # allein hätte agent/Witz nicht benannt.
+    stuck = w.get("merge_stuck") or []
+    if stuck:
+        namen = html.escape(", ".join(stuck))
+        teile.append(f'<span class="chip conflict" title="merge-back cannot '
+                     f'land this work — resolve with /sync">merge stuck: '
+                     f'{namen}</span>')
     return (" " + " ".join(teile)) if teile else ""
 
 

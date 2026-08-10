@@ -148,13 +148,28 @@ class Heartbeat:
         Scheitert das Lesen, bleiben beide ``None`` — *unbekannt*, nicht *in
         Ordnung*. Ein Heartbeat darf daran nicht scheitern; die Angabe ist eine
         Beigabe, nicht sein Zweck.
+
+        ``merge_stuck`` (m.rau/bibi#111) reist aus demselben Grund mit, ist
+        aber die andere Konflikt-Sorte: nicht "dieser Knoten kommt mit origin
+        nicht klar", sondern "die Arbeit eines Jobs kommt nicht nach trunk"
+        (eskalierte ``agent/*``-Branches, ``data/merge_quarantine.json``).
+        Scheitert das Lesen, bleibt es ``[]`` statt ``None`` — anders als bei
+        sync_conflict soll Stille hier nicht "unbekannt" heissen, sondern
+        deckt sich mit dem Normalfall (keine Eskalation).
         """
         try:
             from bibi import state
-            return {"sync_conflict": state.get_sync_conflict(),
+            werte = {"sync_conflict": state.get_sync_conflict(),
                     "auto_sync": state.get_auto_sync()}
         except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            return {"sync_conflict": None, "auto_sync": None}
+            werte = {"sync_conflict": None, "auto_sync": None}
+        try:
+            from bibi import repo
+            from bibi.daemon import merge_quarantine
+            werte["merge_stuck"] = merge_quarantine.escalated(repo.root())
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            werte["merge_stuck"] = []
+        return werte
 
     def _beat(self) -> None:
         try:
