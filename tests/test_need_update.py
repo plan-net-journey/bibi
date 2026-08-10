@@ -41,7 +41,10 @@ def test_outdated_when_tags_differ(team_repo: Path):
     _repo_with_ref(team_repo, "v0.4.0")
     out = deploy.update_status(info=EngineInfo(version="0.3.0", ref="v0.3.0",
                                                commit="a" * 40))
-    assert out["verdict"] == "outdated"
+    # **``behind``, nicht mehr ``outdated``** (m.rau/bibi#127): der eigene und
+    # der fremde Knoten hatten zwei Vokabulare fuer dasselbe Urteil. Jetzt
+    # faellt es an einer Stelle, also gibt es auch nur ein Wort dafuer.
+    assert out["verdict"] == "behind"
     assert out["needs_update"] is True
     assert out["expected"] == "v0.4.0"
     assert out["running"] == "v0.3.0"
@@ -124,28 +127,66 @@ def test_unknown_without_an_expected_ref(team_repo: Path):
     assert out["needs_update"] is False
 
 
-def test_unknown_without_a_running_ref(team_repo: Path):
+def test_a_version_without_a_ref_still_answers_the_question(team_repo: Path):
+    """**Hier stand ``unknown``, und das war die dritte Antwort auf denselben
+    Zustand** (m.rau/bibi#127).
+
+    Ein aus einem Index installiertes Paket hat keinen ``direct_url``-Eintrag;
+    bekannt ist nur die Version. Die drei Wege urteilten darueber verschieden:
+    ``update_status()`` sagte ``unknown``, ``label_verdict()`` sagte
+    ``current``, und ``label_is_outdated()`` sagte „nicht veraltet" — mit dem
+    Kommentar *„aus einem Index installiert"* ausdruecklich als gewollter Fall.
+
+    **Zwei von drei haben die Frage beantwortet, eine hat sie verweigert.**
+    Version und Soll-Stand stimmen ueberein; das ist die Auskunft, nach der
+    jemand fragt. Die Zurueckhaltung bleibt dort, wo sie etwas traegt — bei
+    einem Branch-Pin, wo der Commit wirklich nichts ueber den Rueckstand sagt.
+    """
     _repo_with_ref(team_repo, "v0.4.0")
     out = deploy.update_status(info=EngineInfo(version="0.4.0"))
-    assert out["verdict"] == "unknown"
+    assert out["verdict"] == "current"
+    assert out["needs_update"] is False
 
 
 # ── Dasselbe Urteil für einen fremden Knoten ────────────────────────────────
 
 
-@pytest.mark.parametrize("expected,label,outdated", [
-    ("v0.4.0", "v0.3.0", True),
-    ("v0.4.0", "v0.4.0", False),
-    ("v0.4.0", "0.4.0", False),            # aus einem Index installiert
-    ("v0.4.0", "dev @ 86ea20e", True),     # Branch statt gepinntem Tag
-    ("v0.4.0", "0.4.0 (editable)", False),  # Absicht, kein Rückstand
-    ("dev", "v0.3.0", False),              # Soll ist kein Tag ⇒ kein Urteil
-    (None, "v0.3.0", False),
-    ("v0.4.0", None, False),
-    ("v0.4.0", "", False),
+@pytest.mark.parametrize("expected,running,verdict", [
+    ("v0.4.0", "v0.3.0", "behind"),
+    ("v0.4.0", "v0.4.0", "current"),
+    ("v0.4.0", "0.4.0", "current"),          # aus einem Index installiert
+    ("v0.4.0", "dev @ 86ea20e", "branch"),   # Branch statt gepinntem Tag
+    ("v0.4.0", "0.4.0 (editable)", "editable"),  # Absicht, kein Rückstand
+    ("dev", "v0.3.0", "branch"),             # Soll ist kein Tag ⇒ kein Urteil
+    (None, "v0.3.0", "unknown"),
+    ("v0.4.0", None, "unknown"),
+    ("v0.4.0", "", "unknown"),
 ])
-def test_label_is_outdated(expected, label, outdated):
-    assert deploy.label_is_outdated(expected, label) is outdated
+def test_the_verdict_for_a_foreign_node(expected, running, verdict):
+    """Dieselbe Tabelle wie zuvor, nur mit dem Urteil statt einem Bool.
+
+    **Sie hat zwei Fassungen bewacht, die einander widersprachen.** Die
+    geloeschte ``label_is_outdated()`` nannte einen Knoten mit Branch-Pin
+    „veraltet"; ``label_verdict()`` nannte denselben Fall „branch", also
+    unbestimmt. Ein Aufrufer haette sich aussuchen koennen, welche Antwort er
+    bekommt — nur hatte ``label_is_outdated()`` gar keinen mehr, und deshalb
+    ist der Widerspruch nie jemandem begegnet.
+    """
+    assert deploy.node_verdict(expected, running) == verdict
+
+
+def test_the_installed_side_only_ever_softens_the_judgement():
+    """``installed`` kann ``behind`` zu ``restart pending`` machen — mehr nicht.
+
+    Es darf aus einem ``current`` kein Problem und aus einem ``branch`` keine
+    Gewissheit machen: was laeuft, entscheidet der laufende Stand, und die
+    Platte sagt nur, *welche Handlung* den Rueckstand behebt.
+    """
+    for installed in (None, "v0.4.0", "v0.3.0", "dev @ 86ea20e"):
+        assert deploy.node_verdict("v0.4.0", "v0.4.0", installed) == "current"
+        assert deploy.node_verdict("dev", "v0.3.0", installed) == "branch"
+    assert deploy.node_verdict("v0.4.0", "v0.3.0", "v0.4.0") == "restart pending"
+    assert deploy.node_verdict("v0.4.0", "v0.3.0", "v0.3.0") == "behind"
 
 
 # ── /-/status trägt das Urteil ──────────────────────────────────────────────

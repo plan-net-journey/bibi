@@ -813,6 +813,7 @@ def _add_scheduler_routes(app: FastAPI, registry: WorkerRegistry,
         result = registry.heartbeat(hb.worker, hb.host, hb.git_status,
                                     node_id=hb.node_id, git_user=hb.git_user, role=hb.role,
                                     port=hb.port, engine=hb.engine,
+                                    engine_installed=hb.engine_installed,
                                     engine_tree=hb.engine_tree,
                                     session=hb.session,
                                     # m.rau/bibi#74

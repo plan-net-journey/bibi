@@ -191,83 +191,89 @@ def update_status(root: Path | None = None, info=None) -> dict:
     st = engine_state(root, info)
     info = st.info
     expected = st.expected
-    out = {"expected": expected, "installed": st.installed,
-           "running": st.running,
-           "needs_update": False, "verdict": "unknown"}
-    if info.editable:
-        out["verdict"] = "editable"
-        return out
-    if info.local:
-        # Eigenes Urteil statt „unknown" (m.rau/bibi#58): unbekannt sagt zu
-        # wenig über einen Zustand, den man kennt — hier läuft nachweislich
-        # nicht der gepinnte Stand, sondern eine Kopie eines Verzeichnisses.
-        out["verdict"] = "local"
-        return out
-    if not expected or not info.ref:
-        return out
-    if not _is_tag(expected):
-        out["verdict"] = "branch"
-        return out
-    if _norm(expected) == _norm(info.ref):
-        out["verdict"] = "current"
-        return out
-    out["verdict"] = "outdated"
-    out["needs_update"] = True
-    return out
+    # **Das Urteil kommt aus ``node_verdict()``, nicht mehr von hier**
+    # (m.rau/bibi#126). Bis dahin stand es zweimal im Code: diese Funktion
+    # urteilte über ``info.ref`` — die PLATTE — und nannte das Ergebnis
+    # ``outdated``; ``label_verdict()`` urteilte für fremde Knoten über den
+    # gemeldeten laufenden Stand und nannte es ``behind``. **Zwei
+    # Implementierungen derselben Regel, zwei Vokabulare, und sie sind zweimal
+    # auseinandergelaufen** (#102, #126).
+    #
+    # Live am 2026-08-10: ``running v0.7.18``, ``verdict current``,
+    # ``needs_update False`` — während ``upgrade_notice`` im selben Moment zum
+    # Neustart aufforderte. Der Screen zeigte die Version aus ``running`` und
+    # die Aufforderung daneben aus ``installed``.
+    v = node_verdict(expected, st.running, st.installed)
+    return {"expected": expected, "installed": st.installed,
+            "running": st.running, "verdict": v,
+            # **Was ``needs_update`` heißt: der laufende Stand ist nicht der
+            # erwartete.** Beide Rückstands-Urteile zählen — bei ``behind`` ist
+            # die Lock noch nicht da, bei ``restart pending`` liegt sie schon
+            # auf der Platte. Für die Frage „muss hier jemand handeln" ist das
+            # dasselbe; *was* zu tun ist, sagt das Verdict daneben.
+            "needs_update": v in ("behind", "restart pending")}
 
 
-def label_verdict(expected: str | None, label: str | None) -> str:
-    """Aktualitäts-Urteil für einen **fremden** Knoten, von dem nur die fertige
-    Bezeichnung bekannt ist — dieselbe Frage wie ``update_state()``, nur ohne
-    Zugriff auf dessen ``EngineInfo`` (m.rau/bibi#67).
+def node_verdict(expected: str | None, running: str | None,
+                 installed: str | None = None) -> str:
+    """**Das** Aktualitäts-Urteil über einen Knoten — eigenen oder fremden
+    (m.rau/bibi#127).
 
-    Die Wörter sind die der Repo-Zelle im Nodes-Screen (``current``/``behind``),
-    nicht die internen Verdict-Namen: nebeneinander gelesen sollen Engine- und
-    Repo-Zeile dieselbe Sprache sprechen. ``branch`` bleibt, weil es keine
-    Entsprechung hat und auch keine braucht — bei einem Branch-Pin weiß hier
-    niemand, ob der Branch weitergewandert ist.
+    Es gab zwei davon. ``update_status()`` urteilte lokal über ``info.ref`` und
+    nannte das Ergebnis ``outdated``; ``label_verdict()`` urteilte für einen
+    fremden Knoten über die gemeldete Bezeichnung und nannte es ``behind``.
+    **Zwei Implementierungen derselben Regel und zwei Vokabulare** — die eine
+    las die Platte, die andere den Prozess, und niemand hat sie je nebeneinander
+    gehalten. Beide Male ist es an derselben Stelle aufgefallen: einem Knoten,
+    der ``current`` meldete, während er alten Code fuhr (#102, #126).
 
-    ``unknown`` statt eines Ratens, wenn eine Seite fehlt. Dieselbe
-    Zurückhaltung wie in ``label_is_outdated()``: ein falsches Urteil schickt
-    jemanden los, etwas zu reparieren, das in Ordnung ist.
+    Es arbeitet ausschließlich auf **fertigen Bezeichnungen**, wie sie im
+    Heartbeat reisen. Das ist keine Einschränkung, sondern der Grund, warum es
+    für beide Wege dasselbe sagen kann: der eigene Knoten hat mehr Daten, aber
+    er darf sie hier nicht brauchen.
+
+    Die drei Lagen, die es unterscheidet, sind drei **Handlungen**:
+
+    - ``current`` — der Prozess fährt den erwarteten Stand. Nichts zu tun.
+    - ``restart pending`` — die Lock ist angekommen, der Prozess ist alt.
+      **Ein Neustart genügt**, und er ist der Auslöser, den ein automatischer
+      Rollout (#103) braucht. Ohne die zweite Größe war diese Lage von der
+      nächsten nicht zu unterscheiden.
+    - ``behind`` — auch die Platte ist alt. Ein Neustart hilft hier nicht; erst
+      muss der Sync durch.
+
+    Dazu die Zurückhaltungen, die schon vorher galten: ``branch``, wenn ein
+    Pin auf einen Branch zeigt (dann sagt der Commit nichts darüber, ob der
+    Branch weitergewandert ist), ``editable``/``local`` für ein
+    Arbeits-Checkout bzw. eine Verzeichnis-Kopie (m.rau/bibi#58 — beide tragen
+    im Screen ihren eigenen Chip), und ``unknown``, wenn eine Seite fehlt. **Ein
+    falsches Urteil schickt jemanden los, etwas zu reparieren, das in Ordnung
+    ist.**
+
+    ``installed=None`` ist kein Fehler, sondern **während jedes Rollouts der
+    Normalfall**: die noch laufenden alten Prozesse senden das Feld nicht. Dann
+    urteilt es aus ``running`` allein, also wie vor #127 — ein ``unknown`` an
+    dieser Stelle nähme eine Auskunft weg, die vorher dastand.
     """
-    if not expected or not label:
+    if not expected or not running:
         return "unknown"
-    if "(editable)" in label or "(local)" in label:
-        # Beide tragen ihren eigenen Chip; ein Aktualitäts-Urteil daneben wäre
-        # bedeutungslos — ein Neustart holt keinen gepinnten Stand, wenn das
-        # venv aus einem Verzeichnis kommt.
-        return "unknown"
+    for marker, wort in (("(editable)", "editable"), ("(local)", "local")):
+        if marker in running:
+            return wort
     if not _is_tag(expected):
         return "branch"
     # Ein Branch-Pin auf der Ist-Seite („dev @ 86ea20e") ist ebenso unbestimmt,
     # auch wenn der Soll-Stand ein Tag ist: der Commit sagt nichts darüber, ob
     # der Branch inzwischen weiter ist.
-    running = label.split()[0]
-    if " @ " in label and not _is_tag(running):
+    lauf = running.split()[0]
+    if " @ " in running and not _is_tag(lauf):
         return "branch"
-    return "current" if _norm(running) == _norm(expected) else "behind"
-
-
-def label_is_outdated(expected: str | None, label: str | None) -> bool:
-    """Dasselbe Urteil für einen **fremden** Knoten, von dem nur die fertige
-    Bezeichnung bekannt ist (``engine``-Feld des Heartbeats).
-
-    Dass der Soll-Stand für alle Knoten derselbe ist, ist keine Annahme,
-    sondern folgt aus der geteilten ``uv.lock``: ein Knotennetz fährt ein
-    Release. Deshalb genügt hier der Soll-Stand des Hosts.
-
-    Im Zweifel ``False``. Ein falsches NEED UPDATE wäre schlimmer als ein
-    fehlendes — es schickt jemanden los, etwas zu reparieren, das in Ordnung ist.
-    """
-    if not expected or not label or not _is_tag(expected):
-        return False
-    if "(editable)" in label or "(local)" in label:
-        # Beide tragen im Screen ihren eigenen Chip (m.rau/bibi#58). Ein
-        # NEED UPDATE daneben wäre irreführend: ein Neustart holt keinen
-        # gepinnten Stand, wenn das venv aus einem Verzeichnis kommt.
-        return False
-    return _norm(label.split()[0]) != _norm(expected)
+    if _norm(lauf) == _norm(expected):
+        return "current"
+    # Der Prozess ist hinterher — **die Platte entscheidet, was zu tun ist.**
+    if installed and _norm(installed.split()[0]) == _norm(expected):
+        return "restart pending"
+    return "behind"
 
 
 def set_expected_version(ref: str, root: Path | None = None,
