@@ -407,11 +407,17 @@ def test_schedule_detail_route_shows_app_link_for_running_app_job(app_with):
     client = FakeClient(
         schedules=[{"slug": "hitl-test-app", "kind": "job", "trigger": "now",
                     "app_port": 9101, "next_fire_at": None, "last_status": "running"}],
-        jobs=[{"id": "j1", "slug": "hitl-test-app", "status": "running", "started_at": 1.0}])
+        # `host` seit #117: der Link braucht den Knoten, der die App fährt.
+        # Ohne ihn stünde nur noch der Port da — was die Durchreichung von
+        # `app_port` (worum es diesem Test geht) zwar auch belegte, aber
+        # schwächer.
+        jobs=[{"id": "j1", "slug": "hitl-test-app", "status": "running",
+               "started_at": 1.0, "host": "sarasate"}])
     with TestClient(app_with(client)) as c:
         r = c.get("/-/ui/schedule/hitl-test-app")
         assert r.status_code == 200
         assert "Open app →" in r.text and ":9101" in r.text
+        assert 'href="http://sarasate:9101/"' in r.text
 
 
 def test_schedule_detail_route_shows_output_for_terminal_job(app_with):
@@ -591,25 +597,38 @@ def test_detail_live_panel_failed_shows_next_run():
     assert "next run" in html
 
 
-def test_detail_app_link_defaults_to_localhost():
-    # PLAN-22 Befund 6: ohne explizit übergebenen public_host bleibt localhost
-    # der sichere Default (kein I/O in render.py — "pure" Funktionen, s.
-    # Moduldocstring — config.public_host() wird eine Ebene höher aufgelöst).
+def test_detail_app_link_is_absent_without_a_known_node():
+    # **Umgeschrieben mit #117.** Hier stand bis dahin die Erwartung, ohne
+    # übergebenen public_host sei localhost "der sichere Default" — und das war
+    # der Fehler, nicht seine Absicherung: localhost ist der Knoten des
+    # BETRACHTERS, und ein Link dorthin führt bei jeder App, die woanders
+    # läuft, ins Leere. Live belegt am Mac-FE, das localhost:9110 verlinkte,
+    # während die App auf sarasate lief.
+    #
+    # Was von PLAN-22 Befund 6 gilt und bestehen bleibt: kein I/O in render.py.
+    # Die Adresse wird weiterhin eine Ebene höher aufgelöst — nur aus einer
+    # anderen Quelle, nämlich dem ausführenden Knoten.
     s = {"slug": "a", "kind": "job", "trigger": "now"}
     job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0, "app_port": 9100}
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
-    assert 'href="http://localhost:9100/"' in html
+    assert ":9100" in html, "der Port ist eine Job-Eigenschaft und darf stehen"
+    assert ":9100/" not in html, "die Adresse ist keine — ohne Knoten kein Link"
 
 
-def test_detail_app_link_uses_passed_public_host():
-    # Auf einem Remote-Host (sarasate) muss der Link eine erreichbare Adresse
-    # zeigen, nicht 127.0.0.1/localhost (live beobachtet, FeedbackOnJobManagement.md).
+def test_detail_app_link_uses_the_host_that_runs_the_app():
+    # Die Absicht dieses Tests ist unverändert und war immer richtig: auf einem
+    # Remote-Host muss der Link eine erreichbare Adresse zeigen, nicht
+    # 127.0.0.1/localhost (live beobachtet, FeedbackOnJobManagement.md).
+    # Geändert hat sich mit #117 nur, woher sie kommt — vom Knoten, der den
+    # Lauf ausgeführt hat, statt von dem, der die Seite rendert.
     s = {"slug": "a", "kind": "job", "trigger": "now"}
-    job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0, "app_port": 9100}
+    job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0,
+           "app_port": 9100, "host": "sarasate.tail9f9173.ts.net"}
     html = render.schedule_detail_inner(
-        s, [], job, slug="a", now=5.0, public_host="sarasate.tail9f9173.ts.net")
+        s, [], job, slug="a", now=5.0, public_host="air2024")
     assert 'href="http://sarasate.tail9f9173.ts.net:9100/"' in html
     assert "127.0.0.1" not in html
+    assert "air2024:9100" not in html
 
 
 def test_detail_shows_live_panel_for_last_terminal_run():

@@ -24,6 +24,10 @@ def test_clients_table_empty_state():
 def test_clients_table_renders_worker_row():
     workers = [{
         "worker": "air2024", "host": "mac", "port": 8780, "git_user": "m.rau",
+        # `role` trägt seit #118 den Link: ohne Controller-Rolle gibt es kein
+        # `/-/`, und der Name bleibt Text. Ein Client hat sie, deshalb steht sie
+        # hier — die Zeile beschreibt einen Knoten mit Frontend.
+        "role": "controller,synchronizer",
         "git_status": "trunk · clean · synced", "stale": False,
         "connected_at": 0, "last_heartbeat": 90,
     }]
