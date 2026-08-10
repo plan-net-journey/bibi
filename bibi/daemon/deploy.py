@@ -178,45 +178,21 @@ def update_status(root: Path | None = None, info=None) -> dict:
       eine Absicht; der Nodes-Screen kennzeichnet das ohnehin schon.
     - ``unknown`` — eine der beiden Seiten fehlt.
     """
-    from bibi.engine_info import engine_info
-    info = engine_info() if info is None else info
-    expected = current_ref(root)
-    # **``installed``, nicht ``running``** (m.rau/bibi#81). Was hier gelesen
-    # wird, ist ``direct_url.json`` im venv — also der Stand auf der PLATTE,
-    # nicht der, den ein Prozess geladen hat. Das Feld hiess bis zum 2026-08-09
-    # ``running`` und war genau so lange harmlos, wie niemand den Unterschied
-    # brauchte: nach einem ``uv sync`` ohne Neustart fallen die beiden
-    # auseinander, und das ist per Definition die Lage des Sitzungs-Knotens,
-    # fuer den ``upgrade_notice`` ueberhaupt existiert. Der Hinweis erlosch
-    # dort, waehrend der alte Code weiterlief.
+    # **Die drei Größen kommen aus ``engine_state``** (m.rau/bibi#125). Diese
+    # Funktion hat die Trennung ``installed``/``running`` als erste bekommen
+    # (#81, korrigiert in #102) und sie dabei hier ausformuliert — mitsamt der
+    # Portdatei-Stufe. Genau das war der Fehler: dieselbe Stufe stand danach an
+    # drei Stellen einzeln, und an einer vierten (dem Heartbeat) fehlte sie.
     #
-    # ``running`` traegt, was der Name sagt: den Stand DIESES Prozesses.
-    #
-    # **Bis zum 2026-08-09 stand hier ``info.label()``** — dieselbe Quelle wie
-    # ``installed``, und damit tat das Feld genau das, wogegen #81 es trennen
-    # sollte (m.rau/bibi#102). Der Kommentar darueber beschrieb bereits den
-    # Startstand; der Code las die Platte, und zwar bei jedem Abruf frisch.
-    # Live: `sarasate:8780` lief seit 10:59:36 unveraendert, dazwischen ein
-    # `uv sync` — `/-/status` meldete `running: v0.7.11` und das FE den Chip
-    # `current`, waehrend der Prozess v0.7.10-Code fuhr.
-    #
-    # Die Angabe steht in der Portdatei, die der Daemon **beim Start** schreibt
-    # (``portfile.write(engine=…)``) — die einzige Stelle, an der der Startstand
-    # ueberhaupt festgehalten wird. ``upgrade_notice.pending()`` liest sie seit
-    # #81 genau dafuer; diese Funktion tat es nicht, obwohl sie den Wert an
-    # `/-/status` und den Nodes-Screen liefert.
-    #
-    # Ohne Portdatei bleibt es beim venv: in einem frisch gestarteten
-    # CLI-Aufruf ist das dasselbe, und ein fehlender Eintrag (Daemon aelter als
-    # diese Aenderung) ist kein Grund, die Auskunft ganz aufzugeben.
-    laufend = None
-    try:
-        from bibi.daemon import portfile
-        laufend = (portfile.read(root) or {}).get("engine")
-    except Exception:  # noqa: BLE001 — defensiv (§2.7): eine Auskunft, kein Tor
-        laufend = None
-    out = {"expected": expected, "installed": info.label(),
-           "running": laufend or info.label(),
+    # Was die Namen bedeuten, steht jetzt im Modul-Docstring von
+    # ``bibi.engine_state`` und nicht mehr hier. Das ``verdict`` unten bleibt:
+    # es ist ein Urteil über die drei Größen, nicht ihre Erhebung.
+    from bibi.engine_state import engine_state
+    st = engine_state(root, info)
+    info = st.info
+    expected = st.expected
+    out = {"expected": expected, "installed": st.installed,
+           "running": st.running,
            "needs_update": False, "verdict": "unknown"}
     if info.editable:
         out["verdict"] = "editable"

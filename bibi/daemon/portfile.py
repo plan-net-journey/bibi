@@ -156,14 +156,20 @@ def write(port: int, *, host: str | None = None, roles: str | None = None,
 def _engine_label() -> str | None:
     """Die Engine-Bezeichnung dieses Prozesses, oder ``None``.
 
+    **Hier entsteht ``running``** — aus ``installed``, weil der Wert im Moment
+    des Starts noch beides zugleich ist. Auseinander fallen die zwei erst beim
+    nächsten ``uv sync``; ab dann ist dieser abgelegte Wert die einzige
+    Auskunft über den geladenen Stand (m.rau/bibi#125).
+
+    ``installed_label()`` statt ``engine_state()``: der Wert, der gleich
+    abgelegt wird, kann nicht aus der Ablage kommen.
+
     Defensiv: die Portdatei trägt den Port, und daran hängt, ob überhaupt
-    jemand mit diesem Daemon reden kann. Eine Beigabe darf das nie kosten.
+    jemand mit diesem Daemon reden kann. Eine Beigabe darf das nie kosten —
+    ``installed_label()`` gibt deshalb ``None`` zurück statt zu werfen.
     """
-    try:
-        from bibi.engine_info import engine_info
-        return engine_info().label()
-    except Exception:  # noqa: BLE001 — defensiv (§2.7)
-        return None
+    from bibi.engine_state import installed_label
+    return installed_label()
 
 
 def clear(root: Path | None = None) -> None:

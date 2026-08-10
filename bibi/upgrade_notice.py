@@ -54,35 +54,34 @@ def pending(root: Path | None = None, info=None) -> dict | None:
             return None
         st = deploy.update_status(root, info)
         # **Verglichen wird gegen den laufenden Prozess, nicht gegen das venv**
-        # (m.rau/bibi#81). ``update_status()`` liest ``direct_url.json``, also
-        # den Stand auf der Platte. Nach einem ``uv sync`` ohne Neustart ist
-        # der aktuell, während der Daemon noch den alten Code fährt — und genau
+        # (m.rau/bibi#81). Der Stand auf der Platte ist nach einem ``uv sync``
+        # aktuell, während der Daemon noch den alten Code fährt — und genau
         # dann erlosch die Aufforderung, obwohl sie da am dringendsten war.
         # Live am 2026-08-08: der Knoten baute weiter 15 Verbindungen pro
         # Minute auf, das Muster des in ``v0.7.7`` behobenen Fehlers, während
         # alle drei Anzeigen übereinstimmend ``current`` meldeten.
         #
-        # Die Angabe kommt aus derselben Portdatei, die oben ohnehin gelesen
-        # wird — **kein HTTP und keine Host-Abhängigkeit**; die Lokalität
-        # dieser Prüfung bleibt unangetastet.
+        # **``st["running"]`` trägt das seit m.rau/bibi#125.** Bis dahin las
+        # diese Funktion die Portdatei ein drittes Mal selbst — der Wert stand
+        # oben ohnehin schon im ``entry``, und die Fallunterscheidung „mit oder
+        # ohne abgelegten Startstand" war hier nachgebaut. Sie ist entfallen,
+        # ohne das Urteil zu ändern: fehlt der Startstand, ist ``running``
+        # das venv, und das war vorher der zweite Zweig.
         #
-        # Fehlt sie (Daemon älter als diese Änderung), entscheidet weiterhin
-        # das venv: unbekannt ist kein Grund, den Hinweis ganz aufzugeben.
         # **Nur dort, wo ein Tag-Vergleich überhaupt trägt.** ``update_status()``
         # fällt vorher schon Urteile, die nichts mit dem Rückstand zu tun haben:
         # ``editable`` ist eine Absicht, ``branch`` und ``unknown`` sind
         # Datenlücken, ``local`` ist eine Kopie. In all diesen Fällen bleibt es
         # still, und die laufende Version ändert daran nichts — sonst bekäme ein
         # Arbeits-Checkout eine Aufforderung, die er nie einlösen kann.
-        laufend = entry.get("engine")
-        if laufend and st.get("verdict") in ("current", "outdated"):
-            erwartet = st.get("expected")
-            if not erwartet or deploy._norm(erwartet) == deploy._norm(laufend):
-                return None
-            return {"expected": erwartet, "running": laufend}
-        if not st.get("needs_update"):
+        if st.get("verdict") not in ("current", "outdated"):
             return None
-        return {"expected": st.get("expected"), "running": st.get("installed")}
+        erwartet, laufend = st.get("expected"), st.get("running")
+        if not erwartet or not laufend:
+            return None
+        if deploy._norm(erwartet) == deploy._norm(laufend):
+            return None
+        return {"expected": erwartet, "running": laufend}
     except Exception:  # noqa: BLE001
         # Die Aufforderung hängt im Sitzungsstart und in der Statusleiste.
         # Beide dürfen an ihr nicht scheitern — dieselbe Regel wie dort.
