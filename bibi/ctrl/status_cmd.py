@@ -57,6 +57,17 @@ def run(args: argparse.Namespace) -> int:
         print(f"park_foreign: {rel} ({who}"
               + (" — save nähme sonst das ganze Repo)" if not case_path else ")"))
     print(f"auto_sync: {s.get('auto_sync', 'off')}")
+    # m.rau/bibi#75 A: die aktive Persona steht im selben Dict wie ``auto_sync``
+    # eine Zeile darüber — sie fehlte hier schlicht. **`/state` ruft genau
+    # dieses Kommando**, und der Skilltext zu `/soul` behauptete deshalb, die
+    # Soul sei *„a plain persistence field, not shown by /state"*: eine Doku,
+    # die eine Lücke als Eigenschaft beschreibt.
+    #
+    # Immer gedruckt, auch ohne Wert — anders als in der Statusleiste. `status`
+    # ist die vollständige Auskunft über den Zustand eines Knotens; dort ist
+    # „keine Persona aktiv" selbst eine Auskunft, und zwar genau die, nach der
+    # jemand nach einer Kompaktierung sucht.
+    print(f"soul: {s.get('soul') or '(none)'}")
     if s.get("sync_conflict"):
         print("sync_conflict: true")
     # PLAN-30 Ebene 3: dieselbe Quarantäne-Liste aus Ebene 2 ist die

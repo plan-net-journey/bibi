@@ -646,6 +646,8 @@ def _finish(env: dict[str, str], exit_code: int, outcome: str) -> None:
     """Worktree committen + Terminal-Status melden."""
     commit_sha, branch = _commit_worktree(env)
 
+    from bibi.schedule.backoff import exhausted as _exhausted
+
     attempt_cur = int(env.get("BIBI_ATTEMPT", "0"))
     attempts_max = int(env.get("BIBI_ATTEMPTS", "1"))
     report_attempt: int | None = None
@@ -675,7 +677,11 @@ def _finish(env: dict[str, str], exit_code: int, outcome: str) -> None:
         status, reason = "deferred", None
     elif exit_code == 0:
         status, reason = "complete", None
-    elif attempt_cur < attempts_max:
+    elif not _exhausted(attempt_cur, attempts_max):
+        # m.rau/bibi#128: die Erschöpfungsregel steht in ``backoff.exhausted()``.
+        # Hier stand sie als ``attempt_cur < attempts_max`` — richtig, aber als
+        # eine von mehreren Fassungen, und der Setup-Fehler-Pfad im Worker
+        # hatte gar keine.
         from bibi.schedule import backoff as _backoff
         next_attempt = attempt_cur + 1
         # Präzedenz (analog defer_time/Deferred): expliziter Job-Override

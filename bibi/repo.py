@@ -145,3 +145,44 @@ def credential_checks() -> list[dict[str, str]]:
             out.append({"env": env, "keychain_service": service,
                         "keychain_account": account})
     return out
+
+
+def retired_terms() -> list[dict[str, str]]:
+    """Abgeschaffte Bezeichner, die in aktiver Doku nichts mehr zu suchen haben.
+
+    Aus pyproject ``[[tool.bibi.retired_terms]]``::
+
+        [[tool.bibi.retired_terms]]
+        term = "BIBI_CONFIG_PATH"
+        since = "v0.7.3"
+        replacement = "config.env_path()"
+
+    **Im Team-Repo konfiguriert, nicht in der Engine verdrahtet** — dieselbe
+    Erwägung wie bei ``credential_checks()``: *welche* Namen abgeschafft sind,
+    wächst mit der Instanz, und ein Team mit eigenen Begriffen trägt sie hier
+    nach, ohne die Engine anzufassen (m.rau/bibi#92).
+
+    ``since`` und ``replacement`` sind optional. Ohne ``replacement`` meldet
+    ``doctor`` den Fund ohne Nachfolger — zulässig, aber weniger wert: der
+    Leser muss dann selbst suchen, und genau das Suchen wollte das Ticket
+    abnehmen.
+    """
+    pyproject = root() / "pyproject.toml"
+    if not pyproject.exists():
+        return []
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError):
+        return []
+    raw = data.get("tool", {}).get("bibi", {}).get("retired_terms") or []
+    out: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        term = str(entry.get("term", "")).strip()
+        if not term:
+            continue
+        out.append({"term": term,
+                    "since": str(entry.get("since", "")).strip(),
+                    "replacement": str(entry.get("replacement", "")).strip()})
+    return out

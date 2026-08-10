@@ -30,3 +30,29 @@ def delay(strategy: str, attempt: int, *, base: float = DEFAULT_BASE) -> float:
     if strategy == "exponential":
         return base * (2 ** (attempt - 1))
     return base  # fixed (Default)
+
+
+def exhausted(attempt: int, attempts: int) -> bool:
+    """Sind die gewährten Wiederholungen aufgebraucht? (m.rau/bibi#128)
+
+    ``attempts`` meint **N Retries zusätzlich zum ersten Lauf** (``parser.py``,
+    Default 0 = ein Versuch, kein Retry). ``attempt`` ist der Zähler der
+    bisherigen Versuche.
+
+    **Es gibt diese Funktion, weil dieselbe Entscheidung an vier Stellen stand
+    und an einer davon fehlte.** ``wrapper._finish()`` traf sie für den
+    Wrapper-Pfad; ``job_db.reserve_next()`` und ``job_db.sweep()`` haben ihre
+    eigenen Fassungen entfernt, beide ausdrücklich unter Berufung auf jene —
+    *„ein Job landet per Konstruktion nur dann als ``failed`` in der DB, wenn
+    der zuletzt gewährte Retry noch aussteht"*. Der **Setup-Fehler-Pfad** in
+    ``worker.py`` hat diese Zusicherung nie eingehalten: er schrieb ``failed``
+    mit neuem Termin, ohne ``attempts`` je anzusehen — er kann den Wrapper ja
+    gerade nicht starten.
+
+    Live am 2026-08-10: ein Job mit ``attempts: 0`` stand bei **488** Versuchen,
+    24 Stunden lang alle drei Minuten derselbe deterministische Fehlschlag.
+
+    **Kein viertes Sicherheitsnetz, sondern die eine Regel, auf die sich die
+    drei berufen.** Wer künftig ``failed`` schreibt, fragt hier.
+    """
+    return attempt >= attempts

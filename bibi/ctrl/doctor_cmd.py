@@ -118,6 +118,59 @@ def _credential_pairs(cfg_and_env: dict[str, str]) -> list[hygiene.CredentialPai
     return pairs
 
 
+#: Aktive Doku — **das Gegenteil von „alles Markdown"** (m.rau/bibi#92).
+#:
+#: Im Wurzelverzeichnis die Handvoll Dateien, die jemand liest, um etwas zu
+#: tun; dazu die Skills, die eine Anleitung *sind*. Bewusst **ohne**
+#: ``vault/case/**`` und ``vault/memo/**``: dort sind alte Namen Aufzeichnung
+#: und gehören hin. Eine Prüfung, die ein Release-Memo dafür anmahnt, dass es
+#: einen abgeschafften Namen erwähnt, wird nach dem dritten Lauf überlesen —
+#: und dann auch dort, wo sie recht hat.
+_ACTIVE_DOC_NAMES = ("README.md", "INSTALL.md", "JOBS.md", "CONVENTIONS.md",
+                     "TOPOLOGIE.md", "DESIGN.md", "CLAUDE.md")
+
+
+def _active_docs(root) -> list:
+    """Die Dateien, gegen die Doku-Drift geprüft wird.
+
+    Wurzel-Dokumente, ``.claude/CLAUDE.md`` und jede ``SKILL.md`` unter
+    ``skills/`` bzw. ``.claude/skills/`` — die Engine trägt die Quelle, ein
+    Team-Repo die installierten Kopien, und beide sollen dieselbe Prüfung
+    bekommen.
+    """
+    out = []
+    for name in _ACTIVE_DOC_NAMES:
+        for kandidat in (root / name, root / ".claude" / name):
+            if kandidat.is_file():
+                out.append(kandidat)
+    for skills in (root / "skills", root / ".claude" / "skills"):
+        if skills.is_dir():
+            out += sorted(skills.rglob("SKILL.md"))
+    return out
+
+
+def _retired_term_findings(root, terms=None) -> list[hygiene.Finding]:
+    """m.rau/bibi#92: abgeschaffte Bezeichner in aktiver Doku.
+
+    ``terms`` ist stellbar, damit ein Test die Liste setzen kann, ohne ein
+    pyproject zu schreiben — dieselbe Erwägung wie bei
+    ``portfile.write(engine=…)``.
+    """
+    if terms is None:
+        terms = repo.retired_terms()
+    if not terms:
+        return []
+    out: list[hygiene.Finding] = []
+    for p in _active_docs(root):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        out += hygiene.check_retired_terms(
+            p.relative_to(root).as_posix(), text, terms)
+    return out
+
+
 def _markdown_style_findings(vault_root) -> list[hygiene.Finding]:
     """PLAN-15: jede ``.md`` unter ``vault/`` einlesen (ganzer Vault, nicht nur
     ``case/`` — die CONVENTIONS.md-Regel gilt fürs gesamte Vault), beide neuen
@@ -177,6 +230,7 @@ def run(args: argparse.Namespace) -> int:
         + hygiene.check_orphan_worktrees(_worktree_slugs(root), _known_slugs(root))
         + hygiene.check_invalid_schedules(discovered.errors)
         + _markdown_style_findings(repo.vault())
+        + _retired_term_findings(root)
         + hygiene.check_missing_claude_auth(
             has_claude_jobs=has_claude_jobs, token_present=token_present)
         + hygiene.check_missing_public_host(

@@ -271,6 +271,67 @@ def check_html_placeholder_tags(path: str, text: str) -> list[Finding]:
     return out
 
 
+#: Wendungen, die eine Erwähnung als **Rückblick** ausweisen (m.rau/bibi#92).
+#:
+#: Deutsch und Englisch nebeneinander, weil beide vorkommen: die Skills unter
+#: ``skills/`` sind englisch, Vault und ``CLAUDE.md`` deutsch. Die Liste ist
+#: bewusst kurz — jeder Eintrag macht die Prüfung stiller, und eine Prüfung,
+#: die zu viel verschweigt, ist so wertlos wie eine, die zu viel meldet.
+#:
+#: Geeicht an den zwei echten Stellen im ``bibi-setup``-Skill, die seit #58
+#: vorbildlich formuliert sind: *„this skill **explained** an environment
+#: variable"* und *„which **no longer exists**"*.
+RETIRED_LOOKBACK = (
+    "no longer", "removed", "replaced", "deprecated", "used to", "explained",
+    "formerly", "until ", "was ", "were ",
+    "nicht mehr", "entfällt", "entfallen", "abgeschafft", "früher", "frueher",
+    "veraltet", "ersetzt", "hieß", "hiess", "bis zum", "bis ", "damals",
+)
+
+
+def check_retired_terms(path: str, text: str, terms) -> list[Finding]:
+    """Abgeschaffte Bezeichner in **aktiver** Doku (m.rau/bibi#92).
+
+    ``terms`` ist die gepflegte Liste aus ``[[tool.bibi.retired_terms]]``: je
+    Eintrag ``term``, optional ``since`` und ``replacement``.
+
+    **Warum eine gepflegte Liste und keine generische Erkennung:** „veralteter
+    Begriff" ist maschinell nicht bestimmbar, und der Versuch erzeugte nur
+    Rauschen. Die Liste ist zugleich der eigentliche Ertrag — **eine
+    Aufstellung dessen, was abgeschafft wurde und wie es heute heißt, gibt es
+    sonst nirgends.**
+
+    **Ein Treffer entfällt, wenn die Zeile ihn als Rückblick ausweist** — durch
+    eine Wendung aus :data:`RETIRED_LOOKBACK` oder dadurch, dass sie den
+    Nachfolger gleich mitnennt. Ohne diese Regel meldete die Prüfung ihre
+    eigenen Korrekturen: der ``bibi-setup``-Skill nennt ``BIBI_CONFIG_PATH``
+    zweimal, beide Male richtig.
+
+    Zeilenweise, nicht dokumentweit — der Rückblick muss **neben** dem Namen
+    stehen. Ein Dokument, das auf Seite 1 „X gibt es nicht mehr" schreibt und
+    auf Seite 4 zu X rät, ist genau der Fall, den dieses Ticket meint.
+    """
+    out: list[Finding] = []
+    for i, line in enumerate(text.splitlines(), start=1):
+        klein = line.lower()
+        rueckblick = any(w in klein for w in RETIRED_LOOKBACK)
+        for eintrag in terms:
+            begriff = (eintrag.get("term") or "").strip()
+            if not begriff or begriff not in line:
+                continue
+            nachfolger = (eintrag.get("replacement") or "").strip()
+            if rueckblick or (nachfolger and nachfolger in line):
+                continue
+            seit = (eintrag.get("since") or "").strip()
+            detail = f"{begriff} ist abgeschafft"
+            detail += f" (seit {seit})" if seit else ""
+            detail += f" — heute: {nachfolger}" if nachfolger else ""
+            detail += ("; ist die Erwähnung ein bewusster Rückblick, benenne "
+                       "sie in derselben Zeile als solchen")
+            out.append(Finding("retired-term", f"{path}:{i}", detail))
+    return out
+
+
 def _is_structured_line(line: str, stripped: str) -> bool:
     return bool(
         stripped
