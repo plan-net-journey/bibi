@@ -277,6 +277,12 @@ def _local_schedules() -> dict[str, dict]:
     }
 
 
+#: Zustaende, in denen ein Lauf noch Ausgabe nachliefern kann (#124). Dieselbe
+#: Menge, die `_live_placeholder_row()` als "aktiver Lauf" fuehrt — `pending`
+#: gehoert ausdruecklich nicht dazu: dort wartet nur ein Platz, es laeuft nichts.
+_LEBENDE_ZUSTAENDE = ("running", "awaiting", "deferred")
+
+
 def _scheduler_url() -> str | None:
     from bibi import config
     return os.environ.get("BIBI_SCHEDULER_URL") or config.read_env().get("BIBI_SCHEDULER_URL")
@@ -1779,6 +1785,23 @@ def add_controller_routes(
             return client.run_live_reset(slug)
         return client.run_rebuild(slug)
 
+    def _host_slot_laeuft(job_id: str) -> bool:
+        """Laeuft dieser Lauf beim Scheduler noch (#124)?
+
+        `/-/job/{id}/output` traegt die Antwort nicht — es liefert `events` und
+        `kind`, sonst nichts. Der Zustand kommt deshalb aus der Job-Liste des
+        Hosts, und zwar **defensiv**: faellt der Aufruf aus, gilt der Lauf als
+        nicht laufend und der Bereich bekommt sein Standbild. Ein Standbild ist
+        eine Verschlechterung, ein Strom ins Leere waere ein Fehler.
+        """
+        try:
+            for j in _host_client().jobs() or []:
+                if str(j.get("id")) == str(job_id):
+                    return j.get("status") in _LEBENDE_ZUSTAENDE
+        except Exception:  # noqa: BLE001 — defensiv (§2.7)
+            return False
+        return False
+
     @app.get("/-/jobs/{job_uid}/slot/{ziel}/{job_id}/output", include_in_schema=False)
     def screen_job_slot_output(request: Request, job_uid: str,  # noqa: ARG001
                                ziel: str, job_id: str):
@@ -1807,13 +1830,33 @@ def add_controller_routes(
             # Der Host formatiert bereits (`app.py` ruft `format_events`);
             # zusammengefuegt und ausgezeichnet wird hier — dieselbe
             # Darstellung wie fuer einen lokalen Lauf (m.rau/bibi#99).
+            #
+            # **Ein laufender Lauf bekommt einen Strom, kein Standbild** (#124).
+            # Bis hierher lieferte diese Route ausschliesslich `output_block()`,
+            # und der aufgeklappte Bereich stand still, bis jemand zu- und
+            # wieder aufklappte.
+            #
+            # Der Zustand steht nicht in der Antwort — `/-/job/{id}/output`
+            # traegt `events` und `kind`, sonst nichts. Er wird deshalb eigens
+            # geholt: ein Aufruf **pro Klick**, nicht pro Tick, und damit kein
+            # Beitrag zum Grundrauschen.
+            if _host_slot_laeuft(job_id):
+                return HTMLResponse(render.live_output_box(
+                    str(job_id), ereignisse,
+                    kind=antwort.get("kind") or "job",
+                    stream_url=f"/-/job/{job_id}/output/stream"))
             return HTMLResponse(render.output_block(
                 ereignisse, antwort.get("kind") or "job"))
         from bibi.daemon import job_db
         conn = job_db.connect()
         try:
             zeile = conn.execute(
-                "SELECT id, slug, fire, output_ref FROM jobs WHERE id=?",
+                # `status` seit #124 — der Zweig unten entscheidet daran, ob
+                # der Lauf noch laeuft. `payload` stand hier ebenfalls nicht,
+                # obwohl `effective_kind()` es unten liest: der Typ war damit
+                # immer der Default. Zwei Spalten, ein Griff.
+                "SELECT id, slug, fire, output_ref, status, payload "
+                "FROM jobs WHERE id=?",
                 (job_id,)).fetchone()
         finally:
             conn.close()
@@ -1850,8 +1893,14 @@ def add_controller_routes(
         # `zeile` ist je nach Pfad ein `sqlite3.Row` — der kennt kein `.get()`.
         _row = dict(zeile) if zeile is not None else {}
         _kind = _models.effective_kind(_row.get("payload"))
-        return HTMLResponse(render.output_block(
-            _of.format_events(zeilen, _kind), _kind))
+        ereignisse = _of.format_events(zeilen, _kind)
+        # Lokaler Lauf: seine `output.jsonl` liegt hier, der globale Bus speist
+        # die Box. Kein `stream_url` noetig — derselbe Grund wie im Zweig
+        # darueber (#124), andere Quelle.
+        if _row.get("status") in _LEBENDE_ZUSTAENDE:
+            return HTMLResponse(render.live_output_box(
+                str(job_id), ereignisse, kind=_kind))
+        return HTMLResponse(render.output_block(ereignisse, _kind))
 
     @app.get("/-/jobs/{job_uid}/runs/{jid}/output", include_in_schema=False)
     def screen_job_run_output(request: Request, job_uid: str, jid: int):  # noqa: ARG001
