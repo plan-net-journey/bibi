@@ -4404,7 +4404,12 @@ def _run_zeile(r: dict) -> str:
         f'<td class="src">{_e(r.get("src"))}</td>'
         f'<td>{_e(st)}{" &middot; " + _e(rs) if rs else ""}</td>'
         f'<td>{_e(r.get("exit_code"))}</td>'
-        f'<td>{_human_duration(r.get("exec_runtime"))}</td>'
+        # **Ueber `_duration_cell()`, nicht an ihm vorbei** (#123). Die
+        # Entscheidung "tickt oder tickt nicht" haengt an `finished_at`, und
+        # sie steht dort schon. Hier stand ein direkter Aufruf ohne Anker — es
+        # gibt zwei Zeilenbauer fuer Laeufe, und der erste Anlauf hat nur den
+        # anderen erreicht. Dieselbe Fehlerform wie #96.
+        f'<td>{_duration_cell(r)}</td>'
         f'<td>{_e((r.get("commit_sha") or "")[:7])}</td>'
         f'<td><button class="cta run-show" {holen} '
         f'data-run="{_e(r.get("run_id"))}">[show]</button></td>'
