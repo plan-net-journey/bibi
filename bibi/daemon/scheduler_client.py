@@ -65,6 +65,7 @@ class LocalScheduler:
                  role: str | None = None, port: int | None = None,
                  client_config_version: str | None = None,
                  engine: str | None = None,
+                 engine_installed: str | None = None,
                  engine_tree: str | None = None,
                  session: bool | None = None,
                  git_commit: str | None = None,
@@ -124,6 +125,7 @@ class RemoteScheduler:
                  role: str | None = None, port: int | None = None,
                  client_config_version: str | None = None,
                  engine: str | None = None,
+                 engine_installed: str | None = None,
                  engine_tree: str | None = None,
                  session: bool | None = None,
                  git_commit: str | None = None,
@@ -147,6 +149,10 @@ class RemoteScheduler:
             # ignoriert sie einfach (FastAPI verwirft unbekannte Felder nicht
             # mit 422, solange das Modell sie nicht verbietet).
             "engine": engine, "git_commit": git_commit,
+            # m.rau/bibi#127: der installierte Stand neben dem laufenden. Ein
+            # aelterer Host ignoriert das Feld, ein aelterer Client sendet es
+            # nicht — beides ist waehrend eines Rollouts der Normalfall.
+            "engine_installed": engine_installed,
             # m.rau/bibi#67, ebenso optional: ein aelterer Host ignoriert es.
             "engine_tree": engine_tree,
             # m.rau/bibi#44: Sitzungs-Daemon (kein Supervisor) oder Unit.

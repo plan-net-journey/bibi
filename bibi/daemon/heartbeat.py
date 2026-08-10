@@ -191,6 +191,13 @@ class Heartbeat:
                 # der letzte Nachweis lief über ein Verhaltensmerkmal des neuen
                 # Codes in einer Logzeile, also über Indizien.
                 engine=engine.running,
+                # m.rau/bibi#127: **die zweite Groesse.** Ohne sie sieht ein
+                # Knoten, dessen Lock angekommen und dessen Prozess alt ist,
+                # genauso aus wie einer, bei dem der Sync haengt — zwei Lagen
+                # mit zwei verschiedenen Handlungen. Der Scheduler sieht
+                # ausschliesslich fremde Knoten und hat sonst nur diese eine
+                # Auskunft.
+                engine_installed=engine.installed,
                 # m.rau/bibi#67: der Arbeitsbaum des Engine-Checkouts, damit
                 # die Engine-Zelle dieselbe dreiteilige Auskunft geben kann
                 # wie die Repo-Zelle. None bei einem VCS-Pin — dort gibt es

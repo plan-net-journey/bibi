@@ -212,6 +212,8 @@ class WorkerHeartbeat(BaseModel):
     # verschiedenen Commits stehen. Beide optional — ein älterer Client
     # registriert sich weiterhin ohne 422, sein Eintrag bleibt nur leer.
     engine: str | None = None
+    #: m.rau/bibi#127: der installierte Stand (venv) neben dem laufenden.
+    engine_installed: str | None = None
     git_commit: str | None = None
     # m.rau/bibi#67: clean/modified des Engine-Checkouts. Optional — ein
     # aelterer Client sendet es nicht, dann entfaellt der Chip im Screen.
@@ -269,7 +271,8 @@ class WorkerView(BaseModel):
     git_user: str | None = None
     role: str | None = None
     port: int | None = None
-    engine: str | None = None       # installierter Engine-Stand (#19)
+    engine: str | None = None       # laufender Engine-Stand (#19, #125)
+    engine_installed: str | None = None  # installierter Stand, venv (#127)
     git_commit: str | None = None   # kurzer Commit des Team-Repos (#19)
     engine_tree: str | None = None  # clean/modified des Engine-Checkouts (#67)
     # m.rau/bibi#74: ob dieser Knoten seine Arbeit loswird. ``session`` fehlte

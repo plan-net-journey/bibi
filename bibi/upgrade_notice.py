@@ -61,27 +61,23 @@ def pending(root: Path | None = None, info=None) -> dict | None:
         # Minute auf, das Muster des in ``v0.7.7`` behobenen Fehlers, während
         # alle drei Anzeigen übereinstimmend ``current`` meldeten.
         #
-        # **``st["running"]`` trägt das seit m.rau/bibi#125.** Bis dahin las
-        # diese Funktion die Portdatei ein drittes Mal selbst — der Wert stand
-        # oben ohnehin schon im ``entry``, und die Fallunterscheidung „mit oder
-        # ohne abgelegten Startstand" war hier nachgebaut. Sie ist entfallen,
-        # ohne das Urteil zu ändern: fehlt der Startstand, ist ``running``
-        # das venv, und das war vorher der zweite Zweig.
+        # **Die Bedingung ist auf ``needs_update`` zusammengeschmolzen**
+        # (m.rau/bibi#126). Hier stand dreimal nacheinander eine eigene
+        # Fallunterscheidung: erst die Portdatei ein drittes Mal gelesen (bis
+        # #125), dann die Verdict-Namen aufgezählt und ``expected`` gegen
+        # ``running`` verglichen. **Beides war eine zweite Fassung derselben
+        # Regel** — und die erste Fassung urteilte über die Platte, während
+        # diese hier den Prozess las. Genau daran ist #126 entstanden: die
+        # Statusleiste forderte zum Neustart auf, der Screen daneben schwieg.
         #
-        # **Nur dort, wo ein Tag-Vergleich überhaupt trägt.** ``update_status()``
-        # fällt vorher schon Urteile, die nichts mit dem Rückstand zu tun haben:
-        # ``editable`` ist eine Absicht, ``branch`` und ``unknown`` sind
-        # Datenlücken, ``local`` ist eine Kopie. In all diesen Fällen bleibt es
-        # still, und die laufende Version ändert daran nichts — sonst bekäme ein
-        # Arbeits-Checkout eine Aufforderung, die er nie einlösen kann.
-        if st.get("verdict") not in ("current", "outdated"):
+        # ``needs_update`` sagt jetzt für beide dasselbe: *der laufende Stand
+        # ist nicht der erwartete.* Ob dafür ein Neustart genügt
+        # (``restart pending``) oder erst der Sync durchmuss (``behind``),
+        # steht im Verdict — für die Aufforderung an einen Menschen ist es
+        # dasselbe, er tippt ohnehin ``exit`` und ``bibi``.
+        if not st.get("needs_update"):
             return None
-        erwartet, laufend = st.get("expected"), st.get("running")
-        if not erwartet or not laufend:
-            return None
-        if deploy._norm(erwartet) == deploy._norm(laufend):
-            return None
-        return {"expected": erwartet, "running": laufend}
+        return {"expected": st.get("expected"), "running": st.get("running")}
     except Exception:  # noqa: BLE001
         # Die Aufforderung hängt im Sitzungsstart und in der Statusleiste.
         # Beide dürfen an ihr nicht scheitern — dieselbe Regel wie dort.

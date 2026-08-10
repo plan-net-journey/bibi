@@ -57,10 +57,16 @@ def self_entry(roles) -> dict:
     # vierten fehlte sie: der Heartbeat meldete unverändert das venv, obwohl
     # der Kommentar hier bereits behauptete, die Angabe reise mit ihm zum
     # Scheduler. Jetzt tut sie das.
-    engine = engine_tree = None
+    #
+    # m.rau/bibi#127: ``engine_installed`` steht daneben — dieselben Felder wie
+    # im Heartbeat, damit die Zeile des Schedulers dieselbe Auskunft trägt wie
+    # jede gemeldete. Er meldet sich nie bei sich selbst; ohne das Feld hier
+    # fehlte es ausgerechnet bei dem Knoten, der die Tabelle rendert.
+    engine = engine_installed = engine_tree = None
     try:
         st = engine_state()
-        engine, engine_tree = st.running, st.tree_status()
+        engine, engine_installed = st.running, st.installed
+        engine_tree = st.tree_status()
     except Exception:  # noqa: BLE001 — defensiv (§2.7)
         pass
     raw_port = os.environ.get("BIBI_DAEMON_PORT")
@@ -107,6 +113,7 @@ def self_entry(roles) -> dict:
         "git_status": git_status,
         "git_commit": git_commit,
         "engine": engine,
+        "engine_installed": engine_installed,
         "engine_tree": engine_tree,
         "sync_conflict": sync_conflict,
         "auto_sync": auto_sync,
