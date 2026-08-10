@@ -248,7 +248,8 @@ def test_wall_time_kills_job(gitrepo: Path):
 def test_silence_zombies_job(gitrepo: Path):
     jid = _seed(gitrepo, "hang/README.md",
                 '---\nschedule: now\njob: "sleep 30"\nsilence_timeout: 1\n---\n')
-    _worker(gitrepo).tick_once()
+    w = _worker(gitrepo)
+    assert w.tick_once() is True
     row = _wait_terminal(gitrepo, jid)
     assert row["status"] == "zombie" and row["reason"] == "silence"
 

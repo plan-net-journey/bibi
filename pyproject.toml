@@ -58,6 +58,14 @@ markers = [
     "slow: echte Prozesse/Docker — nur mit --slow",
     "browser: echter Daemon + echter Browser — nur mit --browser-tests",
 ]
+# #101: eine vollstaendig gruene Session raeumt ihren `tmp_path`-Baum sofort
+# weg, statt ihn liegenzulassen, bis eine kuenftige, unbeteiligte Session ihn
+# abraeumen muss. Ohne das sammelt eine volle --slow-Suite (viele `gitrepo`-
+# und Worktree-Fixtures, viele kleine Dateien) ihre Altlast in EINEM Baum an,
+# und ein x-beliebiger spaeterer Lauf zahlt die Aufraeum-Rechnung — genau das
+# sah wie "lastabhaengig" aus (siehe tests/test_tmp_retention.py). Nur Baeume
+# mit mindestens einem Fehlschlag bleiben zur Fehlersuche liegen.
+tmp_path_retention_policy = "failed"
 # Parallel als Standard (m.rau/bibi#115). Auf 8 Kernen gemessen: die volle Suite
 # parallel (53 s) ist schneller als die halbe seriell (86 s). Damit ist der
 # `slow`-Marker als Geschwindigkeitswerkzeug hinfällig — er benennt nur noch,
