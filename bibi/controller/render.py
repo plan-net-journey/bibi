@@ -2491,6 +2491,12 @@ _EVENTS_JS = """
   }
   document.addEventListener('DOMContentLoaded', initBoxes);
   document.body.addEventListener('htmx:afterSettle', initBoxes);
+  // #124: eine Box, die per `innerHTML` entsteht, faellt zwischen beide
+  // Momente — sie waere da, und der Strom faende sie nicht. Wer eine
+  // einsetzt, sagt es hier an. **Ausdruecklich statt ueber die Reihenfolge
+  // zweier afterSettle-Zuhoerer**, die an der Skript-Reihenfolge der Seite
+  // haengt und niemandem auffaellt, wenn sie kippt.
+  window.__bibiInitBoxes = initBoxes;
 
   // #82: eine Box, die htmx gleich entfernt, nimmt ihren Strom mit.
   //
@@ -2730,12 +2736,23 @@ def _live_placeholder_row(job: dict | None, now: float) -> str:
     if status not in ("starting", "running", "awaiting", "deferred"):
         return ""
     st = _e(status)
-    t_abs = _abs_datetime(job.get("started_at"), now)
+    begonnen = job.get("started_at")
+    t_abs = _abs_datetime(begonnen, now)
+    # **RUNTIME statt eines vierten Gedankenstrichs** (#123). Hier standen vier,
+    # und der dritte war die Laufzeit — sie war nie da, weder stehend noch
+    # tickend. Seit `v0.7.16` tickt die Dauer auf der Kachel darueber, und der
+    # Unterschied machte die Luecke sichtbar; der Docstring dieser Funktion
+    # verlangt ohnehin, dass Kachel und Zeile nie auseinanderlaufen.
+    #
+    # Die drei verbleibenden Striche bleiben: REASON, EXIT und COMMIT sind zur
+    # Laufzeit wirklich unbekannt, und sie zu fuellen waere eine Behauptung.
+    laufzeit = ("—" if begonnen is None
+                else _human_duration(now - begonnen, seit=begonnen))
     return (
         "<tr>"
         f"<td>{t_abs}</td>"
         f'<td class="st {st}">{st}</td>'
-        "<td>—</td><td>—</td><td>—</td><td>—</td>"
+        f"<td>—</td><td>—</td><td>{laufzeit}</td><td>—</td>"
         f'<td><a class="back" href="#live">↑ live</a></td>'
         "</tr>"
     )
@@ -3873,7 +3890,13 @@ _JOB_DETAIL_JS = """
       // err/thinking-Klassen, der einklappbare Denkabschnitt. Als Text
       // eingesetzt staende das Markup lesbar in der Box. Der Server escapt
       // jede Zeile ueber `_e()`, bevor er sie einsetzt.
-      if (r.ok) feld.innerHTML = await r.text();
+      if (r.ok) {
+        feld.innerHTML = await r.text();
+        // Steckt eine Live-Box darin, braucht sie ihren Strom (#124). Ohne
+        // diesen Aufruf waere sie gebaut und nicht angeschlossen — genau die
+        // Verwechslung, die dieses Ticket erzeugt hat.
+        if (window.__bibiInitBoxes) window.__bibiInitBoxes();
+      }
       else feld.textContent = 'output unavailable';
       // Ein laufender Lauf ist noch nicht fertig — sein Output darf beim
       // naechsten Aufklappen nicht aus dem Cache kommen.
@@ -3945,7 +3968,14 @@ _JOB_DETAIL_JS = """
         // weiteres Ereignis folgt. Sichtbar als: Status `complete`, letzte
         // Zeile fehlt, erst ein Reload holt sie (Befund m.rau, 2026-08-09).
         feld.innerHTML = s.html;
+        // **Hier entscheidet sich, ob es ruckelt** (#124). Traegt der gerettete
+        // Stand eine Live-Box, setzt sie ueber ihr `data-from` exakt dort auf,
+        // wo sie stand — Doppelte verwirft der Offset-Dedup. Ihn stattdessen
+        // vollstaendig neu zu holen waere ein Roundtrip je Swap und ein
+        // sichtbarer Neuaufbau statt eines Weiterlaufens.
+        const lebt = feld.querySelector('.liveterm');
         if (s.geladen) { feld.dataset.geladen = '1'; }
+        else if (lebt) { if (window.__bibiInitBoxes) window.__bibiInitBoxes(); }
         else if (b) { ladeOutput(z, b); }
       }
       if (b) b.textContent = '[hide]';
