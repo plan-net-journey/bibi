@@ -345,6 +345,12 @@ table.jobs th.sortiert { color: var(--text); }
    man klicken kann. Die aktive Spalte traegt zusaetzlich den Pfeil. */
 th a { color: inherit; text-decoration: none; cursor: pointer; }
 th a:hover { text-decoration: underline; }
+/* Eine tickende Dauer darf nicht zappeln. Die Design-Studie hat es gemessen:
+   die Ziffernbreiten der System-Sans schwanken um 39 % (5,77 bis 8,00 px), und
+   eine sekuendlich fortgeschriebene Zelle wechselt dabei sichtbar ihre Breite.
+   `tabular-nums` haelt sie konstant (7,83 px). Vor #122 fiel das nicht auf,
+   weil keine dieser Zellen sich je von selbst geaendert hat. */
+.dur { font-variant-numeric: tabular-nums; }
 .chip { font-family: ui-monospace, monospace; font-size: .7rem; font-weight: 700;
         padding: .1rem .45rem; border-radius: .3rem; display: inline-block; white-space: nowrap; }
 /* Git-Status je Job-MD (PLAN-21 Befund 10) — löst die vorherige Lokal/Remote-
@@ -554,10 +560,26 @@ th a:hover { text-decoration: underline; }
 """
 
 
-def _ago(ts: float | None, now: float) -> str:
-    if ts is None:
-        return "—"
-    d = max(0, int(now - ts))
+def _dauer_span(text: str, art: str, anker: float) -> str:
+    """Eine Dauer, die im Browser weiterzählt (Thema A, #122).
+
+    **Der Server liefert den Anker, der Browser zählt.** Eine Dauer ist keine
+    Nachricht — sie ist eine reine Funktion aus einem Zeitstempel und *jetzt*,
+    und ein Roundtrip pro Sekunde wäre für einen Wert, den jedes Gerät selbst
+    ausrechnen kann, der Firehose in Reinform. Genau so arbeitet die
+    Kopfzeilen-Uhr seit jeher (``_CLOCK_JS``).
+
+    **Der Text bleibt trotzdem im HTML.** Ohne JS steht dann eine
+    stehengebliebene Zahl da statt einer leeren Zelle — dieselbe Entscheidung
+    wie beim Erstbild: eine stehengebliebene Seite kann man lesen.
+    """
+    return (f'<span class="dur" data-dur="{art}" data-at="{anker}">'
+            f'{text}</span>')
+
+
+def _ago_text(d: int) -> str:
+    """Nur die Regel, ohne Huelle — damit der Test sie mit dem Browser
+    vergleichen kann, ohne HTML abziehen zu muessen."""
     if d < 60:
         return f"{d}s ago"
     if d < 3600:
@@ -567,7 +589,16 @@ def _ago(ts: float | None, now: float) -> str:
     return f"{d // 86400} d ago"
 
 
-def _human_duration(seconds: float | None) -> str:
+def _ago(ts: float | None, now: float) -> str:
+    """Vergangenheits-Distanz. **Traegt immer einen Anker**, weil sie per
+    Definition eine Distanz zu *jetzt* ist — sie steht keine Sekunde still,
+    ausser der Browser laesst sie."""
+    if ts is None:
+        return "—"
+    return _dauer_span(_ago_text(max(0, int(now - ts))), "ago", ts)
+
+
+def _human_duration(seconds: float | None, *, seit: float | None = None) -> str:
     """Dauer (kein Zeitpunkt) als angepasstes Delta — Bibi4-Iteration, User-
     Fund: "die Spalte Laufzeit soll human-readable sein und nicht nur die
     Sekunden zeigen, sondern je nach Dauer ein angepasstes Delta". Analog zu
@@ -576,6 +607,18 @@ def _human_duration(seconds: float | None) -> str:
     einer, damit eine 90-Minuten-Laufzeit nicht auf "1h" abgerundet wird."""
     if seconds is None:
         return "—"
+    text = _dauer_text(seconds)
+    # **Ohne Anker kein Ticken, und das ist die wichtigere Haelfte.** Eine
+    # abgeschlossene Laufzeit ist ein Ergebnis, kein Zeitraum, der gerade
+    # vergeht; ein P90 ist eine Kennzahl ueber viele Laeufe. Beide duerfen
+    # nicht weiterzaehlen. Wer die Dauer eines LAUFENDEN Vorgangs zeigt, gibt
+    # `seit` mit — die Entscheidung gehoert zum Aufrufer, weil nur er weiss,
+    # ob der Vorgang noch laeuft.
+    return text if seit is None else _dauer_span(text, "since", seit)
+
+
+def _dauer_text(seconds: float) -> str:
+    """Nur die Regel, ohne Huelle (s. ``_ago_text``)."""
     d = max(0, int(seconds))
     if d < 10:
         # Eine Nachkommastelle, solange sie etwas unterscheidet: die meisten
@@ -602,9 +645,13 @@ def _until(ts: float | None, now: float) -> str:
     oneshot, s. Befund 1, hinter einer unauffälligen Anzeige)."""
     if ts is None:
         return "—"
-    if ts <= now:
+    return _dauer_span(_until_text(int(ts - now)), "until", ts)
+
+
+def _until_text(d: int) -> str:
+    """Nur die Regel, ohne Huelle (s. ``_ago_text``)."""
+    if d <= 0:
         return "asap"
-    d = int(ts - now)
     if d < 60:
         return f"in {d}s"
     if d < 3600:
@@ -1108,7 +1155,7 @@ def clients_page(workers: list[dict], now: float | None = None, *,
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{clients_fragment(workers, now)}"
         f"<script>{_EVENTS_JS}</script>"
-        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"
         f"<script>{_THEME_JS}</script>"
@@ -1327,7 +1374,13 @@ def status_header(
     host = scheduler_host or sched.get("hostname") or "—"
     punkt = "○" if stale else "●"
     host_klasse = "bad" if stale else "ok"
-    titel_zusatz = f' — no contact for {_human_duration(now - scheduler_stale_since)}' if stale else ""
+    # **Diese Dauer tickt, und das ist der Unterschied zur Runtime** (m.rau in
+    # #67): beide zaehlen hoch, aber ein wachsender Kontaktverlust ist
+    # unerwartet und verdient Aufmerksamkeit, eine wachsende Laufzeit ist
+    # erwartet. Vom Diff ausgenommen wird, was erwartet ist — nicht, was tickt.
+    titel_zusatz = (f' — no contact for '
+                    f'{_human_duration(now - scheduler_stale_since, seit=scheduler_stale_since)}'
+                    if stale else "")
 
     clients = len(sched.get("workers") or [])
     counts_quelle = sched.get("job_stats") or {}
@@ -1419,6 +1472,61 @@ def _live_clock(scheduler_now: float | None = None, now: float | None = None) ->
         versatz = round(scheduler_now - now, 1)
     return (f'<span class="liveclock" id="liveclock" data-offset="{versatz}">'
             f'--.--.---- --:--:--</span>')
+
+
+#: Schreibt jede Dauer sekündlich fort — rein client-seitig, ohne ein einziges
+#: Server-Ereignis (Thema A der FE-Ereignisarchitektur, #122).
+#:
+#: **Die drei Regeln stehen hier zwangsläufig ein zweites Mal.** Der Server
+#: rendert das Erstbild, der Browser schreibt es fort; beide müssen dieselbe
+#: Zahl gleich schreiben, sonst springt der Text beim ersten Tick sichtbar um.
+#: ``tests/test_live_durations.py`` vergleicht deshalb beide Seiten Wert für
+#: Wert gegen einen Node-Harnisch — ohne ihn fiele ein Auseinanderlaufen erst
+#: im Betrieb auf, und dann als Zucken, das niemand einem Commit zuordnet.
+_DURATION_JS = """
+(function(){
+  function dauer(sek){
+    const d = Math.max(0, Math.trunc(sek));
+    if (d < 10) return Math.max(0, sek).toFixed(1) + 's';
+    if (d < 60) return d + 's';
+    if (d < 3600) return Math.trunc(d/60) + 'm ' + (d%60) + 's';
+    if (d < 86400) return Math.trunc(d/3600) + 'h ' + Math.trunc((d%3600)/60) + 'm';
+    return Math.trunc(d/86400) + 'd ' + Math.trunc((d%86400)/3600) + 'h';
+  }
+  function ago(d){
+    if (d < 60) return d + 's ago';
+    if (d < 3600) return Math.trunc(d/60) + ' min ago';
+    if (d < 86400) return Math.trunc(d/3600) + ' h ago';
+    return Math.trunc(d/86400) + ' d ago';
+  }
+  function until(d){
+    if (d <= 0) return 'asap';
+    if (d < 60) return 'in ' + d + 's';
+    if (d < 3600) return 'in ' + Math.trunc(d/60) + ' min';
+    if (d < 86400) return 'in ' + Math.trunc(d/3600) + ' h';
+    return 'in ' + Math.trunc(d/86400) + ' d';
+  }
+  window.__bibiDauer = { dauer: dauer, ago: ago, until: until };
+  function tick(){
+    const jetzt = Date.now()/1000;
+    document.querySelectorAll('[data-dur]').forEach(function(el){
+      const at = parseFloat(el.getAttribute('data-at'));
+      if (!isFinite(at)) return;
+      const art = el.getAttribute('data-dur');
+      let text;
+      if (art === 'since') text = dauer(jetzt - at);
+      else if (art === 'ago') text = ago(Math.max(0, Math.trunc(jetzt - at)));
+      else if (art === 'until') text = until(Math.trunc(at - jetzt));
+      else return;
+      // Nur schreiben, wenn sich etwas aendert: ein unveraendertes
+      // `textContent` zu setzen macht eine laufende CSS-Animation kaputt —
+      // und genau die baut Welle 3 auf diese Zellen.
+      if (el.textContent !== text) el.textContent = text;
+    });
+  }
+  tick(); setInterval(tick, 1000);
+})();
+"""
 
 
 #: Setzt die Uhr sekündlich (rein client-seitig) — „wir leben noch".
@@ -1641,7 +1749,7 @@ def log_page(daemon_status: dict | None = None, *, git_status: dict | None = Non
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Live Log', status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
-        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{_log_panel()}"
         f"<script>{_EVENTS_JS}</script>"
@@ -1973,7 +2081,7 @@ def feed_page(
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Feed', status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
-        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{feed_fragment(feed_data, days=days, now=now)}"
         f"<script>{_EVENTS_JS}</script>"
@@ -2553,7 +2661,15 @@ def _commit_cell(run: dict) -> str:
 
 
 def _duration_cell(r: dict) -> str:
-    return _human_duration(r.get("exec_runtime"))
+    """Die Laufzeit einer Journal-Zeile — tickend, solange der Lauf laeuft.
+
+    `exec_runtime` kommt fertig gerechnet herein und weiss nicht mehr, ob es
+    ein Ergebnis oder ein Zwischenstand ist. **Diese Zeile weiss es**, an
+    `finished_at`, und nur deshalb steht die Entscheidung hier und nicht im
+    Formatierer."""
+    laeuft = r.get("started_at") is not None and r.get("finished_at") is None
+    return _human_duration(r.get("exec_runtime"),
+                           seit=r.get("started_at") if laeuft else None)
 
 
 #: Läufe pro Infinite-Scroll-Nachladung (User-Entscheidung, Job Lifecycle-Diskussion).
@@ -3015,7 +3131,7 @@ def schedule_detail_page(
         f'<a class="back" href="/-/ui/schedule/{_e(name)}/attrs">Attribute →</a>'
         f'</div>'
         f"{schedule_detail_inner(schedule, runs, job, slug, now, live_output=live_output, public_host=public_host, output_stream_url=output_stream_url)}"
-        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_SCROLL_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
@@ -3201,7 +3317,7 @@ def execution_detail_page(entry: dict | None, events: list[dict], kind: str,
         f"{_attr_table(e)}"
         f"<h2>Output</h2>{raw_links}"
         f'<div class="outscroll">{out}</div>'
-        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"
         f"<script>{_THEME_JS}</script>"
@@ -3713,7 +3829,7 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         # allein bewirkt nichts, den Strom baut ausschliesslich `_EVENTS_JS`
         # auf. Beim Neubau der v5-Seiten blieb es aus — als einzige Screens.
         f"<script>{_EVENTS_JS}</script>"
-        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"
         f"<script>{_THEME_JS}</script>"
@@ -3998,7 +4114,9 @@ def _slot_kachel(kachel, *, now: float) -> str:
             # und lässt Dauern ausdrücklich zu (`no contact for 4m`). Gemessen
             # gegen das Ende, wo es eines gibt: ein blockierter Lauf steht unter
             # A2 tagelang, und seine Laufzeit darf dabei nicht mitwachsen.
-            teile.append(_human_duration((beendet if beendet is not None else now) - begonnen))
+            teile.append(_human_duration(
+                (beendet if beendet is not None else now) - begonnen,
+                seit=begonnen if beendet is None else None))
         zustand = " &middot; ".join(teile)
     return (
         f'<div class="tile"><div class="tile-head">{titel}{app}</div>'
@@ -4359,7 +4477,7 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
         # keinen Strom, an dem sich die Regionen anmelden koennten — `#tiles`
         # an `live:<slug>`, `#runs` seit #43 an `journal:<slug>`.
         f"<script>{_EVENTS_JS}</script>"
-        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOB_DETAIL_JS}</script>"
         f"<script>{_SLOT_JS}</script>"
@@ -4436,7 +4554,7 @@ def job_attrs_page_v5(*, slug: str, spec: dict, defaults: dict, now: float,
         '<span class="jd-meta">attributes</span>'
         "</div>"
         f'<div class="attrs">{"".join(zeilen)}</div>'
-        f"<script>{_CLOCK_JS}</script>"
+        f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"

@@ -40,16 +40,21 @@ def test_until_none_is_dash():
 
 
 def test_until_future_is_in_x():
-    assert render._until(360.0, 300.0) == "in 1 min"
+    # Seit #122 traegt die Zelle ihren Anker, damit der Browser weiterzaehlen
+    # kann. Die Regel selbst steht unveraendert in `_until_text()`.
+    assert render._until_text(60) == "in 1 min"
+    assert 'data-dur="until" data-at="360.0"' in render._until(360.0, 300.0)
 
 
 def test_until_past_is_asap():
-    assert render._until(100.0, 300.0) == "asap"
+    assert render._until_text(-200) == "asap"
+    assert ">asap<" in render._until(100.0, 300.0)
 
 
 def test_until_exactly_now_is_asap():
     # ts == now zählt als fällig, nicht als Zukunft (kein "in 0s").
-    assert render._until(300.0, 300.0) == "asap"
+    assert render._until_text(0) == "asap"
+    assert ">asap<" in render._until(300.0, 300.0)
 
 
 # ── Time-Toggle (Bibi4-Iteration, User-Fund: "Time: abs./rel./both") ────────
