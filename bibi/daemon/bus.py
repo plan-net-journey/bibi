@@ -551,7 +551,7 @@ class Collector:
         conn = job_db.connect(self.db_path)
         try:
             rows = conn.execute(
-                "SELECT id, slug, status, fire, payload, pinned_host "
+                "SELECT id, slug, status, fire, payload, pinned_host, next_fire_at "
                 "FROM jobs WHERE active=1").fetchall()
             jrow = conn.execute("SELECT MAX(id) AS m FROM journal").fetchone()
             jmax = jrow["m"] or 0
@@ -568,11 +568,19 @@ class Collector:
         seen: dict[str, tuple] = {}
         for r in rows:
             jid, slug = r["id"], r["slug"]
-            seen[jid] = (r["status"], r["fire"], slug, r["pinned_host"])
-            changed = (self._primed
-                       and self._jobs.get(jid, (None,))[:2] != seen[jid][:2])
+            seen[jid] = (r["status"], r["fire"], slug, r["pinned_host"], r["next_fire_at"])
+            old = self._jobs.get(jid, (None, None, None, None, None))
+            changed = self._primed and old[:2] != seen[jid][:2]
+            # #110: ein Job kann in Status+fire unveraendert bleiben und trotzdem
+            # eine neue NEXT-Zeit bekommen (Retry-Backoff, Reschedule nach einem
+            # Lauf, RESET) — der Jobs-Screen zeigt genau dieses Feld. Ohne den
+            # eigenen Vergleich blieb "jobs" bei so einer Aenderung sauber, der
+            # Header (der den Scheduler direkt fragt) lief weiter, die Liste
+            # stand. Bewusst NICHT Teil von `changed`: live:/journal: sind die
+            # Live-Kachel eines einzelnen Laufs, die NEXT-Spalte betrifft nur
+            # die Liste — ein Retry-Countdown soll keinen Live-Refetch ausloesen.
+            next_fire_changed = self._primed and old[4] != seen[jid][4]
             if changed:
-                any_job_change = True
                 self._publish_live(slug, r["pinned_host"],
                                    {"status": r["status"], "fire": r["fire"]})
                 # Journal bei JEDEM Statuswechsel mit-dirty (nicht nur beim
@@ -582,12 +590,14 @@ class Collector:
                 # einer bereits offenen Seite erst beim nächsten Reload.
                 self._publish_journal(slug, r["pinned_host"])
                 stats["state"] += 1
+            if changed or next_fire_changed:
+                any_job_change = True
             self._track_tail(root, r, freshly_started=changed)
         # Verschwundene Zeilen (deactivate/Löschung): Tail final leeren und die
         # Live-Region dreckig melden — der Refetch zeigt dann den neuen Zustand.
         if self._primed:
             for jid in set(self._jobs) - set(seen):
-                _, _, slug, pinned = self._jobs[jid]
+                _, _, slug, pinned, _ = self._jobs[jid]
                 self._drop_tail(jid, final_read=True)
                 self._publish_live(slug, pinned)
                 any_job_change = True
