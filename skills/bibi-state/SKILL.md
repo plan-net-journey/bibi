@@ -1,6 +1,6 @@
 ---
 name: state
-description: Show the current bibi state — active case, auto_sync, sync_conflict, and protocol mode. Read-only; never mutates state.
+description: Show the current bibi state — active case, auto_sync, active soul, sync_conflict, and protocol mode. Read-only; never mutates state.
 argument-hint:
 allowed-tools:
   - Bash
@@ -20,6 +20,9 @@ Prints the current state of the team repo and the active case:
   session's park marker written by `/open`. The source is shown in parentheses
   (`cwd` / `session`). Empty if no case is active.
 - **auto_sync** — `on`/`off`, the standing push consent (§4.9).
+- **soul** — the active persona, or `(none)`. Printed even when unset:
+  "no persona active" is itself the answer someone is looking for after
+  a compaction (m.rau/bibi#75).
 - **sync_conflict** — `true` if a prior pull/rebase left unresolved markers.
 - **merge_stuck** — count + branch names of `agent/*` branches that failed to
   merge back into trunk 3+ times in a row and were pulled out of automatic

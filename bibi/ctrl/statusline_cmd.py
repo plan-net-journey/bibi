@@ -153,6 +153,16 @@ def render(payload: dict[str, Any]) -> str:
                 proto = _proto_state(folder)
                 color = {"on": GREEN, "dbg": YELLOW, "off": GRAY}[proto]
                 parts.append(_color(f"proto:{proto}", color))
+        # m.rau/bibi#45: die aktive Persona. Sie verändert das Verhalten des
+        # Agenten spürbar und war bis hierhin nur durch einen expliziten
+        # ``bibi-ctrl soul`` sichtbar — **jeder andere Zustand dieser Art
+        # (Case, proto, sync) steht längst in der Leiste, die Soul war die
+        # Ausnahme.** Der Datenzugriff kostet nichts, ``s`` ist oben schon
+        # gelesen. Ohne gesetzte Soul bleibt das Segment weg statt „none" zu
+        # behaupten: eine Leiste mit sechs Segmenten verträgt keinen Platz für
+        # eine Abwesenheit.
+        if s.get("soul"):
+            parts.append(_color(f"soul:{s['soul']}", CYAN))
         if s.get("sync_conflict"):
             parts.append(_color("sync:!conflict", RED))
         else:

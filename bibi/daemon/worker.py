@@ -631,8 +631,25 @@ def _retry_fields(reservation: dict) -> dict:
     ``backoff.DEFAULT_BASE``. Ein per Job-Exception explizit übergebenes
     ``seconds=N`` (``bibi.job.Failed``) wirkt nur im detachten Wrapper-Pfad —
     dieser blockierende Pfad (``bibi-ctrl run``/``test``) sieht keine
-    BIBI-Signale des Kindprozesses."""
-    attempt = (reservation.get("attempt") or 0) + 1
+    BIBI-Signale des Kindprozesses.
+
+    **Seit m.rau/bibi#128 fragt diese Funktion, ob überhaupt noch ein Versuch
+    zusteht.** Sie tat es nie — und war damit der eine Pfad, der die Zusicherung
+    brach, auf die sich ``reserve_next()`` und ``sweep()`` ausdrücklich berufen
+    (*„eine Zeile mit ``status='failed'`` schuldet per Konstruktion IMMER noch
+    einen Dispatch"*). Ein Job mit ``attempts: 0`` stand am 2026-08-10 bei
+    **488** Versuchen, weil jeder Setup-Fehler pflichtschuldig einen neuen
+    Termin schrieb.
+
+    Bei Erschöpfung bleibt es hier bei ``failed`` **ohne** Termin: ``error`` ist
+    von ``starting`` aus keine gültige Kante (``lifecycle.py`` kennt nur
+    ``failed --exhaust--> error``). Der Aufrufer schiebt es synchron nach —
+    dieselbe zweistufige Bewegung, die ``_finish()`` für den Wrapper-Pfad
+    macht."""
+    attempt_cur = reservation.get("attempt") or 0
+    if backoff.exhausted(attempt_cur, reservation.get("attempts") or 0):
+        return {"status": "failed", "attempt": attempt_cur, "next_fire_at": None}
+    attempt = attempt_cur + 1
     error_time = reservation.get("error_time")
     base = float(error_time if error_time is not None
                  else os.environ.get("BIBI_RETRY_BASE") or backoff.DEFAULT_BASE)
@@ -779,9 +796,22 @@ def execute_reservation(
         fields = {**_retry_fields(reservation), "exit_code": -1, "output_ref": output_ref,
                   "worker": worker_name, "host": host, "commit_sha": None, "branch": None}
         res = client.report(jid, **fields)
+        # m.rau/bibi#128: sind die Versuche aufgebraucht, folgt sofort das
+        # ``error``. Zwei Meldungen statt einer, weil ``starting → error`` keine
+        # gültige Kante ist — erst der Zwischenschritt nach ``failed`` (ohne
+        # Termin, also ohne weiteren Dispatch), dann die EXHAUST-Kante. Genau
+        # die Bewegung, die ``_finish()`` für den Wrapper-Pfad macht; **ohne
+        # sie bliebe der Job als ``failed`` liegen und der Sweeper müsste ihn
+        # holen** — der prüft seit seiner Bereinigung aber nur noch ``failed``
+        # OHNE Termin, und das wäre hier zufällig richtig statt begründet.
+        status = fields["status"] if res == "ok" else None
+        if res == "ok" and fields.get("next_fire_at") is None:
+            if client.report(jid, status="error", exit_code=-1,
+                             output_ref=output_ref, worker=worker_name,
+                             host=host) == "ok":
+                status = "error"
         return {"id": jid, "exit_code": -1, "commit": None,
-                "status": fields["status"] if res == "ok" else None,
-                "outcome": "setup_error"}
+                "status": status, "outcome": "setup_error"}
 
     # Detach: Wrapper läuft selbstständig weiter. Worker kehrt sofort zurück.
     activity.emit(log, logging.INFO, "worker.spawned", role="worker",

@@ -418,13 +418,20 @@ def test_execute_reservation_setup_failure_does_not_hang_running(gitrepo: Path, 
         res, repo_root=gitrepo, work_dir=gitrepo / "data" / "worktrees",
         client=LocalScheduler(gitrepo / "data" / "jobs.sqlite"), worker_name="t",
     )
-    assert out["outcome"] == "setup_error" and out["status"] == "failed"
+    # **Zielzustand seit m.rau/bibi#128 ``error``, nicht ``failed``.** Die
+    # Zusage dieses Tests ist unverändert — raus aus `running` (Fund B) —, aber
+    # dieser Job traegt kein ``attempts:``, also Default 0: ein Versuch, kein
+    # Retry. Ein ``failed`` mit neuem Termin hiesse, ihn erneut zu dispatchen,
+    # und genau so kam `Witz` am 2026-08-10 auf 488 Versuche.
+    assert out["outcome"] == "setup_error" and out["status"] == "error"
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     row = conn.execute(
         "SELECT status, exit_code, attempt, output_ref FROM jobs WHERE id=?", (jid,)).fetchone()
     conn.close()
-    assert row["status"] == "failed"   # raus aus `running` (Fund B behoben)
-    assert row["exit_code"] == -1 and row["attempt"] == 1
+    assert row["status"] == "error"   # raus aus `running` (Fund B behoben)
+    # ``attempt`` bleibt bei 0: es wurde kein weiterer Versuch gewaehrt, also
+    # wird auch keiner gezaehlt (#128).
+    assert row["exit_code"] == -1 and row["attempt"] == 0
     # User-Feedback 2026-07-03: der Fehler soll im Job-Output landen, nicht nur
     # im Daemon-Log — output_ref darf hier nicht mehr None sein.
     assert row["output_ref"] is not None

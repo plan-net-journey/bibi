@@ -28,8 +28,10 @@ Switching is two steps, both required:
 1. **Persist the choice.** `bibi-ctrl soul <name>` matches `<name>`
    case-insensitively against the `.claude/souls/*.SOUL.md` filenames
    (`NN.<Name>.SOUL.md`), writes the canonical name into the repo-global
-   `.state.md` (`soul:` field — a plain persistence field, not shown by
-   `/state`, which stays read-only and scoped to sync/case status). On an
+   `.state.md` (`soul:` field). Since m.rau/bibi#75 `/state` shows it, and
+   so does the status line (m.rau/bibi#45) — until then the only way to learn
+   the active persona was to run this command, which is exactly the wrong tool
+   for a question you ask *after* a compaction. On an
    unknown name the command aborts (exit 1) and lists the available souls on
    stderr — relay that list back to the user.
 2. **Load + adopt the profile.** Read the matching `.claude/souls/NN.<Name>.SOUL.md`
