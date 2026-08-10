@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -117,6 +118,38 @@ def test_tail_lines(tmp_path):
     assert activity.tail_lines(tmp_path / "nope", 5) == []
 
 
+def _run_isolated(coro):
+    """Eine Coroutine in einem EIGENEN Thread mit frischer Event-Loop fahren
+    (#94: "Zwei Bus-Tests scheitern, sobald die Browser-Ebene im selben Lauf
+    ist").
+
+    ``asyncio.run()`` bricht mit ``RuntimeError`` ab, sobald der aufrufende
+    Thread bereits eine laufende Loop hat — und genau das hinterlässt
+    ``pytest-playwright``s Sync-API, wenn vorher ein Browser-Test lief (sie
+    treibt Playwrights Async-Anbindung über eine eigene, im Haupt-Thread als
+    laufend markierte Loop). Live reproduziert: beide Tests grün einzeln und
+    in dieser Datei allein, rot nur in Kombination mit der Browser-Ebene, und
+    nur wenn ein Browser-Test zuerst lief — "wer zuerst läuft, entscheidet"
+    war deshalb kein Zufall, sondern die Reihenfolge, in der die störende
+    Loop entsteht.
+
+    Ein eigener Thread ist von der Loop des Haupt-Threads unabhängig — Loops
+    sind thread-lokal, ``asyncio.run()`` prüft nur den *aufrufenden* Thread.
+    Das ist unabhängig davon, WARUM eine fremde Loop im Haupt-Thread läuft,
+    und trifft deshalb die Fehlerklasse, nicht nur den einen Auslöser."""
+    import threading
+
+    result: dict = {}
+
+    def _runner() -> None:
+        result["value"] = asyncio.run(coro)
+
+    t = threading.Thread(target=_runner)
+    t.start()
+    t.join()
+    return result["value"]
+
+
 def test_broadcaster_delivers_across_thread():
     # Publizieren aus einem fremden Thread → Zustellung in den asyncio-Abonnenten.
     import asyncio
@@ -134,7 +167,7 @@ def test_broadcaster_delivers_across_thread():
         assert b.subscriber_count() == 0
         return line
 
-    assert asyncio.run(scenario()) == '{"event": "x"}'
+    assert _run_isolated(scenario()) == '{"event": "x"}'
 
 
 def test_broadcaster_publish_without_subscribers_is_noop():
@@ -152,7 +185,7 @@ def test_broadcaster_full_queue_drops_not_blocks():
         await asyncio.sleep(0)  # call_soon_threadsafe abarbeiten lassen
         return q.qsize()
 
-    assert asyncio.run(scenario()) == 1
+    assert _run_isolated(scenario()) == 1
 
 
 def test_resolve_level_precedence_and_tolerance():
