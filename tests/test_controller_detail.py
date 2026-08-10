@@ -639,7 +639,10 @@ def test_detail_shows_live_panel_for_last_terminal_run():
     job = {"id": "j", "slug": "a", "status": "complete", "finished_at": 2.0}
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
     assert 'class="live"' in html and 'class="st complete">complete' in html
-    assert "last run" in html and "finished 3s ago" in html
+    assert "last run" in html
+    # Seit #122 traegt die Dauer eine Huelle mit ihrem Anker — der Text
+    # steht darin, zusammenhaengend ist er nicht mehr.
+    assert "finished " in html and ">3s ago<" in html
 
 
 def test_detail_live_region_is_bus_only():
