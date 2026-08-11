@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- verlieren wie ein `pending`-Job. rescan() markiert verschwundene Slugs
     -- als inactive statt die Zeile zu löschen (Journal-Historie bleibt erreichbar).
     active          INTEGER NOT NULL DEFAULT 1,
+    -- Slug-Kollision (#142): JSON-Liste der MDs, die denselben Slug
+    -- beanspruchen; NULL = kein Konflikt. Ein eigener Zustand neben `active`,
+    -- nicht in ihm: `active` sagt "MD im Vault vorhanden", und bei einer
+    -- Kollision sind *beide* vorhanden. Solange die Spalte gefüllt ist, ist der
+    -- Job nicht startbar — welche der beiden MDs gälte, ist nicht entscheidbar.
+    conflict_refs   TEXT,
 
     -- Live-Zustand (§5.4/§5.5)
     status          TEXT NOT NULL DEFAULT 'pending',

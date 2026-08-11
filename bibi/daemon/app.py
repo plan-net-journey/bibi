@@ -1138,10 +1138,24 @@ def _add_worker_routes(app: FastAPI, worker: Worker) -> None:
         conn = job_db.connect(worker.db_path)
         try:
             outcome = job_db.start_now(conn, id)
+            # Die Pfade gehören in die Antwort, nicht nur der Grund (#142): wer
+            # den Konflikt auflösen soll, braucht die beiden Dateien. Sie stehen
+            # in der Zeile, und nur dieser Zweig liest sie.
+            pfade = []
+            if outcome == "conflict":
+                zeile = conn.execute(
+                    "SELECT conflict_refs FROM jobs WHERE id=?", (id,)).fetchone()
+                pfade = json.loads(zeile["conflict_refs"]) if zeile else []
         finally:
             conn.close()
         if outcome == "not_found":
             return JSONResponse(status_code=404, content={"error": "job not found", "id": id})
+        if outcome == "conflict":
+            # 409 wie „not pending", aber mit eigener Aussage: das Hindernis
+            # liegt im Vault und nicht im Zustand des Jobs.
+            return JSONResponse(status_code=409, content={
+                "error": "slug conflict — two schedule MDs claim this slug",
+                "id": id, "paths": pfade})
         if outcome == "invalid":
             return JSONResponse(status_code=409, content={"error": "not pending", "id": id})
         return {"id": id, "status": "started"}

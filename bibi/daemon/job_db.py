@@ -28,7 +28,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle, slot
 from bibi.schedule.models import Kind, Status, display_kind, job_uid
 from bibi.schedule.parser import SPECIAL_SCHEDULES, ParseResult
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 #: Terminalzustände, die den Slot **blockieren** statt ihn freizugeben — alle
 #: außer ``complete`` (Archivierungsregel A2, Zustandsmodell §3). Sie bleiben in
@@ -272,6 +272,14 @@ def _mig_run_snapshot(conn: sqlite3.Connection) -> None:  # v22 → v23
         conn.execute("ALTER TABLE jobs DROP COLUMN hitl_timeout")
 
 
+def _mig_conflict_refs(conn: sqlite3.Connection) -> None:  # v23 → v24
+    # Eine Slug-Kollision bekommt einen eigenen Zustand (#142). Bis hierher
+    # wurde sie wie eine gelöschte MD behandelt — `active=0` —, und ein Job,
+    # der still verschwindet, fällt nicht auf: er fehlt.
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "conflict_refs"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN conflict_refs TEXT")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -298,6 +306,7 @@ _MIGRATIONS: dict[int, list] = {
     20: [_mig_jobs_commit],
     21: [_mig_bootstrap_tokens],
     22: [_mig_run_snapshot],
+    23: [_mig_conflict_refs],
 }
 
 
@@ -1030,10 +1039,24 @@ def rescan(conn: sqlite3.Connection, vault_root: Path | None = None) -> dict:
         else:
             upsert_schedule(conn, pr, now)
             inserted += 1
+    # ── Eine Kollision ist kein Verschwinden (#142) ──────────────────────────
+    # Ein kollidierender Slug steht nicht in `found` — bis `v0.8.2` landete er
+    # damit in derselben Menge wie eine gelöschte MD und wurde deaktiviert.
+    # `active` sagt aber *„MD im Vault vorhanden"*, und bei einer Kollision sind
+    # **beide** vorhanden. Der Zustand bekommt deshalb eine eigene Spalte, und
+    # die Deaktivierungsmenge lässt ihn aus.
+    #
+    # Erst räumen, dann setzen: ein aufgelöster Konflikt muss wieder weggehen,
+    # und die erste Anweisung trifft nur Zeilen, die überhaupt eine tragen.
+    kollidiert = {c.slug: sorted(c.schedule_refs) for c in result.collisions}
+    conn.execute("UPDATE jobs SET conflict_refs=NULL WHERE conflict_refs IS NOT NULL")
+    for slug, refs in kollidiert.items():
+        conn.execute("UPDATE jobs SET conflict_refs=? WHERE slug=?",
+                     (json.dumps(refs, ensure_ascii=False), slug))
     # "removed" heißt seit PLAN-14 Stufe 14.5 "deaktiviert" (Zeile bleibt,
     # active=0) — Feldname aus Kompatibilität zu bibi/ctrl/job_cmd.py,
     # bibi/daemon/rescanner.py unverändert belassen (nur Logging, kein Branch).
-    removed = deactivate_slugs(conn, existing - discovered)
+    removed = deactivate_slugs(conn, existing - discovered - set(kollidiert))
     _sweep_karteileichen(conn)
     conn.commit()
 
@@ -1188,7 +1211,14 @@ def reserve_next(
         # nie mehr erreicht.
         rows = conn.execute(
             "SELECT id, slug, status, priority, enqueued_at, rowid AS seq FROM jobs "
-            f"WHERE active=1 AND locked_at IS NULL AND {pin_clause} AND ("
+            # `conflict_refs IS NULL` (#142): bei zwei MDs mit demselben Slug
+            # ist nicht entscheidbar, welche gilt — beide schreiben über
+            # `upsert_schedule()` in dieselbe Zeile, und wer gewinnt, hängt an
+            # der Scan-Reihenfolge. **Einen der beiden Zufallssieger
+            # auszuführen wäre schlimmer, als gar nichts zu tun.** Die Sperre
+            # sitzt hier und nicht an `active`, damit die Zeile sichtbar bleibt.
+            f"WHERE active=1 AND conflict_refs IS NULL AND locked_at IS NULL "
+            f"AND {pin_clause} AND ("
             "  (status='pending' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='failed' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='deferred' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
@@ -1653,9 +1683,16 @@ def start_now(conn: sqlite3.Connection, job_id: str, now: float | None = None) -
     unfällig (User-Feedback, PLAN-14 14.2). ``ok`` | ``invalid`` (running/awaiting)
     | ``not_found``."""
     now = time.time() if now is None else now
-    row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+    row = conn.execute(
+        "SELECT status, conflict_refs FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return "not_found"
+    if row["conflict_refs"]:
+        # **Der Grund gehört in die Antwort** (#142). Ein `invalid` hier schickte
+        # den Menschen an die Zustandsmaschine, während das Problem im Vault
+        # liegt: zwei MDs beanspruchen denselben Slug, und welche gilt, ist
+        # nicht entscheidbar. Die Auflösung ist eine Umbenennung, kein START.
+        return "conflict"
     if row["status"] == slot.DONE:
         # Verbrauchter Oneshot: START zeigt nichts an, was ginge. Wer ihn
         # erneut laufen lassen will, legt eine neue `at`-Datei an oder macht
