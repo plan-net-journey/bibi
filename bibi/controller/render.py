@@ -927,57 +927,30 @@ def _node_engine_cell(engine: str | None, expected: str | None = None,
     return cell
 
 
-def _node_restart_cell(node_id: str | None, port: int | None,
-                       session: bool | None = None) -> str:
-    """Neustart-Knöpfe je Knoten (m.rau/bibi#39).
+def _node_session_chip(session: bool | None) -> str:
+    """„Dieser Knoten läuft in einer Sitzung und hat keinen Supervisor" (#44).
 
-    Zwei getrennte Verben statt eines mit Häkchen: **Restart** beendet nur den
-    Prozess, **Deploy** pullt vorher. Der Unterschied ist bedeutsam genug, ihn
-    nicht hinter einer Option zu verstecken — der eine holt einen neuen Stand,
-    der andere nicht.
+    **Der Chip hat den Rückbau aus #103 überlebt, die Knöpfe daneben nicht** —
+    und das ist eine Entscheidung, keine Nachlässigkeit. Er saß in der
+    Restart-Zelle, weil er vor einem Klick warnte, der die eigene Sitzung
+    abschießt; mit der Zelle wäre er verschwunden. Er sagt aber etwas über den
+    **Knoten** aus, nicht über den Knopf, und diese Aussage wird mit dem
+    automatischen Rollout *wichtiger* statt überflüssig: ein Sitzungs-Knoten,
+    der sich selbst neu startet, kommt von allein nicht zurück.
 
-    Ohne ``port`` (älterer Client, oder erster Heartbeat noch nicht durch) gibt
-    es keine Adresse zum Aufrufen; dann bleibt die Zelle leer statt einen Knopf
-    anzubieten, der ins Leere liefe.
+    **Er steht jetzt an der Namenszelle.** Sie benennt den Knoten, und wie er
+    betrieben wird, gehört dazu. Die Engine-Spalte wäre die andere Wahl
+    gewesen — dort steht die Version, um die es beim Rollout geht —, aber sie
+    trägt bereits Version, Baum-Chip, Verdict und `NEED UPDATE`; ein fünftes
+    Zeichen hätte die Zelle unlesbar gemacht.
 
-    ``hx-confirm`` bei beiden: ein Klick, der einen laufenden Knoten beendet,
-    darf nicht versehentlich passieren. Der Drain (#38) macht ihn verantwortbar,
-    nicht folgenlos.
-
-    ``session=True`` ändert Chip, Verb und Rückfrage (m.rau/bibi#44). Der
-    Endpunkt beendet den Prozess und verlässt sich auf einen Supervisor — den
-    ein Sitzungs-Daemon nicht hat. Das erst im Ergebnis zu erwähnen wäre zu
-    spät: wer den Knopf für seinen eigenen Knoten drückt, hat dann bereits
-    seine Sitzung abgeschossen. Deshalb steht es **vor** dem Klick da, und
-    zwar zweimal — als Chip für den, der die Tabelle überfliegt, und in der
-    Rückfrage für den, der schon klickt.
-
-    ``session=None`` heißt *unbekannt* (Client älter als diese Änderung) und
-    verhält sich unverändert wie bisher: eine Behauptung über die Herkunft
-    wäre hier schlechter als keine.
+    ``session=None`` heißt *unbekannt* (Client älter als #44) und schweigt:
+    eine Behauptung über die Herkunft wäre schlechter als keine.
     """
-    if not node_id or not port:
-        return "—"
-    base = 'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this"'
-    nid = _e(node_id)
-    if session:
-        warn = ("This node runs inside a session — it will stop and nobody "
-                "brings it back. Start it again with: bibi")
-        return (
-            f'<span class="chip modified" title="no supervisor">session</span> '
-            f'<button class="killbtn" hx-post="/-/ui/clients/{nid}/restart" '
-            f'hx-confirm="{_e(warn)}" {base}>Stop{_BTN_SPINNER}</button> '
-            f'<button class="killbtn" hx-post="/-/ui/clients/{nid}/deploy" '
-            f'hx-confirm="{_e("Pull the new state, then stop. " + warn)}" {base}>'
-            f'Deploy + stop{_BTN_SPINNER}</button>'
-        )
-    return (
-        f'<button class="startbtn" hx-post="/-/ui/clients/{nid}/restart" '
-        f'hx-confirm="Restart this node?" {base}>Restart{_BTN_SPINNER}</button> '
-        f'<button class="startbtn" hx-post="/-/ui/clients/{nid}/deploy" '
-        f'hx-confirm="Pull the new state and restart?" {base}>'
-        f'Deploy{_BTN_SPINNER}</button>'
-    )
+    if not session:
+        return ""
+    return (' <span class="chip modified" title="no supervisor — it will not '
+            'come back on its own">session</span>')
 
 
 _APPROVAL_CHIP_CLASS = {"pending": "chip modified", "approved": "chip clean",
@@ -1030,7 +1003,8 @@ def _clients_table(workers: list[dict], now: float,
                        else '<span class="chip clean">connected</span>')
         rows.append(
             "<tr>"
-            f"<td>{_node_link_cell(w.get('worker'), w.get('host'), w.get('port'), w.get('role'))}</td>"
+            f"<td>{_node_link_cell(w.get('worker'), w.get('host'), w.get('port'), w.get('role'))}"
+            f"{_node_session_chip(w.get('session'))}</td>"
             f"{_role_matrix_cells(w.get('role'))}"
             f"<td>{_node_engine_cell(w.get('engine'), expected, w.get('engine_tree'), w.get('engine_installed'))}</td>"
             f"<td>{_e(w.get('git_user') or '—')}</td>"
@@ -1042,7 +1016,6 @@ def _clients_table(workers: list[dict], now: float,
             + "</td>"
             f"<td>{status_html}</td>"
             f"<td>{_node_approval_cell(w.get('node_id'), w.get('approval_status', 'pending'))}</td>"
-            f"<td>{_node_restart_cell(w.get('node_id'), w.get('port'), w.get('session'))}</td>"
             f"<td>{_abs_datetime(w.get('connected_at'), now)}</td>"
             f"<td>{_ago(w.get('last_heartbeat'), now)}</td>"
             "</tr>"
@@ -1051,7 +1024,10 @@ def _clients_table(workers: list[dict], now: float,
         '<table><thead><tr><th>Name</th>'
         f"{_role_matrix_header()}"
         '<th>Engine</th><th>Git user</th>'
-        '<th>Git status</th><th>Status</th><th>Approval</th><th>Restart</th>'
+        # Keine `Restart`-Spalte mehr (#103): ein Knoten wird nicht gestoppt,
+        # gestartet, restartet oder deployed — er holt sich den geforderten
+        # Stand selbst, wenn Ist und Soll auseinanderlaufen.
+        '<th>Git status</th><th>Status</th><th>Approval</th>'
         '<th>Connected since</th>'
         '<th>Last heartbeat</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"
@@ -1117,11 +1093,7 @@ def _expected_version_form(deploy_result: dict | None) -> str:
         f"{datalist} "
         '<button class="startbtn" hx-post="/-/ui/clients/expected-version" '
         'hx-include="closest p" hx-target="#clientsboard" hx-swap="outerHTML" '
-        f'hx-disabled-elt="this">Set{_BTN_SPINNER}</button> '
-        '<button class="startbtn" hx-post="/-/ui/clients/expected-version?deploy=true" '
-        'hx-include="closest p" hx-confirm="Set the version AND restart every node?" '
-        'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this">'
-        f'Set + deploy{_BTN_SPINNER}</button> {msg}'
+        f'hx-disabled-elt="this">Set{_BTN_SPINNER}</button> {msg}'
         '</p>'
     )
 
@@ -1133,18 +1105,18 @@ def clients_fragment(workers: list[dict], now: float | None = None, *,
         '<div id="clientsboard" data-bus="nodes" data-bus-refetch="/-/ui/clients/board">'
         '<div class="panel-card"><h2>Nodes</h2>'
         f"{_expected_version_form(deploy_result)}"
-        # „Restart all" (m.rau/bibi#39) im Panel-Kopf, nicht je Zeile: es ist
-        # eine Aktion auf die Föderation, nicht auf einen Knoten. Rollierend
-        # ausgeführt (Clients zuerst, Host zuletzt) — siehe clients_restart_all().
-        '<p class="handles">'
-        '<button class="startbtn" hx-post="/-/ui/clients/restart-all" '
-        'hx-confirm="Restart EVERY node?" hx-target="#clientsboard" '
-        f'hx-swap="outerHTML" hx-disabled-elt="this">Restart all{_BTN_SPINNER}</button> '
-        '<button class="startbtn" hx-post="/-/ui/clients/restart-all?deploy=true" '
-        'hx-confirm="Fetch the new revision on EVERY node and restart?" '
-        'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this">'
-        f'Deploy all{_BTN_SPINNER}</button>'
-        '</p>'
+        # Hier standen „Restart all" und „Deploy all" (m.rau/bibi#39). Sie sind
+        # mit #103 gefallen, zusammen mit „Set + deploy" und der Restart-Spalte
+        # je Zeile. Der Bauplan sagt es wörtlich: *„Ein Scheduler/Worker/Client
+        # kann nicht gestoppt, gestartet, restartet oder deployed werden. Das
+        # gilt ebenso für Restart all und Deploy all."* Stattdessen der moderne
+        # Weg — jeder Knoten holt sich den geforderten Stand selbst, wenn Ist
+        # und Soll auseinanderlaufen.
+        #
+        # **Die Routen bleiben**, nach m.raus Auftrennung der Reihenfolge:
+        # *„Die Endpunkte können bestehen bleiben. Das FE kann die Buttons
+        # trotzdem schon zurück bauen."* Sie fallen erst, wenn der Auslöser
+        # gebaut ist — heute vermittelt der Heartbeat keinen Restart.
         f"{_clients_table(workers, now, _expected_ref())}</div>"
         "</div>"
     )

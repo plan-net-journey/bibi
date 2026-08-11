@@ -44,8 +44,20 @@ from bibi.controller import render
 #: seit `#100` abgeschlossen ist. Wer etwas einträgt, begründet es im Commit.
 _ERLAUBT_UNERREICHBAR: frozenset[str] = frozenset()
 
-#: Dasselbe für Routen. Ebenfalls leer.
-_ERLAUBT_TOTE_ROUTEN: frozenset[str] = frozenset()
+#: Dasselbe für Routen — mit **einem** Eintrag, und er ist Schuld.
+#:
+#: `/-/ui/clients/restart-all` hat mit `#103` seinen letzten Knopf verloren.
+#: Die Route bleibt trotzdem, und zwar auf m.raus ausdrückliche Auftrennung
+#: der Reihenfolge hin: *„Die Endpunkte können bestehen bleiben. Das FE kann
+#: die Buttons trotzdem schon zurück bauen."* Der Rückbau des FE geht dem
+#: automatischen Rollout voraus; heute vermittelt der Heartbeat keinen
+#: Restart, und die Route ist bis dahin der einzige verbliebene Weg, einen
+#: Neustart über die Föderation anzustoßen.
+#:
+#: **Sie fällt, wenn der Auslöser gebaut ist** — dann ersatzlos, samt der
+#: Verben `restart`/`deploy` in `clients_node_action()`. Bis dahin steht sie
+#: hier und nicht unbemerkt im Code.
+_ERLAUBT_TOTE_ROUTEN: frozenset[str] = frozenset({"/-/ui/clients/restart-all"})
 
 _WURZEL = pathlib.Path(render.__file__).resolve().parent.parent.parent
 
@@ -206,9 +218,23 @@ def test_the_allowance_lists_stay_empty_unless_someone_argues():
     """Die Gegenrichtung: eine Ausnahmeliste, die wächst, deckt jede neue
     Leiche und nimmt den beiden Tests darüber ihre Schärfe.
 
-    Sie ist deshalb leer und soll es bleiben. Wer einträgt, begründet — und
+    Sie war leer und soll es wieder werden. Wer einträgt, begründet — und
     dieser Test macht sichtbar, dass er es getan hat.
+
+    **Ein Eintrag steht drin, seit #103.** `/-/ui/clients/restart-all` hat
+    seinen letzten Knopf verloren; die Route bleibt auf m.raus ausdrückliche
+    Auftrennung hin stehen (*„Die Endpunkte können bestehen bleiben. Das FE
+    kann die Buttons trotzdem schon zurück bauen."*). Bis der automatische
+    Rollout gebaut ist, ist sie der einzige verbliebene Weg, einen Neustart
+    über die Föderation anzustoßen — heute vermittelt der Heartbeat keinen.
+
+    **Sie fällt mit dem Auslöser**, und dieser Test ist die Erinnerung daran:
+    er wird rot, sobald jemand die Route entfernt, ohne den Eintrag
+    mitzunehmen — und er bleibt rot, wenn jemand einen zweiten einträgt.
     """
-    assert not _ERLAUBT_UNERREICHBAR and not _ERLAUBT_TOTE_ROUTEN, (
+    assert not _ERLAUBT_UNERREICHBAR, (
+        "Ausnahmen sind zugelassen, aber nie stillschweigend: dieser Test "
+        "gehört mit der Begründung angepasst, nicht die Liste allein.")
+    assert _ERLAUBT_TOTE_ROUTEN == frozenset({"/-/ui/clients/restart-all"}), (
         "Ausnahmen sind zugelassen, aber nie stillschweigend: dieser Test "
         "gehört mit der Begründung angepasst, nicht die Liste allein.")
