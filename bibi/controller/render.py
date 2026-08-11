@@ -2108,6 +2108,49 @@ def _feed_reach(days: int | None) -> str:
     return f"showing {_e(fenster)}"
 
 
+#: Wie viele neue Einheiten ein Klick auf LOAD MORE mindestens bringen soll,
+#: und wie viele ertraglose Tage er dafür höchstens durchschreitet (#34).
+_LOAD_MORE_ZIEL = 10
+_LOAD_MORE_GRENZE = 30
+
+
+def naechstes_fenster(entries: list[dict], *, aktuell: int, now: float) -> int:
+    """Auf welches Fenster LOAD MORE öffnet — eine **Menge**, kein Tag (#34).
+
+    **Befund m.rau:** an einem ruhigen Tag kommt genau eine Zeile dazu; der
+    Knopf verspricht „mehr" und liefert „einen Tag weiter". Er wandert deshalb
+    so weit, bis ``_LOAD_MORE_ZIEL`` neue Einheiten zusammenkommen — und hört
+    nach ``_LOAD_MORE_GRENZE`` ertraglosen Tagen auf.
+
+    **Die Obergrenze ist kein Sicherheitsnetz, sondern die Bedingung dafür,
+    dass der Knopf ehrlich bleiben kann.** Ohne sie liefe die Erweiterung bei
+    einem stillen Vault ins Leere, und niemand könnte „hier ist nichts mehr"
+    von „ich suche noch" unterscheiden.
+
+    **Und nicht weiter als nötig:** wo genug liegt, wird das Fenster nur bis
+    dorthin geöffnet. Ein Sprung um immer dieselben 30 Tage wäre derselbe
+    Fehler in die andere Richtung — er überschüttet den ruhigen Fall und
+    überspringt im lebhaften alles, was dazwischen lag.
+
+    ``entries`` sind die Einträge eines Fensters, das mindestens
+    ``aktuell + _LOAD_MORE_GRENZE`` Tage umfasst; ohne sie kann die Funktion
+    nur raten, und Raten ist hier ein zweiter Netzaufruf.
+    """
+    grenze = aktuell + _LOAD_MORE_GRENZE
+    neue = sorted(
+        alter
+        for e in entries
+        if (ts := e.get("last_changed")) is not None
+        and aktuell < (alter := (now - ts) / 86400) <= grenze
+    )
+    if len(neue) < _LOAD_MORE_ZIEL:
+        return grenze
+    # Aufgerundet: der Tag, an dem die zehnte Einheit liegt, muss **im**
+    # Fenster sein — ein abgerundetes Fenster schnitte sie wieder ab.
+    import math
+    return min(grenze, max(aktuell + 1, math.ceil(neue[_LOAD_MORE_ZIEL - 1])))
+
+
 def _feed_board_url(days: int | None) -> str:
     return "/-/ui/feed/board" + (f"?days={days}" if days is not None else "")
 
@@ -2133,7 +2176,14 @@ def feed_fragment(feed_data: dict, *, days: int | None = None,
     commit_base_url = feed_data.get("commit_base_url")
     load_more = ""
     if days and days >= 1:
-        url = _feed_board_url(days + 1)
+        # **Das Ziel des Knopfes rechnet der Aufrufer aus** (#34) — er hat die
+        # Einträge eines größeren Fensters, aus denen sich bestimmen lässt, wie
+        # weit es sich zu öffnen lohnt. Fehlt die Angabe, bleibt es beim alten
+        # Verhalten (ein Tag weiter): ein Fragment, das ohne diese Zahl gar
+        # keinen Knopf mehr zeigte, wäre schlechter als eines, das einen
+        # bescheideneren anbietet.
+        ziel = feed_data.get("next_days") or days + 1
+        url = _feed_board_url(ziel)
         load_more = (
             '<div class="loadmore">'
             f'<button hx-get="{url}" hx-target="#feedboard" '

@@ -482,3 +482,44 @@ def test_the_reach_survives_without_a_button():
     zu unterscheiden."""
     html = render.feed_fragment({"entries": [{"unit": "a", "changes": 3}]}, days=None)
     assert "<button" not in html, "ohne Fenster steht ein Knopf da"
+
+
+# ── #34: LOAD MORE erweitert um eine Menge, nicht um einen Tag ─────────────
+#
+# **Befund m.rau:** an einem ruhigen Tag kommt genau eine Zeile dazu — der
+# Knopf verspricht „mehr" und liefert „einen Tag weiter".
+#
+# Neu: Tage dazunehmen, bis **10 neue Einheiten** zusammenkommen **oder** 30
+# Tage am Stück nichts brachten; dann aufhören und es sagen.
+
+
+def _eintraege(tage: list[int], now: float = 1_000_000.0):
+    """Je ein Eintrag an den genannten Tagen (Alter in Tagen)."""
+    return [{"unit": f"u{i}", "last_changed": now - t * 86400}
+            for i, t in enumerate(tage)]
+
+
+def test_the_window_grows_until_ten_units_are_reached():
+    """Der Kern: nicht ein Tag weiter, sondern so weit, bis es sich lohnt."""
+    from bibi.controller.render import naechstes_fenster
+    # Zehn Einheiten liegen alle am Tag 12 — ein Fenster von 7 Tagen muss also
+    # auf 12 springen, nicht auf 8.
+    eintraege = _eintraege([12] * 10)
+    assert naechstes_fenster(eintraege, aktuell=7, now=1_000_000.0) == 12
+
+
+def test_the_window_stops_after_thirty_barren_days():
+    """Die Obergrenze, und sie ist der Grund, warum der Knopf ehrlich bleiben
+    kann: ohne sie liefe die Erweiterung bei einem stillen Vault ins Leere und
+    der Nutzer wartete auf etwas, das nicht kommt."""
+    from bibi.controller.render import naechstes_fenster
+    assert naechstes_fenster([], aktuell=7, now=1_000_000.0) == 37
+
+
+def test_a_busy_window_grows_by_the_smallest_useful_step():
+    """Die Gegenprobe: wo genug liegt, wird nicht weiter aufgerissen als
+    nötig. Ein Fenster, das bei jedem Klick um 30 Tage waechst, ist derselbe
+    Fehler in die andere Richtung."""
+    from bibi.controller.render import naechstes_fenster
+    eintraege = _eintraege(list(range(8, 20)))   # ab Tag 8 einer pro Tag
+    assert naechstes_fenster(eintraege, aktuell=7, now=1_000_000.0) == 17
