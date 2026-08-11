@@ -450,3 +450,85 @@ def test_carrying_a_value_adds_no_fetch_and_no_comparison():
     c._diff_scheduler_jobs()
     assert aufrufe["n"] == 1
     assert c._sched_jobs_snapshot == {"a": ("running", 2)}   # Fingerabdruck unveraendert
+
+
+# ── #131: ein Slot-Zustandswechsel muss die Lauf-Liste bewegen ───────────────
+#
+# **Befund aus dem Akzeptanz-Durchgang zu `v0.8.0`:** die Kachel meldet
+# `running · 28s`, waehrend die Zeile darunter eine Minute lang `starting`
+# behauptet. Beide zeigen denselben Lauf.
+#
+# Die Ursache ist eine Asymmetrie zwischen zwei Diffs, die dasselbe Ereignis
+# verarbeiten. Der **lokale** Pfad (`tick_once()`) publiziert bei jedem
+# Statuswechsel beide Ziele — `_publish_live()` fuer die Kachel und
+# `_publish_journal()` fuer die Lauf-Liste, mit ausdruecklicher Begruendung im
+# Kommentar dort. Der **Scheduler**-Pfad (`_diff_scheduler_jobs()`) publiziert
+# nur `live:<slug>` und das Sammel-Target `jobs`. Auf einem Client laufen die
+# Jobs beim Scheduler — dort greift also genau der Pfad, dem das Ziel fehlt.
+#
+# **Diese Tests pruefen die Wirkung, nicht die Verdrahtung.** Ein Test, der
+# `data-bus="journal:<slug>"` im Markup sucht, waere auch vor dem Fix gruen:
+# das Attribut steht seit #43 dort, es feuert nur niemand darauf.
+
+
+def test_a_scheduler_slot_change_moves_the_run_list():
+    """`starting → running` beim Scheduler meldet auch die Lauf-Liste dreckig.
+
+    Der Uebergang ohne Journal-INSERT ist der Fall, um den es geht: archiviert
+    wird dabei nichts, das `archived`-Target feuert also zu Recht nicht — und
+    bis #131 feuerte deshalb ueberhaupt nichts fuer die Liste."""
+    gesehen: list[tuple] = []
+
+    class _B:
+        def publish_state(self, target, value=None):
+            gesehen.append((target, value))
+
+    c = Collector(_B(), registry=None)
+    c._primed = True
+    c._sched_jobs_snapshot = {"a": ("starting", 1)}
+    c._fetch_scheduler_jobs = lambda: [{"slug": "a", "row_status": "running", "fire": 1}]
+    c._diff_scheduler_jobs()
+    ziele = [t for t, _ in gesehen]
+    assert "live:a" in ziele          # die Kachel — schon vor #131 richtig
+    assert "journal:a" in ziele       # die Zeile darunter — der Fehler
+
+
+def test_the_run_list_target_carries_no_value():
+    """`journal:<slug>` bleibt wertlos, und das ist kein Versehen.
+
+    `live:<slug>` traegt `(status, fire)`, weil die Kachel genau diese zwei
+    Felder zeigt. Die Lauf-Liste zeigt eine ganze Zeile — Beginn, Runtime,
+    Ausgang —, und die steht in keinem Fingerabdruck. Ein Wert daran waere die
+    Zusage, etwas mitzuliefern, das der Diff gar nicht gelesen hat."""
+    gesehen: list[tuple] = []
+
+    class _B:
+        def publish_state(self, target, value=None):
+            gesehen.append((target, value))
+
+    c = Collector(_B(), registry=None)
+    c._primed = True
+    c._sched_jobs_snapshot = {"a": ("starting", 1)}
+    c._fetch_scheduler_jobs = lambda: [{"slug": "a", "row_status": "running", "fire": 1}]
+    c._diff_scheduler_jobs()
+    assert ("journal:a", None) in gesehen
+
+
+def test_an_unchanged_slot_moves_nothing():
+    """Die Gegenprobe, ohne die der Fix ein Firehose waere.
+
+    `_diff_scheduler_jobs()` laeuft im Poll-Rueckfall alle paar Sekunden. Ein
+    zusaetzliches Ziel je Tick — statt je Wechsel — liesse die Lauf-Liste
+    dauernd nachladen und naehme ihr Scroll-Position und Faltzustand."""
+    gesehen: list[tuple] = []
+
+    class _B:
+        def publish_state(self, target, value=None):
+            gesehen.append((target, value))
+
+    c = Collector(_B(), registry=None)
+    c._primed = True
+    c._sched_jobs_snapshot = {"a": ("running", 1)}
+    c._fetch_scheduler_jobs = lambda: [{"slug": "a", "row_status": "running", "fire": 1}]
+    c._diff_scheduler_jobs()
+    assert gesehen == []
