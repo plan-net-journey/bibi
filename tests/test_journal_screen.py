@@ -21,6 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bibi.controller import render
+from bibi.controller import jobs_view
 from bibi.controller.jobs_view import Segment, build_rows
 from bibi.daemon import roles
 from bibi.daemon.app import create_app
@@ -207,3 +208,125 @@ def test_the_journal_page_carries_the_bus_client():
     """`data-bus` allein bewirkt nichts — den Strom baut `_EVENTS_JS` auf."""
     html = render.journal_page_v5([], now=NOW)
     assert "new EventSource('/-/events')" in html
+
+
+# ── #130: NEXT und 24H behaupten auf diesem Screen eine Zukunft ─────────────
+#
+# **Beobachtung aus dem Akzeptanz-Durchgang zu `v0.8.0`.** Jobs, die es nicht
+# mehr gibt, tragen zwei Angaben über ihre Zukunft: `NEXT` steht in der
+# Vergangenheit (der letzte berechnete `next_fire_at` eines seit Wochen
+# gelöschten Jobs), und `24H` meldet `0/288+0 0%` — die schlechtestmögliche
+# Zuverlässigkeit für einen Job, der planmäßig nicht laufen soll.
+#
+# **Ein Umzug ändert nichts an den Daten und alles an ihrem Gewicht.** Beide
+# Spalten waren im JOURNAL-Segment schon immer so gefüllt; dort standen die
+# Zeilen aber zwischen den aktiven. Der eigene Screen führt ausschließlich
+# solche Zeilen — dann ist eine Spalte, die für jede Zeile dasselbe Falsche
+# behauptet, keine Randnotiz mehr, sondern der Screen.
+#
+# **Die Spalten bleiben stehen und werden gefüllt, nicht entfernt.** Beide
+# Screens teilen sich eine Zeilenfunktion; sie wegzulassen hieße einen zweiten
+# Tabellenkopf zu führen — bewusst vermieden, und für die Filterzeile aus `#31`,
+# die über alle Bänder wirken soll, der falsche Weg.
+
+
+#: Die Spalten der Jobs-Tabelle in ihrer Reihenfolge. Die Zellen tragen **keine
+#: Klassen** — bis auf `slug` sind es nackte `<td>`. Ein Test, der nach Position
+#: greift, ist deshalb hier keine Nachlässigkeit, sondern die einzige ehrliche
+#: Möglichkeit: eine Klasse zu erfinden, damit der Test hübscher wird, hieße den
+#: Prüfgegenstand für die Prüfung zu ändern.
+_SPALTEN = ("slug", "type", "client", "scheduler", "last", "next", "runtime", "24h")
+
+
+def _zelle(html: str, spalte: str) -> str:
+    """Der Text der Zelle `spalte` aus der ersten Datenzeile."""
+    import re
+    zeilen = re.findall(r"<tr>(?:(?!</tr>).)*</tr>", html, re.S)
+    daten = [z for z in zeilen if 'class="slug"' in z]
+    assert daten, f"keine Datenzeile im HTML gefunden (Spalte {spalte})"
+    zellen = re.findall(r"<td[^>]*>(.*?)</td>", daten[0], re.S)
+    assert len(zellen) == len(_SPALTEN), (
+        f"{len(zellen)} Zellen, erwartet {len(_SPALTEN)} — die Tabelle hat "
+        f"ihre Spalten geändert, dieser Helfer muss nach: {zellen}")
+    roh = zellen[_SPALTEN.index(spalte)]
+    return re.sub(r"<[^>]+>", "", roh).strip()
+
+
+def _abgelegt_mit_zukunft(slug):
+    """Die Lage, in der der Befund entstand — und sie ist nicht frei erfunden.
+
+    `_segment_fuer()` legt einen Job ins JOURNAL, wenn es **keine MD mehr gibt**
+    (`lokal is None`), der Scheduler ihn aber noch kennt und auf `active=0`
+    führt. Genau dieser Scheduler-Eintrag trägt weiter seinen zuletzt
+    berechneten `next_fire_at` — der Termin, der in der Vergangenheit steht.
+
+    Ein Testdatum, das die Zeile nur ins richtige Segment schiebt, ohne diesen
+    Weg zu nehmen, hat kein `next_fire_at` in der Zeile und prüft nichts: der
+    erste Anlauf dieser Datei war aus diesem Grund grün, bevor irgendetwas
+    behoben war."""
+    return {"slug": slug, "active": 0, "schedule": "0 * * * *",
+            "next_fire_at": NOW - 86_400, "last_run_at": NOW - 90_000}
+
+
+def _journal_zeilen(slug="laengst-weg"):
+    zeilen = _zeilen(scheduler=[_abgelegt_mit_zukunft(slug)],
+                     journal=[_historie(slug)])
+    assert zeilen and zeilen[0].segment is Segment.JOURNAL, (
+        f"das Testdatum landet nicht im JOURNAL-Segment: {zeilen}")
+    return zeilen
+
+
+def test_the_journal_screen_promises_no_next_run():
+    """`NEXT` ist für einen abgelegten Job ohne Aussage — also `—`.
+
+    Der Screen beantwortet „welche Jobs haben nur noch Historie?". Eine Spalte,
+    die daneben behauptet, es stehe noch etwas bevor, unterläuft genau diese
+    Zusage."""
+    html = render.journal_screen(_journal_zeilen(), now=NOW)
+    zelle = _zelle(html, "next")
+    assert zelle == "—", (
+        f"NEXT zeigt {zelle!r} statt `—` — ein Termin in der Vergangenheit für "
+        "einen Job, den es nicht mehr gibt")
+
+
+def test_the_journal_screen_promises_no_reliability():
+    """`24H` rechnet gegen eine Erwartung, die für einen abgelegten Job nicht
+    mehr gilt. `0 %` ist dann kein schlechter Wert, sondern gar keiner.
+
+    Die Quote setzt der Controller an die Zeile, nicht `build_rows()` — sie
+    wird hier deshalb gesetzt statt erwartet. Ohne das ist sie `None`, rendert
+    ohnehin `—`, und der Test wäre grün, ohne etwas zu prüfen."""
+    zeilen = _journal_zeilen()
+    zeilen[0].quote = jobs_view.Quote(complete=0, expected=288, manual=0)
+    html = render.journal_screen(zeilen, now=NOW)
+    zelle = _zelle(html, "24h")
+    assert zelle == "—", (
+        f"24H zeigt {zelle!r} statt `—` — die schlechtestmögliche Quote für "
+        "einen Job, der planmäßig nicht laufen soll")
+
+
+def test_the_jobs_screen_keeps_both_columns_filled():
+    """Die Gegenprobe, und sie ist der Grund, warum der Fix an der Zeile hängt
+    und nicht an der Spalte: auf dem Jobs-Screen sagen beide Spalten etwas, und
+    dort müssen sie es weiter sagen."""
+    zeilen = _zeilen(local=[_md("taeglich")],
+                     scheduler=[{"slug": "taeglich", "active": 1,
+                                 "schedule": "0 * * * *",
+                                 "next_fire_at": NOW + 3600}])
+    zeilen[0].quote = jobs_view.Quote(complete=20, expected=24, manual=0)
+    html = render.jobs_screen(zeilen, now=NOW)
+    assert _zelle(html, "next") != "—", (
+        "NEXT ist auch auf dem Jobs-Screen leer — der Fix hat zu weit gegriffen")
+    assert _zelle(html, "24h") != "—", (
+        "24H ist auch auf dem Jobs-Screen leer — der Fix hat zu weit gegriffen")
+
+
+def test_both_screens_still_share_one_table_head():
+    """Kein zweiter Tabellenkopf. Die Spalten bleiben, ihr Inhalt ändert sich —
+    das ist die Bedingung, unter der `#31` seine Filter an die Köpfe hängen
+    kann, ohne sie zweimal zu bauen."""
+    j = render.journal_screen(_journal_zeilen("weg"), now=NOW)
+    b = render.jobs_screen(_zeilen(local=[_md("da")]), now=NOW)
+    for spalte in ("NEXT", "24H"):
+        assert spalte in j, f"{spalte} fehlt im Journal-Kopf"
+        assert spalte in b, f"{spalte} fehlt im Jobs-Kopf"

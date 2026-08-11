@@ -3475,6 +3475,27 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
         beziehung = f' <span class="{klasse}"{titel}>({row.relation})</span>'
 
     s, l = row.scheduler, row.local
+    # `NEXT` und `24H` sind für eine Journal-Zeile ohne Aussage (#130).
+    #
+    # Beide Spalten waren dort schon immer so gefüllt: `next_fire_at` ist der
+    # zuletzt berechnete Termin eines Jobs, den der Scheduler auf `active=0`
+    # führt — er liegt zwangsläufig hinter uns —, und die Quote rechnet gegen
+    # eine Erwartung, die für einen abgelegten Job nicht mehr gilt. `0/288+0 0%`
+    # liest sich als schlechtester möglicher Wert; gemeint ist „keiner".
+    #
+    # **Ein Umzug ändert nichts an den Daten und alles an ihrem Gewicht.** Im
+    # dritten Band standen diese Zeilen zwischen den aktiven und fielen nicht
+    # auf. Seit #38 führt ein eigener Screen ausschliesslich solche Zeilen —
+    # dann behauptet jede Zeile dasselbe Falsche, und es ist nicht mehr die
+    # Ausnahme, sondern der Screen.
+    #
+    # **Am Segment der Zeile, nicht am Screen**, obwohl heute nur der
+    # Journal-Screen solche Zeilen führt: „dieser Job hat keine Zukunft mehr"
+    # ist eine Aussage über den Job, nicht über den Ort, an dem er gerade
+    # steht. Die Spalten bleiben dabei stehen — sie wegzulassen hiesse einen
+    # zweiten Tabellenkopf zu führen, und das ist für die Filterzeile aus #31,
+    # die an genau diesen Köpfen hängen soll, der falsche Weg.
+    ohne_zukunft = row.segment is Segment.JOURNAL
     return (
         "<tr>"
         f'<td class="slug"><a href="/-/jobs/{job_uid(row.slug)}" title="{row.slug}">'
@@ -3500,13 +3521,13 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
         f'<td>{l.get("status") or "—"}</td>'
         f'<td>{s.get("row_status") or s.get("status") or "—"}</td>'
         f'<td>{_uhrzeit(s.get("last_run_at"), now)}</td>'
-        f'<td>{_uhrzeit(s.get("next_fire_at"), now)}</td>'
+        f'<td>{"—" if ohne_zukunft else _uhrzeit(s.get("next_fire_at"), now)}</td>'
         # RUNTIME gehört auf diese Seite und ist ein Perzentil (m.rau/bibi#132):
         # P90 der letzten 30 Läufe, nicht die Dauer des letzten. Die sprang —
         # derselbe Job zeigte mal `2.8s`, mal `4m 34s`, je nachdem was zuletzt
         # geschah. Unter fünf Läufen liefert der Scheduler bewusst nichts.
         f'<td>{_human_duration(s.get("runtime_p90"))}</td>'
-        f'<td>{row.quote or "—"}</td>'
+        f'<td>{"—" if ohne_zukunft else (row.quote or "—")}</td>'
         "</tr>"
     )
 
