@@ -551,6 +551,17 @@ th a:hover { text-decoration: underline; }
 /* Zwei Signale fuer „Default", nicht eins: die Dimmung geht in hellen Themes
    und auf schlechten Monitoren verloren, die Klammer nicht. */
 .ts-dim { color: var(--faint); }
+/* Lauf-Attribute (#40): dieselbe Zeile, um eine Herkunftsspalte erweitert.
+   Die Spaltenbreiten stehen an `.attrs-head`, damit Kopf und Zeilen nicht
+   auseinanderlaufen koennen — sie erben beide dasselbe Raster. */
+.attrs-head, .attrs .attr-row { grid-template-columns: 12rem 1fr 5rem; }
+.attrs-head { display: grid; gap: .4rem; padding: .18rem 0;
+              border-bottom: 1px solid var(--line); color: var(--hdr-key);
+              font-family: ui-monospace, monospace; font-size: .72rem;
+              letter-spacing: .04em; }
+.attr-src { color: var(--faint); font-family: ui-monospace, monospace;
+            font-size: .72rem; text-align: right; }
+.attrs-note { font-size: .78rem; max-width: 60rem; margin: .2rem 0 1rem; }
 
 /* Leerer Zustand und Nachladen. */
 .empty { color: var(--dim); font-size: .85rem; font-style: italic;
@@ -916,57 +927,30 @@ def _node_engine_cell(engine: str | None, expected: str | None = None,
     return cell
 
 
-def _node_restart_cell(node_id: str | None, port: int | None,
-                       session: bool | None = None) -> str:
-    """Neustart-Knöpfe je Knoten (m.rau/bibi#39).
+def _node_session_chip(session: bool | None) -> str:
+    """„Dieser Knoten läuft in einer Sitzung und hat keinen Supervisor" (#44).
 
-    Zwei getrennte Verben statt eines mit Häkchen: **Restart** beendet nur den
-    Prozess, **Deploy** pullt vorher. Der Unterschied ist bedeutsam genug, ihn
-    nicht hinter einer Option zu verstecken — der eine holt einen neuen Stand,
-    der andere nicht.
+    **Der Chip hat den Rückbau aus #103 überlebt, die Knöpfe daneben nicht** —
+    und das ist eine Entscheidung, keine Nachlässigkeit. Er saß in der
+    Restart-Zelle, weil er vor einem Klick warnte, der die eigene Sitzung
+    abschießt; mit der Zelle wäre er verschwunden. Er sagt aber etwas über den
+    **Knoten** aus, nicht über den Knopf, und diese Aussage wird mit dem
+    automatischen Rollout *wichtiger* statt überflüssig: ein Sitzungs-Knoten,
+    der sich selbst neu startet, kommt von allein nicht zurück.
 
-    Ohne ``port`` (älterer Client, oder erster Heartbeat noch nicht durch) gibt
-    es keine Adresse zum Aufrufen; dann bleibt die Zelle leer statt einen Knopf
-    anzubieten, der ins Leere liefe.
+    **Er steht jetzt an der Namenszelle.** Sie benennt den Knoten, und wie er
+    betrieben wird, gehört dazu. Die Engine-Spalte wäre die andere Wahl
+    gewesen — dort steht die Version, um die es beim Rollout geht —, aber sie
+    trägt bereits Version, Baum-Chip, Verdict und `NEED UPDATE`; ein fünftes
+    Zeichen hätte die Zelle unlesbar gemacht.
 
-    ``hx-confirm`` bei beiden: ein Klick, der einen laufenden Knoten beendet,
-    darf nicht versehentlich passieren. Der Drain (#38) macht ihn verantwortbar,
-    nicht folgenlos.
-
-    ``session=True`` ändert Chip, Verb und Rückfrage (m.rau/bibi#44). Der
-    Endpunkt beendet den Prozess und verlässt sich auf einen Supervisor — den
-    ein Sitzungs-Daemon nicht hat. Das erst im Ergebnis zu erwähnen wäre zu
-    spät: wer den Knopf für seinen eigenen Knoten drückt, hat dann bereits
-    seine Sitzung abgeschossen. Deshalb steht es **vor** dem Klick da, und
-    zwar zweimal — als Chip für den, der die Tabelle überfliegt, und in der
-    Rückfrage für den, der schon klickt.
-
-    ``session=None`` heißt *unbekannt* (Client älter als diese Änderung) und
-    verhält sich unverändert wie bisher: eine Behauptung über die Herkunft
-    wäre hier schlechter als keine.
+    ``session=None`` heißt *unbekannt* (Client älter als #44) und schweigt:
+    eine Behauptung über die Herkunft wäre schlechter als keine.
     """
-    if not node_id or not port:
-        return "—"
-    base = 'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this"'
-    nid = _e(node_id)
-    if session:
-        warn = ("This node runs inside a session — it will stop and nobody "
-                "brings it back. Start it again with: bibi")
-        return (
-            f'<span class="chip modified" title="no supervisor">session</span> '
-            f'<button class="killbtn" hx-post="/-/ui/clients/{nid}/restart" '
-            f'hx-confirm="{_e(warn)}" {base}>Stop{_BTN_SPINNER}</button> '
-            f'<button class="killbtn" hx-post="/-/ui/clients/{nid}/deploy" '
-            f'hx-confirm="{_e("Pull the new state, then stop. " + warn)}" {base}>'
-            f'Deploy + stop{_BTN_SPINNER}</button>'
-        )
-    return (
-        f'<button class="startbtn" hx-post="/-/ui/clients/{nid}/restart" '
-        f'hx-confirm="Restart this node?" {base}>Restart{_BTN_SPINNER}</button> '
-        f'<button class="startbtn" hx-post="/-/ui/clients/{nid}/deploy" '
-        f'hx-confirm="Pull the new state and restart?" {base}>'
-        f'Deploy{_BTN_SPINNER}</button>'
-    )
+    if not session:
+        return ""
+    return (' <span class="chip modified" title="no supervisor — it will not '
+            'come back on its own">session</span>')
 
 
 _APPROVAL_CHIP_CLASS = {"pending": "chip modified", "approved": "chip clean",
@@ -1019,7 +1003,8 @@ def _clients_table(workers: list[dict], now: float,
                        else '<span class="chip clean">connected</span>')
         rows.append(
             "<tr>"
-            f"<td>{_node_link_cell(w.get('worker'), w.get('host'), w.get('port'), w.get('role'))}</td>"
+            f"<td>{_node_link_cell(w.get('worker'), w.get('host'), w.get('port'), w.get('role'))}"
+            f"{_node_session_chip(w.get('session'))}</td>"
             f"{_role_matrix_cells(w.get('role'))}"
             f"<td>{_node_engine_cell(w.get('engine'), expected, w.get('engine_tree'), w.get('engine_installed'))}</td>"
             f"<td>{_e(w.get('git_user') or '—')}</td>"
@@ -1031,7 +1016,6 @@ def _clients_table(workers: list[dict], now: float,
             + "</td>"
             f"<td>{status_html}</td>"
             f"<td>{_node_approval_cell(w.get('node_id'), w.get('approval_status', 'pending'))}</td>"
-            f"<td>{_node_restart_cell(w.get('node_id'), w.get('port'), w.get('session'))}</td>"
             f"<td>{_abs_datetime(w.get('connected_at'), now)}</td>"
             f"<td>{_ago(w.get('last_heartbeat'), now)}</td>"
             "</tr>"
@@ -1040,7 +1024,10 @@ def _clients_table(workers: list[dict], now: float,
         '<table><thead><tr><th>Name</th>'
         f"{_role_matrix_header()}"
         '<th>Engine</th><th>Git user</th>'
-        '<th>Git status</th><th>Status</th><th>Approval</th><th>Restart</th>'
+        # Keine `Restart`-Spalte mehr (#103): ein Knoten wird nicht gestoppt,
+        # gestartet, restartet oder deployed — er holt sich den geforderten
+        # Stand selbst, wenn Ist und Soll auseinanderlaufen.
+        '<th>Git status</th><th>Status</th><th>Approval</th>'
         '<th>Connected since</th>'
         '<th>Last heartbeat</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>"
@@ -1106,11 +1093,7 @@ def _expected_version_form(deploy_result: dict | None) -> str:
         f"{datalist} "
         '<button class="startbtn" hx-post="/-/ui/clients/expected-version" '
         'hx-include="closest p" hx-target="#clientsboard" hx-swap="outerHTML" '
-        f'hx-disabled-elt="this">Set{_BTN_SPINNER}</button> '
-        '<button class="startbtn" hx-post="/-/ui/clients/expected-version?deploy=true" '
-        'hx-include="closest p" hx-confirm="Set the version AND restart every node?" '
-        'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this">'
-        f'Set + deploy{_BTN_SPINNER}</button> {msg}'
+        f'hx-disabled-elt="this">Set{_BTN_SPINNER}</button> {msg}'
         '</p>'
     )
 
@@ -1122,18 +1105,18 @@ def clients_fragment(workers: list[dict], now: float | None = None, *,
         '<div id="clientsboard" data-bus="nodes" data-bus-refetch="/-/ui/clients/board">'
         '<div class="panel-card"><h2>Nodes</h2>'
         f"{_expected_version_form(deploy_result)}"
-        # „Restart all" (m.rau/bibi#39) im Panel-Kopf, nicht je Zeile: es ist
-        # eine Aktion auf die Föderation, nicht auf einen Knoten. Rollierend
-        # ausgeführt (Clients zuerst, Host zuletzt) — siehe clients_restart_all().
-        '<p class="handles">'
-        '<button class="startbtn" hx-post="/-/ui/clients/restart-all" '
-        'hx-confirm="Restart EVERY node?" hx-target="#clientsboard" '
-        f'hx-swap="outerHTML" hx-disabled-elt="this">Restart all{_BTN_SPINNER}</button> '
-        '<button class="startbtn" hx-post="/-/ui/clients/restart-all?deploy=true" '
-        'hx-confirm="Fetch the new revision on EVERY node and restart?" '
-        'hx-target="#clientsboard" hx-swap="outerHTML" hx-disabled-elt="this">'
-        f'Deploy all{_BTN_SPINNER}</button>'
-        '</p>'
+        # Hier standen „Restart all" und „Deploy all" (m.rau/bibi#39). Sie sind
+        # mit #103 gefallen, zusammen mit „Set + deploy" und der Restart-Spalte
+        # je Zeile. Der Bauplan sagt es wörtlich: *„Ein Scheduler/Worker/Client
+        # kann nicht gestoppt, gestartet, restartet oder deployed werden. Das
+        # gilt ebenso für Restart all und Deploy all."* Stattdessen der moderne
+        # Weg — jeder Knoten holt sich den geforderten Stand selbst, wenn Ist
+        # und Soll auseinanderlaufen.
+        #
+        # **Die Routen bleiben**, nach m.raus Auftrennung der Reihenfolge:
+        # *„Die Endpunkte können bestehen bleiben. Das FE kann die Buttons
+        # trotzdem schon zurück bauen."* Sie fallen erst, wenn der Auslöser
+        # gebaut ist — heute vermittelt der Heartbeat keinen Restart.
         f"{_clients_table(workers, now, _expected_ref())}</div>"
         "</div>"
     )
@@ -1242,17 +1225,33 @@ _RESOLUTION_LABEL = {1440: "24h/1m", 480: "8h/1w", 180: "3h/3d", 120: "2h/2d",
 # leitet sich jetzt aus `_SORTIERBAR` ab — siehe `sortierbare_schluessel()`.
 
 
-#: Die fünf Screens, in der Reihenfolge der App-Bar. Feed und Jobs sind die
-#: täglichen, Nodes ist Betrieb, Live und Log sind Diagnose.
+#: Die sechs Screens, in der Reihenfolge der App-Bar. Feed und Jobs sind die
+#: täglichen, Journal steht neben Jobs (es war dessen drittes Segment), Nodes
+#: ist Betrieb, Live und Log sind Diagnose.
 #:
-#: **Archive ist gestrichen** (m.rau/bibi#130, FE-Spezifikation §1). Die Frage
-#: „was lief" beantwortet die `RELIABILITY`-Spalte im Jobs-Screen in einer Zahl;
-#: ein Screen, der Läufe nach Zeit auflistet, beantwortet dieselbe Frage
-#: langsamer. Der frühere Einwand — er sei der einzige Weg zu einem heimatlosen
-#: Lauf — trägt nicht mehr: das JOURNAL-Segment führt auch den Job ohne MD.
+#: **Archive bleibt gestrichen** (m.rau/bibi#130, FE-Spezifikation §1 und §6).
+#: `Journal` ist nicht seine Rücknahme, und der Unterschied muss sichtbar
+#: bleiben, sonst wird der alte Screen versehentlich wiederbelebt: der alte Tab
+#: führte **Läufe** aller Jobs nach Zeit und beantwortete „was lief heute
+#: Nacht?" — die Frage, die die `24H`-Spalte des Jobs-Screens in einer Zahl
+#: beantwortet und die deshalb gestrichen wurde. Dieser hier führt **Jobs**, je
+#: Slug aggregiert, und beantwortet „welche Jobs haben nur noch Historie?".
+#:
+#: Er heißt `Journal` und nicht `Archive` (#38): so heißt die Sache in der
+#: Engine und in FE §4.1 auch, und `Archive` hat in `OneClient.md` bereits zwei
+#: verschiedene Dinge bezeichnet und beide Seiten in die Irre geführt.
+#:
+#: **Seine Adresse liegt unter `/-/jobs/`, und das ist keine Marotte:**
+#: `/-/journal` ist seit jeher die Journal-**API** des Schedulers
+#: (``daemon/app.py``), die der Controller-Client selbst aufruft. Ein Knoten
+#: mit beiden Rollen — sarasate ist einer — führt beide Routen in derselben
+#: App; die zweite wäre stumm verdeckt, und je nach Registrierungsreihenfolge
+#: bekäme entweder der Browser JSON oder der Client HTML. Der Pfad sagt
+#: außerdem, was der Screen ist: das dritte Segment von Jobs, umgezogen.
 SCREENS: tuple[tuple[str, str], ...] = (
     ("Feed", "/-/"),
     ("Jobs", "/-/jobs"),
+    ("Journal", "/-/jobs/journal"),
     ("Nodes", "/-/nodes"),
     ("Live", "/-/live"),
     ("Log", "/-/log"),
@@ -3512,9 +3511,13 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
     )
 
 
-#: Die Filtergruppen der Kopfleiste. `TYPE` und `STATUS` wirken auf alle
-#: Bänder, die drei Journal-Filter nur auf das dritte — deshalb stehen sie
-#: dort und nicht hier oben.
+#: Die Filtergruppen der Kopfleiste des Jobs-Screens. `TYPE` und `STATUS`
+#: wirken auf beide Bänder.
+#:
+#: Die drei Journal-Filter standen bis #38 am dritten Band. Sie sind mit ihm
+#: auf den Journal-Screen gezogen — ein Filter, der nur auf Zeilen wirkt, die
+#: hier nicht mehr stehen, wäre ein toter Knopf, und ein toter Knopf ist
+#: schlimmer als ein fehlender.
 _FILTER_OBEN = (("TYPE", ("job", "claude", "app")),
                 ("STATUS", ("waiting", "running", "stopped")))
 _FILTER_JOURNAL = ("dropped", "oneshot", "local")
@@ -3557,67 +3560,16 @@ def _sort_kopf(schluessel: str, label: str, sort: str | None, richtung: str) -> 
     return f'<th data-sort="{schluessel}">{label}</th>'
 
 
-def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
-                status: list[str] | None = None, journal: list[str] | None = None,
-                sort: str | None = None, direction: str = "asc",
-                group: bool = True, public_host: str = "localhost") -> str:
-    """Die drei Bänder mit ihren Zeilen — oder eine Liste ohne Unterteilung.
+def _jobs_kopf(sort: str | None, direction: str) -> str:
+    """Der Tabellenkopf — **eine** Quelle für Jobs- und Journal-Screen.
 
-    Alle drei stehen immer da, auch leer: sonst verschöbe sich das Layout je
-    nachdem, was gerade existiert, und man suchte ein Band, das nur gerade
-    nichts enthält.
-
-    Die Bänder sind eine Klassifikation, keine Sortierordnung — sortiert wird
-    innerhalb eines Bandes. Der Grund für Bänder statt einer flachen Liste ist
-    die gestaffelte Filtermenge: `TYPE` und `STATUS` wirken überall, die drei
-    Journal-Filter nur im dritten Band, und eine gestaffelte Filtermenge
-    braucht einen Ort je Staffel.
-
-    **``group=False`` blendet sie aus** (m.rau/bibi#134). Das ist kein
-    Widerspruch zur Klassifikation, sondern ihre Folge: seit die Zeile ihre
-    Gruppe selbst trägt (``@`` beim Oneshot, ein ``next`` beim Rhythmus,
-    keins von beidem bei ``adhoc``), ist die Bänderung nur noch eine
-    Darstellungsform. Die Sortierung wirkt dann über die ganze Liste — genau
-    das ist der Zweck des Schalters.
-
-    Die drei Journal-Filter bleiben dabei erreichbar: sie wandern in die
-    Kopfleiste, statt mit ihrem Band zu verschwinden. Ein Filter, den man nur
-    in einer Ansicht erreicht, ist in der anderen ein toter Knopf.
+    Beide führen dieselbe Einheit (ein Slug = eine Zeile) und dieselben acht
+    Spalten; sie unterscheiden sich in der Auswahl der Zeilen und in ihrer
+    Filterleiste, nicht in der Tabelle. Zwei Köpfe nebeneinander liefen
+    auseinander, sobald eine Spalte dazukäme — und genau das steht mit `#39`
+    an.
     """
-    if not rows:
-        return (
-            '<div class="leer">'
-            "<p>No jobs yet.</p>"
-            "<p class=\"muted\">bibi finds its work in your vault: add "
-            "<code>schedule:</code> to the frontmatter of a markdown file for a "
-            "recurring job, or <code>at:</code> for a one-off. "
-            "Then press <span class=\"mono\">⟳</span> to rescan.</p>"
-            "</div>"
-        )
-
-    from bibi.controller import jobs_view
-
-    typ, status, journal = typ or [], status or [], journal or []
-    rows = [r for r in rows
-            if jobs_view.trifft_filter(r, typ=typ, status=status, journal=journal)]
-    if sort:
-        rows = jobs_view.sortiere(rows, nach=sort, richtung=direction)
-
-    gruppen = "".join(
-        f'<span class="fltr-grp">{name}</span>'
-        + "".join(_filter_knopf(w, typ if name == "TYPE" else status) for w in werte)
-        for name, werte in _FILTER_OBEN)
-    if not group:
-        # Ohne Bänder gäbe es für die drei Journal-Filter keinen Ort mehr —
-        # sie stünden am Band, das gerade nicht da ist. Also hier.
-        gruppen += ('<span class="fltr-grp">JOURNAL</span>'
-                    + "".join(_filter_knopf(w, journal) for w in _FILTER_JOURNAL))
-    leiste = (f'<div class="fltr-bar">{gruppen}'
-              f'<button class="fltr{" on" if group else ""}" data-group='
-              f'"{"off" if group else "on"}">group</button>'
-              f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
-
-    kopf = (
+    return (
         "<thead>"
         '<tr class="gruppen"><th></th><th></th>'
         # **Client links, Scheduler rechts** (m.rau/bibi#147): links steht, was
@@ -3653,6 +3605,84 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
         + "</tr></thead>"
     )
 
+
+#: Die leere Seite, bevor überhaupt ein Job existiert. Sie sagt, was fehlt
+#: **und** was man tun kann — das ist die eigentliche Einstiegsdokumentation
+#: dieses Screens (Umbauplan §4).
+_KEINE_JOBS = (
+    '<div class="leer">'
+    "<p>No jobs yet.</p>"
+    "<p class=\"muted\">bibi finds its work in your vault: add "
+    "<code>schedule:</code> to the frontmatter of a markdown file for a "
+    "recurring job, or <code>at:</code> for a one-off. "
+    "Then press <span class=\"mono\">⟳</span> to rescan.</p>"
+    "</div>"
+)
+
+
+def _sichtbar(rows: list, *, typ: list[str], status: list[str],
+              journal: list[str], sort: str | None, direction: str) -> list:
+    """Filtern und sortieren — der gemeinsame Vorlauf beider Screens."""
+    from bibi.controller import jobs_view
+
+    rows = [r for r in rows
+            if jobs_view.trifft_filter(r, typ=typ, status=status, journal=journal)]
+    if sort:
+        rows = jobs_view.sortiere(rows, nach=sort, richtung=direction)
+    return rows
+
+
+def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
+                status: list[str] | None = None, journal: list[str] | None = None,
+                sort: str | None = None, direction: str = "asc",
+                group: bool = True, public_host: str = "localhost") -> str:
+    """Die **zwei** Bänder mit ihren Zeilen — oder eine Liste ohne Unterteilung.
+
+    Beide stehen immer da, auch leer: sonst verschöbe sich das Layout je
+    nachdem, was gerade existiert, und man suchte ein Band, das nur gerade
+    nichts enthält.
+
+    **Es waren drei, bis #38 das dritte umzog.** Der Befund war gemessen und
+    nicht gefühlt: 37 Jobs im Screen, davon 23 im JOURNAL-Segment — knapp zwei
+    Drittel der Zeilen gehörten Jobs, die es nicht mehr gibt, und standen
+    zwischen den 14, um die es täglich geht. Der Screen war nicht zu voll, er
+    war **falsch gewichtet**: das Seltene verdrängte das Häufige. Das dritte
+    Segment steht seither unter :func:`journal_screen`.
+
+    Die Bänder sind eine Klassifikation, keine Sortierordnung — sortiert wird
+    innerhalb eines Bandes.
+
+    **``group=False`` blendet sie aus** (m.rau/bibi#134). Das ist kein
+    Widerspruch zur Klassifikation, sondern ihre Folge: seit die Zeile ihre
+    Gruppe selbst trägt (``@`` beim Oneshot, ein ``next`` beim Rhythmus,
+    keins von beidem bei ``adhoc``), ist die Bänderung nur noch eine
+    Darstellungsform. Die Sortierung wirkt dann über die ganze Liste — genau
+    das ist der Zweck des Schalters.
+
+    ``journal`` bleibt in der Signatur und wird durchgereicht: die Auswahl
+    lebt in der URL, und ein Wechsel zwischen den beiden Screens soll sie
+    nicht unterwegs verlieren. Gefiltert wird damit hier nichts mehr — die
+    Zeilen, auf die sie wirkt, stehen drüben.
+    """
+    if not rows:
+        return _KEINE_JOBS
+
+    typ, status, journal = typ or [], status or [], journal or []
+    rows = [r for r in _sichtbar(rows, typ=typ, status=status, journal=journal,
+                                 sort=sort, direction=direction)
+            if r.segment is not Segment.JOURNAL]
+
+    gruppen = "".join(
+        f'<span class="fltr-grp">{name}</span>'
+        + "".join(_filter_knopf(w, typ if name == "TYPE" else status) for w in werte)
+        for name, werte in _FILTER_OBEN)
+    leiste = (f'<div class="fltr-bar">{gruppen}'
+              f'<button class="fltr{" on" if group else ""}" data-group='
+              f'"{"off" if group else "on"}">group</button>'
+              f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
+
+    kopf = _jobs_kopf(sort, direction)
+
     if not group:
         # Eine Liste ohne Unterteilung. Die Sortierung wirkt damit über alles,
         # statt innerhalb jedes Bandes — genau der Zweck des Schalters.
@@ -3660,16 +3690,11 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
         return f'{leiste}<table class="jobs">{kopf}<tbody>{zeilen}</tbody></table>'
 
     teile = []
-    for seg in (Segment.SCHEDULE, Segment.ADHOC, Segment.JOURNAL):
+    for seg in (Segment.SCHEDULE, Segment.ADHOC):
         drin = [r for r in rows if r.segment is seg]
-        eigene = ""
-        if seg is Segment.JOURNAL:
-            # Hier, nicht oben: diese drei wirken nur in diesem Band, und eine
-            # gestaffelte Filtermenge braucht einen Ort je Staffel.
-            eigene = " " + "".join(_filter_knopf(w, journal) for w in _FILTER_JOURNAL)
         teile.append(
             f'<tr class="band"><td colspan="8">{seg.value.upper()} '
-            f'<span class="muted">{len(drin)}</span>{eigene}</td></tr>'
+            f'<span class="muted">{len(drin)}</span></td></tr>'
         )
         if drin:
             teile.extend(_jobs_zeile(r, now, public_host=public_host) for r in drin)
@@ -3677,6 +3702,48 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
             teile.append(f'<tr class="leer-band"><td colspan="8">— {_LEER[seg]}</td></tr>')
 
     return f'{leiste}<table class="jobs">{kopf}<tbody>{"".join(teile)}</tbody></table>'
+
+
+def journal_screen(rows: list, now: float, *, typ: list[str] | None = None,
+                   status: list[str] | None = None,
+                   journal: list[str] | None = None,
+                   sort: str | None = None, direction: str = "asc",
+                   public_host: str = "localhost") -> str:
+    """Das dritte Segment, jetzt auf eigenem Screen (#38).
+
+    **Ein Umzug, kein neuer Screen** — und der Unterschied zum gestrichenen
+    Archive-Tab muss im Code sichtbar bleiben, sonst wird der alte versehentlich
+    wiederbelebt: dort war eine Zeile ein **Lauf**, hier ist sie ein **Job**.
+    Die Frage „was lief heute Nacht?" bleibt gestrichen; diese hier beantwortet
+    „welche Jobs haben nur noch Historie?".
+
+    Kein ``group``-Handle: es gibt nur eine Sektion, und ein Schalter, der
+    zwischen einer Gruppe und keiner umschaltet, schaltet nichts.
+
+    Kein ``STATUS``-Filter: im Journal steht Historie, die keinen laufenden
+    Zustand hat — ``trifft_filter()`` überspringt ihn für dieses Segment schon
+    immer, und ein Knopf ohne Wirkung ist schlimmer als keiner. ``status``
+    bleibt trotzdem in der Signatur und wird durchgereicht, damit ein Wechsel
+    zurück zu Jobs die dortige Wahl wiederfindet.
+    """
+    typ, status, journal = typ or [], status or [], journal or []
+    rows = [r for r in _sichtbar(rows, typ=typ, status=status, journal=journal,
+                                 sort=sort, direction=direction)
+            if r.segment is Segment.JOURNAL]
+
+    gruppen = ('<span class="fltr-grp">TYPE</span>'
+               + "".join(_filter_knopf(w, typ) for w in _FILTER_OBEN[0][1])
+               + '<span class="fltr-grp">JOURNAL</span>'
+               + "".join(_filter_knopf(w, journal) for w in _FILTER_JOURNAL))
+    leiste = (f'<div class="fltr-bar">{gruppen}'
+              f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
+
+    if not rows:
+        return f'{leiste}<div class="leer"><p class="muted">— {_LEER[Segment.JOURNAL]}</p></div>'
+
+    zeilen = "".join(_jobs_zeile(r, now, public_host=public_host) for r in rows)
+    return (f'{leiste}<table class="jobs">{_jobs_kopf(sort, direction)}'
+            f"<tbody>{zeilen}</tbody></table>")
 
 
 _JOBS_JS = """
@@ -3823,6 +3890,30 @@ def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
     )
 
 
+def journal_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
+                          status: list[str] | None = None,
+                          journal: list[str] | None = None,
+                          sort: str | None = None, direction: str = "asc",
+                          group: bool = True,
+                          public_host: str = "localhost") -> str:
+    """Die Journal-Liste samt Bus-Wrapper — dieselbe Form wie bei Jobs.
+
+    ``data-bus="jobs"``, weil es dieselben Ereignisse sind: ein Job, der
+    aufhört zu existieren, wandert von dort nach hier, und beide Screens
+    müssen das mitbekommen. Der Bus swappt per ``querySelectorAll`` — mehrere
+    Regionen unter einem Ziel sind vorgesehen.
+    """
+    return (
+        f'<div id="journal-jobs" data-bus="jobs" data-bus-refetch="/-/jobs/journal/list?'
+        + _jobs_view_query(typ=typ, status=status, journal=journal, sort=sort,
+                           direction=direction, group=group)
+        + '">'
+        + journal_screen(rows, now, typ=typ, status=status, journal=journal,
+                         sort=sort, direction=direction, public_host=public_host)
+        + "</div>"
+    )
+
+
 def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
                  git_status: dict | None = None, host_url: str | None = None,
                  scheduler: dict | None = None,
@@ -3856,6 +3947,40 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         # Der Empfaenger zur Anmeldung darueber (m.rau/bibi#153): `data-bus`
         # allein bewirkt nichts, den Strom baut ausschliesslich `_EVENTS_JS`
         # auf. Beim Neubau der v5-Seiten blieb es aus — als einzige Screens.
+        f"<script>{_EVENTS_JS}</script>"
+        f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_JOBS_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
+
+
+def journal_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
+                    git_status: dict | None = None, host_url: str | None = None,
+                    scheduler: dict | None = None,
+                    scheduler_stale_since: float | None = None,
+                    typ: list[str] | None = None, status: list[str] | None = None,
+                    journal: list[str] | None = None,
+                    sort: str | None = None, direction: str = "asc",
+                    group: bool = True, public_host: str = "localhost") -> str:
+    """Die Journal-Seite: dieselbe Hülle wie Jobs, andere Liste.
+
+    ``_JOBS_JS`` liegt auch hier: Filter- und Sortier-Klicks werden über einen
+    Zuhörer an ``body`` ausgewertet und schreiben in die URL der Seite, auf der
+    sie passieren — der Screen muss dafür nicht bekannt sein.
+    """
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>bibi · Journal</title>"
+        f"<style>{_CSS}</style>"
+        f'<script src="/-/static/htmx-1.9.12.min.js"></script>'
+        "</head><body>"
+        f"{_header('Journal', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
+        f'{journal_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group, public_host=public_host)}'
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
@@ -4283,7 +4408,7 @@ def job_runs_fragment(liste, *, now: float, slug: str | None = None,
     for tag, laeufe in jobs_view.by_day(liste.runs, ts_key="sort_at"):
         aus.append(f'<tr class="day"><td colspan="8">{_e(tag)}</td></tr>')
         for r in laeufe:
-            aus.append(_run_zeile(r))
+            aus.append(_run_zeile(r, basis=basis))
     aus.append("</tbody></table>")
     # Der Knopf erscheint **nur**, wenn es wirklich mehr gibt, und er erweitert
     # um eine Menge statt um einen Tag — `weiter` ist das Fenster, das die
@@ -4388,8 +4513,16 @@ def _runs_reichweite(reach: dict | None) -> str:
     return f'<span class="runs-reach">{" &middot; ".join(teile)}</span>'
 
 
-def _run_zeile(r: dict) -> str:
-    """Eine Zeile der Lauf-Liste plus ihr (zugeklappter) Ausklappbereich."""
+def _run_zeile(r: dict, *, basis: str = "") -> str:
+    """Eine Zeile der Lauf-Liste plus ihr (zugeklappter) Ausklappbereich.
+
+    ``basis`` ist ``/-/jobs/<job_uid>`` und trägt den Weg zu den Attributen
+    dieses Laufs (#40). Er steht **nur an archivierten Läufen**: ein Lauf im
+    Slot hat keine Journal-Zeile und damit keinen Snapshot — ein Link dorthin
+    wäre ein toter Knopf. Dass die Ansicht erst ab der Archivierung existiert,
+    ist eine Lücke der Ablage und nicht der Anzeige; sie ist als eigenes
+    Ticket festgehalten statt hier stillschweigend überbrückt.
+    """
     st = r.get("status") or ""
     rs = r.get("reason")
     im_slot = r.get("in_slot") is True
@@ -4407,6 +4540,10 @@ def _run_zeile(r: dict) -> str:
                  f'data-src="{_e(r.get("src"))}"')
     else:
         holen = f'data-jid="{_e(r.get("id"))}"'
+    attrs = ""
+    if basis and not im_slot and r.get("id") is not None:
+        attrs = (f' <a class="cta" href="{basis}/runs/{_e(r.get("id"))}/attrs">'
+                 "[attrs]</a>")
     return (
         f'<tr class="{"run run-in-slot" if im_slot else "run"}">'
         f'<td class="mark">{marke}</td>'
@@ -4423,7 +4560,7 @@ def _run_zeile(r: dict) -> str:
         f'<td>{_duration_cell(r)}</td>'
         f'<td>{_e((r.get("commit_sha") or "")[:7])}</td>'
         f'<td><button class="cta run-show" {holen} '
-        f'data-run="{_e(r.get("run_id"))}">[show]</button></td>'
+        f'data-run="{_e(r.get("run_id"))}">[show]</button>{attrs}</td>'
         "</tr>"
         # Der Ausklappbereich gehoert zum **Lauf**, nicht zur Zeilenposition —
         # deshalb ueberlebt der Deep-Link `#run=` die Archivierung (§5.4).
@@ -4538,6 +4675,20 @@ _ATTR_FELDER = ("schedule", "at", "attempts", "backoff",
                 "defer_time", "defer_max", "error_time", "silence_timeout",
                 "wall_time", "hitl_timeout")
 
+#: Die Konfigurationswerte eines **Laufs** (#40). Weiter als `_ATTR_FELDER`,
+#: weil ein Lauf mehr erbt als seinen Zeitplan: `model` und `soul` erklären
+#: zwei Läufe desselben Jobs, die verschieden ausgehen, oft allein.
+_LAUF_KONFIG = (*_ATTR_FELDER, "model", "soul", "session", "exec_mode",
+                "image", "priority", "app_port", "app_prefix")
+
+#: Die Laufzeit-Werte, in der Reihenfolge, in der man sie liest: erst wer und
+#: wo, dann wie lange und mit welchem Ausgang, dann woran (Commit) und wohin
+#: (Output). `run_id` steht zuerst, weil er den Lauf benennt.
+_LAUF_LAUFZEIT = ("run_id", "status", "reason", "host", "worker", "domain",
+                  "pinned_host", "started_at", "finished_at", "archived_at",
+                  "exec_runtime", "exit_code", "commit_sha", "branch",
+                  "output_ref")
+
 
 # Hier stand `_load_more()` — der Nachlade-Knopf der bibi4-Listen. Die
 # v5-Lauf-Liste laedt ueber `reach`/`weiter` nach (FE §5.3) und rendert ihren
@@ -4600,6 +4751,117 @@ def job_attrs_page_v5(*, slug: str, spec: dict, defaults: dict, now: float,
         '<span class="jd-meta">attributes</span>'
         "</div>"
         f'<div class="attrs">{"".join(zeilen)}</div>'
+        f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
+
+
+def _attr_zeile(feld: str, wert, herkunft: str) -> str:
+    """Eine Zeile der Lauf-Attribute: Feld, Wert, Herkunft.
+
+    Dieselbe Form wie auf der Job-Attribut-Seite, um eine dritte Spalte
+    erweitert. Zwei Signale wie dort: die Herkunft steht als Wort da **und**
+    färbt den Wert — Dimmung allein geht in hellen Themes verloren.
+    """
+    klasse = {"job": "attr-default", "run": "attr-set", "runtime": "attr-set"}[herkunft]
+    return (f'<div class="attr-row"><span class="attr-key">{_e(feld)}</span>'
+            f'<span class="{klasse}">{_e(wert)}</span>'
+            f'<span class="attr-src muted">{herkunft}</span></div>')
+
+
+def run_attrs_page_v5(*, slug: str, lauf: dict, job_spec: dict, now: float,
+                      daemon_status: dict | None = None,
+                      git_status: dict | None = None, host_url: str | None = None,
+                      scheduler: dict | None = None,
+                      scheduler_stale_since: float | None = None) -> str:
+    """Die Attribute **eines Laufs** (#40) — drei Schichten in einer Tabelle.
+
+    **Warum eine Tabelle und nicht zwei Ansichten:** die Frage, die hierher
+    führt, lautet *warum ging dieser Lauf anders aus als jener*. Getrennte
+    Ansichten beantworten sie in zwei Blicken; eine Spalte „woher" beantwortet
+    sie in einem. Das liegt außerdem näher an dem, was ``/attrs`` für den Job
+    schon tut.
+
+    **Standbild, nicht Bus-gebunden.** Bei einem laufenden Lauf wüchsen die
+    Laufzeitwerte — ob die Ansicht daran hängt, entscheidet Welle 4 und soll
+    hier nicht vorweggenommen werden. Die Frage stellt sich ohnehin erst dann:
+    es gibt diese Seite nur für archivierte Läufe (siehe unten).
+
+    **Was die Herkunftsspalte nicht wissen kann, behauptet sie auch nicht.**
+    ``journal.snapshot`` friert die Job-Konfiguration beim **Archivieren** ein,
+    nicht beim Start — und nach Archivierungsregel A2 bleibt ein terminaler
+    Lauf im Slot stehen, bis jemand START oder RESET auslöst, der Abstand
+    wächst also beliebig. Ein Unterschied zwischen Snapshot und heutiger
+    Job-Konfiguration heißt deshalb *„dieser Lauf hatte einen anderen Wert"*
+    und nicht *„der Lauf hat ihn gesetzt"*: ob der Lauf abwich oder der Job
+    sich danach änderte, ist aus der Ablage nicht zu entscheiden. Der Satz
+    steht auf der Seite, nicht nur hier — dieselbe Ehrlichkeit, mit der die
+    Job-Seite ihr „geerbt" als Näherung ausweist.
+
+    Die volle Erhebung, auf der das beruht, liegt im Bibi5-Case unter
+    ``20260811.Lauf-Attribute.md``.
+    """
+    import json as _json
+
+    from bibi.schedule.models import job_uid as _uid
+
+    try:
+        schnapp = _json.loads(lauf.get("snapshot") or "{}")
+    except (ValueError, TypeError):
+        # Ein unlesbarer Snapshot ist kein Grund, die Laufzeitwerte
+        # zurückzuhalten — sie stehen in eigenen Spalten und sind unberührt.
+        schnapp = {}
+
+    zeilen = []
+    for feld in _LAUF_LAUFZEIT:
+        wert = lauf.get(feld)
+        if wert in (None, ""):
+            continue
+        if feld in ("started_at", "finished_at", "archived_at"):
+            wert = _uhrzeit(wert, now)
+        elif feld == "exec_runtime":
+            wert = _human_duration(wert)
+        zeilen.append(_attr_zeile(feld, wert, "runtime"))
+
+    for feld in _LAUF_KONFIG:
+        wert = schnapp.get(feld)
+        if wert is None:
+            continue
+        # `run`, wo der Lauf einen anderen Wert trug als der Job heute — mit
+        # dem Vorbehalt oben. `job`, wo beide dasselbe sagen.
+        abweichend = feld in job_spec and job_spec.get(feld) != wert
+        zeilen.append(_attr_zeile(feld, wert, "run" if abweichend else "job"))
+
+    if not zeilen:
+        zeilen.append('<div class="empty">Nothing recorded for this run — its '
+                      "journal row carries no snapshot.</div>")
+
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>bibi &middot; {_e(slug)} &middot; run attributes</title>"
+        f"<style>{_CSS}</style>"
+        f'<script src="/-/static/htmx-1.9.12.min.js"></script>'
+        "</head><body>"
+        f"{_header('Jobs', daemon_status, scheduler=scheduler, sub=True, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
+        '<div class="jd-head">'
+        f'<a class="back" href="/-/jobs/{_uid(slug)}">&#9666; back to job</a>'
+        f'<span class="jd-slug">{_e(slug)}</span>'
+        f'<span class="jd-meta">run attributes &middot; {_e(lauf.get("run_id") or "")}</span>'
+        "</div>"
+        '<div class="attrs-head"><span class="attr-key">FIELD</span>'
+        '<span>VALUE</span><span class="attr-src">SOURCE</span></div>'
+        f'<div class="attrs">{"".join(zeilen)}</div>'
+        '<p class="muted attrs-note">The snapshot is frozen when the run is '
+        "archived, not when it starts &mdash; under rule A2 a terminal run "
+        "waits in its slot until someone presses START or RESET. A "
+        "<span class=\"mono\">run</span> therefore means &bdquo;this run held a "
+        "different value than the job holds today&ldquo;, which is not the same "
+        "as &bdquo;the run set it&ldquo;.</p>"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"

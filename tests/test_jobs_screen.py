@@ -77,11 +77,15 @@ def _zeilen(**kw):
 # ── Die drei Bänder ────────────────────────────────────────────────────────
 
 
-def test_all_three_bands_are_always_there():
+def test_both_bands_are_always_there():
     """Auch leer — sonst verschiebt sich das Layout, je nachdem was gerade
-    existiert, und man sucht ein Band, das nur gerade nichts enthält."""
+    existiert, und man sucht ein Band, das nur gerade nichts enthält.
+
+    **Zwei seit #38**, nicht mehr drei: das JOURNAL-Segment steht auf einem
+    eigenen Screen. Dass es hier nicht mehr auftaucht, prüft
+    `test_journal_screen.py` — dort steht auch der gemessene Grund dafür."""
     html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
-    for band in ("SCHEDULE", "ADHOC", "JOURNAL"):
+    for band in ("SCHEDULE", "ADHOC"):
         assert band in html, band
 
 
@@ -384,15 +388,12 @@ def test_an_active_filter_is_marked():
     assert aktiv and "on" in aktiv[0]
 
 
-def test_the_journal_filters_sit_at_their_band():
-    """Die Staffelung ist der Grund für Bänder: eine gestaffelte Filtermenge
-    braucht einen Ort je Staffel. Die drei wirken nur im dritten Band, also
-    stehen sie dort — nicht oben bei den anderen."""
-    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
-    oben = html.split("JOURNAL", 1)[0]
-    for wert in ("dropped", "oneshot", "local"):
-        assert f'data-filter="{wert}"' not in oben, wert
-        assert f'data-filter="{wert}"' in html, wert
+# Die drei Journal-Filter standen am dritten Band, weil eine gestaffelte
+# Filtermenge einen Ort je Staffel braucht. Mit #38 ist das Band ein eigener
+# Screen — sie stehen dort, und dass sie hier verschwunden sind, prüft
+# `test_journal_screen.py::test_the_journal_filters_leave_the_jobs_screen_
+# with_their_band`. Die Staffelung selbst ist damit nicht aufgehoben, sondern
+# über zwei Screens verteilt.
 
 
 def test_column_heads_are_clickable():

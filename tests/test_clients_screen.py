@@ -300,39 +300,15 @@ def test_clients_node_action_route_rejects_unknown_verb(team_repo: Path):
     assert client.node_actions == []
 
 
-# ── Neustart-Knöpfe (m.rau/bibi#39) ────────────────────────────────────────
-
-
-def test_clients_table_offers_restart_and_deploy():
-    # Zwei getrennte Verben statt eines mit Häkchen: Restart beendet nur den
-    # Prozess, Deploy pullt vorher. Der Unterschied ist zu bedeutsam, um ihn
-    # hinter einer Option zu verstecken.
-    workers = [{"worker": "w", "host": "h", "port": 8780, "node_id": "n1",
-                "stale": False, "connected_at": 0, "last_heartbeat": 0}]
-    html = render._clients_table(workers, now=0)
-    assert "<th>Restart</th>" in html
-    assert 'hx-post="/-/ui/clients/n1/restart"' in html
-    assert 'hx-post="/-/ui/clients/n1/deploy"' in html
-    # Ein Klick, der einen laufenden Knoten beendet, darf nicht versehentlich
-    # passieren.
-    assert "hx-confirm" in html
-
-
-def test_clients_table_omits_restart_without_port():
-    # Ohne Port gibt es keine Adresse zum Aufrufen — dann lieber keine
-    # Schaltfläche als eine, die ins Leere liefe.
-    workers = [{"worker": "old", "host": "h", "node_id": "n2", "stale": False,
-                "connected_at": 0, "last_heartbeat": 0}]
-    html = render._clients_table(workers, now=0)
-    assert "/restart" not in html
-    assert "<th>Restart</th>" in html
-
-
-def test_clients_fragment_offers_restart_all():
-    # Aktion auf die Föderation, nicht auf einen Knoten — deshalb im Panel-Kopf.
-    html = render.clients_fragment([], now=0)
-    assert 'hx-post="/-/ui/clients/restart-all"' in html
-    assert 'hx-post="/-/ui/clients/restart-all?deploy=true"' in html
+# ── Neustart-Knöpfe (m.rau/bibi#39) — im FE zurückgebaut mit #103 ──────────
+#
+# Hier standen drei Tests auf die Knöpfe: `Restart`/`Deploy` je Zeile, die
+# leere Zelle ohne Port, und `Restart all`/`Deploy all` im Panel-Kopf. Sie
+# beschrieben ein FE, das es nicht mehr gibt. Was an ihre Stelle tritt, steht
+# am Fuß dieser Datei — dieselben Stellen, umgekehrte Aussage.
+#
+# **Die Routen darunter sind unberührt geblieben**, und die Tests darauf
+# stehen weiter: der Rückbau war FE-only.
 
 
 def test_clients_restart_route_targets_the_node_directly(team_repo: Path):
@@ -386,7 +362,8 @@ def test_expected_version_form_shows_current_ref(monkeypatch):
     assert 'name="version"' in html
     assert 'value="v0.2.3"' in html
     assert 'hx-post="/-/ui/clients/expected-version"' in html
-    assert 'hx-post="/-/ui/clients/expected-version?deploy=true"' in html
+    # `Set + deploy` ist mit #103 gefallen — das Setzen IST seit der
+    # Entscheidung der Auslöser, nicht ein zweiter Klick danach.
 
 
 def test_expected_version_form_reports_failure_prominently(monkeypatch):
@@ -416,41 +393,20 @@ def test_expected_version_form_warns_when_not_pushed(monkeypatch):
 
 
 # ── m.rau/bibi#44: ein Sitzungs-Knoten hat keinen Supervisor ────────────────
+#
+# **Der Befund hat den Rückbau aus #103 überlebt, sein Knopf nicht.** Die drei
+# Tests hier prüften Chip *und* Verb *und* Rückfrage — die letzten beiden gab
+# es nur, weil es einen Knopf gab, der die eigene Sitzung abschoss. Was bleibt,
+# ist die Aussage über den Knoten, und sie wird mit dem automatischen Rollout
+# wichtiger: geprüft am Fuß dieser Datei.
 
 
-def test_restart_cell_marks_a_session_node_before_the_click():
-    """Die Anforderung aus dem Plan: der Knopf macht es **vorher** sichtbar,
-    statt es erst im Ergebnis zu erwähnen. Wer erst nach dem Klick erfährt, dass
-    niemand zurückkommt, hat seine eigene Sitzung bereits abgeschossen."""
-    workers = [{"worker": "air2024", "host": "mac", "port": 8780, "node_id": "n1",
-                "session": True, "stale": False, "connected_at": 0, "last_heartbeat": 0}]
-    html = render._clients_table(workers, now=0)
-    assert ">session<" in html                    # als Chip lesbar, ohne Klick
-    assert ">Stop" in html                        # das Verb sagt, was passiert
-    # Nur die **Zelle** darf keinen Neustart versprechen. Seit #37 heißt der
-    # Spaltenkopf "Restart" — ohne diesen Zuschnitt prüfte die Zeile den
-    # Tabellenkopf mit und wäre für immer rot.
-    zelle = html.split("<tbody>")[1]
-    assert "Restart<" not in zelle                # und verspricht keinen Neustart
-    assert "nobody brings it back" in html        # im Bestätigungsdialog
-
-
-def test_restart_cell_is_unchanged_for_a_supervised_node():
-    workers = [{"worker": "sarasate", "host": "s", "port": 8781, "node_id": "n2",
-                "session": False, "stale": False, "connected_at": 0, "last_heartbeat": 0}]
-    html = render._clients_table(workers, now=0)
-    assert ">Restart" in html
-    assert ">session<" not in html
-    assert "nobody brings it back" not in html
-
-
-def test_restart_cell_treats_unknown_origin_as_before():
-    """Ein Client, der noch kein ``session`` meldet (älter als diese Änderung),
-    verhält sich wie bisher — eine Behauptung wäre schlechter als keine."""
+def test_a_node_of_unknown_origin_claims_nothing():
+    """Ein Client, der noch kein ``session`` meldet (älter als #44), schweigt —
+    eine Behauptung über die Herkunft wäre schlechter als keine."""
     workers = [{"worker": "alt", "host": "h", "port": 8782, "node_id": "n3",
                 "stale": False, "connected_at": 0, "last_heartbeat": 0}]
     html = render._clients_table(workers, now=0)
-    assert ">Restart" in html
     assert ">session<" not in html
 
 
@@ -653,3 +609,98 @@ def test_restart_all_leaves_the_scheduler_and_the_own_node_for_last(
     with TestClient(app) as c:
         c.post("/-/ui/clients/restart-all")
     assert [port for _host, port, _deploy in _FakeClient.restarts] == [8782, 8780, 64409]
+
+
+# ── #103: die Knöpfe fallen im FE, die Endpunkte bleiben ────────────────────
+#
+# Entscheidung m.rau, 2026-08-09, zu #98: *„diese Knöpfe entfallen. Deployment
+# soll automatisch erfolgen, wenn eine Version gesetzt ist. Rückbau!"* — und
+# die Reihenfolge ist ausdrücklich aufgetrennt: *„Die Endpunkte können bestehen
+# bleiben. Das FE kann die Buttons trotzdem schon zurück bauen."*
+#
+# Der entschiedene Bauplan liegt außerhalb des Boards, in
+# `20260805.LiveLogNodes.md`: *„Ein Scheduler/Worker/Client kann nicht
+# gestoppt, gestartet, restartet oder deployed werden. Das gilt ebenso für
+# Restart all und Deploy all. Das sind keine vorgesehenen Aktionen."*
+
+
+def test_no_node_offers_a_restart_or_deploy_anymore():
+    workers = [{"worker": "w", "host": "h", "port": 8780, "node_id": "n1",
+                "stale": False, "connected_at": 0, "last_heartbeat": 0}]
+    html = render._clients_table(workers, now=0)
+    assert "/-/ui/clients/n1/restart" not in html
+    assert "/-/ui/clients/n1/deploy" not in html
+    assert "<th>Restart</th>" not in html
+
+
+def test_the_session_node_offers_no_stop_either():
+    workers = [{"worker": "air2024", "host": "mac", "port": 8780, "node_id": "n1",
+                "session": True, "stale": False, "connected_at": 0, "last_heartbeat": 0}]
+    html = render._clients_table(workers, now=0)
+    assert ">Stop" not in html
+    assert "Deploy + stop" not in html
+    assert "nobody brings it back" not in html
+
+
+def test_the_session_chip_moves_instead_of_disappearing():
+    """**Die Entscheidung, die der Rückbau erzwingt.**
+
+    Der Chip sitzt heute *in* der Restart-Zelle, weil er vor einem Klick warnt,
+    der die eigene Sitzung abschießt (#44). Mit der Zelle verschwände er — und
+    das wäre falsch: er sagt etwas über den **Knoten**, nicht über den Knopf,
+    und diese Aussage wird mit dem Auto-Upgrade *wichtiger* statt überflüssig.
+    Ein Sitzungs-Knoten, der sich selbst neu startet, kommt von allein nicht
+    zurück.
+    """
+    workers = [{"worker": "air2024", "host": "mac", "port": 8780, "node_id": "n1",
+                "session": True, "stale": False, "connected_at": 0, "last_heartbeat": 0}]
+    html = render._clients_table(workers, now=0)
+    assert ">session<" in html
+    assert "no supervisor" in html
+
+
+def test_a_supervised_node_carries_no_session_chip():
+    workers = [{"worker": "sarasate", "host": "s", "port": 8781, "node_id": "n2",
+                "session": False, "stale": False, "connected_at": 0, "last_heartbeat": 0}]
+    html = render._clients_table(workers, now=0)
+    assert ">session<" not in html
+
+
+def test_the_panel_head_offers_no_fleet_restart_anymore():
+    html = render.clients_fragment([], now=0)
+    assert "restart-all" not in html
+    assert "Restart all" not in html
+    assert "Deploy all" not in html
+
+
+def test_setting_the_expected_version_stays_and_deploying_goes():
+    """Der Nodes-Screen tut laut Bauplan genau das: *„Mit dem Nodes Screen wird
+    die SOLL Version spezifiziert."* Der zweite Knopf war der Handgriff danach
+    — und genau der ist der Auslöser geworden."""
+    html = render._expected_version_form(None)
+    assert ">Set" in html
+    assert "Set + deploy" not in html
+    assert "deploy=true" not in html
+
+
+def test_approve_and_block_are_untouched():
+    """Die Gegenprobe, die verhindert, dass der Rückbau zu weit geht: sie sind
+    die einzigen Handles, die der Bauplan ausdrücklich vorsieht."""
+    workers = [{"worker": "w", "host": "h", "port": 8780, "node_id": "n1",
+                "approval_status": "approved", "stale": False,
+                "connected_at": 0, "last_heartbeat": 0}]
+    html = render._clients_table(workers, now=0)
+    assert 'hx-post="/-/ui/clients/n1/block"' in html
+    workers[0]["approval_status"] = "pending"
+    assert 'hx-post="/-/ui/clients/n1/approve"' in render._clients_table(workers, now=0)
+
+
+def test_the_endpoints_stay_reachable(team_repo: Path):
+    """**FE-only**, nach m.raus Auftrennung. `release.sh` rollt über
+    `ssh … systemctl restart` aus und ruft keine dieser Routen — der Satz aus
+    dem Ticket, es gäbe ohne die Knöpfe keinen Weg mehr, gilt für das FE und
+    nicht für das Release. Sie fallen erst, wenn der Auslöser gebaut ist."""
+    app = create_app(roles.resolve({"controller"}), controller_client=_FakeClient())
+    pfade = {r.path for r in app.routes if hasattr(r, "path")}
+    assert "/-/ui/clients/restart-all" in pfade
+    assert "/-/ui/clients/{node_id}/{verb}" in pfade
