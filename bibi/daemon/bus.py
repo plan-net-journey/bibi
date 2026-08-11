@@ -1086,6 +1086,24 @@ class Collector:
             self.bus.publish_state(
                 f"live:{slug}",
                 None if wert is None else {"status": wert[0], "fire": wert[1]})
+            # #131: dieselbe Paarung wie im lokalen Pfad (`tick_once()`), wo
+            # jeder Statuswechsel `_publish_live()` **und** `_publish_journal()`
+            # ausloest. Hier fehlte die zweite Haelfte: die Kachel haengt an
+            # `live:<slug>` und zog nach, die Lauf-Liste haengt an
+            # `journal:<slug>` und stand — auf einem Client eine Minute lang,
+            # bis der Journal-INSERT beim Terminalwerden sie einholte.
+            #
+            # **Ohne Wert, anders als `live:` daneben.** Die Kachel zeigt genau
+            # `(status, fire)`, also das, was der Diff ohnehin verglichen hat;
+            # die Lauf-Zeile zeigt Beginn, Runtime und Ausgang, und die stehen
+            # in keinem Fingerabdruck. Die Regel aus #79 gilt in beide
+            # Richtungen: trage den Wert, den du ohnehin liest — erfinde keinen
+            # Vergleich, um einen tragen zu koennen.
+            #
+            # Kein Bucket-Slug (anders als `_publish_journal()`): dieser Pfad
+            # kennt nur den Scheduler-Slug, und `live:` daneben wird aus
+            # demselben Grund ebenfalls ohne Bucket-Variante gemeldet.
+            self.bus.publish_state(f"journal:{slug}")
         # Die Liste hoert auf EIN Sammel-Target, nicht auf jeden Slug einzeln
         # (PLAN-36 Stufe 36.3) — ohne sie bewegt sich die Kachel im Detail und
         # die Zeile in der Liste nicht, und genau die sieht man zuerst.

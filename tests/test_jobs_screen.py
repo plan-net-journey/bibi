@@ -327,8 +327,11 @@ def test_an_empty_band_explains_itself():
 
 
 def test_the_relation_appears_next_to_the_slug():
+    """Die Beziehung steht weiter an der Zeile — seit `#31` als Chip statt in
+    Klammern. Geprüft wird der Ort und die Angabe, nicht die Schreibweise; die
+    Form hat ihren eigenen Test (`test_the_relation_is_a_chip_not_a_parenthesis`)."""
     html = render.jobs_screen(_zeilen(local=[_md("frisch")]), now=NOW)
-    assert "(new)" in html
+    assert ">new</span>" in html
 
 
 def test_duplicate_is_the_only_red_label():
@@ -337,7 +340,7 @@ def test_duplicate_is_the_only_red_label():
     zeilen = _zeilen(local=[_md("Backup", repo_path="case/eins/Backup.md"),
                             _md("Backup", repo_path="case/zwei/Backup.md")])
     html = render.jobs_screen(zeilen, now=NOW)
-    assert "(duplicate)" in html
+    assert ">duplicate</span>" in html
     zelle = [z for z in html.split("<td") if "duplicate" in z][0]
     assert "bad" in zelle
 
@@ -1470,3 +1473,348 @@ def test_scheduler_probe_resets_after_success():
     b.fehlschlag(now=100.0)
     b.erfolg()
     assert b.darf(now=101.0), "nach einer geglueckten Antwort keine Pause mehr"
+
+
+# ── #31: die Filter ziehen an die Spalten, die sie einschränken ─────────────
+#
+# **Befund m.rau:** *„Der Filter nimmt sehr viel Platz ein. Unnötig viel
+# Platz."* — und der Grund dafür ist nicht die Größe der Knöpfe, sondern eine
+# Doppelung: `TYPE` und `STATUS` stehen als Spaltenkopf **und** als Gruppenlabel
+# der Filterleiste. Dasselbe Wort zweimal auf demselben Screen, einmal als
+# Überschrift und einmal als Beschriftung.
+#
+# **Der Kopf behält die Sortierung.** Er trägt danach beides: Klick sortiert,
+# die Werte darunter filtern. Das ist der ganze Umbau — kein neues Konzept,
+# sondern zwei Dinge an einen Ort, die schon immer über dieselbe Spalte
+# sprachen.
+
+
+def _kopf(html: str) -> str:
+    """Nur der Tabellenkopf. Die Abgrenzung ist hier der Prüfgegenstand: es
+    geht ausdrücklich darum, wo die Knöpfe stehen, nicht ob es sie gibt."""
+    i, j = html.index("<thead>"), html.index("</thead>")
+    return html[i:j]
+
+
+def _vor_der_tabelle(html: str) -> str:
+    """Alles vor der Tabelle — dort stand die Filterleiste bisher."""
+    return html[:html.index("<table")]
+
+
+def test_the_type_filters_live_under_their_column():
+    """`TYPE` filtert die TYPE-Spalte — also gehören seine Werte an sie.
+
+    Rot vor `#31`: die Knöpfe stehen in der Leiste über der Tabelle, der Kopf
+    kennt sie nicht."""
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    kopf = _kopf(html)
+    for wert in ("job", "claude", "app"):
+        assert f'data-filter="{wert}"' in kopf, (
+            f"der TYPE-Filter {wert!r} steht nicht im Tabellenkopf")
+
+
+def test_the_status_filters_live_under_their_column():
+    """Dieselbe Zusage für `STATUS` — und sie wirkt weiterhin ausschließlich
+    auf den Scheduler-Zustand. Der Client-Zustand ist Anzeige, kein
+    Filterkriterium (Klarstellung m.rau)."""
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    kopf = _kopf(html)
+    for wert in ("waiting", "running", "stopped"):
+        assert f'data-filter="{wert}"' in kopf, (
+            f"der STATUS-Filter {wert!r} steht nicht im Tabellenkopf")
+
+
+def test_the_column_name_is_no_longer_printed_twice():
+    """Der eigentliche Befund: `TYPE` und `STATUS` standen zweimal da.
+
+    Der Gruppenlabel der Filterleiste entfällt — die Spalte, unter der die
+    Werte jetzt hängen, beschriftet sie bereits."""
+    vorne = _vor_der_tabelle(render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW))
+    assert 'class="fltr-grp"' not in vorne, (
+        "über der Tabelle stehen weiterhin Gruppenlabels — dieselben Wörter, "
+        "die einen Zentimeter tiefer als Spaltenkopf stehen")
+
+
+def test_the_head_still_sorts_after_the_filters_moved_in():
+    """Die Gegenprobe, ohne die der Umbau still etwas kaputt macht: der Kopf
+    trägt jetzt zwei Bedeutungen, und die ältere muss die neue überleben."""
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW,
+                              sort="next", direction="desc")
+    kopf = _kopf(html)
+    assert 'data-sort="next"' in kopf, "die Spalte sortiert nicht mehr"
+    assert "↓" in kopf, "die Sortierrichtung wird nicht mehr angezeigt"
+    for schluessel in ("slug", "type", "status", "last", "next", "24h"):
+        assert f'data-sort="{schluessel}"' in kopf, schluessel
+
+
+def test_the_count_stays_out_of_the_table_head():
+    """Die Kennzahl bleibt, wo sie ist — sie beschreibt die Auswahl, nicht eine
+    Spalte. Vorschlag 1 der Design-Studie setzt sie rechts in die Toolbar-Zeile,
+    und dort ist sie eine Aussage über das Ganze."""
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    assert 'class="fltr-zahl"' in _vor_der_tabelle(html)
+    assert 'class="fltr-zahl"' not in _kopf(html)
+
+
+# ── #31: die dritte Achse wirkt über alle Bänder ───────────────────────────
+#
+# Sie hing am Journal-Band und filterte nur dort. Zwei ihrer drei Werte
+# beschreiben aber Eigenschaften, die ein Job in **jedem** Band haben kann:
+# `local` trifft jeden Job mit lokalen Läufen — `EngineCI` steht im
+# SCHEDULE-Band und hat neun —, `1shot` jeden `at`-Job. Nur `gone` ist
+# journal-eigen.
+#
+# **Ein Filter, der nur auf einem Drittel der Zeilen wirkt, aber über allen
+# steht, ist keine Achse, sondern eine Falle.**
+
+
+def _mit_lauf(slug):
+    """Ein Schedule-Job, der lokal schon gelaufen ist — der Fall `EngineCI`."""
+    return {slug: {"status": "complete", "started_at": NOW - 600}}
+
+
+def test_local_selects_within_the_schedule_band():
+    """`local` ist eine Eigenschaft des Jobs, nicht des Bandes.
+
+    **Geprüft wird, was verschwindet, nicht was bleibt.** Ein Filter, der auf
+    ein Band gar nicht wirkt, lässt dort ebenfalls jede Zeile stehen — ein Test
+    auf „der Treffer ist noch da" wäre also auch dann grün, wenn nichts
+    filtert. Erst der Nicht-Treffer daneben macht die Aussage prüfbar."""
+    zeilen = _zeilen(local=[_md("mit-lauf"), _md("ohne-lauf")],
+                     local_runs=_mit_lauf("mit-lauf"))
+    assert all(z.segment is Segment.SCHEDULE for z in zeilen), \
+        "Testdatum im falschen Band"
+    html = render.jobs_screen(zeilen, now=NOW, journal=["local"])
+    assert "mit-lauf" in html, "`local` lässt den Job mit lokalen Läufen fallen"
+    assert "ohne-lauf" not in html, (
+        "`local` behält einen Job ohne lokale Läufe — der Filter wirkt im "
+        "SCHEDULE-Band nicht, er lässt dort nur alles durch")
+
+
+def test_oneshot_selects_within_the_schedule_band():
+    """Dieselbe Bauart für `1shot`: der at-Job bleibt, der Cron-Job geht."""
+    zeilen = _zeilen(local=[_md("einmalig", schedule=None, at="2026-09-01 10:00"),
+                            _md("stuendlich")])
+    html = render.jobs_screen(zeilen, now=NOW, journal=["1shot"])
+    assert "einmalig" in html, "`1shot` trifft den at-Job nicht"
+    assert "stuendlich" not in html, "`1shot` behält einen Cron-Job"
+
+
+def test_gone_stays_a_journal_matter():
+    """Die Gegenprobe: `gone` beschreibt ein Verhältnis zum Vault, das ein
+    aktiver Job per Definition nicht hat. Es darf nicht plötzlich alles
+    treffen, nur weil die Achse jetzt überall wirkt."""
+    zeilen = _zeilen(local=[_md("da")])
+    html = render.jobs_screen(zeilen, now=NOW, journal=["gone"])
+    assert "da</a>" not in html, "`gone` trifft einen Job, den es noch gibt"
+
+
+# ── #31/Vorschlag 1: Beziehungslabels als Chips ────────────────────────────
+#
+# **Befund m.rau:** *„Aktuell ist die Visualisierung in `(...)`. Das folgt dem
+# Terminal-Ansatz. Aber gerade hier wollen wir Aufmerksamkeit lenken. Deshalb
+# sind Chips geeignet."*
+#
+# Die Abstufung ist der Inhalt, nicht die Form: `new`/`modified`/`deleted`/
+# `dropped` beschreiben ein Verhältnis zwischen zwei Speichern und verlangen
+# Kenntnis — vier ruhige Chips. `duplicate` meldet einen Fehler im Vault und
+# verlangt Handeln. **Sind alle fünf gleich laut, ist keiner mehr laut.**
+
+
+def test_the_relation_is_a_chip_not_a_parenthesis():
+    """Die Klammern waren ein Wireframe-Zeichen und wurden wörtlich gebaut."""
+    html = render.jobs_screen(_zeilen(local=[_md("neu")]), now=NOW)
+    assert '<span class="chip' in html, "die Beziehung steht nicht als Chip da"
+    assert "(new)" not in html, "die Klammer-Schreibweise steht noch da"
+
+
+def test_only_duplicate_shouts():
+    """Der einzige rote Chip — und die Gegenprobe dazu in einem Test, weil die
+    Aussage eine über den *Unterschied* ist: ein Fehler im Vault fällt nur auf,
+    solange die vier ruhigen daneben ruhig bleiben."""
+    laut = render.jobs_screen(
+        _zeilen(local=[_md("doppelt", repo_path="case/a/doppelt.md"),
+                       _md("doppelt", repo_path="case/b/doppelt.md")]), now=NOW)
+    assert 'class="chip bad"' in laut, "`duplicate` ist nicht als Fehler markiert"
+
+    leise = render.jobs_screen(_zeilen(local=[_md("neu")]), now=NOW)
+    assert 'class="chip bad"' not in leise, (
+        "ein gewöhnliches `new` trägt dieselbe Warnfarbe wie ein Vault-Fehler")
+
+
+# ── #11: `fällig` sieht aus wie `geplant` ──────────────────────────────────
+#
+# Ein `pending`-Job, dessen Termin verstrichen ist, wird vom Scheduler beim
+# nächsten Tick geholt — der Termin gehört ihm zu Recht. Er ist keine
+# Karteileiche, sondern eine Verspätung: der Knoten war offline, der Scheduler
+# stand, der Backoff lief.
+#
+# Die Spalte zeigt darüber heute nur einen Zeitpunkt und überlässt dem Leser
+# die Subtraktion gegen das heutige Datum.
+#
+# **Ergänzen statt ersetzen.** `asap` *statt* `02/07 08:05` wirft weg, wie
+# lange etwas überfällig ist — bei zwei Sekunden egal, bei 38 Tagen nicht. Vor
+# allem aber wäre `asap` allein wieder eine Relativangabe und verlöre die
+# Eigenschaft, um derentwillen die Entscheidung vom 2026-08-03 fiel: **ein
+# absoluter Zeitpunkt bleibt nach einem Screenshot wahr.**
+
+
+def _wartend_mit(next_fire_at):
+    return _zeilen(local=[_md("wartet")],
+                   scheduler=[{"slug": "wartet", "active": 1,
+                               "schedule": "0 * * * *", "row_status": "pending",
+                               "next_fire_at": next_fire_at}])
+
+
+def test_an_overdue_job_is_marked_as_due():
+    """Rot vor `#11`: die Zelle ist von der eines künftigen Termins nicht zu
+    unterscheiden, außer man rechnet gegen heute."""
+    html = render.jobs_screen(_wartend_mit(NOW - 3600), now=NOW)
+    zelle = _zelle(html, "next")
+    assert "due" in zelle, (
+        f"NEXT zeigt {zelle!r} — ein verstrichener Termin sieht aus wie ein "
+        "geplanter")
+
+
+def test_the_timestamp_survives_the_marking():
+    """Der Kern der Entscheidung: die Kennzeichnung **ergänzt**, sie ersetzt
+    nicht. Sonst wäre nicht mehr abzulesen, ob es zwei Sekunden oder 38 Tage
+    sind."""
+    html = render.jobs_screen(_wartend_mit(NOW - 40 * 86400), now=NOW)
+    zelle = _zelle(html, "next")
+    assert any(z.isdigit() for z in zelle), (
+        f"NEXT zeigt {zelle!r} — der Zeitpunkt ist der Kennzeichnung gewichen")
+
+
+def test_a_future_appointment_looks_unchanged():
+    """Die Gegenprobe. Ohne sie wäre auch ein Screen grün, der alles markiert."""
+    html = render.jobs_screen(_wartend_mit(NOW + 3600), now=NOW)
+    assert "due" not in _zelle(html, "next"), "ein künftiger Termin ist markiert"
+
+
+def test_a_terminal_job_with_a_stale_date_is_not_touched():
+    """Ausdrücklich nicht Teil von `#11`: ein terminaler Job mit stehen-
+    gebliebenem Termin ist `#97` — ein **Datenfehler**, der nicht dadurch
+    heilt, dass man ihn hübscher rendert. Er darf `due` nicht tragen: das
+    hieße zu behaupten, er komme noch."""
+    zeilen = _zeilen(local=[_md("fertig")],
+                     scheduler=[{"slug": "fertig", "active": 1,
+                                 "schedule": "0 * * * *", "row_status": "error",
+                                 "next_fire_at": NOW - 3600}])
+    assert "due" not in _zelle(render.jobs_screen(zeilen, now=NOW), "next")
+
+
+#: Die Spalten der Jobs-Tabelle in ihrer Reihenfolge. Die Zellen tragen **keine
+#: Klassen** — bis auf `slug` sind es nackte `<td>`. Ein Test, der nach Position
+#: greift, ist deshalb hier keine Nachlässigkeit, sondern die einzige ehrliche
+#: Möglichkeit: eine Klasse zu erfinden, damit der Test hübscher wird, hieße den
+#: Prüfgegenstand für die Prüfung zu ändern.
+_SPALTEN = ("slug", "type", "client", "scheduler", "last", "next", "runtime", "24h")
+
+
+def _zelle(html: str, spalte: str) -> str:
+    """Der Text der Zelle `spalte` aus der ersten Datenzeile."""
+    import re
+    zeilen = re.findall(r"<tr>(?:(?!</tr>).)*</tr>", html, re.S)
+    daten = [z for z in zeilen if 'class="slug"' in z]
+    assert daten, f"keine Datenzeile im HTML gefunden (Spalte {spalte})"
+    zellen = re.findall(r"<td[^>]*>(.*?)</td>", daten[0], re.S)
+    assert len(zellen) == len(_SPALTEN), (
+        f"{len(zellen)} Zellen, erwartet {len(_SPALTEN)} — die Tabelle hat "
+        f"ihre Spalten geändert, dieser Helfer muss nach: {zellen}")
+    roh = zellen[_SPALTEN.index(spalte)]
+    return re.sub(r"<[^>]+>", "", roh).strip()
+
+
+
+
+# ── #39: die Slot-Kachel sagt zu wenig ─────────────────────────────────────
+#
+# **Befund m.rau:** *„sei in der Job Kachel Client und Scheduler ruhig etwas
+# informativer. … steht nur die Uhrzeit bei idle - last. Warum nicht das
+# Datum?"*
+#
+# `_abs_time()` liefert nur `HH:MM`. Bei einem Job, der zuletzt vor drei Tagen
+# lief, steht dort `last 14:03` — eine Angabe, die falsch gelesen wird, weil
+# sie „heute" suggeriert.
+#
+# **Der Header macht es an dieser Stelle bereits richtig:** `_uhrzeit()` nimmt
+# unter 24 Stunden die Uhrzeit allein und darüber Datum plus Uhrzeit (FE §2).
+# Die Kachel benutzte diese Regel nicht — ein Funktionstausch, kein neues
+# Konzept, und er behebt eine echte Fehllesung.
+
+
+def _kachel(**kw):
+    from bibi.controller.jobs_view import Tile
+    # **Client-Seite und ein Zustand ohne eigenen Lauf** — nur dort steht
+    # `last` überhaupt. Der Scheduler-Slot zeigt nach vorn (`next`), der
+    # Client-Slot zurück; die Angabe, um die es in #39 geht, gibt es also
+    # genau in dieser Konstellation.
+    grund = {"quelle": "client", "host": "h", "slot": {}, "status": "pending",
+             "aktionen": frozenset()}
+    return Tile(**{**grund, **kw})
+
+
+def _last_wert(html: str) -> str:
+    """Nur der Wert hinter `last` — bis zum nächsten Tag oder Trenner.
+
+    Ohne diese Abgrenzung greift ein naives Slicing das `/` aus `</div>` mit
+    und der Test ist grün, gleich was die Kachel sagt."""
+    import re
+    m = re.search(r"last ([^<·]+)", html)
+    assert m, f"die Kachel nennt kein `last`: {html[:200]}"
+    return m.group(1).strip()
+
+
+def test_a_last_run_older_than_a_day_shows_its_date():
+    """Rot vor `#39`: `last 14:03` für einen Lauf von vorgestern."""
+    wert = _last_wert(render.job_tiles_fragment(
+        [_kachel(last_at=NOW - 3 * 86400)], now=NOW, slug="j", job_uid="u"))
+    assert "/" in wert, f"die Kachel nennt kein Datum: {wert!r}"
+
+
+def test_a_last_run_today_stays_short():
+    """Die Gegenprobe — und der Grund, warum es die 24-Stunden-Regel ist und
+    nicht „immer Datum": in der Kachel eines Jobs, der vor zehn Minuten lief,
+    wäre das Datum Lärm."""
+    wert = _last_wert(render.job_tiles_fragment(
+        [_kachel(last_at=NOW - 600)], now=NOW, slug="j", job_uid="u"))
+    assert "/" not in wert, f"unnötiges Datum bei einem Lauf von heute: {wert!r}"
+
+
+def test_the_tile_names_the_runtime_of_the_last_run():
+    """Punkt 2 von `#39`: die Dauer liegt im Journal (`exec_runtime`) und stand
+    auf der Kachel nicht — obwohl sie die Frage beantwortet, die man vor einem
+    Klick auf START stellt."""
+    wert = render.job_tiles_fragment(
+        [_kachel(last_at=NOW - 3 * 86400, slot={"exec_runtime": 92.0})],
+        now=NOW, slug="j", job_uid="u")
+    assert "1m 32s" in wert, f"die Runtime fehlt: {wert[:400]}"
+
+
+def test_the_tile_names_the_commit_when_there_is_one():
+    """Punkt 3. Die Zelle bleibt oft leer — heute in 93 % der Läufe —, und das
+    ist in Ordnung: sie ist die Verbindung Lauf ↔ Vault-Wirkung, **und ihre
+    Leere ist selbst eine Auskunft.**"""
+    wert = render.job_tiles_fragment(
+        [_kachel(last_at=NOW - 3 * 86400, slot={"commit_sha": "a1b2c3d4e5f6"})],
+        now=NOW, slug="j", job_uid="u")
+    assert "a1b2c3d" in wert, f"der Commit fehlt: {wert[:400]}"
+
+
+def test_a_tile_without_a_commit_says_nothing_about_it():
+    """Die Gegenprobe: ein leeres `commit —` sähe aus wie ein Fehler, wo nur
+    nichts zu sagen ist. Dieselbe Erwägung, aus der `last` ohne lokalen Lauf
+    ganz entfällt."""
+    wert = render.job_tiles_fragment(
+        [_kachel(last_at=NOW - 3 * 86400, slot={})], now=NOW, slug="j", job_uid="u")
+    assert "commit" not in wert, f"leere Commit-Angabe: {wert[:400]}"
+
+
+def test_the_tile_offers_a_way_to_the_run():
+    """Punkt 4, und der eigentliche Befund: *„Warum kein Link runter zu den
+    Details, wo ich auch den Output öffnen kann!?"* — heute ist die Kachel eine
+    Sackgasse, sie nennt einen Lauf und bietet keinen Weg dorthin."""
+    wert = render.job_tiles_fragment(
+        [_kachel(last_at=NOW - 3 * 86400, slot={})], now=NOW, slug="j", job_uid="u")
+    assert 'href="#runs"' in wert, f"kein Weg zum Lauf: {wert[:400]}"

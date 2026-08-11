@@ -10,7 +10,7 @@ import json
 import re
 import time
 
-from bibi.controller.jobs_view import Segment, erreichbarer_host
+from bibi.controller.jobs_view import Segment, erreichbarer_host, status_gruppe
 from bibi.schedule import models
 
 # PLAN-36 Stufe 36.0: htmx lokal statt unpkg.com-CDN (Tailnet-only-Setup —
@@ -304,9 +304,18 @@ table.jobs td.slug a:hover { text-decoration: underline; }
    und sollen sie nicht optisch erschlagen. */
 .fltr-bar { display: flex; align-items: baseline; gap: .35rem;
             padding: .4rem 0 .7rem; flex-wrap: wrap; font-size: .9rem; }
-.fltr-grp { color: var(--hdr-key); margin-right: .2rem; margin-left: .9rem;
-            letter-spacing: .04em; font-size: .82rem; }
-.fltr-grp:first-child { margin-left: 0; }
+/* Die Filterwerte sitzen seit #31 unter ihrer Spalte, nicht mehr in der Leiste.
+   Hier standen bis dahin `.fltr-grp`-Regeln fuer die Gruppenlabels `TYPE` und
+   `STATUS` — sie sind mit dem Markup entfallen, weil der Spaltenkopf einen
+   Zentimeter tiefer dasselbe Wort traegt.
+
+   Die Zeile ist bewusst leiser als die Koepfe darueber: sie ist ein Handle,
+   keine Ueberschrift, und ohne die duennere Schrift konkurriert sie mit der
+   Spaltenbeschriftung um dieselbe Aufmerksamkeit. */
+tr.fltr-kopf th { border-bottom: 1px solid var(--line); padding-bottom: .3rem;
+                  font-weight: normal; }
+th.fltr-zelle { white-space: nowrap; }
+th.fltr-zelle .fltr { font-size: .82rem; padding: .05rem .35rem; }
 .fltr { background: none; border: 1px solid transparent; color: var(--dim);
         padding: .1rem .45rem; border-radius: 3px; cursor: pointer;
         font: inherit; }
@@ -314,10 +323,28 @@ table.jobs td.slug a:hover { text-decoration: underline; }
 /* Der gewaehlte Zustand traegt Rahmen UND Farbe: Farbe allein geht in hellen
    Themes und auf schlechten Monitoren verloren. */
 .fltr.on { color: var(--text); border-color: var(--btnline); background: var(--btnbg); }
+/* `gone` trifft nichts, solange keine abgelegte Zeile sichtbar ist (#31).
+   Ausgegraut statt versteckt: ein Knopf, der verschwindet, laesst die Achse
+   springen, und wer ihn sucht, weiss nicht, ob es ihn nie gab oder ob er
+   gerade nur leer ist. Der Cursor sagt dasselbe noch einmal fuer die Maus. */
+.fltr.tot { opacity: .4; cursor: default; }
+.fltr.tot:hover { color: var(--dim); background: none; }
 .fltr-zahl { margin-left: auto; color: var(--dim); }
 table.jobs th[data-sort] { cursor: pointer; user-select: none; }
 table.jobs th[data-sort]:hover { color: var(--text); }
 table.jobs th.sortiert { color: var(--text); }
+/* Mindestbreiten fuer LAST und NEXT (#31). Die Zellen tragen `11/01 14:46`,
+   beim Jahreswechsel aber auch `01/01/2027 00:05` — ohne feste Breite
+   springen die Spalten dann, und zwar genau in dem Moment, in dem jemand
+   hinsieht. `nowrap` allein reicht nicht: es verhindert den Umbruch, nicht
+   das Wandern der Nachbarspalten.
+
+   Die Breite haengt an der Spaltenposition, nicht an einer Klasse — die
+   Zellen tragen bis auf `slug` keine, und eine einzufuehren, damit das CSS
+   huebscher wird, waere eine Aenderung am Markup fuer eine Frage der
+   Darstellung. */
+table.jobs td:nth-child(5), table.jobs td:nth-child(6),
+table.jobs th:nth-child(5), table.jobs th:nth-child(6) { min-width: 6.5rem; }
 /* Leerer Screen: kein Kasten, kein Ausrufezeichen — ein Satz, der sagt, was
    fehlt und was man tun kann. */
 .leer { padding: 2.2rem 0; max-width: 42rem; }
@@ -359,6 +386,24 @@ th a:hover { text-decoration: underline; }
 .chip.modified { background: var(--ambersoft); color: var(--amber); }
 .chip.new { background: var(--bluesoft); color: var(--blue); }
 .chip.conflict { background: var(--redsoft); color: var(--red); }
+/* Beziehungslabels der Jobs-Zeile (#31, Vorschlag 1). Zwei Lautstaerken, und
+   die Zweiteilung ist die eigentliche Aussage: `leise` traegt ein Verhaeltnis
+   zwischen zwei Speichern (new/modified/deleted/dropped) und verlangt
+   Kenntnis; `bad` meldet einen Fehler im Vault und verlangt Handeln. Sind
+   alle gleich laut, ist keiner mehr laut. */
+.chip.leise { background: var(--hover); color: var(--dim); font-weight: 500; }
+.chip.bad { background: var(--redsoft); color: var(--red); }
+/* Faelligkeitskennzeichen der NEXT-Spalte (#11). Es steht NEBEN dem
+   Zeitpunkt, nicht an seiner Stelle: der Zeitpunkt sagt, wie lange etwas
+   ueberfaellig ist, das Kennzeichen, dass es das ueberhaupt ist. Leiser als
+   ein Chip, weil eine Verspaetung kein Fehler ist — der Scheduler holt sie
+   beim naechsten Tick. */
+.due { color: var(--amber); font-size: .78rem; letter-spacing: .03em; }
+/* Der Weg von der Kachel zur Lauf-Liste (#39). Leiser als die Verben daneben:
+   er ist eine Navigation, keine Handlung, und darf mit START/KILL/RESET nicht
+   um dieselbe Aufmerksamkeit konkurrieren. */
+.tile-weg { color: var(--faint); text-decoration: none; }
+.tile-weg:hover { color: var(--text); text-decoration: underline; }
 /* Nodes-Screen Git-Status-Chips (Batch 9 Punkt 3) — dieselben Farben wie die
    tree- und sync-Klassen der Feed-Git-Kachel, hier als Chip statt Klartext.
    Die Klassennamen stehen bewusst ohne Stern: ".tree-" plus Stern ergibt die
@@ -403,7 +448,6 @@ th a:hover { text-decoration: underline; }
 .fday { display: flex; align-items: center; gap: .6rem; margin: .9rem 0 .2rem;
         font-family: ui-monospace, monospace; font-size: .72rem; color: var(--faint); }
 .fday::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
-.freach { font-size: .78rem; color: var(--faint); margin: 0 0 .3rem; }
 /* m.rau/bibi#63: in der Karte, an ihrem unteren linken Rand. Der obere
    Abstand trennt vom Inhalt darueber, der untere entfaellt — die Karte
    bringt ihr eigenes Padding mit. */
@@ -1920,6 +1964,35 @@ def _feed_commit_cell(sha: str | None, commit_base_url: str | None) -> str:
     return f'<span class="commit">{short}</span>'
 
 
+def _urheber(authors: list[str]) -> tuple[str, str]:
+    """Höchstens zwei Namen, dann ``+n`` — und die volle Liste im ``title`` (#34).
+
+    **Anlass (Fall m.rau):** bei zehn gleich häufigen Urhebern nannte „die
+    häufigsten" alle zehn. Die Spalte lief über und sagte dabei weniger, als
+    zwei Namen es täten.
+
+    **Sortiert nach Häufigkeit, bei Gleichstand alphabetisch — und das zweite
+    ist der eigentliche Inhalt der Regel.** Ohne den Tiebreak hängt die
+    Reihenfolge daran, wie die Daten ankamen; die Anzeige springt dann zwischen
+    zwei Ladevorgängen, ohne dass sich etwas geändert hätte. Eine Liste, die
+    ohne Anlass die Reihenfolge wechselt, liest sich wie eine Nachricht.
+
+    Gibt ``(text, title_attribut)`` zurück; das Attribut ist leer, wenn nichts
+    gekürzt wurde — **gekürzt heißt nicht weggeworfen**, aber ein ``title``,
+    der dasselbe wiederholt, ist nur ein Tooltip ohne Auskunft.
+    """
+    if not authors:
+        return "—", ""
+    haeufig: dict[str, int] = {}
+    for a in authors:
+        haeufig[a] = haeufig.get(a, 0) + 1
+    geordnet = sorted(haeufig, key=lambda a: (-haeufig[a], a))
+    if len(geordnet) <= 2:
+        return ", ".join(geordnet), ""
+    return (f'{", ".join(geordnet[:2])} +{len(geordnet) - 2}',
+            f' title="{_e(", ".join(geordnet))}"')
+
+
 def _feed_row(entry: dict, *, commit_base_url: str | None = None) -> str:
     """Eine Einheit: Uhrzeit, Name, Umfang, Urheber, Commit.
 
@@ -1930,13 +2003,13 @@ def _feed_row(entry: dict, *, commit_base_url: str | None = None) -> str:
     zeit = _abs_time(ts)
     n = int(entry.get("changes") or 0)
     umfang = f"{n} change" if n == 1 else f"{n} changes"
-    wer = ", ".join(entry.get("authors") or []) or "—"
+    wer, alle = _urheber(entry.get("authors") or [])
     commit = _feed_commit_cell(entry.get("last_commit_sha"), commit_base_url)
     return ('<div class="frow">'
            f'<span class="t">{_e(zeit)}</span>'
            f'<span class="msg">{_e(entry.get("unit") or "—")}</span>'
            f'<span class="cnt">{_e(umfang)}</span>'
-           f'<span class="who">{_e(wer)}</span>'
+           f'<span class="who"{alle}>{_e(wer)}</span>'
            f"{commit}"
            "</div>")
 
@@ -2012,21 +2085,70 @@ def _feed_list(entries: list[dict], *, days: int | None = None,
     return "".join(teile)
 
 
-def _feed_reach(entries: list[dict], days: int | None) -> str:
-    """Reichweite und Umfang im Bild, nicht nur im Knopf — sonst ist ein
-    LOAD MORE, das nichts mehr lädt, von „da war nichts" nicht zu
-    unterscheiden."""
-    einheiten = len(entries)
-    aenderungen = sum(int(e.get("changes") or 0) for e in entries)
-    e_wort = "unit" if einheiten == 1 else "units"
-    a_wort = "change" if aenderungen == 1 else "changes"
-    umfang = f"{einheiten} {e_wort}, {aenderungen} {a_wort}"
+def _feed_reach(days: int | None) -> str:
+    """Die Reichweite **am Knopf**, der sie ändert (#34).
+
+    **Hier stand bis dahin zusätzlich der Umfang** — `128 units, 2533 changes`
+    — mit der Begründung, ein LOAD MORE, das nichts mehr lädt, sei sonst von
+    „da war nichts" nicht zu unterscheiden. Die Sorge war berechtigt und die
+    Antwort darauf falsch: sie beantwortet die Frage *nach* dem Klick, indem
+    sie *vor* jedem Klick zwei Zahlen hinstellt, die niemand braucht. Wie viele
+    Einheiten im Fenster liegen, sieht man an der Liste; die Summe der
+    Änderungen ist eine Zahl ohne Handlung. Befund m.rau: *„nimm die folgende
+    Anzeige komplett aus dem Feed Screen raus."*
+
+    **Die Reichweite bleibt** — sie beantwortet „warum sehe ich nicht mehr?" —
+    und steht jetzt dort, wo die Frage entsteht.
+    """
     if not days or days < 1:
         # Ohne Fenster keine Fensterangabe — „showing None days" stand hier
         # vorher wortwoertlich.
-        return f'<p class="freach">{umfang}</p>'
+        return ""
     fenster = "1 day" if days == 1 else f"{days} days"
-    return f'<p class="freach">showing {_e(fenster)} · {umfang}</p>'
+    return f"showing {_e(fenster)}"
+
+
+#: Wie viele neue Einheiten ein Klick auf LOAD MORE mindestens bringen soll,
+#: und wie viele ertraglose Tage er dafür höchstens durchschreitet (#34).
+_LOAD_MORE_ZIEL = 10
+_LOAD_MORE_GRENZE = 30
+
+
+def naechstes_fenster(entries: list[dict], *, aktuell: int, now: float) -> int:
+    """Auf welches Fenster LOAD MORE öffnet — eine **Menge**, kein Tag (#34).
+
+    **Befund m.rau:** an einem ruhigen Tag kommt genau eine Zeile dazu; der
+    Knopf verspricht „mehr" und liefert „einen Tag weiter". Er wandert deshalb
+    so weit, bis ``_LOAD_MORE_ZIEL`` neue Einheiten zusammenkommen — und hört
+    nach ``_LOAD_MORE_GRENZE`` ertraglosen Tagen auf.
+
+    **Die Obergrenze ist kein Sicherheitsnetz, sondern die Bedingung dafür,
+    dass der Knopf ehrlich bleiben kann.** Ohne sie liefe die Erweiterung bei
+    einem stillen Vault ins Leere, und niemand könnte „hier ist nichts mehr"
+    von „ich suche noch" unterscheiden.
+
+    **Und nicht weiter als nötig:** wo genug liegt, wird das Fenster nur bis
+    dorthin geöffnet. Ein Sprung um immer dieselben 30 Tage wäre derselbe
+    Fehler in die andere Richtung — er überschüttet den ruhigen Fall und
+    überspringt im lebhaften alles, was dazwischen lag.
+
+    ``entries`` sind die Einträge eines Fensters, das mindestens
+    ``aktuell + _LOAD_MORE_GRENZE`` Tage umfasst; ohne sie kann die Funktion
+    nur raten, und Raten ist hier ein zweiter Netzaufruf.
+    """
+    grenze = aktuell + _LOAD_MORE_GRENZE
+    neue = sorted(
+        alter
+        for e in entries
+        if (ts := e.get("last_changed")) is not None
+        and aktuell < (alter := (now - ts) / 86400) <= grenze
+    )
+    if len(neue) < _LOAD_MORE_ZIEL:
+        return grenze
+    # Aufgerundet: der Tag, an dem die zehnte Einheit liegt, muss **im**
+    # Fenster sein — ein abgerundetes Fenster schnitte sie wieder ab.
+    import math
+    return min(grenze, max(aktuell + 1, math.ceil(neue[_LOAD_MORE_ZIEL - 1])))
 
 
 def _feed_board_url(days: int | None) -> str:
@@ -2054,17 +2176,23 @@ def feed_fragment(feed_data: dict, *, days: int | None = None,
     commit_base_url = feed_data.get("commit_base_url")
     load_more = ""
     if days and days >= 1:
-        url = _feed_board_url(days + 1)
+        # **Das Ziel des Knopfes rechnet der Aufrufer aus** (#34) — er hat die
+        # Einträge eines größeren Fensters, aus denen sich bestimmen lässt, wie
+        # weit es sich zu öffnen lohnt. Fehlt die Angabe, bleibt es beim alten
+        # Verhalten (ein Tag weiter): ein Fragment, das ohne diese Zahl gar
+        # keinen Knopf mehr zeigte, wäre schlechter als eines, das einen
+        # bescheideneren anbietet.
+        ziel = feed_data.get("next_days") or days + 1
+        url = _feed_board_url(ziel)
         load_more = (
             '<div class="loadmore">'
             f'<button hx-get="{url}" hx-target="#feedboard" '
-            f'hx-swap="outerHTML">LOAD MORE ({days + 1} days)</button>'
+            f'hx-swap="outerHTML">LOAD MORE · {_feed_reach(days)}</button>'
             "</div>"
         )
     return (
         f'<div id="feedboard" data-bus="feed" '
         f'data-bus-refetch="{_feed_board_url(days)}"><div class="panel-card">'
-        f"{_feed_reach(entries, days)}"
         f"{_feed_list(entries, days=days, commit_base_url=commit_base_url, uncommitted=feed_data.get('uncommitted') or [])}"
         f"{load_more}"
         "</div></div>"
@@ -3461,6 +3589,35 @@ _LEER = {
 }
 
 
+def _next_zelle(row, s: dict, now: float, ohne_zukunft: bool) -> str:
+    """Die NEXT-Zelle — mit Fälligkeitskennzeichen, wenn der Termin hinter uns
+    liegt und der Job noch wartet (#11).
+
+    **Ergänzen, nicht ersetzen.** ``_until()`` gibt für genau diesen Fall
+    ``asap`` zurück und wird in der Jobs-Tabelle seit dem v5-Umbau nicht mehr
+    gerufen; ``asap`` **statt** des Zeitpunkts wirft aber weg, *wie lange*
+    etwas überfällig ist — bei zwei Sekunden egal, bei 38 Tagen nicht. Vor
+    allem wäre es wieder eine Relativangabe und verlöre die Eigenschaft, um
+    derentwillen die Entscheidung vom 2026-08-03 gegen Relativzeiten fiel:
+    **ein absoluter Zeitpunkt bleibt nach einem Screenshot wahr.**
+
+    **Nur für wartende Jobs.** Ein terminaler Job mit stehengebliebenem Termin
+    ist `#97` — ein Datenfehler, der nicht dadurch heilt, dass man ihn hübscher
+    rendert. Ihn als fällig zu markieren hieße zu behaupten, er komme noch.
+    """
+    if ohne_zukunft:
+        return "—"
+    ts = s.get("next_fire_at")
+    zeit = _uhrzeit(ts, now)
+    if ts is None or ts >= now:
+        return zeit
+    gruppe = status_gruppe(s.get("row_status") or s.get("status"),
+                           next_fire_at=ts)
+    if gruppe != "waiting":
+        return zeit
+    return f'{zeit} <span class="due" title="overdue — the scheduler will pick it up on its next tick">due</span>'
+
+
 def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
     """Eine Zeile: ein Slug, zwei Zustandsblöcke."""
     from bibi.schedule.models import job_uid
@@ -3470,11 +3627,45 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
         # `duplicate` ist das einzige rote Label: es meldet ein Problem im
         # Vault, kein Verhältnis zwischen zwei Speichern, und verlangt eine
         # Umbenennung statt eines Syncs.
-        klasse = "bad" if row.relation == "duplicate" else "muted"
+        # **Chip statt Klammertext** (#31, Vorschlag 1 der Design-Studie).
+        # Befund m.rau: *„Aktuell ist die Visualisierung in `(...)`. Das folgt
+        # dem Terminal-Ansatz. Aber gerade hier wollen wir Aufmerksamkeit
+        # lenken."* Die Klammern waren ein Wireframe-Zeichen für „hier steht
+        # eine Nebenangabe" und wurden wörtlich gebaut; im Browser trägt die
+        # Form das schon.
+        #
+        # **Die Abstufung ist der Inhalt, nicht die Form.** `new`, `modified`,
+        # `deleted` und `dropped` beschreiben ein Verhältnis zwischen zwei
+        # Speichern und verlangen Kenntnis — vier ruhige Chips in der
+        # Beschriftungsfarbe. `duplicate` meldet einen Fehler im Vault und
+        # verlangt Handeln; es ist als einziges rot. **Sind alle fünf gleich
+        # laut, ist keiner mehr laut.**
+        klasse = "bad" if row.relation == "duplicate" else "leise"
         titel = f' title="{" · ".join(row.paths)}"' if row.relation == "duplicate" else ""
-        beziehung = f' <span class="{klasse}"{titel}>({row.relation})</span>'
+        beziehung = f' <span class="chip {klasse}"{titel}>{row.relation}</span>'
 
     s, l = row.scheduler, row.local
+    # `NEXT` und `24H` sind für eine Journal-Zeile ohne Aussage (#130).
+    #
+    # Beide Spalten waren dort schon immer so gefüllt: `next_fire_at` ist der
+    # zuletzt berechnete Termin eines Jobs, den der Scheduler auf `active=0`
+    # führt — er liegt zwangsläufig hinter uns —, und die Quote rechnet gegen
+    # eine Erwartung, die für einen abgelegten Job nicht mehr gilt. `0/288+0 0%`
+    # liest sich als schlechtester möglicher Wert; gemeint ist „keiner".
+    #
+    # **Ein Umzug ändert nichts an den Daten und alles an ihrem Gewicht.** Im
+    # dritten Band standen diese Zeilen zwischen den aktiven und fielen nicht
+    # auf. Seit #38 führt ein eigener Screen ausschliesslich solche Zeilen —
+    # dann behauptet jede Zeile dasselbe Falsche, und es ist nicht mehr die
+    # Ausnahme, sondern der Screen.
+    #
+    # **Am Segment der Zeile, nicht am Screen**, obwohl heute nur der
+    # Journal-Screen solche Zeilen führt: „dieser Job hat keine Zukunft mehr"
+    # ist eine Aussage über den Job, nicht über den Ort, an dem er gerade
+    # steht. Die Spalten bleiben dabei stehen — sie wegzulassen hiesse einen
+    # zweiten Tabellenkopf zu führen, und das ist für die Filterzeile aus #31,
+    # die an genau diesen Köpfen hängen soll, der falsche Weg.
+    ohne_zukunft = row.segment is Segment.JOURNAL
     return (
         "<tr>"
         f'<td class="slug"><a href="/-/jobs/{job_uid(row.slug)}" title="{row.slug}">'
@@ -3500,13 +3691,13 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
         f'<td>{l.get("status") or "—"}</td>'
         f'<td>{s.get("row_status") or s.get("status") or "—"}</td>'
         f'<td>{_uhrzeit(s.get("last_run_at"), now)}</td>'
-        f'<td>{_uhrzeit(s.get("next_fire_at"), now)}</td>'
+        f"<td>{_next_zelle(row, s, now, ohne_zukunft)}</td>"
         # RUNTIME gehört auf diese Seite und ist ein Perzentil (m.rau/bibi#132):
         # P90 der letzten 30 Läufe, nicht die Dauer des letzten. Die sprang —
         # derselbe Job zeigte mal `2.8s`, mal `4m 34s`, je nachdem was zuletzt
         # geschah. Unter fünf Läufen liefert der Scheduler bewusst nichts.
         f'<td>{_human_duration(s.get("runtime_p90"))}</td>'
-        f'<td>{row.quote or "—"}</td>'
+        f'<td>{"—" if ohne_zukunft else (row.quote or "—")}</td>'
         "</tr>"
     )
 
@@ -3520,7 +3711,11 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
 #: schlimmer als ein fehlender.
 _FILTER_OBEN = (("TYPE", ("job", "claude", "app")),
                 ("STATUS", ("waiting", "running", "stopped")))
-_FILTER_JOURNAL = ("dropped", "oneshot", "local")
+#: Die dritte Achse (#31). Umbenannt gegenüber `dropped`/`oneshot`: die
+#: Werte stehen seit dem Umzug in den Kopf neben kurzen Spaltennamen, und
+#: `1shot` sagt dasselbe auf halber Breite. `gone` ist zudem das Wort, das
+#: der Vorgang beschreibt — `dropped` klang nach einem Fehler beim Ablegen.
+_FILTER_JOURNAL = ("local", "1shot", "gone")
 
 #: Klickbare Spalten. Der Schlüssel ist zugleich der Query-Parameter.
 _SORTIERBAR = (("slug", "SLUG"), ("type", "TYPE"), ("status", "STATUS"),
@@ -3542,9 +3737,18 @@ def sortierbare_schluessel() -> frozenset[str]:
     return frozenset(k for k, _ in _SORTIERBAR)
 
 
-def _filter_knopf(wert: str, aktiv: list[str]) -> str:
+def _filter_knopf(wert: str, aktiv: list[str], *, tot: bool = False) -> str:
+    """Ein Filterknopf. ``tot`` graut ihn aus, statt ihn wegzulassen (#31).
+
+    Ein Knopf, der verschwindet, sobald er nichts trifft, lässt die Achse
+    springen — und wer ihn sucht, weiss nicht, ob es ihn nie gab oder ob er
+    gerade leer ist. Ausgegraut sagt beides: es gibt ihn, und hier trifft er
+    nichts."""
     an = " on" if wert in aktiv else ""
-    return f'<button class="fltr{an}" data-filter="{wert}">{wert}</button>'
+    tot_klasse = " tot" if tot else ""
+    disabled = " disabled" if tot else ""
+    return (f'<button class="fltr{an}{tot_klasse}" data-filter="{wert}"'
+            f"{disabled}>{wert}</button>")
 
 
 def _sort_kopf(schluessel: str, label: str, sort: str | None, richtung: str) -> str:
@@ -3560,7 +3764,10 @@ def _sort_kopf(schluessel: str, label: str, sort: str | None, richtung: str) -> 
     return f'<th data-sort="{schluessel}">{label}</th>'
 
 
-def _jobs_kopf(sort: str | None, direction: str) -> str:
+def _jobs_kopf(sort: str | None, direction: str, *,
+               typ: list[str] | None = None,
+               status: list[str] | None = None,
+               status_filter: bool = True) -> str:
     """Der Tabellenkopf — **eine** Quelle für Jobs- und Journal-Screen.
 
     Beide führen dieselbe Einheit (ein Slug = eine Zeile) und dieselben acht
@@ -3602,7 +3809,62 @@ def _jobs_kopf(sort: str | None, direction: str) -> str:
         # aus ihr.
         + "<th>RUNTIME</th>"
         + _sort_kopf("24h", "24H", sort, direction)
-        + "</tr></thead>"
+        + "</tr>"
+        # **Die Filterwerte hängen unter der Spalte, die sie einschränken (#31).**
+        #
+        # Befund m.rau: *„Der Filter nimmt sehr viel Platz ein. Unnötig viel
+        # Platz."* Der Platz ging nicht für die Knöpfe drauf, sondern für eine
+        # Doppelung: `TYPE` und `STATUS` standen als Spaltenkopf **und** als
+        # Gruppenlabel der Leiste darüber — dasselbe Wort zweimal, einen
+        # Zentimeter auseinander, einmal als Überschrift und einmal als
+        # Beschriftung.
+        #
+        # **Der Kopf trägt danach zwei Bedeutungen**, und beide sind alt: der
+        # Klick sortiert (wie bisher), die Werte darunter filtern (wie bisher,
+        # nur woanders). Kein neues Konzept — zwei Dinge an einem Ort, die
+        # schon immer über dieselbe Spalte sprachen.
+        #
+        # `STATUS` hängt unter der **Scheduler**-Spalte, nicht unter der des
+        # Clients: der Filter wirkt ausschliesslich auf den Scheduler-Zustand
+        # (Klarstellung m.rau), der Client-Zustand ist Anzeige. Die leere Zelle
+        # dazwischen sagt das deutlicher als jeder Kommentar es könnte.
+        + _filter_zeile(typ or [], status or [], status_filter)
+        + "</thead>"
+    )
+
+
+def _filter_zeile(typ: list[str], status: list[str],
+                  status_filter: bool = True) -> str:
+    """Die dritte Kopfzeile: Filterwerte unter ihren Spalten (#31).
+
+    Acht Zellen, damit die Zeile zur Tabelle passt — gefüllt sind zwei. Die
+    leeren stehen ausdrücklich da, statt die Zeile per ``colspan`` zu
+    verkürzen: eine Spalte ohne Filter ist eine Aussage (*hier gibt es nichts
+    zu filtern*), und sie geht verloren, sobald die Zellen verrutschen dürfen.
+
+    ``status_filter=False`` lässt die STATUS-Zelle leer — für den
+    Journal-Screen. Dort steht Historie, die keinen laufenden Zustand hat;
+    ``trifft_filter()`` überspringt den Filter für dieses Segment ohnehin, und
+    **ein toter Knopf ist schlimmer als ein fehlender**. Die Spalte selbst
+    bleibt, weil beide Screens einen Tabellenkopf teilen.
+
+    Diese Unterscheidung stand schon als Test da, bevor die Filter umzogen
+    (``test_the_journal_screen_has_no_status_filter``) — sie hat den Umbau
+    beim ersten Lauf gefangen. Genau dafür ist sie da.
+    """
+    def zellen(werte, aktiv):
+        return ('<th class="fltr-zelle">'
+                + "".join(_filter_knopf(w, aktiv) for w in werte)
+                + "</th>")
+
+    return (
+        '<tr class="fltr-kopf">'
+        "<th></th>"
+        + zellen(_FILTER_OBEN[0][1], typ)      # TYPE
+        + "<th></th>"                          # CLIENT — Anzeige, kein Filter
+        + (zellen(_FILTER_OBEN[1][1], status) if status_filter else "<th></th>")
+        + "<th></th><th></th><th></th><th></th>"
+        + "</tr>"
     )
 
 
@@ -3672,16 +3934,29 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
                                  sort=sort, direction=direction)
             if r.segment is not Segment.JOURNAL]
 
-    gruppen = "".join(
-        f'<span class="fltr-grp">{name}</span>'
-        + "".join(_filter_knopf(w, typ if name == "TYPE" else status) for w in werte)
-        for name, werte in _FILTER_OBEN)
-    leiste = (f'<div class="fltr-bar">{gruppen}'
+    # **Die Toolbar-Zeile trägt nur noch, was keiner Spalte gehört** (#31,
+    # Vorschlag 1 der Design-Studie): links die Schalter, rechts die Kennzahl.
+    # `TYPE` und `STATUS` sind mit ihren Werten in den Tabellenkopf gezogen —
+    # dorthin, wo die Spalte steht, die sie einschränken.
+    #
+    # `group` bleibt hier, und das ist kein Rest: er schaltet die **Bänder**,
+    # also die Gliederung der ganzen Tabelle, und hat deshalb keine Spalte,
+    # unter die er ziehen könnte.
+    # Die dritte Achse steht in der Toolbar, nicht im Kopf: ihre Werte
+    # beschreiben die **Herkunft** einer Zeile (lokal gelaufen, einmalig,
+    # abgelegt) und gehören zu keiner Spalte. `gone` trifft ohne sichtbares
+    # Journal-Band nichts — es wird ausgegraut statt versteckt, damit die Achse
+    # ihre Form behält und niemand einen Knopf sucht, der nur gerade leer ist.
+    hat_gone = any(r.relation in ("dropped", "deleted") for r in rows)
+    achse = "".join(
+        _filter_knopf(w, journal, tot=(w == "gone" and not hat_gone))
+        for w in _FILTER_JOURNAL)
+    leiste = (f'<div class="fltr-bar">{achse}'
               f'<button class="fltr{" on" if group else ""}" data-group='
               f'"{"off" if group else "on"}">group</button>'
               f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
 
-    kopf = _jobs_kopf(sort, direction)
+    kopf = _jobs_kopf(sort, direction, typ=typ, status=status)
 
     if not group:
         # Eine Liste ohne Unterteilung. Die Sortierung wirkt damit über alles,
@@ -3731,18 +4006,21 @@ def journal_screen(rows: list, now: float, *, typ: list[str] | None = None,
                                  sort=sort, direction=direction)
             if r.segment is Segment.JOURNAL]
 
-    gruppen = ('<span class="fltr-grp">TYPE</span>'
-               + "".join(_filter_knopf(w, typ) for w in _FILTER_OBEN[0][1])
-               + '<span class="fltr-grp">JOURNAL</span>'
-               + "".join(_filter_knopf(w, journal) for w in _FILTER_JOURNAL))
-    leiste = (f'<div class="fltr-bar">{gruppen}'
-              f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
+    # Wie beim Jobs-Screen (#31): `TYPE` zieht in den Kopf, die Toolbar behält,
+    # was keiner Spalte gehört. Die Journal-Achse ist genau so ein Fall — sie
+    # beschreibt die **Herkunft** einer Zeile (abgelegt, einmalig, lokal
+    # gelaufen) und nicht den Inhalt einer Spalte.
+    leiste = (f'<div class="fltr-bar">'
+              + "".join(_filter_knopf(w, journal) for w in _FILTER_JOURNAL)
+              + f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
 
     if not rows:
         return f'{leiste}<div class="leer"><p class="muted">— {_LEER[Segment.JOURNAL]}</p></div>'
 
     zeilen = "".join(_jobs_zeile(r, now, public_host=public_host) for r in rows)
-    return (f'{leiste}<table class="jobs">{_jobs_kopf(sort, direction)}'
+    kopf = _jobs_kopf(sort, direction, typ=typ, status=status,
+                      status_filter=False)
+    return (f'{leiste}<table class="jobs">{kopf}'
             f"<tbody>{zeilen}</tbody></table>")
 
 
@@ -4269,7 +4547,44 @@ def _slot_kachel(kachel, *, now: float) -> str:
             # dessen Dauer darunter schon alles. Ohne lokalen Lauf steht gar
             # nichts — ein leeres `last —` sähe aus wie ein Fehler.
             if kachel.last_at is not None:
-                teile.append(f"last {_abs_time(kachel.last_at)}")
+                # **Dieselbe 24-Stunden-Regel wie im Header (#39).**
+                # `_abs_time()` liefert nur `HH:MM`; bei einem Lauf von
+                # vorgestern stand dort `last 14:03` — eine Angabe, die falsch
+                # gelesen wird, weil sie „heute" suggeriert. `_uhrzeit()` nimmt
+                # unter 24 Stunden die Uhrzeit allein und darüber Datum plus
+                # Uhrzeit (FE §2); der Header macht es an dieser Stelle längst
+                # richtig, die Kachel benutzte die Regel nur nicht.
+                #
+                # Ein Funktionstausch, kein neues Konzept — und deshalb der
+                # erste der vier Punkte des Tickets: er behebt eine echte
+                # Fehllesung, während die anderen drei etwas hinzufügen.
+                teile.append(f"last {_uhrzeit(kachel.last_at, now)}")
+                # **Runtime, Commit und der Weg zum Lauf (#39, Punkte 2-4).**
+                #
+                # Befund m.rau: *„Warum nicht die Runtime wenn verfügbar? Warum
+                # nicht der commit? Warum kein Link runter zu den Details, wo
+                # ich auch den Output öffnen kann!?"* — die Kachel war eine
+                # Sackgasse: sie nennt einen Lauf und bot keinen Weg dorthin.
+                #
+                # **Jede Angabe nur, wenn es sie gibt.** Ein leeres `commit —`
+                # sähe aus wie ein Fehler, wo nur nichts zu sagen ist —
+                # dieselbe Erwägung, aus der `last` ohne lokalen Lauf ganz
+                # entfällt. Der Commit ist heute in rund 7 % der Läufe belegt;
+                # **seine Leere ist selbst eine Auskunft**, nämlich dass dieser
+                # Lauf im Vault nichts bewegt hat.
+                laufzeit = kachel.slot.get("exec_runtime")
+                if laufzeit:
+                    teile.append(_human_duration(laufzeit))
+                sha = kachel.slot.get("commit_sha")
+                if sha:
+                    teile.append(f"commit {_e(str(sha)[:7])}")
+                # Der Weg zum Lauf, und bewusst ein Anker statt einer Route:
+                # die Lauf-Liste steht auf **dieser** Seite. Ein Link, der die
+                # Seite neu lädt, um zwei Bildschirmhöhen tiefer zu landen,
+                # verlöre Faltzustand und Scroll-Position — genau das, was
+                # `#44` an der Region eigens rettet.
+                teile.append('<a href="#runs" class="tile-weg" '
+                             'title="jump to the runs of this job">runs ↓</a>')
         elif kachel.status == "pending" and kachel.slot.get("next_fire_at"):
             # `pending · next 12:00` — ein reservierter Platz mit Termin. Ohne
             # `next` bleibt es beim blossen `pending`: das ist `adhoc`, ein

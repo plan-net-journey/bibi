@@ -440,7 +440,19 @@ def add_controller_routes(
     @app.get("/-/ui/feed/board", include_in_schema=False)
     def feed_board(days: int | None = None):
         eff_days = _effective_days(days)
-        return HTMLResponse(render.feed_fragment(_feed_data(eff_days), days=eff_days))
+        daten = _feed_data(eff_days)
+        # **Das Ziel des LOAD-MORE-Knopfes wird hier bestimmt, nicht im
+        # Renderer** (#34): es braucht die Einträge eines *größeren* Fensters,
+        # und die zu holen ist ein Netzaufruf. Der Renderer bleibt damit rein.
+        #
+        # Ein zweiter Aufruf je Seitenaufbau ist der Preis, und er ist bewusst
+        # bezahlt: die Alternative wäre ein Knopf, der bei jedem Klick erneut
+        # zu wenig liefert — genau der Befund, um den es geht.
+        if eff_days:
+            gross = _feed_data(eff_days + render._LOAD_MORE_GRENZE)
+            daten = {**daten, "next_days": render.naechstes_fenster(
+                gross.get("entries") or [], aktuell=eff_days, now=time.time())}
+        return HTMLResponse(render.feed_fragment(daten, days=eff_days))
 
     @app.get("/-/ui/feed/status", include_in_schema=False)
     def feed_status():
