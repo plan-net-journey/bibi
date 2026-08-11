@@ -443,7 +443,6 @@ th a:hover { text-decoration: underline; }
 .fday { display: flex; align-items: center; gap: .6rem; margin: .9rem 0 .2rem;
         font-family: ui-monospace, monospace; font-size: .72rem; color: var(--faint); }
 .fday::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
-.freach { font-size: .78rem; color: var(--faint); margin: 0 0 .3rem; }
 /* m.rau/bibi#63: in der Karte, an ihrem unteren linken Rand. Der obere
    Abstand trennt vom Inhalt darueber, der untere entfaellt — die Karte
    bringt ihr eigenes Padding mit. */
@@ -1960,6 +1959,35 @@ def _feed_commit_cell(sha: str | None, commit_base_url: str | None) -> str:
     return f'<span class="commit">{short}</span>'
 
 
+def _urheber(authors: list[str]) -> tuple[str, str]:
+    """Höchstens zwei Namen, dann ``+n`` — und die volle Liste im ``title`` (#34).
+
+    **Anlass (Fall m.rau):** bei zehn gleich häufigen Urhebern nannte „die
+    häufigsten" alle zehn. Die Spalte lief über und sagte dabei weniger, als
+    zwei Namen es täten.
+
+    **Sortiert nach Häufigkeit, bei Gleichstand alphabetisch — und das zweite
+    ist der eigentliche Inhalt der Regel.** Ohne den Tiebreak hängt die
+    Reihenfolge daran, wie die Daten ankamen; die Anzeige springt dann zwischen
+    zwei Ladevorgängen, ohne dass sich etwas geändert hätte. Eine Liste, die
+    ohne Anlass die Reihenfolge wechselt, liest sich wie eine Nachricht.
+
+    Gibt ``(text, title_attribut)`` zurück; das Attribut ist leer, wenn nichts
+    gekürzt wurde — **gekürzt heißt nicht weggeworfen**, aber ein ``title``,
+    der dasselbe wiederholt, ist nur ein Tooltip ohne Auskunft.
+    """
+    if not authors:
+        return "—", ""
+    haeufig: dict[str, int] = {}
+    for a in authors:
+        haeufig[a] = haeufig.get(a, 0) + 1
+    geordnet = sorted(haeufig, key=lambda a: (-haeufig[a], a))
+    if len(geordnet) <= 2:
+        return ", ".join(geordnet), ""
+    return (f'{", ".join(geordnet[:2])} +{len(geordnet) - 2}',
+            f' title="{_e(", ".join(geordnet))}"')
+
+
 def _feed_row(entry: dict, *, commit_base_url: str | None = None) -> str:
     """Eine Einheit: Uhrzeit, Name, Umfang, Urheber, Commit.
 
@@ -1970,13 +1998,13 @@ def _feed_row(entry: dict, *, commit_base_url: str | None = None) -> str:
     zeit = _abs_time(ts)
     n = int(entry.get("changes") or 0)
     umfang = f"{n} change" if n == 1 else f"{n} changes"
-    wer = ", ".join(entry.get("authors") or []) or "—"
+    wer, alle = _urheber(entry.get("authors") or [])
     commit = _feed_commit_cell(entry.get("last_commit_sha"), commit_base_url)
     return ('<div class="frow">'
            f'<span class="t">{_e(zeit)}</span>'
            f'<span class="msg">{_e(entry.get("unit") or "—")}</span>'
            f'<span class="cnt">{_e(umfang)}</span>'
-           f'<span class="who">{_e(wer)}</span>'
+           f'<span class="who"{alle}>{_e(wer)}</span>'
            f"{commit}"
            "</div>")
 
@@ -2052,21 +2080,27 @@ def _feed_list(entries: list[dict], *, days: int | None = None,
     return "".join(teile)
 
 
-def _feed_reach(entries: list[dict], days: int | None) -> str:
-    """Reichweite und Umfang im Bild, nicht nur im Knopf — sonst ist ein
-    LOAD MORE, das nichts mehr lädt, von „da war nichts" nicht zu
-    unterscheiden."""
-    einheiten = len(entries)
-    aenderungen = sum(int(e.get("changes") or 0) for e in entries)
-    e_wort = "unit" if einheiten == 1 else "units"
-    a_wort = "change" if aenderungen == 1 else "changes"
-    umfang = f"{einheiten} {e_wort}, {aenderungen} {a_wort}"
+def _feed_reach(days: int | None) -> str:
+    """Die Reichweite **am Knopf**, der sie ändert (#34).
+
+    **Hier stand bis dahin zusätzlich der Umfang** — `128 units, 2533 changes`
+    — mit der Begründung, ein LOAD MORE, das nichts mehr lädt, sei sonst von
+    „da war nichts" nicht zu unterscheiden. Die Sorge war berechtigt und die
+    Antwort darauf falsch: sie beantwortet die Frage *nach* dem Klick, indem
+    sie *vor* jedem Klick zwei Zahlen hinstellt, die niemand braucht. Wie viele
+    Einheiten im Fenster liegen, sieht man an der Liste; die Summe der
+    Änderungen ist eine Zahl ohne Handlung. Befund m.rau: *„nimm die folgende
+    Anzeige komplett aus dem Feed Screen raus."*
+
+    **Die Reichweite bleibt** — sie beantwortet „warum sehe ich nicht mehr?" —
+    und steht jetzt dort, wo die Frage entsteht.
+    """
     if not days or days < 1:
         # Ohne Fenster keine Fensterangabe — „showing None days" stand hier
         # vorher wortwoertlich.
-        return f'<p class="freach">{umfang}</p>'
+        return ""
     fenster = "1 day" if days == 1 else f"{days} days"
-    return f'<p class="freach">showing {_e(fenster)} · {umfang}</p>'
+    return f"showing {_e(fenster)}"
 
 
 def _feed_board_url(days: int | None) -> str:
@@ -2098,13 +2132,12 @@ def feed_fragment(feed_data: dict, *, days: int | None = None,
         load_more = (
             '<div class="loadmore">'
             f'<button hx-get="{url}" hx-target="#feedboard" '
-            f'hx-swap="outerHTML">LOAD MORE ({days + 1} days)</button>'
+            f'hx-swap="outerHTML">LOAD MORE · {_feed_reach(days)}</button>'
             "</div>"
         )
     return (
         f'<div id="feedboard" data-bus="feed" '
         f'data-bus-refetch="{_feed_board_url(days)}"><div class="panel-card">'
-        f"{_feed_reach(entries, days)}"
         f"{_feed_list(entries, days=days, commit_base_url=commit_base_url, uncommitted=feed_data.get('uncommitted') or [])}"
         f"{load_more}"
         "</div></div>"

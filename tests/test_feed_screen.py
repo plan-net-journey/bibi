@@ -99,14 +99,18 @@ def test_the_row_shows_the_time_only_because_the_day_stands_above_it():
 
 # --- Reichweite und LOAD MORE -------------------------------------------------
 
-def test_reach_states_window_units_and_changes():
-    # Ein LOAD MORE, das nichts mehr laedt, muss sich von "da war nichts"
-    # unterscheiden lassen.
+def test_reach_states_the_window():
+    """**Hier stand bis `#34` zusätzlich der Umfang** (`2 units, 5 changes`),
+    mit der Begründung, ein LOAD MORE ohne Ertrag sei sonst von „da war nichts"
+    nicht zu unterscheiden. Die Sorge war berechtigt, die Antwort falsch: sie
+    stellt vor jedem Klick zwei Zahlen hin, um eine Frage nach dem Klick zu
+    beantworten. Befund m.rau: *„nimm die folgende Anzeige komplett aus dem
+    Feed Screen raus."* Die Reichweite bleibt und steht am Knopf."""
     html = render.feed_fragment(
-        _daten(_entry("a", _T, 3), _entry("b", _T, 2)), days=1)
-    assert "showing 1 day" in html
-    assert "2 units, 5 changes" in html
-
+        {"entries": [{"unit": "a", "changes": 2}, {"unit": "b", "changes": 3}]},
+        days=7)
+    assert "showing 7 days" in html
+    assert "2 units" not in html
 
 def test_reach_uses_plural_days_beyond_one():
     html = render.feed_fragment(_daten(_entry("a", _T)), days=7)
@@ -114,12 +118,13 @@ def test_reach_uses_plural_days_beyond_one():
 
 
 def test_load_more_widens_the_window_by_one_day():
-    html = render.feed_fragment(_daten(_entry("a", _T)), days=2)
-    assert "/-/ui/feed/board?days=3" in html
-    assert "LOAD MORE (3 days)" in html
-
-
-# --- leerer Zustand -----------------------------------------------------------
+    """Der Knopf öffnet weiterhin einen Tag mehr — seine Beschriftung nennt
+    seit `#34` aber die **aktuelle** Reichweite statt der künftigen. Sie
+    beantwortet „warum sehe ich nicht mehr?"; die künftige Zahl beantwortete
+    nichts, was ein Klick nicht sofort gezeigt hätte."""
+    html = render.feed_fragment({"entries": []}, days=2)
+    assert 'days=3' in html, "der Knopf öffnet nicht einen Tag mehr"
+    assert "LOAD MORE · showing 2 days" in html
 
 def test_empty_state_says_what_is_missing_and_what_to_do():
     """Umbauplan §4: jeder leere Zustand ist Einstiegsdokumentation.
@@ -398,3 +403,82 @@ def test_without_a_window_the_refetch_stays_plain():
     """Ohne Fenster keine Fensterangabe — sonst stünde `days=None` in der URL."""
     html = render.feed_fragment(_daten(_entry("case/a", _T)), days=None)
     assert 'data-bus-refetch="/-/ui/feed/board"' in html
+
+
+# ── #34: das Urheber-Format wird gehaertet ─────────────────────────────────
+#
+# **Anlass (Fall m.rau):** bei zehn gleich haeufigen Urhebern nennt „die
+# haeufigsten" alle zehn — die Spalte laeuft ueber und sagt dabei weniger als
+# zwei Namen es taeten.
+#
+# Hoechstens zwei Namen, dann `+n`, sortiert nach Haeufigkeit und bei
+# Gleichstand alphabetisch. Die volle Liste steht im `title`.
+
+
+def test_at_most_two_authors_are_named():
+    html = render._feed_row({"unit": "u", "changes": 1,
+                             "authors": ["a", "b", "c", "d"]})
+    assert ">a, b +2<" in html, (
+        f"das Urheber-Feld nennt nicht zwei Namen plus Rest: {html}")
+
+
+def test_the_full_list_stays_reachable():
+    """Gekuerzt heisst nicht weggeworfen — sonst waere die Spalte nach der
+    Haertung weniger wert als vorher."""
+    html = render._feed_row({"unit": "u", "changes": 1,
+                             "authors": ["a", "b", "c"]})
+    assert 'title="a, b, c"' in html, f"die volle Liste fehlt: {html}"
+
+
+def test_authors_are_ordered_by_frequency_then_alphabetically():
+    """**Deterministisch, und das ist der Punkt.** Bei Gleichstand entscheidet
+    das Alphabet — sonst haengt die Anzeige an der Reihenfolge, in der die
+    Daten ankamen, und springt zwischen zwei Ladevorgaengen."""
+    html = render._feed_row({"unit": "u", "changes": 1,
+                             "authors": ["zoe", "amy", "zoe", "bob"]})
+    assert ">zoe, amy +1<" in html, (
+        f"nicht nach Haeufigkeit, dann alphabetisch sortiert: {html}")
+
+
+def test_two_authors_need_no_counter():
+    """Die Gegenprobe: `+0` waere Laerm."""
+    html = render._feed_row({"unit": "u", "changes": 1, "authors": ["a", "b"]})
+    assert ">a, b<" in html, f"unnoetiger Zaehler: {html}"
+
+
+# ── #34: die Reichweite wandert an den Knopf ───────────────────────────────
+#
+# **Befund m.rau:** *„nimm die folgende Anzeige komplett aus dem Feed Screen
+# raus"* — gemeint sind die Zaehlungen `128 units, 2533 changes`. Sie
+# beantworten keine Frage, die jemand hat: wie viele Einheiten im Fenster
+# liegen, sieht man an der Liste, und die Summe der Aenderungen ist eine Zahl
+# ohne Handlung.
+#
+# Die **Reichweite** bleibt — sie beantwortet „warum sehe ich nicht mehr?" —
+# und zieht dorthin, wo die Frage entsteht: an den Knopf, der sie aendert.
+
+
+def test_the_counts_are_gone():
+    """Mehrere Eintraege, damit die Zaehlung in ihrer Mehrzahlform auftritt —
+    mit einer einzigen Einheit hiesse sie `1 unit, 3 changes`, und ein Test auf
+    `units,` waere gruen, ohne etwas zu pruefen."""
+    html = render.feed_fragment(
+        {"entries": [{"unit": "a", "changes": 3}, {"unit": "b", "changes": 4}]},
+        days=7)
+    assert "2 units" not in html and "7 changes" not in html, (
+        f"die Zaehlungen stehen noch im Feed: {html[:300]}")
+
+
+def test_the_reach_sits_on_the_button():
+    html = render.feed_fragment({"entries": [{"unit": "a", "changes": 3}]}, days=7)
+    knopf = html[html.index("<button"):html.index("</button>")]
+    assert "showing 7 days" in knopf, (
+        f"die Reichweite steht nicht am Knopf: {knopf}")
+
+
+def test_the_reach_survives_without_a_button():
+    """Ohne Fenster gibt es keinen Knopf — die Reichweite darf dann nicht
+    stillschweigend mitverschwinden, sonst ist „alles" von „sieben Tage" nicht
+    zu unterscheiden."""
+    html = render.feed_fragment({"entries": [{"unit": "a", "changes": 3}]}, days=None)
+    assert "<button" not in html, "ohne Fenster steht ein Knopf da"
