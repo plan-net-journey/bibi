@@ -386,6 +386,13 @@ th a:hover { text-decoration: underline; }
 .chip.modified { background: var(--ambersoft); color: var(--amber); }
 .chip.new { background: var(--bluesoft); color: var(--blue); }
 .chip.conflict { background: var(--redsoft); color: var(--red); }
+/* Beziehungslabels der Jobs-Zeile (#31, Vorschlag 1). Zwei Lautstaerken, und
+   die Zweiteilung ist die eigentliche Aussage: `leise` traegt ein Verhaeltnis
+   zwischen zwei Speichern (new/modified/deleted/dropped) und verlangt
+   Kenntnis; `bad` meldet einen Fehler im Vault und verlangt Handeln. Sind
+   alle gleich laut, ist keiner mehr laut. */
+.chip.leise { background: var(--hover); color: var(--dim); font-weight: 500; }
+.chip.bad { background: var(--redsoft); color: var(--red); }
 /* Nodes-Screen Git-Status-Chips (Batch 9 Punkt 3) — dieselben Farben wie die
    tree- und sync-Klassen der Feed-Git-Kachel, hier als Chip statt Klartext.
    Die Klassennamen stehen bewusst ohne Stern: ".tree-" plus Stern ergibt die
@@ -3497,9 +3504,22 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
         # `duplicate` ist das einzige rote Label: es meldet ein Problem im
         # Vault, kein Verhältnis zwischen zwei Speichern, und verlangt eine
         # Umbenennung statt eines Syncs.
-        klasse = "bad" if row.relation == "duplicate" else "muted"
+        # **Chip statt Klammertext** (#31, Vorschlag 1 der Design-Studie).
+        # Befund m.rau: *„Aktuell ist die Visualisierung in `(...)`. Das folgt
+        # dem Terminal-Ansatz. Aber gerade hier wollen wir Aufmerksamkeit
+        # lenken."* Die Klammern waren ein Wireframe-Zeichen für „hier steht
+        # eine Nebenangabe" und wurden wörtlich gebaut; im Browser trägt die
+        # Form das schon.
+        #
+        # **Die Abstufung ist der Inhalt, nicht die Form.** `new`, `modified`,
+        # `deleted` und `dropped` beschreiben ein Verhältnis zwischen zwei
+        # Speichern und verlangen Kenntnis — vier ruhige Chips in der
+        # Beschriftungsfarbe. `duplicate` meldet einen Fehler im Vault und
+        # verlangt Handeln; es ist als einziges rot. **Sind alle fünf gleich
+        # laut, ist keiner mehr laut.**
+        klasse = "bad" if row.relation == "duplicate" else "leise"
         titel = f' title="{" · ".join(row.paths)}"' if row.relation == "duplicate" else ""
-        beziehung = f' <span class="{klasse}"{titel}>({row.relation})</span>'
+        beziehung = f' <span class="chip {klasse}"{titel}>{row.relation}</span>'
 
     s, l = row.scheduler, row.local
     # `NEXT` und `24H` sind für eine Journal-Zeile ohne Aussage (#130).

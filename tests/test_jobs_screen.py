@@ -327,8 +327,11 @@ def test_an_empty_band_explains_itself():
 
 
 def test_the_relation_appears_next_to_the_slug():
+    """Die Beziehung steht weiter an der Zeile — seit `#31` als Chip statt in
+    Klammern. Geprüft wird der Ort und die Angabe, nicht die Schreibweise; die
+    Form hat ihren eigenen Test (`test_the_relation_is_a_chip_not_a_parenthesis`)."""
     html = render.jobs_screen(_zeilen(local=[_md("frisch")]), now=NOW)
-    assert "(new)" in html
+    assert ">new</span>" in html
 
 
 def test_duplicate_is_the_only_red_label():
@@ -337,7 +340,7 @@ def test_duplicate_is_the_only_red_label():
     zeilen = _zeilen(local=[_md("Backup", repo_path="case/eins/Backup.md"),
                             _md("Backup", repo_path="case/zwei/Backup.md")])
     html = render.jobs_screen(zeilen, now=NOW)
-    assert "(duplicate)" in html
+    assert ">duplicate</span>" in html
     zelle = [z for z in html.split("<td") if "duplicate" in z][0]
     assert "bad" in zelle
 
@@ -1604,3 +1607,36 @@ def test_gone_stays_a_journal_matter():
     zeilen = _zeilen(local=[_md("da")])
     html = render.jobs_screen(zeilen, now=NOW, journal=["gone"])
     assert "da</a>" not in html, "`gone` trifft einen Job, den es noch gibt"
+
+
+# ── #31/Vorschlag 1: Beziehungslabels als Chips ────────────────────────────
+#
+# **Befund m.rau:** *„Aktuell ist die Visualisierung in `(...)`. Das folgt dem
+# Terminal-Ansatz. Aber gerade hier wollen wir Aufmerksamkeit lenken. Deshalb
+# sind Chips geeignet."*
+#
+# Die Abstufung ist der Inhalt, nicht die Form: `new`/`modified`/`deleted`/
+# `dropped` beschreiben ein Verhältnis zwischen zwei Speichern und verlangen
+# Kenntnis — vier ruhige Chips. `duplicate` meldet einen Fehler im Vault und
+# verlangt Handeln. **Sind alle fünf gleich laut, ist keiner mehr laut.**
+
+
+def test_the_relation_is_a_chip_not_a_parenthesis():
+    """Die Klammern waren ein Wireframe-Zeichen und wurden wörtlich gebaut."""
+    html = render.jobs_screen(_zeilen(local=[_md("neu")]), now=NOW)
+    assert '<span class="chip' in html, "die Beziehung steht nicht als Chip da"
+    assert "(new)" not in html, "die Klammer-Schreibweise steht noch da"
+
+
+def test_only_duplicate_shouts():
+    """Der einzige rote Chip — und die Gegenprobe dazu in einem Test, weil die
+    Aussage eine über den *Unterschied* ist: ein Fehler im Vault fällt nur auf,
+    solange die vier ruhigen daneben ruhig bleiben."""
+    laut = render.jobs_screen(
+        _zeilen(local=[_md("doppelt", repo_path="case/a/doppelt.md"),
+                       _md("doppelt", repo_path="case/b/doppelt.md")]), now=NOW)
+    assert 'class="chip bad"' in laut, "`duplicate` ist nicht als Fehler markiert"
+
+    leise = render.jobs_screen(_zeilen(local=[_md("neu")]), now=NOW)
+    assert 'class="chip bad"' not in leise, (
+        "ein gewöhnliches `new` trägt dieselbe Warnfarbe wie ein Vault-Fehler")
