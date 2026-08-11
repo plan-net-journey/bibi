@@ -946,13 +946,11 @@ def test_the_archive_screen_is_gone(client):
         assert c.get(weg).status_code == 404, f"{weg} antwortet noch"
 
 
-def test_the_app_bar_carries_five_screens():
-    """Fuenf Screens statt sechs — und der Test prueft die Reihenfolge mit, weil
-    die App-Bar auf jedem Screen steht: ein verrutschter Tab faellt sonst nur
-    dem auf, der hinsieht."""
-    from bibi.controller import render
-    assert [name for name, _ in render.SCREENS] == \
-        ["Feed", "Jobs", "Nodes", "Live", "Log"]
+# Die Zahl der Screens stand hier — fuenf, seit `#130` den Archive-Tab
+# strich. Sie ist mit `#38` sechs geworden und wird dort geprueft, wo der
+# sechste entsteht: `test_journal_screen.py::test_the_app_bar_carries_six_
+# screens`. Zwei Tests auf dieselbe Reihenfolge liefen beim naechsten Screen
+# auseinander, und dann meldete einer von beiden das Falsche.
 
 
 def test_no_archive_renderer_is_left_anywhere():
@@ -1015,10 +1013,15 @@ def test_a_job_that_only_ran_locally_is_still_reachable(client):
     ausdruecklich auf einen Ersatz berufen hat.
 
     Rot war `assert 'Runner-Container' in <jobs-screen>` — der Slug fehlte.
+
+    **Seit #38 fuehrt der Weg ueber den Journal-Screen**, weil das
+    JOURNAL-Segment dorthin umgezogen ist. Die Zusage selbst ist unveraendert
+    und wird deshalb weiter belegt statt vorausgesetzt: einmal hat sie schon
+    nicht gestimmt.
     """
     c, root = _md_job(client)
     _seed_run(root, "Runner-Container")  # keine MD, nur lokale Historie
-    text = c.get("/-/jobs").text
+    text = c.get("/-/jobs/journal").text
     assert "Runner-Container" in text, "der heimatlose Lauf ist unerreichbar"
     assert f'/-/jobs/{job_uid("Runner-Container")}' in text
 

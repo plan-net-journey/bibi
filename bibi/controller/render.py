@@ -1242,17 +1242,33 @@ _RESOLUTION_LABEL = {1440: "24h/1m", 480: "8h/1w", 180: "3h/3d", 120: "2h/2d",
 # leitet sich jetzt aus `_SORTIERBAR` ab — siehe `sortierbare_schluessel()`.
 
 
-#: Die fünf Screens, in der Reihenfolge der App-Bar. Feed und Jobs sind die
-#: täglichen, Nodes ist Betrieb, Live und Log sind Diagnose.
+#: Die sechs Screens, in der Reihenfolge der App-Bar. Feed und Jobs sind die
+#: täglichen, Journal steht neben Jobs (es war dessen drittes Segment), Nodes
+#: ist Betrieb, Live und Log sind Diagnose.
 #:
-#: **Archive ist gestrichen** (m.rau/bibi#130, FE-Spezifikation §1). Die Frage
-#: „was lief" beantwortet die `RELIABILITY`-Spalte im Jobs-Screen in einer Zahl;
-#: ein Screen, der Läufe nach Zeit auflistet, beantwortet dieselbe Frage
-#: langsamer. Der frühere Einwand — er sei der einzige Weg zu einem heimatlosen
-#: Lauf — trägt nicht mehr: das JOURNAL-Segment führt auch den Job ohne MD.
+#: **Archive bleibt gestrichen** (m.rau/bibi#130, FE-Spezifikation §1 und §6).
+#: `Journal` ist nicht seine Rücknahme, und der Unterschied muss sichtbar
+#: bleiben, sonst wird der alte Screen versehentlich wiederbelebt: der alte Tab
+#: führte **Läufe** aller Jobs nach Zeit und beantwortete „was lief heute
+#: Nacht?" — die Frage, die die `24H`-Spalte des Jobs-Screens in einer Zahl
+#: beantwortet und die deshalb gestrichen wurde. Dieser hier führt **Jobs**, je
+#: Slug aggregiert, und beantwortet „welche Jobs haben nur noch Historie?".
+#:
+#: Er heißt `Journal` und nicht `Archive` (#38): so heißt die Sache in der
+#: Engine und in FE §4.1 auch, und `Archive` hat in `OneClient.md` bereits zwei
+#: verschiedene Dinge bezeichnet und beide Seiten in die Irre geführt.
+#:
+#: **Seine Adresse liegt unter `/-/jobs/`, und das ist keine Marotte:**
+#: `/-/journal` ist seit jeher die Journal-**API** des Schedulers
+#: (``daemon/app.py``), die der Controller-Client selbst aufruft. Ein Knoten
+#: mit beiden Rollen — sarasate ist einer — führt beide Routen in derselben
+#: App; die zweite wäre stumm verdeckt, und je nach Registrierungsreihenfolge
+#: bekäme entweder der Browser JSON oder der Client HTML. Der Pfad sagt
+#: außerdem, was der Screen ist: das dritte Segment von Jobs, umgezogen.
 SCREENS: tuple[tuple[str, str], ...] = (
     ("Feed", "/-/"),
     ("Jobs", "/-/jobs"),
+    ("Journal", "/-/jobs/journal"),
     ("Nodes", "/-/nodes"),
     ("Live", "/-/live"),
     ("Log", "/-/log"),
@@ -3512,9 +3528,13 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
     )
 
 
-#: Die Filtergruppen der Kopfleiste. `TYPE` und `STATUS` wirken auf alle
-#: Bänder, die drei Journal-Filter nur auf das dritte — deshalb stehen sie
-#: dort und nicht hier oben.
+#: Die Filtergruppen der Kopfleiste des Jobs-Screens. `TYPE` und `STATUS`
+#: wirken auf beide Bänder.
+#:
+#: Die drei Journal-Filter standen bis #38 am dritten Band. Sie sind mit ihm
+#: auf den Journal-Screen gezogen — ein Filter, der nur auf Zeilen wirkt, die
+#: hier nicht mehr stehen, wäre ein toter Knopf, und ein toter Knopf ist
+#: schlimmer als ein fehlender.
 _FILTER_OBEN = (("TYPE", ("job", "claude", "app")),
                 ("STATUS", ("waiting", "running", "stopped")))
 _FILTER_JOURNAL = ("dropped", "oneshot", "local")
@@ -3557,67 +3577,16 @@ def _sort_kopf(schluessel: str, label: str, sort: str | None, richtung: str) -> 
     return f'<th data-sort="{schluessel}">{label}</th>'
 
 
-def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
-                status: list[str] | None = None, journal: list[str] | None = None,
-                sort: str | None = None, direction: str = "asc",
-                group: bool = True, public_host: str = "localhost") -> str:
-    """Die drei Bänder mit ihren Zeilen — oder eine Liste ohne Unterteilung.
+def _jobs_kopf(sort: str | None, direction: str) -> str:
+    """Der Tabellenkopf — **eine** Quelle für Jobs- und Journal-Screen.
 
-    Alle drei stehen immer da, auch leer: sonst verschöbe sich das Layout je
-    nachdem, was gerade existiert, und man suchte ein Band, das nur gerade
-    nichts enthält.
-
-    Die Bänder sind eine Klassifikation, keine Sortierordnung — sortiert wird
-    innerhalb eines Bandes. Der Grund für Bänder statt einer flachen Liste ist
-    die gestaffelte Filtermenge: `TYPE` und `STATUS` wirken überall, die drei
-    Journal-Filter nur im dritten Band, und eine gestaffelte Filtermenge
-    braucht einen Ort je Staffel.
-
-    **``group=False`` blendet sie aus** (m.rau/bibi#134). Das ist kein
-    Widerspruch zur Klassifikation, sondern ihre Folge: seit die Zeile ihre
-    Gruppe selbst trägt (``@`` beim Oneshot, ein ``next`` beim Rhythmus,
-    keins von beidem bei ``adhoc``), ist die Bänderung nur noch eine
-    Darstellungsform. Die Sortierung wirkt dann über die ganze Liste — genau
-    das ist der Zweck des Schalters.
-
-    Die drei Journal-Filter bleiben dabei erreichbar: sie wandern in die
-    Kopfleiste, statt mit ihrem Band zu verschwinden. Ein Filter, den man nur
-    in einer Ansicht erreicht, ist in der anderen ein toter Knopf.
+    Beide führen dieselbe Einheit (ein Slug = eine Zeile) und dieselben acht
+    Spalten; sie unterscheiden sich in der Auswahl der Zeilen und in ihrer
+    Filterleiste, nicht in der Tabelle. Zwei Köpfe nebeneinander liefen
+    auseinander, sobald eine Spalte dazukäme — und genau das steht mit `#39`
+    an.
     """
-    if not rows:
-        return (
-            '<div class="leer">'
-            "<p>No jobs yet.</p>"
-            "<p class=\"muted\">bibi finds its work in your vault: add "
-            "<code>schedule:</code> to the frontmatter of a markdown file for a "
-            "recurring job, or <code>at:</code> for a one-off. "
-            "Then press <span class=\"mono\">⟳</span> to rescan.</p>"
-            "</div>"
-        )
-
-    from bibi.controller import jobs_view
-
-    typ, status, journal = typ or [], status or [], journal or []
-    rows = [r for r in rows
-            if jobs_view.trifft_filter(r, typ=typ, status=status, journal=journal)]
-    if sort:
-        rows = jobs_view.sortiere(rows, nach=sort, richtung=direction)
-
-    gruppen = "".join(
-        f'<span class="fltr-grp">{name}</span>'
-        + "".join(_filter_knopf(w, typ if name == "TYPE" else status) for w in werte)
-        for name, werte in _FILTER_OBEN)
-    if not group:
-        # Ohne Bänder gäbe es für die drei Journal-Filter keinen Ort mehr —
-        # sie stünden am Band, das gerade nicht da ist. Also hier.
-        gruppen += ('<span class="fltr-grp">JOURNAL</span>'
-                    + "".join(_filter_knopf(w, journal) for w in _FILTER_JOURNAL))
-    leiste = (f'<div class="fltr-bar">{gruppen}'
-              f'<button class="fltr{" on" if group else ""}" data-group='
-              f'"{"off" if group else "on"}">group</button>'
-              f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
-
-    kopf = (
+    return (
         "<thead>"
         '<tr class="gruppen"><th></th><th></th>'
         # **Client links, Scheduler rechts** (m.rau/bibi#147): links steht, was
@@ -3653,6 +3622,84 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
         + "</tr></thead>"
     )
 
+
+#: Die leere Seite, bevor überhaupt ein Job existiert. Sie sagt, was fehlt
+#: **und** was man tun kann — das ist die eigentliche Einstiegsdokumentation
+#: dieses Screens (Umbauplan §4).
+_KEINE_JOBS = (
+    '<div class="leer">'
+    "<p>No jobs yet.</p>"
+    "<p class=\"muted\">bibi finds its work in your vault: add "
+    "<code>schedule:</code> to the frontmatter of a markdown file for a "
+    "recurring job, or <code>at:</code> for a one-off. "
+    "Then press <span class=\"mono\">⟳</span> to rescan.</p>"
+    "</div>"
+)
+
+
+def _sichtbar(rows: list, *, typ: list[str], status: list[str],
+              journal: list[str], sort: str | None, direction: str) -> list:
+    """Filtern und sortieren — der gemeinsame Vorlauf beider Screens."""
+    from bibi.controller import jobs_view
+
+    rows = [r for r in rows
+            if jobs_view.trifft_filter(r, typ=typ, status=status, journal=journal)]
+    if sort:
+        rows = jobs_view.sortiere(rows, nach=sort, richtung=direction)
+    return rows
+
+
+def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
+                status: list[str] | None = None, journal: list[str] | None = None,
+                sort: str | None = None, direction: str = "asc",
+                group: bool = True, public_host: str = "localhost") -> str:
+    """Die **zwei** Bänder mit ihren Zeilen — oder eine Liste ohne Unterteilung.
+
+    Beide stehen immer da, auch leer: sonst verschöbe sich das Layout je
+    nachdem, was gerade existiert, und man suchte ein Band, das nur gerade
+    nichts enthält.
+
+    **Es waren drei, bis #38 das dritte umzog.** Der Befund war gemessen und
+    nicht gefühlt: 37 Jobs im Screen, davon 23 im JOURNAL-Segment — knapp zwei
+    Drittel der Zeilen gehörten Jobs, die es nicht mehr gibt, und standen
+    zwischen den 14, um die es täglich geht. Der Screen war nicht zu voll, er
+    war **falsch gewichtet**: das Seltene verdrängte das Häufige. Das dritte
+    Segment steht seither unter :func:`journal_screen`.
+
+    Die Bänder sind eine Klassifikation, keine Sortierordnung — sortiert wird
+    innerhalb eines Bandes.
+
+    **``group=False`` blendet sie aus** (m.rau/bibi#134). Das ist kein
+    Widerspruch zur Klassifikation, sondern ihre Folge: seit die Zeile ihre
+    Gruppe selbst trägt (``@`` beim Oneshot, ein ``next`` beim Rhythmus,
+    keins von beidem bei ``adhoc``), ist die Bänderung nur noch eine
+    Darstellungsform. Die Sortierung wirkt dann über die ganze Liste — genau
+    das ist der Zweck des Schalters.
+
+    ``journal`` bleibt in der Signatur und wird durchgereicht: die Auswahl
+    lebt in der URL, und ein Wechsel zwischen den beiden Screens soll sie
+    nicht unterwegs verlieren. Gefiltert wird damit hier nichts mehr — die
+    Zeilen, auf die sie wirkt, stehen drüben.
+    """
+    if not rows:
+        return _KEINE_JOBS
+
+    typ, status, journal = typ or [], status or [], journal or []
+    rows = [r for r in _sichtbar(rows, typ=typ, status=status, journal=journal,
+                                 sort=sort, direction=direction)
+            if r.segment is not Segment.JOURNAL]
+
+    gruppen = "".join(
+        f'<span class="fltr-grp">{name}</span>'
+        + "".join(_filter_knopf(w, typ if name == "TYPE" else status) for w in werte)
+        for name, werte in _FILTER_OBEN)
+    leiste = (f'<div class="fltr-bar">{gruppen}'
+              f'<button class="fltr{" on" if group else ""}" data-group='
+              f'"{"off" if group else "on"}">group</button>'
+              f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
+
+    kopf = _jobs_kopf(sort, direction)
+
     if not group:
         # Eine Liste ohne Unterteilung. Die Sortierung wirkt damit über alles,
         # statt innerhalb jedes Bandes — genau der Zweck des Schalters.
@@ -3660,16 +3707,11 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
         return f'{leiste}<table class="jobs">{kopf}<tbody>{zeilen}</tbody></table>'
 
     teile = []
-    for seg in (Segment.SCHEDULE, Segment.ADHOC, Segment.JOURNAL):
+    for seg in (Segment.SCHEDULE, Segment.ADHOC):
         drin = [r for r in rows if r.segment is seg]
-        eigene = ""
-        if seg is Segment.JOURNAL:
-            # Hier, nicht oben: diese drei wirken nur in diesem Band, und eine
-            # gestaffelte Filtermenge braucht einen Ort je Staffel.
-            eigene = " " + "".join(_filter_knopf(w, journal) for w in _FILTER_JOURNAL)
         teile.append(
             f'<tr class="band"><td colspan="8">{seg.value.upper()} '
-            f'<span class="muted">{len(drin)}</span>{eigene}</td></tr>'
+            f'<span class="muted">{len(drin)}</span></td></tr>'
         )
         if drin:
             teile.extend(_jobs_zeile(r, now, public_host=public_host) for r in drin)
@@ -3677,6 +3719,48 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
             teile.append(f'<tr class="leer-band"><td colspan="8">— {_LEER[seg]}</td></tr>')
 
     return f'{leiste}<table class="jobs">{kopf}<tbody>{"".join(teile)}</tbody></table>'
+
+
+def journal_screen(rows: list, now: float, *, typ: list[str] | None = None,
+                   status: list[str] | None = None,
+                   journal: list[str] | None = None,
+                   sort: str | None = None, direction: str = "asc",
+                   public_host: str = "localhost") -> str:
+    """Das dritte Segment, jetzt auf eigenem Screen (#38).
+
+    **Ein Umzug, kein neuer Screen** — und der Unterschied zum gestrichenen
+    Archive-Tab muss im Code sichtbar bleiben, sonst wird der alte versehentlich
+    wiederbelebt: dort war eine Zeile ein **Lauf**, hier ist sie ein **Job**.
+    Die Frage „was lief heute Nacht?" bleibt gestrichen; diese hier beantwortet
+    „welche Jobs haben nur noch Historie?".
+
+    Kein ``group``-Handle: es gibt nur eine Sektion, und ein Schalter, der
+    zwischen einer Gruppe und keiner umschaltet, schaltet nichts.
+
+    Kein ``STATUS``-Filter: im Journal steht Historie, die keinen laufenden
+    Zustand hat — ``trifft_filter()`` überspringt ihn für dieses Segment schon
+    immer, und ein Knopf ohne Wirkung ist schlimmer als keiner. ``status``
+    bleibt trotzdem in der Signatur und wird durchgereicht, damit ein Wechsel
+    zurück zu Jobs die dortige Wahl wiederfindet.
+    """
+    typ, status, journal = typ or [], status or [], journal or []
+    rows = [r for r in _sichtbar(rows, typ=typ, status=status, journal=journal,
+                                 sort=sort, direction=direction)
+            if r.segment is Segment.JOURNAL]
+
+    gruppen = ('<span class="fltr-grp">TYPE</span>'
+               + "".join(_filter_knopf(w, typ) for w in _FILTER_OBEN[0][1])
+               + '<span class="fltr-grp">JOURNAL</span>'
+               + "".join(_filter_knopf(w, journal) for w in _FILTER_JOURNAL))
+    leiste = (f'<div class="fltr-bar">{gruppen}'
+              f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
+
+    if not rows:
+        return f'{leiste}<div class="leer"><p class="muted">— {_LEER[Segment.JOURNAL]}</p></div>'
+
+    zeilen = "".join(_jobs_zeile(r, now, public_host=public_host) for r in rows)
+    return (f'{leiste}<table class="jobs">{_jobs_kopf(sort, direction)}'
+            f"<tbody>{zeilen}</tbody></table>")
 
 
 _JOBS_JS = """
@@ -3823,6 +3907,30 @@ def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
     )
 
 
+def journal_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
+                          status: list[str] | None = None,
+                          journal: list[str] | None = None,
+                          sort: str | None = None, direction: str = "asc",
+                          group: bool = True,
+                          public_host: str = "localhost") -> str:
+    """Die Journal-Liste samt Bus-Wrapper — dieselbe Form wie bei Jobs.
+
+    ``data-bus="jobs"``, weil es dieselben Ereignisse sind: ein Job, der
+    aufhört zu existieren, wandert von dort nach hier, und beide Screens
+    müssen das mitbekommen. Der Bus swappt per ``querySelectorAll`` — mehrere
+    Regionen unter einem Ziel sind vorgesehen.
+    """
+    return (
+        f'<div id="journal-jobs" data-bus="jobs" data-bus-refetch="/-/jobs/journal/list?'
+        + _jobs_view_query(typ=typ, status=status, journal=journal, sort=sort,
+                           direction=direction, group=group)
+        + '">'
+        + journal_screen(rows, now, typ=typ, status=status, journal=journal,
+                         sort=sort, direction=direction, public_host=public_host)
+        + "</div>"
+    )
+
+
 def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
                  git_status: dict | None = None, host_url: str | None = None,
                  scheduler: dict | None = None,
@@ -3856,6 +3964,40 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         # Der Empfaenger zur Anmeldung darueber (m.rau/bibi#153): `data-bus`
         # allein bewirkt nichts, den Strom baut ausschliesslich `_EVENTS_JS`
         # auf. Beim Neubau der v5-Seiten blieb es aus — als einzige Screens.
+        f"<script>{_EVENTS_JS}</script>"
+        f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_JOBS_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
+
+
+def journal_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
+                    git_status: dict | None = None, host_url: str | None = None,
+                    scheduler: dict | None = None,
+                    scheduler_stale_since: float | None = None,
+                    typ: list[str] | None = None, status: list[str] | None = None,
+                    journal: list[str] | None = None,
+                    sort: str | None = None, direction: str = "asc",
+                    group: bool = True, public_host: str = "localhost") -> str:
+    """Die Journal-Seite: dieselbe Hülle wie Jobs, andere Liste.
+
+    ``_JOBS_JS`` liegt auch hier: Filter- und Sortier-Klicks werden über einen
+    Zuhörer an ``body`` ausgewertet und schreiben in die URL der Seite, auf der
+    sie passieren — der Screen muss dafür nicht bekannt sein.
+    """
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>bibi · Journal</title>"
+        f"<style>{_CSS}</style>"
+        f'<script src="/-/static/htmx-1.9.12.min.js"></script>'
+        "</head><body>"
+        f"{_header('Journal', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
+        f'{journal_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group, public_host=public_host)}'
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"

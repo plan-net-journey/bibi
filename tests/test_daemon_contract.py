@@ -178,3 +178,43 @@ def test_no_static_route_is_shadowed_by_an_earlier_placeholder():
             assert not verdeckt, (
                 f"{pfad} ist unerreichbar — {frueher} ist vorher registriert "
                 f"und schluckt ihn. Feste Pfade vor Platzhalter-Pfade legen.")
+
+
+def test_no_path_is_registered_twice():
+    """Die Schwester der Invariante darüber, und sie fehlte (#38).
+
+    Jene fängt den festen Pfad, den ein **Platzhalter** schluckt. Zwei Routen
+    auf **demselben** Pfad fängt sie nicht — und das ist derselbe Fehler mit
+    demselben Ausgang: Starlette nimmt die erste, die zweite ist still tot.
+
+    Live geworden beim Bau des Journal-Screens: er sollte auf `/-/journal`
+    liegen, und genau dort führt der Scheduler seit jeher die Journal-API, die
+    der Controller-Client selbst aufruft. Auf einem Knoten mit beiden Rollen —
+    sarasate ist einer — bekäme je nach Reihenfolge entweder der Browser JSON
+    oder der Client HTML. Aufgefallen ist es nur, weil das *Fragment*
+    `/-/journal/list` an `/-/journal/{jid}` hängenblieb; die Kollision der
+    Screen-Route selbst hätte niemand gemeldet.
+
+    **Die 501-Stubs des gefrorenen Vertrags sind ausgenommen, und zwar
+    ausdrücklich statt stillschweigend:** ``add_contract_routes()`` läuft
+    zuletzt und wird von jeder echten Implementierung verdeckt — das ist die
+    Bauweise (siehe den Kommentar dort zu ``POST /-/scheduler/status/{id}``),
+    kein Versehen. Erkannt werden sie am Modul ihres Handlers und nicht an
+    einer Liste von Pfaden: eine Liste liefe mit dem nächsten implementierten
+    Endpunkt auseinander.
+    """
+    app = create_app(roles.resolve({"controller", "scheduler", "synchronizer"}))
+    gesehen: set[tuple[str, str]] = set()
+    doppelt: list[str] = []
+    for r in app.routes:
+        if not (hasattr(r, "path") and hasattr(r, "methods")):
+            continue
+        stub = getattr(getattr(r, "endpoint", None), "__module__", "") \
+            == "bibi.daemon.openapi"
+        for m in (r.methods or ()):
+            if (r.path, m) in gesehen and not stub:
+                doppelt.append(f"{m} {r.path}")
+            gesehen.add((r.path, m))
+    assert not doppelt, (
+        "doppelt vergebene Routen — die spätere ist unerreichbar: "
+        + ", ".join(sorted(doppelt)))

@@ -1046,24 +1046,9 @@ def add_controller_routes(
         überhaupt sichtbar ist) macht ``jobs_view.build_rows()`` — eine reine
         Funktion über Listen. Hier wird nur beschafft.
         """
-        import time as _t
-
         from bibi import config
-        from bibi.controller import jobs_view
         _sched = _scheduler_status()
-        jetzt = _t.time()
-        lokal = _local_job_mds()
-        historie = _journal_for_rows()
-        zeilen = jobs_view.build_rows(
-            local=lokal, scheduler=_host_schedules(), journal=historie,
-            now=jetzt, local_runs=_local_run_status())
-
-        _quoten(zeilen, historie, jetzt)
-        # Mehrfachauswahl kommt als wiederholter Query-Parameter (`?typ=job&
-        # typ=app`) — die Toggles sind on/off und nicht exklusiv, und eine
-        # Ansicht soll teilbar sein. Fehlt die Query ganz, antwortet die
-        # gemerkte Wahl (#156).
-        v = _jobs_view(request, sort, dir)
+        zeilen, v, jetzt = _jobs_zeilen_und_view(request, sort, dir)
         resp = HTMLResponse(render.jobs_page_v5(
             zeilen, now=jetzt, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), scheduler=_sched[0], scheduler_stale_since=_sched[1],
@@ -1072,6 +1057,32 @@ def add_controller_routes(
             public_host=config.public_host()))
         _merke_jobs_view(resp, v)
         return resp
+
+    def _jobs_zeilen_und_view(request: Request, sort: str | None,
+                              dir: str | None) -> tuple[list, dict, float]:
+        """Die Zeilen des Jobs-Materials plus die effektive Ansicht.
+
+        **Vier Routen teilen sie sich** — Jobs, Journal und je ihr
+        Listen-Fragment. Sie führen dieselbe Klassifikation und dürfen sich
+        deshalb nicht auseinanderentwickeln: ein Job, der auf dem einen Screen
+        als `dropped` gilt und auf dem anderen nicht, wäre in keinem von
+        beiden zu finden.
+
+        Mehrfachauswahl kommt als wiederholter Query-Parameter (`?typ=job&
+        typ=app`) — die Toggles sind on/off und nicht exklusiv, und eine
+        Ansicht soll teilbar sein. Fehlt die Query ganz, antwortet die
+        gemerkte Wahl (#156).
+        """
+        import time as _t
+
+        from bibi.controller import jobs_view
+        jetzt = _t.time()
+        historie = _journal_for_rows()
+        zeilen = jobs_view.build_rows(
+            local=_local_job_mds(), scheduler=_host_schedules(), journal=historie,
+            now=jetzt, local_runs=_local_run_status())
+        _quoten(zeilen, historie, jetzt)
+        return zeilen, _jobs_view(request, sort, dir), jetzt
 
     def _quoten(zeilen: list, historie: list, jetzt: float) -> None:
         """Die 24H-Kennzahl an jede Zeile haengen.
@@ -1280,21 +1291,12 @@ def add_controller_routes(
         Die Seite bleibt stehen, damit Scroll-Position und Fokus erhalten
         bleiben; getauscht wird der Inhalt von ``#jobs``.
         """
-        import time as _t
-
         from bibi import config
-        from bibi.controller import jobs_view
-        jetzt = _t.time()
-        historie = _journal_for_rows()
-        zeilen = jobs_view.build_rows(
-            local=_local_job_mds(), scheduler=_host_schedules(), journal=historie,
-            now=jetzt, local_runs=_local_run_status())
-        _quoten(zeilen, historie, jetzt)
         # Dieselbe Auflösung wie der Screen: der Bus trägt die Ansicht zwar in
         # seiner Refetch-URL mit (#156), aber ein Aufruf ohne Query — von Hand,
         # aus einem alten Lesezeichen — soll nicht anders antworten als die
         # Seite, in der das Fragment steckt.
-        v = _jobs_view(request, sort, dir)
+        zeilen, v, jetzt = _jobs_zeilen_und_view(request, sort, dir)
         # `jobs_list_fragment`, nicht `jobs_screen`: die Antwort muss ihren
         # Bus-Wrapper mitbringen, weil `_EVENTS_JS` mit `outerHTML` swappt —
         # sonst ist die Region nach genau einem Update abgemeldet.
@@ -1317,6 +1319,63 @@ def add_controller_routes(
         # Wert zurueck, den der Cookie schon hat. Ein `Set-Cookie` je Ereignis
         # ist der Preis; ihn per Vergleich zu sparen hiesse, den gemerkten Stand
         # zusaetzlich zu lesen, um ihn nicht zu schreiben.
+        _merke_jobs_view(resp, v)
+        return resp
+
+    # ── Journal: dasselbe Material, andere Sektion (#38) ────────────────────
+    #
+    # **Ein Umzug, kein neuer Screen.** Der gestrichene Archive-Tab (#130)
+    # führte *Läufe* aller Jobs nach Zeit; dieser führt *Jobs*, je Slug
+    # aggregiert, und beantwortet damit eine andere Frage. `archive_page_v5`,
+    # `/-/archive` und die zwei bibi4-Altrenderer bleiben gelöscht —
+    # `test_job_detail.py::test_no_archive_renderer_is_left_anywhere` hält
+    # das fest.
+    #
+    # Die Beschaffung ist Zeile für Zeile dieselbe wie bei `/-/jobs`: es sind
+    # dieselben Zeilen, nur eine andere Auswahl daraus. Getrennt zu beschaffen
+    # hieße, zwei Wege zu derselben Klassifikation zu führen — genau die
+    # Doppelung, an der der alte Archive-Screen zerbrochen ist.
+    #
+    # **Der Pfad liegt unter `/-/jobs/`, nicht auf `/-/journal`** — das ist die
+    # Journal-API des Schedulers (`daemon/app.py`), und beide Rollen laufen auf
+    # sarasate in derselben App. Aufgefallen ist es an
+    # `test_no_static_route_is_shadowed_by_an_earlier_placeholder`, allerdings
+    # nur für `/-/journal/list` gegen `/-/journal/{jid}`: die Kollision der
+    # Screen-Route mit der API auf demselben Pfad war identisch und blieb
+    # stumm. Deshalb steht seit #38 eine zweite Invariante daneben, die
+    # doppelt vergebene Pfade meldet.
+    #
+    # ACHTUNG, Reihenfolge: beide MÜSSEN vor `/-/jobs/{job_uid}` und dessen
+    # Unterpfaden stehen — sonst schluckt der Platzhalter sie, wie er es bis
+    # `#151` schon mit `/-/jobs/list` getan hat.
+
+    @app.get("/-/jobs/journal", include_in_schema=False)
+    def screen_journal(request: Request, sort: str | None = None,
+                       dir: str | None = None):
+        """Jobs, die nur noch Historie haben — das dritte Segment von Jobs."""
+        from bibi import config
+        _sched = _scheduler_status()
+        zeilen, v, jetzt = _jobs_zeilen_und_view(request, sort, dir)
+        resp = HTMLResponse(render.journal_page_v5(
+            zeilen, now=jetzt, daemon_status=_status(),
+            git_status=_feed_git_status(), host_url=_scheduler_url(),
+            scheduler=_sched[0], scheduler_stale_since=_sched[1],
+            typ=v["typ"], status=v["status"], journal=v["journal"],
+            sort=v["sort"], direction=v["direction"], group=v["group"],
+            public_host=config.public_host()))
+        _merke_jobs_view(resp, v)
+        return resp
+
+    @app.get("/-/jobs/journal/list", include_in_schema=False)
+    def screen_journal_list(request: Request, sort: str | None = None,
+                            dir: str | None = None):
+        """Nur die Liste — das Nachlade-Ziel des Bus."""
+        from bibi import config
+        zeilen, v, jetzt = _jobs_zeilen_und_view(request, sort, dir)
+        resp = HTMLResponse(render.journal_list_fragment(
+            zeilen, jetzt, typ=v["typ"], status=v["status"],
+            journal=v["journal"], sort=v["sort"], direction=v["direction"],
+            group=v["group"], public_host=config.public_host()))
         _merke_jobs_view(resp, v)
         return resp
 
