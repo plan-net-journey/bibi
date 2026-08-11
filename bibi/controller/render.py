@@ -304,9 +304,18 @@ table.jobs td.slug a:hover { text-decoration: underline; }
    und sollen sie nicht optisch erschlagen. */
 .fltr-bar { display: flex; align-items: baseline; gap: .35rem;
             padding: .4rem 0 .7rem; flex-wrap: wrap; font-size: .9rem; }
-.fltr-grp { color: var(--hdr-key); margin-right: .2rem; margin-left: .9rem;
-            letter-spacing: .04em; font-size: .82rem; }
-.fltr-grp:first-child { margin-left: 0; }
+/* Die Filterwerte sitzen seit #31 unter ihrer Spalte, nicht mehr in der Leiste.
+   Hier standen bis dahin `.fltr-grp`-Regeln fuer die Gruppenlabels `TYPE` und
+   `STATUS` — sie sind mit dem Markup entfallen, weil der Spaltenkopf einen
+   Zentimeter tiefer dasselbe Wort traegt.
+
+   Die Zeile ist bewusst leiser als die Koepfe darueber: sie ist ein Handle,
+   keine Ueberschrift, und ohne die duennere Schrift konkurriert sie mit der
+   Spaltenbeschriftung um dieselbe Aufmerksamkeit. */
+tr.fltr-kopf th { border-bottom: 1px solid var(--line); padding-bottom: .3rem;
+                  font-weight: normal; }
+th.fltr-zelle { white-space: nowrap; }
+th.fltr-zelle .fltr { font-size: .82rem; padding: .05rem .35rem; }
 .fltr { background: none; border: 1px solid transparent; color: var(--dim);
         padding: .1rem .45rem; border-radius: 3px; cursor: pointer;
         font: inherit; }
@@ -3581,7 +3590,10 @@ def _sort_kopf(schluessel: str, label: str, sort: str | None, richtung: str) -> 
     return f'<th data-sort="{schluessel}">{label}</th>'
 
 
-def _jobs_kopf(sort: str | None, direction: str) -> str:
+def _jobs_kopf(sort: str | None, direction: str, *,
+               typ: list[str] | None = None,
+               status: list[str] | None = None,
+               status_filter: bool = True) -> str:
     """Der Tabellenkopf — **eine** Quelle für Jobs- und Journal-Screen.
 
     Beide führen dieselbe Einheit (ein Slug = eine Zeile) und dieselben acht
@@ -3623,7 +3635,62 @@ def _jobs_kopf(sort: str | None, direction: str) -> str:
         # aus ihr.
         + "<th>RUNTIME</th>"
         + _sort_kopf("24h", "24H", sort, direction)
-        + "</tr></thead>"
+        + "</tr>"
+        # **Die Filterwerte hängen unter der Spalte, die sie einschränken (#31).**
+        #
+        # Befund m.rau: *„Der Filter nimmt sehr viel Platz ein. Unnötig viel
+        # Platz."* Der Platz ging nicht für die Knöpfe drauf, sondern für eine
+        # Doppelung: `TYPE` und `STATUS` standen als Spaltenkopf **und** als
+        # Gruppenlabel der Leiste darüber — dasselbe Wort zweimal, einen
+        # Zentimeter auseinander, einmal als Überschrift und einmal als
+        # Beschriftung.
+        #
+        # **Der Kopf trägt danach zwei Bedeutungen**, und beide sind alt: der
+        # Klick sortiert (wie bisher), die Werte darunter filtern (wie bisher,
+        # nur woanders). Kein neues Konzept — zwei Dinge an einem Ort, die
+        # schon immer über dieselbe Spalte sprachen.
+        #
+        # `STATUS` hängt unter der **Scheduler**-Spalte, nicht unter der des
+        # Clients: der Filter wirkt ausschliesslich auf den Scheduler-Zustand
+        # (Klarstellung m.rau), der Client-Zustand ist Anzeige. Die leere Zelle
+        # dazwischen sagt das deutlicher als jeder Kommentar es könnte.
+        + _filter_zeile(typ or [], status or [], status_filter)
+        + "</thead>"
+    )
+
+
+def _filter_zeile(typ: list[str], status: list[str],
+                  status_filter: bool = True) -> str:
+    """Die dritte Kopfzeile: Filterwerte unter ihren Spalten (#31).
+
+    Acht Zellen, damit die Zeile zur Tabelle passt — gefüllt sind zwei. Die
+    leeren stehen ausdrücklich da, statt die Zeile per ``colspan`` zu
+    verkürzen: eine Spalte ohne Filter ist eine Aussage (*hier gibt es nichts
+    zu filtern*), und sie geht verloren, sobald die Zellen verrutschen dürfen.
+
+    ``status_filter=False`` lässt die STATUS-Zelle leer — für den
+    Journal-Screen. Dort steht Historie, die keinen laufenden Zustand hat;
+    ``trifft_filter()`` überspringt den Filter für dieses Segment ohnehin, und
+    **ein toter Knopf ist schlimmer als ein fehlender**. Die Spalte selbst
+    bleibt, weil beide Screens einen Tabellenkopf teilen.
+
+    Diese Unterscheidung stand schon als Test da, bevor die Filter umzogen
+    (``test_the_journal_screen_has_no_status_filter``) — sie hat den Umbau
+    beim ersten Lauf gefangen. Genau dafür ist sie da.
+    """
+    def zellen(werte, aktiv):
+        return ('<th class="fltr-zelle">'
+                + "".join(_filter_knopf(w, aktiv) for w in werte)
+                + "</th>")
+
+    return (
+        '<tr class="fltr-kopf">'
+        "<th></th>"
+        + zellen(_FILTER_OBEN[0][1], typ)      # TYPE
+        + "<th></th>"                          # CLIENT — Anzeige, kein Filter
+        + (zellen(_FILTER_OBEN[1][1], status) if status_filter else "<th></th>")
+        + "<th></th><th></th><th></th><th></th>"
+        + "</tr>"
     )
 
 
@@ -3693,16 +3760,20 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
                                  sort=sort, direction=direction)
             if r.segment is not Segment.JOURNAL]
 
-    gruppen = "".join(
-        f'<span class="fltr-grp">{name}</span>'
-        + "".join(_filter_knopf(w, typ if name == "TYPE" else status) for w in werte)
-        for name, werte in _FILTER_OBEN)
-    leiste = (f'<div class="fltr-bar">{gruppen}'
+    # **Die Toolbar-Zeile trägt nur noch, was keiner Spalte gehört** (#31,
+    # Vorschlag 1 der Design-Studie): links die Schalter, rechts die Kennzahl.
+    # `TYPE` und `STATUS` sind mit ihren Werten in den Tabellenkopf gezogen —
+    # dorthin, wo die Spalte steht, die sie einschränken.
+    #
+    # `group` bleibt hier, und das ist kein Rest: er schaltet die **Bänder**,
+    # also die Gliederung der ganzen Tabelle, und hat deshalb keine Spalte,
+    # unter die er ziehen könnte.
+    leiste = (f'<div class="fltr-bar">'
               f'<button class="fltr{" on" if group else ""}" data-group='
               f'"{"off" if group else "on"}">group</button>'
               f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
 
-    kopf = _jobs_kopf(sort, direction)
+    kopf = _jobs_kopf(sort, direction, typ=typ, status=status)
 
     if not group:
         # Eine Liste ohne Unterteilung. Die Sortierung wirkt damit über alles,
@@ -3752,18 +3823,21 @@ def journal_screen(rows: list, now: float, *, typ: list[str] | None = None,
                                  sort=sort, direction=direction)
             if r.segment is Segment.JOURNAL]
 
-    gruppen = ('<span class="fltr-grp">TYPE</span>'
-               + "".join(_filter_knopf(w, typ) for w in _FILTER_OBEN[0][1])
-               + '<span class="fltr-grp">JOURNAL</span>'
-               + "".join(_filter_knopf(w, journal) for w in _FILTER_JOURNAL))
-    leiste = (f'<div class="fltr-bar">{gruppen}'
-              f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
+    # Wie beim Jobs-Screen (#31): `TYPE` zieht in den Kopf, die Toolbar behält,
+    # was keiner Spalte gehört. Die Journal-Achse ist genau so ein Fall — sie
+    # beschreibt die **Herkunft** einer Zeile (abgelegt, einmalig, lokal
+    # gelaufen) und nicht den Inhalt einer Spalte.
+    leiste = (f'<div class="fltr-bar">'
+              + "".join(_filter_knopf(w, journal) for w in _FILTER_JOURNAL)
+              + f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
 
     if not rows:
         return f'{leiste}<div class="leer"><p class="muted">— {_LEER[Segment.JOURNAL]}</p></div>'
 
     zeilen = "".join(_jobs_zeile(r, now, public_host=public_host) for r in rows)
-    return (f'{leiste}<table class="jobs">{_jobs_kopf(sort, direction)}'
+    kopf = _jobs_kopf(sort, direction, typ=typ, status=status,
+                      status_filter=False)
+    return (f'{leiste}<table class="jobs">{kopf}'
             f"<tbody>{zeilen}</tbody></table>")
 
 

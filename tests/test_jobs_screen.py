@@ -1470,3 +1470,84 @@ def test_scheduler_probe_resets_after_success():
     b.fehlschlag(now=100.0)
     b.erfolg()
     assert b.darf(now=101.0), "nach einer geglueckten Antwort keine Pause mehr"
+
+
+# ── #31: die Filter ziehen an die Spalten, die sie einschränken ─────────────
+#
+# **Befund m.rau:** *„Der Filter nimmt sehr viel Platz ein. Unnötig viel
+# Platz."* — und der Grund dafür ist nicht die Größe der Knöpfe, sondern eine
+# Doppelung: `TYPE` und `STATUS` stehen als Spaltenkopf **und** als Gruppenlabel
+# der Filterleiste. Dasselbe Wort zweimal auf demselben Screen, einmal als
+# Überschrift und einmal als Beschriftung.
+#
+# **Der Kopf behält die Sortierung.** Er trägt danach beides: Klick sortiert,
+# die Werte darunter filtern. Das ist der ganze Umbau — kein neues Konzept,
+# sondern zwei Dinge an einen Ort, die schon immer über dieselbe Spalte
+# sprachen.
+
+
+def _kopf(html: str) -> str:
+    """Nur der Tabellenkopf. Die Abgrenzung ist hier der Prüfgegenstand: es
+    geht ausdrücklich darum, wo die Knöpfe stehen, nicht ob es sie gibt."""
+    i, j = html.index("<thead>"), html.index("</thead>")
+    return html[i:j]
+
+
+def _vor_der_tabelle(html: str) -> str:
+    """Alles vor der Tabelle — dort stand die Filterleiste bisher."""
+    return html[:html.index("<table")]
+
+
+def test_the_type_filters_live_under_their_column():
+    """`TYPE` filtert die TYPE-Spalte — also gehören seine Werte an sie.
+
+    Rot vor `#31`: die Knöpfe stehen in der Leiste über der Tabelle, der Kopf
+    kennt sie nicht."""
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    kopf = _kopf(html)
+    for wert in ("job", "claude", "app"):
+        assert f'data-filter="{wert}"' in kopf, (
+            f"der TYPE-Filter {wert!r} steht nicht im Tabellenkopf")
+
+
+def test_the_status_filters_live_under_their_column():
+    """Dieselbe Zusage für `STATUS` — und sie wirkt weiterhin ausschließlich
+    auf den Scheduler-Zustand. Der Client-Zustand ist Anzeige, kein
+    Filterkriterium (Klarstellung m.rau)."""
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    kopf = _kopf(html)
+    for wert in ("waiting", "running", "stopped"):
+        assert f'data-filter="{wert}"' in kopf, (
+            f"der STATUS-Filter {wert!r} steht nicht im Tabellenkopf")
+
+
+def test_the_column_name_is_no_longer_printed_twice():
+    """Der eigentliche Befund: `TYPE` und `STATUS` standen zweimal da.
+
+    Der Gruppenlabel der Filterleiste entfällt — die Spalte, unter der die
+    Werte jetzt hängen, beschriftet sie bereits."""
+    vorne = _vor_der_tabelle(render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW))
+    assert 'class="fltr-grp"' not in vorne, (
+        "über der Tabelle stehen weiterhin Gruppenlabels — dieselben Wörter, "
+        "die einen Zentimeter tiefer als Spaltenkopf stehen")
+
+
+def test_the_head_still_sorts_after_the_filters_moved_in():
+    """Die Gegenprobe, ohne die der Umbau still etwas kaputt macht: der Kopf
+    trägt jetzt zwei Bedeutungen, und die ältere muss die neue überleben."""
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW,
+                              sort="next", direction="desc")
+    kopf = _kopf(html)
+    assert 'data-sort="next"' in kopf, "die Spalte sortiert nicht mehr"
+    assert "↓" in kopf, "die Sortierrichtung wird nicht mehr angezeigt"
+    for schluessel in ("slug", "type", "status", "last", "next", "24h"):
+        assert f'data-sort="{schluessel}"' in kopf, schluessel
+
+
+def test_the_count_stays_out_of_the_table_head():
+    """Die Kennzahl bleibt, wo sie ist — sie beschreibt die Auswahl, nicht eine
+    Spalte. Vorschlag 1 der Design-Studie setzt sie rechts in die Toolbar-Zeile,
+    und dort ist sie eine Aussage über das Ganze."""
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    assert 'class="fltr-zahl"' in _vor_der_tabelle(html)
+    assert 'class="fltr-zahl"' not in _kopf(html)
