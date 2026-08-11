@@ -333,6 +333,20 @@ def status_gruppe(status: str | None, *, next_fire_at: float | None) -> str | No
         return "stopped"
     if status == "complete":
         return "waiting" if next_fire_at else None
+    # **Ein Job ohne Zustand wartet (#31)** — konsistent zu `complete` mit
+    # gesetztem Termin, eine Zeile darüber.
+    #
+    # Ein Job, den der Scheduler noch nie ausgeführt hat, trägt gar keinen
+    # Status und fiel damit durch jeden `STATUS`-Filter, auch durch `waiting` —
+    # obwohl genau das seine Lage beschreibt: er hat noch nichts getan und wird
+    # es tun. Die Regel stand für `complete` schon da; sie hier nicht zu
+    # ziehen, machte den häufigeren Fall zur Ausnahme.
+    #
+    # Dieselbe Grenze wie oben: **ohne Termin wartet nichts auf etwas.** Ein
+    # `adhoc`-Job, der nie lief, ist nicht wartend, sondern unbenutzt, und das
+    # ist keine Filtergruppe.
+    if status is None:
+        return "waiting" if next_fire_at else None
     return None
 
 

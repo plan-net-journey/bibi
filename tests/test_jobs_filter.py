@@ -184,3 +184,24 @@ def test_rows_without_a_value_sort_last_either_way():
     for richtung in ("asc", "desc"):
         assert [z.slug for z in sortiere([ohne, mit], nach="24h", richtung=richtung)][-1] \
             == "ohne", richtung
+
+
+# ── #31: ein Job ohne Zustand wartet ───────────────────────────────────────
+
+
+def test_a_job_without_a_state_counts_as_waiting():
+    """**Konsistent zu `complete` mit gesetztem `next`** (Vorgabe m.rau).
+
+    Ein Job, den der Scheduler noch nie ausgeführt hat, trägt gar keinen
+    Status. Er fiel damit durch jeden `STATUS`-Filter — auch durch `waiting`,
+    obwohl genau das seine Lage beschreibt: er hat noch nichts getan und wird
+    es tun. Die Regel steht schon für `complete` mit Termin da; sie hier nicht
+    zu ziehen, machte den häufigeren Fall zur Ausnahme."""
+    assert status_gruppe(None, next_fire_at=1_000_000.0) == "waiting"
+
+
+def test_a_job_without_a_state_and_without_a_date_stays_out():
+    """Die Gegenprobe, und sie zieht dieselbe Grenze wie bei `complete`: ohne
+    Termin wartet nichts auf etwas. Ein `adhoc`-Job, der nie lief, ist nicht
+    „wartend" — er ist unbenutzt, und das ist keine Filtergruppe."""
+    assert status_gruppe(None, next_fire_at=None) is None

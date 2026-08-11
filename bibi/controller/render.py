@@ -333,6 +333,18 @@ th.fltr-zelle .fltr { font-size: .82rem; padding: .05rem .35rem; }
 table.jobs th[data-sort] { cursor: pointer; user-select: none; }
 table.jobs th[data-sort]:hover { color: var(--text); }
 table.jobs th.sortiert { color: var(--text); }
+/* Mindestbreiten fuer LAST und NEXT (#31). Die Zellen tragen `11/01 14:46`,
+   beim Jahreswechsel aber auch `01/01/2027 00:05` — ohne feste Breite
+   springen die Spalten dann, und zwar genau in dem Moment, in dem jemand
+   hinsieht. `nowrap` allein reicht nicht: es verhindert den Umbruch, nicht
+   das Wandern der Nachbarspalten.
+
+   Die Breite haengt an der Spaltenposition, nicht an einer Klasse — die
+   Zellen tragen bis auf `slug` keine, und eine einzufuehren, damit das CSS
+   huebscher wird, waere eine Aenderung am Markup fuer eine Frage der
+   Darstellung. */
+table.jobs td:nth-child(5), table.jobs td:nth-child(6),
+table.jobs th:nth-child(5), table.jobs th:nth-child(6) { min-width: 6.5rem; }
 /* Leerer Screen: kein Kasten, kein Ausrufezeichen — ein Satz, der sagt, was
    fehlt und was man tun kann. */
 .leer { padding: 2.2rem 0; max-width: 42rem; }
