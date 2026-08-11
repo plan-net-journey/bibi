@@ -399,6 +399,11 @@ th a:hover { text-decoration: underline; }
    ein Chip, weil eine Verspaetung kein Fehler ist — der Scheduler holt sie
    beim naechsten Tick. */
 .due { color: var(--amber); font-size: .78rem; letter-spacing: .03em; }
+/* Der Weg von der Kachel zur Lauf-Liste (#39). Leiser als die Verben daneben:
+   er ist eine Navigation, keine Handlung, und darf mit START/KILL/RESET nicht
+   um dieselbe Aufmerksamkeit konkurrieren. */
+.tile-weg { color: var(--faint); text-decoration: none; }
+.tile-weg:hover { color: var(--text); text-decoration: underline; }
 /* Nodes-Screen Git-Status-Chips (Batch 9 Punkt 3) — dieselben Farben wie die
    tree- und sync-Klassen der Feed-Git-Kachel, hier als Chip statt Klartext.
    Die Klassennamen stehen bewusst ohne Stern: ".tree-" plus Stern ergibt die
@@ -4504,6 +4509,32 @@ def _slot_kachel(kachel, *, now: float) -> str:
                 # erste der vier Punkte des Tickets: er behebt eine echte
                 # Fehllesung, während die anderen drei etwas hinzufügen.
                 teile.append(f"last {_uhrzeit(kachel.last_at, now)}")
+                # **Runtime, Commit und der Weg zum Lauf (#39, Punkte 2-4).**
+                #
+                # Befund m.rau: *„Warum nicht die Runtime wenn verfügbar? Warum
+                # nicht der commit? Warum kein Link runter zu den Details, wo
+                # ich auch den Output öffnen kann!?"* — die Kachel war eine
+                # Sackgasse: sie nennt einen Lauf und bot keinen Weg dorthin.
+                #
+                # **Jede Angabe nur, wenn es sie gibt.** Ein leeres `commit —`
+                # sähe aus wie ein Fehler, wo nur nichts zu sagen ist —
+                # dieselbe Erwägung, aus der `last` ohne lokalen Lauf ganz
+                # entfällt. Der Commit ist heute in rund 7 % der Läufe belegt;
+                # **seine Leere ist selbst eine Auskunft**, nämlich dass dieser
+                # Lauf im Vault nichts bewegt hat.
+                laufzeit = kachel.slot.get("exec_runtime")
+                if laufzeit:
+                    teile.append(_human_duration(laufzeit))
+                sha = kachel.slot.get("commit_sha")
+                if sha:
+                    teile.append(f"commit {_e(str(sha)[:7])}")
+                # Der Weg zum Lauf, und bewusst ein Anker statt einer Route:
+                # die Lauf-Liste steht auf **dieser** Seite. Ein Link, der die
+                # Seite neu lädt, um zwei Bildschirmhöhen tiefer zu landen,
+                # verlöre Faltzustand und Scroll-Position — genau das, was
+                # `#44` an der Region eigens rettet.
+                teile.append('<a href="#runs" class="tile-weg" '
+                             'title="jump to the runs of this job">runs ↓</a>')
         elif kachel.status == "pending" and kachel.slot.get("next_fire_at"):
             # `pending · next 12:00` — ein reservierter Platz mit Termin. Ohne
             # `next` bleibt es beim blossen `pending`: das ist `adhoc`, ein

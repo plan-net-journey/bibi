@@ -1780,3 +1780,41 @@ def test_a_last_run_today_stays_short():
     wert = _last_wert(render.job_tiles_fragment(
         [_kachel(last_at=NOW - 600)], now=NOW, slug="j", job_uid="u"))
     assert "/" not in wert, f"unnötiges Datum bei einem Lauf von heute: {wert!r}"
+
+
+def test_the_tile_names_the_runtime_of_the_last_run():
+    """Punkt 2 von `#39`: die Dauer liegt im Journal (`exec_runtime`) und stand
+    auf der Kachel nicht — obwohl sie die Frage beantwortet, die man vor einem
+    Klick auf START stellt."""
+    wert = render.job_tiles_fragment(
+        [_kachel(last_at=NOW - 3 * 86400, slot={"exec_runtime": 92.0})],
+        now=NOW, slug="j", job_uid="u")
+    assert "1m 32s" in wert, f"die Runtime fehlt: {wert[:400]}"
+
+
+def test_the_tile_names_the_commit_when_there_is_one():
+    """Punkt 3. Die Zelle bleibt oft leer — heute in 93 % der Läufe —, und das
+    ist in Ordnung: sie ist die Verbindung Lauf ↔ Vault-Wirkung, **und ihre
+    Leere ist selbst eine Auskunft.**"""
+    wert = render.job_tiles_fragment(
+        [_kachel(last_at=NOW - 3 * 86400, slot={"commit_sha": "a1b2c3d4e5f6"})],
+        now=NOW, slug="j", job_uid="u")
+    assert "a1b2c3d" in wert, f"der Commit fehlt: {wert[:400]}"
+
+
+def test_a_tile_without_a_commit_says_nothing_about_it():
+    """Die Gegenprobe: ein leeres `commit —` sähe aus wie ein Fehler, wo nur
+    nichts zu sagen ist. Dieselbe Erwägung, aus der `last` ohne lokalen Lauf
+    ganz entfällt."""
+    wert = render.job_tiles_fragment(
+        [_kachel(last_at=NOW - 3 * 86400, slot={})], now=NOW, slug="j", job_uid="u")
+    assert "commit" not in wert, f"leere Commit-Angabe: {wert[:400]}"
+
+
+def test_the_tile_offers_a_way_to_the_run():
+    """Punkt 4, und der eigentliche Befund: *„Warum kein Link runter zu den
+    Details, wo ich auch den Output öffnen kann!?"* — heute ist die Kachel eine
+    Sackgasse, sie nennt einen Lauf und bietet keinen Weg dorthin."""
+    wert = render.job_tiles_fragment(
+        [_kachel(last_at=NOW - 3 * 86400, slot={})], now=NOW, slug="j", job_uid="u")
+    assert 'href="#runs"' in wert, f"kein Weg zum Lauf: {wert[:400]}"
