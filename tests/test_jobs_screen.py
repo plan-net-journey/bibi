@@ -1551,3 +1551,56 @@ def test_the_count_stays_out_of_the_table_head():
     html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
     assert 'class="fltr-zahl"' in _vor_der_tabelle(html)
     assert 'class="fltr-zahl"' not in _kopf(html)
+
+
+# ── #31: die dritte Achse wirkt über alle Bänder ───────────────────────────
+#
+# Sie hing am Journal-Band und filterte nur dort. Zwei ihrer drei Werte
+# beschreiben aber Eigenschaften, die ein Job in **jedem** Band haben kann:
+# `local` trifft jeden Job mit lokalen Läufen — `EngineCI` steht im
+# SCHEDULE-Band und hat neun —, `1shot` jeden `at`-Job. Nur `gone` ist
+# journal-eigen.
+#
+# **Ein Filter, der nur auf einem Drittel der Zeilen wirkt, aber über allen
+# steht, ist keine Achse, sondern eine Falle.**
+
+
+def _mit_lauf(slug):
+    """Ein Schedule-Job, der lokal schon gelaufen ist — der Fall `EngineCI`."""
+    return {slug: {"status": "complete", "started_at": NOW - 600}}
+
+
+def test_local_selects_within_the_schedule_band():
+    """`local` ist eine Eigenschaft des Jobs, nicht des Bandes.
+
+    **Geprüft wird, was verschwindet, nicht was bleibt.** Ein Filter, der auf
+    ein Band gar nicht wirkt, lässt dort ebenfalls jede Zeile stehen — ein Test
+    auf „der Treffer ist noch da" wäre also auch dann grün, wenn nichts
+    filtert. Erst der Nicht-Treffer daneben macht die Aussage prüfbar."""
+    zeilen = _zeilen(local=[_md("mit-lauf"), _md("ohne-lauf")],
+                     local_runs=_mit_lauf("mit-lauf"))
+    assert all(z.segment is Segment.SCHEDULE for z in zeilen), \
+        "Testdatum im falschen Band"
+    html = render.jobs_screen(zeilen, now=NOW, journal=["local"])
+    assert "mit-lauf" in html, "`local` lässt den Job mit lokalen Läufen fallen"
+    assert "ohne-lauf" not in html, (
+        "`local` behält einen Job ohne lokale Läufe — der Filter wirkt im "
+        "SCHEDULE-Band nicht, er lässt dort nur alles durch")
+
+
+def test_oneshot_selects_within_the_schedule_band():
+    """Dieselbe Bauart für `1shot`: der at-Job bleibt, der Cron-Job geht."""
+    zeilen = _zeilen(local=[_md("einmalig", schedule=None, at="2026-09-01 10:00"),
+                            _md("stuendlich")])
+    html = render.jobs_screen(zeilen, now=NOW, journal=["1shot"])
+    assert "einmalig" in html, "`1shot` trifft den at-Job nicht"
+    assert "stuendlich" not in html, "`1shot` behält einen Cron-Job"
+
+
+def test_gone_stays_a_journal_matter():
+    """Die Gegenprobe: `gone` beschreibt ein Verhältnis zum Vault, das ein
+    aktiver Job per Definition nicht hat. Es darf nicht plötzlich alles
+    treffen, nur weil die Achse jetzt überall wirkt."""
+    zeilen = _zeilen(local=[_md("da")])
+    html = render.jobs_screen(zeilen, now=NOW, journal=["gone"])
+    assert "da</a>" not in html, "`gone` trifft einen Job, den es noch gibt"

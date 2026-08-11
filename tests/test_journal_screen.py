@@ -97,21 +97,30 @@ def test_a_journal_row_no_longer_stands_between_the_daily_ones():
     assert "laengst-weg" not in html
 
 
-def test_the_journal_filters_leave_the_jobs_screen_with_their_band():
-    """Sie wirkten nur im dritten Band. Ist das Band weg, sind sie hier tote
-    Knöpfe — und ein toter Knopf ist schlimmer als ein fehlender."""
+def test_the_third_axis_returns_to_the_jobs_screen_with_a_reason():
+    """**Hier stand bis `#31` das Gegenteil**, und die Begründung war zum
+    Zeitpunkt von `#38` richtig: die drei Filter wirkten nur im dritten Band,
+    also wären sie auf dem Jobs-Screen tote Knöpfe gewesen.
+
+    `#31` hat die Ursache beseitigt statt das Symptom: die Achse wirkt jetzt
+    über alle Bänder, damit trifft sie hier etwas, und damit gehört sie hierher.
+    **Ein toter Knopf ist schlimmer als ein fehlender — aber ein Knopf, der
+    lebt, gehört dorthin, wo man ihn braucht.**"""
     html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
-    for wert in ("dropped", "oneshot", "local"):
-        assert f'data-filter="{wert}"' not in html, wert
+    for wert in ("local", "1shot", "gone"):
+        assert f'data-filter="{wert}"' in html, wert
 
 
-def test_grouping_off_no_longer_smuggles_the_journal_filters_into_the_bar():
-    """`group=off` hatte sie in die Kopfleiste geholt, damit sie nicht am
-    fehlenden Band hängen. Der Ort, an den sie gehören, ist jetzt ein anderer
-    Screen."""
-    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW, group=False)
-    for wert in ("dropped", "oneshot", "local"):
-        assert f'data-filter="{wert}"' not in html, wert
+def test_the_third_axis_is_independent_of_the_bands():
+    """Die Achse hing einmal an der Gruppierung — `group=off` holte sie in die
+    Kopfleiste, damit sie nicht an einem fehlenden Band hing.
+
+    Seit `#31` ist das gegenstandslos: sie wirkt auf Zeilen, nicht auf Bänder,
+    und steht deshalb in beiden Ansichten gleich."""
+    for gruppiert in (True, False):
+        html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW, group=gruppiert)
+        for wert in ("local", "1shot", "gone"):
+            assert f'data-filter="{wert}"' in html, f"{wert} bei group={gruppiert}"
 
 
 # ── Der eigene Screen ──────────────────────────────────────────────────────
@@ -140,7 +149,7 @@ def test_the_journal_screen_carries_only_journal_rows():
 
 def test_the_three_journal_filters_live_here_now():
     html = render.journal_screen(_zeilen(journal=[_historie("alt")]), now=NOW)
-    for wert in ("dropped", "oneshot", "local"):
+    for wert in ("local", "1shot", "gone"):
         assert f'data-filter="{wert}"' in html, wert
 
 

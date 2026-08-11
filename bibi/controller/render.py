@@ -323,6 +323,12 @@ th.fltr-zelle .fltr { font-size: .82rem; padding: .05rem .35rem; }
 /* Der gewaehlte Zustand traegt Rahmen UND Farbe: Farbe allein geht in hellen
    Themes und auf schlechten Monitoren verloren. */
 .fltr.on { color: var(--text); border-color: var(--btnline); background: var(--btnbg); }
+/* `gone` trifft nichts, solange keine abgelegte Zeile sichtbar ist (#31).
+   Ausgegraut statt versteckt: ein Knopf, der verschwindet, laesst die Achse
+   springen, und wer ihn sucht, weiss nicht, ob es ihn nie gab oder ob er
+   gerade nur leer ist. Der Cursor sagt dasselbe noch einmal fuer die Maus. */
+.fltr.tot { opacity: .4; cursor: default; }
+.fltr.tot:hover { color: var(--dim); background: none; }
 .fltr-zahl { margin-left: auto; color: var(--dim); }
 table.jobs th[data-sort] { cursor: pointer; user-select: none; }
 table.jobs th[data-sort]:hover { color: var(--text); }
@@ -3550,7 +3556,11 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
 #: schlimmer als ein fehlender.
 _FILTER_OBEN = (("TYPE", ("job", "claude", "app")),
                 ("STATUS", ("waiting", "running", "stopped")))
-_FILTER_JOURNAL = ("dropped", "oneshot", "local")
+#: Die dritte Achse (#31). Umbenannt gegenüber `dropped`/`oneshot`: die
+#: Werte stehen seit dem Umzug in den Kopf neben kurzen Spaltennamen, und
+#: `1shot` sagt dasselbe auf halber Breite. `gone` ist zudem das Wort, das
+#: der Vorgang beschreibt — `dropped` klang nach einem Fehler beim Ablegen.
+_FILTER_JOURNAL = ("local", "1shot", "gone")
 
 #: Klickbare Spalten. Der Schlüssel ist zugleich der Query-Parameter.
 _SORTIERBAR = (("slug", "SLUG"), ("type", "TYPE"), ("status", "STATUS"),
@@ -3572,9 +3582,18 @@ def sortierbare_schluessel() -> frozenset[str]:
     return frozenset(k for k, _ in _SORTIERBAR)
 
 
-def _filter_knopf(wert: str, aktiv: list[str]) -> str:
+def _filter_knopf(wert: str, aktiv: list[str], *, tot: bool = False) -> str:
+    """Ein Filterknopf. ``tot`` graut ihn aus, statt ihn wegzulassen (#31).
+
+    Ein Knopf, der verschwindet, sobald er nichts trifft, lässt die Achse
+    springen — und wer ihn sucht, weiss nicht, ob es ihn nie gab oder ob er
+    gerade leer ist. Ausgegraut sagt beides: es gibt ihn, und hier trifft er
+    nichts."""
     an = " on" if wert in aktiv else ""
-    return f'<button class="fltr{an}" data-filter="{wert}">{wert}</button>'
+    tot_klasse = " tot" if tot else ""
+    disabled = " disabled" if tot else ""
+    return (f'<button class="fltr{an}{tot_klasse}" data-filter="{wert}"'
+            f"{disabled}>{wert}</button>")
 
 
 def _sort_kopf(schluessel: str, label: str, sort: str | None, richtung: str) -> str:
@@ -3768,7 +3787,16 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
     # `group` bleibt hier, und das ist kein Rest: er schaltet die **Bänder**,
     # also die Gliederung der ganzen Tabelle, und hat deshalb keine Spalte,
     # unter die er ziehen könnte.
-    leiste = (f'<div class="fltr-bar">'
+    # Die dritte Achse steht in der Toolbar, nicht im Kopf: ihre Werte
+    # beschreiben die **Herkunft** einer Zeile (lokal gelaufen, einmalig,
+    # abgelegt) und gehören zu keiner Spalte. `gone` trifft ohne sichtbares
+    # Journal-Band nichts — es wird ausgegraut statt versteckt, damit die Achse
+    # ihre Form behält und niemand einen Knopf sucht, der nur gerade leer ist.
+    hat_gone = any(r.relation in ("dropped", "deleted") for r in rows)
+    achse = "".join(
+        _filter_knopf(w, journal, tot=(w == "gone" and not hat_gone))
+        for w in _FILTER_JOURNAL)
+    leiste = (f'<div class="fltr-bar">{achse}'
               f'<button class="fltr{" on" if group else ""}" data-group='
               f'"{"off" if group else "on"}">group</button>'
               f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')

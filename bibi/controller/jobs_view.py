@@ -362,11 +362,27 @@ def trifft_filter(row: JobRow, *, typ: list[str], status: list[str],
         if g not in status:
             return False
 
-    if journal and row.segment is Segment.JOURNAL:
+    # **Die dritte Achse wirkt über alle Bänder (#31), nicht nur im Journal.**
+    #
+    # Sie hing bis dahin an `row.segment is Segment.JOURNAL` und filterte nur
+    # dort. Zwei ihrer drei Werte beschreiben aber Eigenschaften, die ein Job in
+    # **jedem** Band haben kann: `local` trifft jeden Job mit lokalen Läufen —
+    # `EngineCI` steht im SCHEDULE-Band und hat neun —, `1shot` jeden `at`-Job.
+    #
+    # **Ein Filter, der nur auf einem Drittel der Zeilen wirkt, aber über allen
+    # steht, ist keine Achse, sondern eine Falle:** er sieht aus, als hätte er
+    # die anderen Bänder geprüft und für passend befunden, während er sie
+    # überhaupt nicht angesehen hat.
+    #
+    # `gone` bleibt journal-eigen — es beschreibt ein Verhältnis zum Vault, das
+    # ein Job, den es noch gibt, per Definition nicht hat. Es ist damit der
+    # einzige Wert, der ohne Treffer dasteht, wenn kein Journal-Band sichtbar
+    # ist; der Screen graut ihn dann aus, statt ihn zu verstecken.
+    if journal:
         passt = False
-        if "dropped" in journal and row.relation in ("dropped", "deleted"):
+        if "gone" in journal and row.relation in ("dropped", "deleted"):
             passt = True
-        if "oneshot" in journal and row.spec.get("at"):
+        if "1shot" in journal and row.spec.get("at"):
             passt = True
         if "local" in journal and row.local:
             passt = True
