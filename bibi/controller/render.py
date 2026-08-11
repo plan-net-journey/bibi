@@ -10,7 +10,7 @@ import json
 import re
 import time
 
-from bibi.controller.jobs_view import Segment, erreichbarer_host
+from bibi.controller.jobs_view import Segment, erreichbarer_host, status_gruppe
 from bibi.schedule import models
 
 # PLAN-36 Stufe 36.0: htmx lokal statt unpkg.com-CDN (Tailnet-only-Setup —
@@ -393,6 +393,12 @@ th a:hover { text-decoration: underline; }
    alle gleich laut, ist keiner mehr laut. */
 .chip.leise { background: var(--hover); color: var(--dim); font-weight: 500; }
 .chip.bad { background: var(--redsoft); color: var(--red); }
+/* Faelligkeitskennzeichen der NEXT-Spalte (#11). Es steht NEBEN dem
+   Zeitpunkt, nicht an seiner Stelle: der Zeitpunkt sagt, wie lange etwas
+   ueberfaellig ist, das Kennzeichen, dass es das ueberhaupt ist. Leiser als
+   ein Chip, weil eine Verspaetung kein Fehler ist — der Scheduler holt sie
+   beim naechsten Tick. */
+.due { color: var(--amber); font-size: .78rem; letter-spacing: .03em; }
 /* Nodes-Screen Git-Status-Chips (Batch 9 Punkt 3) — dieselben Farben wie die
    tree- und sync-Klassen der Feed-Git-Kachel, hier als Chip statt Klartext.
    Die Klassennamen stehen bewusst ohne Stern: ".tree-" plus Stern ergibt die
@@ -3495,6 +3501,35 @@ _LEER = {
 }
 
 
+def _next_zelle(row, s: dict, now: float, ohne_zukunft: bool) -> str:
+    """Die NEXT-Zelle — mit Fälligkeitskennzeichen, wenn der Termin hinter uns
+    liegt und der Job noch wartet (#11).
+
+    **Ergänzen, nicht ersetzen.** ``_until()`` gibt für genau diesen Fall
+    ``asap`` zurück und wird in der Jobs-Tabelle seit dem v5-Umbau nicht mehr
+    gerufen; ``asap`` **statt** des Zeitpunkts wirft aber weg, *wie lange*
+    etwas überfällig ist — bei zwei Sekunden egal, bei 38 Tagen nicht. Vor
+    allem wäre es wieder eine Relativangabe und verlöre die Eigenschaft, um
+    derentwillen die Entscheidung vom 2026-08-03 gegen Relativzeiten fiel:
+    **ein absoluter Zeitpunkt bleibt nach einem Screenshot wahr.**
+
+    **Nur für wartende Jobs.** Ein terminaler Job mit stehengebliebenem Termin
+    ist `#97` — ein Datenfehler, der nicht dadurch heilt, dass man ihn hübscher
+    rendert. Ihn als fällig zu markieren hieße zu behaupten, er komme noch.
+    """
+    if ohne_zukunft:
+        return "—"
+    ts = s.get("next_fire_at")
+    zeit = _uhrzeit(ts, now)
+    if ts is None or ts >= now:
+        return zeit
+    gruppe = status_gruppe(s.get("row_status") or s.get("status"),
+                           next_fire_at=ts)
+    if gruppe != "waiting":
+        return zeit
+    return f'{zeit} <span class="due" title="overdue — the scheduler will pick it up on its next tick">due</span>'
+
+
 def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
     """Eine Zeile: ein Slug, zwei Zustandsblöcke."""
     from bibi.schedule.models import job_uid
@@ -3568,7 +3603,7 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
         f'<td>{l.get("status") or "—"}</td>'
         f'<td>{s.get("row_status") or s.get("status") or "—"}</td>'
         f'<td>{_uhrzeit(s.get("last_run_at"), now)}</td>'
-        f'<td>{"—" if ohne_zukunft else _uhrzeit(s.get("next_fire_at"), now)}</td>'
+        f"<td>{_next_zelle(row, s, now, ohne_zukunft)}</td>"
         # RUNTIME gehört auf diese Seite und ist ein Perzentil (m.rau/bibi#132):
         # P90 der letzten 30 Läufe, nicht die Dauer des letzten. Die sprang —
         # derselbe Job zeigte mal `2.8s`, mal `4m 34s`, je nachdem was zuletzt

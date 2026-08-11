@@ -1640,3 +1640,89 @@ def test_only_duplicate_shouts():
     leise = render.jobs_screen(_zeilen(local=[_md("neu")]), now=NOW)
     assert 'class="chip bad"' not in leise, (
         "ein gewöhnliches `new` trägt dieselbe Warnfarbe wie ein Vault-Fehler")
+
+
+# ── #11: `fällig` sieht aus wie `geplant` ──────────────────────────────────
+#
+# Ein `pending`-Job, dessen Termin verstrichen ist, wird vom Scheduler beim
+# nächsten Tick geholt — der Termin gehört ihm zu Recht. Er ist keine
+# Karteileiche, sondern eine Verspätung: der Knoten war offline, der Scheduler
+# stand, der Backoff lief.
+#
+# Die Spalte zeigt darüber heute nur einen Zeitpunkt und überlässt dem Leser
+# die Subtraktion gegen das heutige Datum.
+#
+# **Ergänzen statt ersetzen.** `asap` *statt* `02/07 08:05` wirft weg, wie
+# lange etwas überfällig ist — bei zwei Sekunden egal, bei 38 Tagen nicht. Vor
+# allem aber wäre `asap` allein wieder eine Relativangabe und verlöre die
+# Eigenschaft, um derentwillen die Entscheidung vom 2026-08-03 fiel: **ein
+# absoluter Zeitpunkt bleibt nach einem Screenshot wahr.**
+
+
+def _wartend_mit(next_fire_at):
+    return _zeilen(local=[_md("wartet")],
+                   scheduler=[{"slug": "wartet", "active": 1,
+                               "schedule": "0 * * * *", "row_status": "pending",
+                               "next_fire_at": next_fire_at}])
+
+
+def test_an_overdue_job_is_marked_as_due():
+    """Rot vor `#11`: die Zelle ist von der eines künftigen Termins nicht zu
+    unterscheiden, außer man rechnet gegen heute."""
+    html = render.jobs_screen(_wartend_mit(NOW - 3600), now=NOW)
+    zelle = _zelle(html, "next")
+    assert "due" in zelle, (
+        f"NEXT zeigt {zelle!r} — ein verstrichener Termin sieht aus wie ein "
+        "geplanter")
+
+
+def test_the_timestamp_survives_the_marking():
+    """Der Kern der Entscheidung: die Kennzeichnung **ergänzt**, sie ersetzt
+    nicht. Sonst wäre nicht mehr abzulesen, ob es zwei Sekunden oder 38 Tage
+    sind."""
+    html = render.jobs_screen(_wartend_mit(NOW - 40 * 86400), now=NOW)
+    zelle = _zelle(html, "next")
+    assert any(z.isdigit() for z in zelle), (
+        f"NEXT zeigt {zelle!r} — der Zeitpunkt ist der Kennzeichnung gewichen")
+
+
+def test_a_future_appointment_looks_unchanged():
+    """Die Gegenprobe. Ohne sie wäre auch ein Screen grün, der alles markiert."""
+    html = render.jobs_screen(_wartend_mit(NOW + 3600), now=NOW)
+    assert "due" not in _zelle(html, "next"), "ein künftiger Termin ist markiert"
+
+
+def test_a_terminal_job_with_a_stale_date_is_not_touched():
+    """Ausdrücklich nicht Teil von `#11`: ein terminaler Job mit stehen-
+    gebliebenem Termin ist `#97` — ein **Datenfehler**, der nicht dadurch
+    heilt, dass man ihn hübscher rendert. Er darf `due` nicht tragen: das
+    hieße zu behaupten, er komme noch."""
+    zeilen = _zeilen(local=[_md("fertig")],
+                     scheduler=[{"slug": "fertig", "active": 1,
+                                 "schedule": "0 * * * *", "row_status": "error",
+                                 "next_fire_at": NOW - 3600}])
+    assert "due" not in _zelle(render.jobs_screen(zeilen, now=NOW), "next")
+
+
+#: Die Spalten der Jobs-Tabelle in ihrer Reihenfolge. Die Zellen tragen **keine
+#: Klassen** — bis auf `slug` sind es nackte `<td>`. Ein Test, der nach Position
+#: greift, ist deshalb hier keine Nachlässigkeit, sondern die einzige ehrliche
+#: Möglichkeit: eine Klasse zu erfinden, damit der Test hübscher wird, hieße den
+#: Prüfgegenstand für die Prüfung zu ändern.
+_SPALTEN = ("slug", "type", "client", "scheduler", "last", "next", "runtime", "24h")
+
+
+def _zelle(html: str, spalte: str) -> str:
+    """Der Text der Zelle `spalte` aus der ersten Datenzeile."""
+    import re
+    zeilen = re.findall(r"<tr>(?:(?!</tr>).)*</tr>", html, re.S)
+    daten = [z for z in zeilen if 'class="slug"' in z]
+    assert daten, f"keine Datenzeile im HTML gefunden (Spalte {spalte})"
+    zellen = re.findall(r"<td[^>]*>(.*?)</td>", daten[0], re.S)
+    assert len(zellen) == len(_SPALTEN), (
+        f"{len(zellen)} Zellen, erwartet {len(_SPALTEN)} — die Tabelle hat "
+        f"ihre Spalten geändert, dieser Helfer muss nach: {zellen}")
+    roh = zellen[_SPALTEN.index(spalte)]
+    return re.sub(r"<[^>]+>", "", roh).strip()
+
+
