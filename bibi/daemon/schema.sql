@@ -51,7 +51,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     defer_time      INTEGER,
     defer_max       INTEGER,
     error_time      INTEGER,
-    hitl_timeout    INTEGER NOT NULL DEFAULT 172800,
 
     -- Registrierung (PLAN-14 Stufe 14.5): ist die MD noch im Vault entdeckt?
     -- Orthogonal zum Lifecycle-Status — ein `error`-Job kann sein MD genauso
@@ -64,6 +63,13 @@ CREATE TABLE IF NOT EXISTS jobs (
     reason          TEXT,
     attempt         INTEGER NOT NULL DEFAULT 0,
     fire            INTEGER NOT NULL DEFAULT 0, -- Zähler je Trigger (cron-Recurrence, §5.2)
+    -- Die Lauf-Attribute (#129): `job_full_view()` als JSON, geschrieben bei
+    -- START in derselben Transaktion wie das Status-UPDATE, unveränderlich für
+    -- die Dauer des Laufs. Die übrigen Spec-Spalten dieser Zeile folgen jedem
+    -- Rescan — sie sind eine Projektion der MD, kein Speicher. Wer zur Laufzeit
+    -- wissen will, womit *dieser* Lauf läuft, liest hier. Eine Spalte statt 26
+    -- duplizierter: jedes neue Attribut kostet sonst zwei Migrationen.
+    run_snapshot    TEXT,
     deferred_at     REAL,                      -- erster Defer-Zeitpunkt (§5.5 defer_max)
     locked_at       REAL,
     started_at      REAL,

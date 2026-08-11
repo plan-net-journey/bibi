@@ -4986,9 +4986,13 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
 
 #: Scheduling-Werte der Attribut-Seite in der Reihenfolge, in der sie dort
 #: stehen — Trigger zuerst, dann Retry-Verhalten, dann die Fristen.
+#: `hitl_timeout` stand hier bis `v0.8.2` und ist mit #129 gefallen: der Parser
+#: hat es am 2026-07-04 mit `silence_timeout` zusammengelegt, `_spec_columns()`
+#: kennt es seither nicht — die Seite führte ein Feld, das es fachlich nicht
+#: mehr gibt und das nur noch sein eigener DEFAULT füllte.
 _ATTR_FELDER = ("schedule", "at", "attempts", "backoff",
                 "defer_time", "defer_max", "error_time", "silence_timeout",
-                "wall_time", "hitl_timeout")
+                "wall_time")
 
 #: Die Konfigurationswerte eines **Laufs** (#40). Weiter als `_ATTR_FELDER`,
 #: weil ein Lauf mehr erbt als seinen Zeitplan: `model` und `soul` erklären
