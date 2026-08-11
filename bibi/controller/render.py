@@ -4492,7 +4492,18 @@ def _slot_kachel(kachel, *, now: float) -> str:
             # dessen Dauer darunter schon alles. Ohne lokalen Lauf steht gar
             # nichts — ein leeres `last —` sähe aus wie ein Fehler.
             if kachel.last_at is not None:
-                teile.append(f"last {_abs_time(kachel.last_at)}")
+                # **Dieselbe 24-Stunden-Regel wie im Header (#39).**
+                # `_abs_time()` liefert nur `HH:MM`; bei einem Lauf von
+                # vorgestern stand dort `last 14:03` — eine Angabe, die falsch
+                # gelesen wird, weil sie „heute" suggeriert. `_uhrzeit()` nimmt
+                # unter 24 Stunden die Uhrzeit allein und darüber Datum plus
+                # Uhrzeit (FE §2); der Header macht es an dieser Stelle längst
+                # richtig, die Kachel benutzte die Regel nur nicht.
+                #
+                # Ein Funktionstausch, kein neues Konzept — und deshalb der
+                # erste der vier Punkte des Tickets: er behebt eine echte
+                # Fehllesung, während die anderen drei etwas hinzufügen.
+                teile.append(f"last {_uhrzeit(kachel.last_at, now)}")
         elif kachel.status == "pending" and kachel.slot.get("next_fire_at"):
             # `pending · next 12:00` — ein reservierter Platz mit Termin. Ohne
             # `next` bleibt es beim blossen `pending`: das ist `adhoc`, ein

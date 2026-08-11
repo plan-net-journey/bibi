@@ -1726,3 +1726,57 @@ def _zelle(html: str, spalte: str) -> str:
     return re.sub(r"<[^>]+>", "", roh).strip()
 
 
+
+
+# ── #39: die Slot-Kachel sagt zu wenig ─────────────────────────────────────
+#
+# **Befund m.rau:** *„sei in der Job Kachel Client und Scheduler ruhig etwas
+# informativer. … steht nur die Uhrzeit bei idle - last. Warum nicht das
+# Datum?"*
+#
+# `_abs_time()` liefert nur `HH:MM`. Bei einem Job, der zuletzt vor drei Tagen
+# lief, steht dort `last 14:03` — eine Angabe, die falsch gelesen wird, weil
+# sie „heute" suggeriert.
+#
+# **Der Header macht es an dieser Stelle bereits richtig:** `_uhrzeit()` nimmt
+# unter 24 Stunden die Uhrzeit allein und darüber Datum plus Uhrzeit (FE §2).
+# Die Kachel benutzte diese Regel nicht — ein Funktionstausch, kein neues
+# Konzept, und er behebt eine echte Fehllesung.
+
+
+def _kachel(**kw):
+    from bibi.controller.jobs_view import Tile
+    # **Client-Seite und ein Zustand ohne eigenen Lauf** — nur dort steht
+    # `last` überhaupt. Der Scheduler-Slot zeigt nach vorn (`next`), der
+    # Client-Slot zurück; die Angabe, um die es in #39 geht, gibt es also
+    # genau in dieser Konstellation.
+    grund = {"quelle": "client", "host": "h", "slot": {}, "status": "pending",
+             "aktionen": frozenset()}
+    return Tile(**{**grund, **kw})
+
+
+def _last_wert(html: str) -> str:
+    """Nur der Wert hinter `last` — bis zum nächsten Tag oder Trenner.
+
+    Ohne diese Abgrenzung greift ein naives Slicing das `/` aus `</div>` mit
+    und der Test ist grün, gleich was die Kachel sagt."""
+    import re
+    m = re.search(r"last ([^<·]+)", html)
+    assert m, f"die Kachel nennt kein `last`: {html[:200]}"
+    return m.group(1).strip()
+
+
+def test_a_last_run_older_than_a_day_shows_its_date():
+    """Rot vor `#39`: `last 14:03` für einen Lauf von vorgestern."""
+    wert = _last_wert(render.job_tiles_fragment(
+        [_kachel(last_at=NOW - 3 * 86400)], now=NOW, slug="j", job_uid="u"))
+    assert "/" in wert, f"die Kachel nennt kein Datum: {wert!r}"
+
+
+def test_a_last_run_today_stays_short():
+    """Die Gegenprobe — und der Grund, warum es die 24-Stunden-Regel ist und
+    nicht „immer Datum": in der Kachel eines Jobs, der vor zehn Minuten lief,
+    wäre das Datum Lärm."""
+    wert = _last_wert(render.job_tiles_fragment(
+        [_kachel(last_at=NOW - 600)], now=NOW, slug="j", job_uid="u"))
+    assert "/" not in wert, f"unnötiges Datum bei einem Lauf von heute: {wert!r}"
