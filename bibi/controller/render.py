@@ -551,6 +551,17 @@ th a:hover { text-decoration: underline; }
 /* Zwei Signale fuer „Default", nicht eins: die Dimmung geht in hellen Themes
    und auf schlechten Monitoren verloren, die Klammer nicht. */
 .ts-dim { color: var(--faint); }
+/* Lauf-Attribute (#40): dieselbe Zeile, um eine Herkunftsspalte erweitert.
+   Die Spaltenbreiten stehen an `.attrs-head`, damit Kopf und Zeilen nicht
+   auseinanderlaufen koennen — sie erben beide dasselbe Raster. */
+.attrs-head, .attrs .attr-row { grid-template-columns: 12rem 1fr 5rem; }
+.attrs-head { display: grid; gap: .4rem; padding: .18rem 0;
+              border-bottom: 1px solid var(--line); color: var(--hdr-key);
+              font-family: ui-monospace, monospace; font-size: .72rem;
+              letter-spacing: .04em; }
+.attr-src { color: var(--faint); font-family: ui-monospace, monospace;
+            font-size: .72rem; text-align: right; }
+.attrs-note { font-size: .78rem; max-width: 60rem; margin: .2rem 0 1rem; }
 
 /* Leerer Zustand und Nachladen. */
 .empty { color: var(--dim); font-size: .85rem; font-style: italic;
@@ -4425,7 +4436,7 @@ def job_runs_fragment(liste, *, now: float, slug: str | None = None,
     for tag, laeufe in jobs_view.by_day(liste.runs, ts_key="sort_at"):
         aus.append(f'<tr class="day"><td colspan="8">{_e(tag)}</td></tr>')
         for r in laeufe:
-            aus.append(_run_zeile(r))
+            aus.append(_run_zeile(r, basis=basis))
     aus.append("</tbody></table>")
     # Der Knopf erscheint **nur**, wenn es wirklich mehr gibt, und er erweitert
     # um eine Menge statt um einen Tag — `weiter` ist das Fenster, das die
@@ -4530,8 +4541,16 @@ def _runs_reichweite(reach: dict | None) -> str:
     return f'<span class="runs-reach">{" &middot; ".join(teile)}</span>'
 
 
-def _run_zeile(r: dict) -> str:
-    """Eine Zeile der Lauf-Liste plus ihr (zugeklappter) Ausklappbereich."""
+def _run_zeile(r: dict, *, basis: str = "") -> str:
+    """Eine Zeile der Lauf-Liste plus ihr (zugeklappter) Ausklappbereich.
+
+    ``basis`` ist ``/-/jobs/<job_uid>`` und trägt den Weg zu den Attributen
+    dieses Laufs (#40). Er steht **nur an archivierten Läufen**: ein Lauf im
+    Slot hat keine Journal-Zeile und damit keinen Snapshot — ein Link dorthin
+    wäre ein toter Knopf. Dass die Ansicht erst ab der Archivierung existiert,
+    ist eine Lücke der Ablage und nicht der Anzeige; sie ist als eigenes
+    Ticket festgehalten statt hier stillschweigend überbrückt.
+    """
     st = r.get("status") or ""
     rs = r.get("reason")
     im_slot = r.get("in_slot") is True
@@ -4549,6 +4568,10 @@ def _run_zeile(r: dict) -> str:
                  f'data-src="{_e(r.get("src"))}"')
     else:
         holen = f'data-jid="{_e(r.get("id"))}"'
+    attrs = ""
+    if basis and not im_slot and r.get("id") is not None:
+        attrs = (f' <a class="cta" href="{basis}/runs/{_e(r.get("id"))}/attrs">'
+                 "[attrs]</a>")
     return (
         f'<tr class="{"run run-in-slot" if im_slot else "run"}">'
         f'<td class="mark">{marke}</td>'
@@ -4565,7 +4588,7 @@ def _run_zeile(r: dict) -> str:
         f'<td>{_duration_cell(r)}</td>'
         f'<td>{_e((r.get("commit_sha") or "")[:7])}</td>'
         f'<td><button class="cta run-show" {holen} '
-        f'data-run="{_e(r.get("run_id"))}">[show]</button></td>'
+        f'data-run="{_e(r.get("run_id"))}">[show]</button>{attrs}</td>'
         "</tr>"
         # Der Ausklappbereich gehoert zum **Lauf**, nicht zur Zeilenposition —
         # deshalb ueberlebt der Deep-Link `#run=` die Archivierung (§5.4).
@@ -4680,6 +4703,20 @@ _ATTR_FELDER = ("schedule", "at", "attempts", "backoff",
                 "defer_time", "defer_max", "error_time", "silence_timeout",
                 "wall_time", "hitl_timeout")
 
+#: Die Konfigurationswerte eines **Laufs** (#40). Weiter als `_ATTR_FELDER`,
+#: weil ein Lauf mehr erbt als seinen Zeitplan: `model` und `soul` erklären
+#: zwei Läufe desselben Jobs, die verschieden ausgehen, oft allein.
+_LAUF_KONFIG = (*_ATTR_FELDER, "model", "soul", "session", "exec_mode",
+                "image", "priority", "app_port", "app_prefix")
+
+#: Die Laufzeit-Werte, in der Reihenfolge, in der man sie liest: erst wer und
+#: wo, dann wie lange und mit welchem Ausgang, dann woran (Commit) und wohin
+#: (Output). `run_id` steht zuerst, weil er den Lauf benennt.
+_LAUF_LAUFZEIT = ("run_id", "status", "reason", "host", "worker", "domain",
+                  "pinned_host", "started_at", "finished_at", "archived_at",
+                  "exec_runtime", "exit_code", "commit_sha", "branch",
+                  "output_ref")
+
 
 # Hier stand `_load_more()` — der Nachlade-Knopf der bibi4-Listen. Die
 # v5-Lauf-Liste laedt ueber `reach`/`weiter` nach (FE §5.3) und rendert ihren
@@ -4742,6 +4779,117 @@ def job_attrs_page_v5(*, slug: str, spec: dict, defaults: dict, now: float,
         '<span class="jd-meta">attributes</span>'
         "</div>"
         f'<div class="attrs">{"".join(zeilen)}</div>'
+        f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
+        f"<script>{_OPS_HANDLES_JS}</script>"
+        f"<script>{_THEME_JS}</script>"
+        "</body></html>"
+    )
+
+
+def _attr_zeile(feld: str, wert, herkunft: str) -> str:
+    """Eine Zeile der Lauf-Attribute: Feld, Wert, Herkunft.
+
+    Dieselbe Form wie auf der Job-Attribut-Seite, um eine dritte Spalte
+    erweitert. Zwei Signale wie dort: die Herkunft steht als Wort da **und**
+    färbt den Wert — Dimmung allein geht in hellen Themes verloren.
+    """
+    klasse = {"job": "attr-default", "run": "attr-set", "runtime": "attr-set"}[herkunft]
+    return (f'<div class="attr-row"><span class="attr-key">{_e(feld)}</span>'
+            f'<span class="{klasse}">{_e(wert)}</span>'
+            f'<span class="attr-src muted">{herkunft}</span></div>')
+
+
+def run_attrs_page_v5(*, slug: str, lauf: dict, job_spec: dict, now: float,
+                      daemon_status: dict | None = None,
+                      git_status: dict | None = None, host_url: str | None = None,
+                      scheduler: dict | None = None,
+                      scheduler_stale_since: float | None = None) -> str:
+    """Die Attribute **eines Laufs** (#40) — drei Schichten in einer Tabelle.
+
+    **Warum eine Tabelle und nicht zwei Ansichten:** die Frage, die hierher
+    führt, lautet *warum ging dieser Lauf anders aus als jener*. Getrennte
+    Ansichten beantworten sie in zwei Blicken; eine Spalte „woher" beantwortet
+    sie in einem. Das liegt außerdem näher an dem, was ``/attrs`` für den Job
+    schon tut.
+
+    **Standbild, nicht Bus-gebunden.** Bei einem laufenden Lauf wüchsen die
+    Laufzeitwerte — ob die Ansicht daran hängt, entscheidet Welle 4 und soll
+    hier nicht vorweggenommen werden. Die Frage stellt sich ohnehin erst dann:
+    es gibt diese Seite nur für archivierte Läufe (siehe unten).
+
+    **Was die Herkunftsspalte nicht wissen kann, behauptet sie auch nicht.**
+    ``journal.snapshot`` friert die Job-Konfiguration beim **Archivieren** ein,
+    nicht beim Start — und nach Archivierungsregel A2 bleibt ein terminaler
+    Lauf im Slot stehen, bis jemand START oder RESET auslöst, der Abstand
+    wächst also beliebig. Ein Unterschied zwischen Snapshot und heutiger
+    Job-Konfiguration heißt deshalb *„dieser Lauf hatte einen anderen Wert"*
+    und nicht *„der Lauf hat ihn gesetzt"*: ob der Lauf abwich oder der Job
+    sich danach änderte, ist aus der Ablage nicht zu entscheiden. Der Satz
+    steht auf der Seite, nicht nur hier — dieselbe Ehrlichkeit, mit der die
+    Job-Seite ihr „geerbt" als Näherung ausweist.
+
+    Die volle Erhebung, auf der das beruht, liegt im Bibi5-Case unter
+    ``20260811.Lauf-Attribute.md``.
+    """
+    import json as _json
+
+    from bibi.schedule.models import job_uid as _uid
+
+    try:
+        schnapp = _json.loads(lauf.get("snapshot") or "{}")
+    except (ValueError, TypeError):
+        # Ein unlesbarer Snapshot ist kein Grund, die Laufzeitwerte
+        # zurückzuhalten — sie stehen in eigenen Spalten und sind unberührt.
+        schnapp = {}
+
+    zeilen = []
+    for feld in _LAUF_LAUFZEIT:
+        wert = lauf.get(feld)
+        if wert in (None, ""):
+            continue
+        if feld in ("started_at", "finished_at", "archived_at"):
+            wert = _uhrzeit(wert, now)
+        elif feld == "exec_runtime":
+            wert = _human_duration(wert)
+        zeilen.append(_attr_zeile(feld, wert, "runtime"))
+
+    for feld in _LAUF_KONFIG:
+        wert = schnapp.get(feld)
+        if wert is None:
+            continue
+        # `run`, wo der Lauf einen anderen Wert trug als der Job heute — mit
+        # dem Vorbehalt oben. `job`, wo beide dasselbe sagen.
+        abweichend = feld in job_spec and job_spec.get(feld) != wert
+        zeilen.append(_attr_zeile(feld, wert, "run" if abweichend else "job"))
+
+    if not zeilen:
+        zeilen.append('<div class="empty">Nothing recorded for this run — its '
+                      "journal row carries no snapshot.</div>")
+
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>bibi &middot; {_e(slug)} &middot; run attributes</title>"
+        f"<style>{_CSS}</style>"
+        f'<script src="/-/static/htmx-1.9.12.min.js"></script>'
+        "</head><body>"
+        f"{_header('Jobs', daemon_status, scheduler=scheduler, sub=True, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
+        '<div class="jd-head">'
+        f'<a class="back" href="/-/jobs/{_uid(slug)}">&#9666; back to job</a>'
+        f'<span class="jd-slug">{_e(slug)}</span>'
+        f'<span class="jd-meta">run attributes &middot; {_e(lauf.get("run_id") or "")}</span>'
+        "</div>"
+        '<div class="attrs-head"><span class="attr-key">FIELD</span>'
+        '<span>VALUE</span><span class="attr-src">SOURCE</span></div>'
+        f'<div class="attrs">{"".join(zeilen)}</div>'
+        '<p class="muted attrs-note">The snapshot is frozen when the run is '
+        "archived, not when it starts &mdash; under rule A2 a terminal run "
+        "waits in its slot until someone presses START or RESET. A "
+        "<span class=\"mono\">run</span> therefore means &bdquo;this run held a "
+        "different value than the job holds today&ldquo;, which is not the same "
+        "as &bdquo;the run set it&ldquo;.</p>"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"

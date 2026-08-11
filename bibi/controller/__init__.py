@@ -1970,6 +1970,43 @@ def add_controller_routes(
                 str(job_id), ereignisse, kind=_kind))
         return HTMLResponse(render.output_block(ereignisse, _kind))
 
+    @app.get("/-/jobs/{job_uid}/runs/{jid}/attrs", include_in_schema=False)
+    def screen_run_attrs(request: Request, job_uid: str, jid: int):  # noqa: ARG001
+        """Die Attribute genau dieses Laufs (#40) — die mittlere der drei
+        Schichten, die es bisher nur abgelegt und nie sichtbar gab.
+
+        **Beide Quellen, wie beim Output.** Die Journal-IDs der beiden Seiten
+        sind verschiedene Zähler; wer nur lokal sucht, antwortet für fast jeden
+        Lauf des Screens mit 404.
+        """
+        import time as _t
+
+        treffer = _job_by_uid(job_uid)
+        if treffer is None:
+            return JSONResponse(status_code=404,
+                                content={"error": "job not found", "job_uid": job_uid})
+        slug, _ = treffer
+        from bibi.daemon import job_db
+        conn = job_db.connect()
+        try:
+            zeile = job_db.get_journal(conn, jid)
+        finally:
+            conn.close()
+        if not zeile:
+            try:
+                zeile = _host_client().journal_entry(jid) or {}
+            except Exception:  # noqa: BLE001 — defensiv (§2.7)
+                zeile = {}
+        if not zeile:
+            return JSONResponse(status_code=404,
+                                content={"error": "run not found", "id": jid})
+        _sched = _scheduler_status()
+        return HTMLResponse(render.run_attrs_page_v5(
+            slug=slug, lauf=zeile, job_spec=_local_schedules().get(slug) or {},
+            now=_t.time(), daemon_status=_status(), git_status=_feed_git_status(),
+            host_url=_scheduler_url(), scheduler=_sched[0],
+            scheduler_stale_since=_sched[1]))
+
     @app.get("/-/jobs/{job_uid}/runs/{jid}/output", include_in_schema=False)
     def screen_job_run_output(request: Request, job_uid: str, jid: int):  # noqa: ARG001
         """Die Ausgabe eines archivierten Laufs (FE-Spezifikation §5.4).
