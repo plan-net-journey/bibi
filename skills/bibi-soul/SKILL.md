@@ -21,6 +21,26 @@ bibi-ctrl soul <name>   # switch — case-insensitive, prints the canonical name
 bibi-ctrl soul          # show the currently active persona (or "none active")
 ```
 
+## The persona is active without anyone asking for it
+
+Since m.rau/bibi#75 part B the team repo's `.claude/settings.json` runs
+`bibi-ctrl soul --hook` on **`SessionStart`** and on **`SubagentStart`**. It
+reads the persisted name, loads the matching `.claude/souls/NN.<Name>.SOUL.md`
+and hands its prose back as `additionalContext`. Three consequences worth
+knowing:
+
+- **A fresh session already carries the persona.** `/soul` is for *changing*
+  it, not for activating it.
+- **A compaction no longer loses it.** `SessionStart` fires on `compact` too,
+  so the persona returns on its own. Until part B that gap was the whole
+  complaint: the state said `soul: Rook` while nothing of Rook was in context.
+- **Subagents carry it too**, structurally via `SubagentStart` rather than by
+  being asked to pass it along.
+
+With no soul set the hook prints nothing and exits 0 — the neutral path, not
+an error. Same for a soul whose file has been deleted: the hook runs *before*
+the first prompt, and failing there fails where nobody could have acted yet.
+
 ## Effect
 
 Switching is two steps, both required:
@@ -36,13 +56,14 @@ Switching is two steps, both required:
    stderr — relay that list back to the user.
 2. **Load + adopt the profile.** Read the matching `.claude/souls/NN.<Name>.SOUL.md`
    and adopt that persona for the rest of the conversation, overriding
-   whatever was active before. This step is **skill-side, not engine-side** —
-   `bibi-ctrl soul` only persists the name, it never reads the SOUL.md's prose.
+   whatever was active before. This is what makes a mid-session `/soul` take
+   effect **with the next turn** instead of only in the next session — the
+   hook above covers session starts, this step covers switches.
 
 With no argument: print whichever persona is currently persisted (or "none
-active") — a pure read, no file is loaded, no persona is adopted. Use this to
-check state, not to reactivate a persona (re-issue `bibi-ctrl soul <name>` to
-actually reload the profile into context, e.g. after a compaction).
+active") — a pure read, no file is loaded. Since part B you no longer need
+this to *reactivate* a persona after a compaction: the hook has already put
+it back.
 
 ## Refuse
 
