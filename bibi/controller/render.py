@@ -3589,6 +3589,29 @@ _LEER = {
 }
 
 
+#: Zustände, in denen ein Lauf im Slot **in Arbeit** ist: er hat begonnen und
+#: ist nicht terminal. `failed` und `deferred` gehören ausdrücklich nicht dazu —
+#: dort wartet der Slot auf einen Termin, und genau den soll `NEXT` dann nennen.
+_IN_ARBEIT = frozenset({"starting", "running", "awaiting"})
+
+
+def _laufender_start(s: dict) -> float | None:
+    """Der Startzeitpunkt des Laufs, der gerade im Slot steht (#136).
+
+    ``None`` heißt „hier läuft nichts" — dann sagen ``LAST`` und ``NEXT``
+    weiterhin, was sie immer gesagt haben.
+
+    **Ein Zustand allein macht keinen Lauf.** ``RESET`` räumt ``started_at``
+    ausdrücklich; ohne die zweite Prüfung zählte danach eine Zelle die Laufzeit
+    eines Laufs hoch, den es nie gab — derselbe Fall, den ``slot_run()`` an
+    seiner Stelle schon abfängt.
+    """
+    if (s.get("row_status") or s.get("status")) not in _IN_ARBEIT:
+        return None
+    start = s.get("started_at")
+    return start if isinstance(start, (int, float)) else None
+
+
 def _next_zelle(row, s: dict, now: float, ohne_zukunft: bool) -> str:
     """Die NEXT-Zelle — mit Fälligkeitskennzeichen, wenn der Termin hinter uns
     liegt und der Job noch wartet (#11).
@@ -3607,6 +3630,18 @@ def _next_zelle(row, s: dict, now: float, ohne_zukunft: bool) -> str:
     """
     if ohne_zukunft:
         return "—"
+    # **Solange ein Lauf läuft, ist die Laufzeit die Zukunft** (#136). Ein
+    # Termin, der neben einem laufenden Lauf steht, beantwortet eine Frage, die
+    # in diesem Moment niemand stellt — und er ist zugleich die eine Angabe
+    # dieser Zeile, die ein Rescan mitten im Lauf neu berechnet.
+    #
+    # Der Server liefert den Anker, der Browser zählt (`_DURATION_JS`). **Was
+    # hier tickt, muss auch refetchen** — die Zeile hängt am Sammel-Target
+    # `jobs`, sonst entstünde genau die Anzeige aus #131: eine, die sich
+    # bewegt und dabei den falschen Zustand zeigt.
+    laeuft = _laufender_start(s)
+    if laeuft is not None:
+        return _dauer_span(_human_duration(now - laeuft), "since", laeuft)
     ts = s.get("next_fire_at")
     zeit = _uhrzeit(ts, now)
     if ts is None or ts >= now:
@@ -3690,7 +3725,11 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
         # abgenommen 2026-08-03).
         f'<td>{l.get("status") or "—"}</td>'
         f'<td>{s.get("row_status") or s.get("status") or "—"}</td>'
-        f'<td>{_uhrzeit(s.get("last_run_at"), now)}</td>'
+        # **`LAST` nennt den Lauf, der gerade läuft** (#136) — seine Startzeit,
+        # nicht die des vorigen. Wer auf die Zeile sieht, während der Job
+        # arbeitet, sucht diesen Lauf und nicht seinen Vorgänger; der steht
+        # ohnehin im Journal.
+        f'<td>{_uhrzeit(_laufender_start(s) or s.get("last_run_at"), now)}</td>'
         f"<td>{_next_zelle(row, s, now, ohne_zukunft)}</td>"
         # RUNTIME gehört auf diese Seite und ist ein Perzentil (m.rau/bibi#132):
         # P90 der letzten 30 Läufe, nicht die Dauer des letzten. Die sprang —
