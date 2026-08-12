@@ -141,7 +141,19 @@ _CSS = """
    Zeilen der UI): die breiteste Zeile — Nodes mit 13 Spalten — braucht in
    Mono 14px 851 px, verfuegbar sind 1024. Der Preis ist 14px Grundgroesse
    statt 15px, und dafuer bleibt die max-width unangetastet. */
-body { font: 14px/1.55 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+/* **Chrome traegt Sans, Werte tragen Monospace** (#36, Vorschlag 2 der
+   Design-Studie). Bis v0.8.4 setzte diese Zeile Monospace, und 21 weitere
+   Deklarationen wiederholten sie lokal -- es gab im ganzen Renderer keine
+   einzige Sans-Familie. Die Umstellung ist deshalb keine Ergaenzung, sondern
+   eine Umkehr der Grundlage: die Chrome-Ebene ist die groessere und erbt,
+   die Werte bekommen ihre Schrift zugewiesen.
+
+   Die 21 lokalen `ui-monospace`-Regeln bleiben unveraendert stehen -- sie
+   sassen schon immer an Wert-Elementen und sind ab jetzt keine Wiederholung
+   mehr, sondern die Aussage. Was sie nicht abdeckten, sind die nackten
+   Tabellenzellen; die bekommen ihre Regel unten. */
+body { font: 14px/1.55 system-ui, -apple-system, "Segoe UI", Roboto,
+       "Helvetica Neue", Arial, sans-serif;
        background: var(--bg); color: var(--text);
        margin: 0; padding: 1.5rem;
        max-width: 64rem; margin-inline: auto; }
@@ -392,7 +404,15 @@ td.cellflash { animation: bibi-cellflash 3.15s ease-out 1; }
 table.jobs { width: 100%; border-collapse: collapse; font-size: .92rem; }
 table.jobs th { text-align: left; font-weight: 500; color: var(--hdr-key);
                 padding: .3rem .6rem .3rem 0; }
-table.jobs td { padding: .22rem .6rem .22rem 0; white-space: nowrap; }
+/* **Die Wertzellen sind der dichteste Ort mit Daten** (#36) -- Slugs, Zeiten,
+   Zustaende, Zaehler. Sie tragen deshalb Monospace, waehrend die Koepfe
+   darueber die Sans vom `body` erben. `tabular-nums` dazu: eine Zeitspalte,
+   die zwischen 09:59 und 10:00 ihre Breite aendert, laesst die ganze Tabelle
+   zucken -- die Design-Studie hat 39 % Unterschied zwischen den Ziffern der
+   System-Sans gemessen, und mit dieser Umstellung kommt genau sie ins Spiel. */
+table.jobs td { padding: .22rem .6rem .22rem 0; white-space: nowrap;
+                font-family: ui-monospace, "SF Mono", Menlo, monospace;
+                font-variant-numeric: tabular-nums; }
 table.jobs tbody tr:hover { background: var(--hover); }
 /* Die Gruppenzeile ueber den zwei Zustandsbloecken. Gepunktet, weil sie eine
    Zusammenfassung ist und keine Spalte. */
@@ -448,9 +468,17 @@ table.jobs th.sortiert { color: var(--text); }
    Die Breite haengt an der Spaltenposition, nicht an einer Klasse — die
    Zellen tragen bis auf `slug` keine, und eine einzufuehren, damit das CSS
    huebscher wird, waere eine Aenderung am Markup fuer eine Frage der
-   Darstellung. */
-table.jobs td:nth-child(5), table.jobs td:nth-child(6),
-table.jobs th:nth-child(5), table.jobs th:nth-child(6) { min-width: 6.5rem; }
+   Darstellung.
+
+   **Positionen 6 und 7 seit #135, vorher 5 und 6.** Genau der Bruch, vor dem
+   der Kommentar an der `data-nodiff`-Zelle warnt: eine Regel, die an einer
+   Spaltenposition haengt, ueberlebt keinen Spaltenumbau. Sie hat ihn hier auch
+   nicht ueberlebt -- unbemerkt wanderte die Mindestbreite auf SCHEDULER STATUS
+   und LAST, waehrend NEXT sie verlor und beim Jahreswechsel wieder umbraeche.
+   Im Journal (eine Spalte weniger) traefe sie STATUS und LAST; das ist
+   hinnehmbar, weil dort ohnehin kein NEXT steht. */
+table.jobs td:nth-child(6), table.jobs td:nth-child(7),
+table.jobs th:nth-child(6), table.jobs th:nth-child(7) { min-width: 6.5rem; }
 /* Leerer Screen: kein Kasten, kein Ausrufezeichen — ein Satz, der sagt, was
    fehlt und was man tun kann. */
 .leer { padding: 2.2rem 0; max-width: 42rem; }
@@ -559,11 +587,18 @@ th a:hover { text-decoration: underline; }
 /* Der Slug bricht **nie** mitten im Wort (Befund m.rau: `20260531.Continuou` /
    `sCollection-` / `a0bc0dcc`). `overflow-wrap: anywhere` stammt aus bibi4 und
    war dort fuer die Autorenliste gedacht — auf einem Namen ist es falsch. */
-.frow .msg { flex: 1; min-width: 0; overflow-wrap: normal; word-break: keep-all; }
+/* Der Name der Einheit ist ein Wert, kein Chrome (#36): ein Case-Ordner heisst
+   `20260731.ReleaseWorkflow-b404b7f9`, und ein Slug gehoert in dieselbe Schrift
+   wie in der Jobs-Tabelle. Ohne diese Regel erbte er die Sans vom `body` und
+   saehe auf zwei Screens verschieden aus. */
+.frow .msg { flex: 1; min-width: 0; overflow-wrap: normal; word-break: keep-all;
+             font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 .frow .cnt { color: var(--dim); font-family: ui-monospace, monospace; font-size: .78rem;
              flex: 0 0 auto; white-space: nowrap; }
+/* Der Urheber ist ein Job-Slug oder ein git-Autor -- beides Werte (#36). */
 .frow .who { color: var(--dim); font-size: .78rem; flex: 0 1 auto; min-width: 0;
-             overflow-wrap: anywhere; }
+             overflow-wrap: anywhere;
+             font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 .frow a.commit { text-decoration: none; }
 .frow a.commit:hover { text-decoration: underline; color: var(--blue); }
 /* **Eine Gruppen-Kopfzeile fuer beide Screens** (#31, Vorschlag 1). Sie tritt
@@ -695,8 +730,13 @@ table.jobs tr.band .gkopf { margin: 0; }
 .runs th { text-align: left; font-weight: 600; font-size: .72rem;
            letter-spacing: .03em; color: var(--faint); text-transform: uppercase;
            padding: .3rem .5rem .3rem 0; border-bottom: 1px solid var(--line); }
+/* Wie die Jobs-Tabelle (#36): die Zellen tragen Werte -- Commit-Hashes,
+   Zeiten, Dauern -- und damit Monospace, waehrend die Koepfe darueber die Sans
+   vom `body` erben. */
 .runs td { padding: .28rem .5rem .28rem 0; border-bottom: 1px solid var(--line);
-           vertical-align: baseline; }
+           vertical-align: baseline;
+           font-family: ui-monospace, "SF Mono", Menlo, monospace;
+           font-variant-numeric: tabular-nums; }
 .runs td:first-child, .runs th:first-child { padding-left: .2rem; }
 .runs tr:hover td { background: var(--hover); }
 /* Die Tagestrennzeile ist kein Datensatz — ohne eigene Form las sie sich als

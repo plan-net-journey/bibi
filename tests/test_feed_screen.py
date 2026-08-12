@@ -262,6 +262,62 @@ def test_both_group_headers_share_one_component():
         "erwartet: die Definition und je ein Aufruf aus Jobs und Feed")
 
 
+# ── Chrome gegen Daten: zwei Schriften, eine Aussage (#36) ────────────────
+#
+# **Vorschlag 2 der Design-Studie**: die Chrome-Ebene (Navigation, Gruppen-
+# labels, Filter, Spaltenköpfe, Buttons) trägt eine System-Sans, jeder Wert
+# bleibt Monospace. *„Die Zeile soll auf den ersten Blick unterscheidbar
+# machen, was Struktur und was Daten ist."*
+#
+# **Der Ausgangszustand war schärfer, als das Ticket ihn beschreibt:** der
+# `body` setzte Monospace per `font:`-Kurzform, 21 weitere Deklarationen
+# wiederholten dieselbe Familie lokal — **keine einzige Sans im ganzen
+# Renderer.** Die Umstellung ist deshalb keine Ergänzung, sondern eine Umkehr
+# der Grundlage.
+
+
+def _css() -> str:
+    return re.search(r'_CSS = """(.*?)"""',
+                     Path(render.__file__).read_text(), re.S).group(1)
+
+
+def test_the_chrome_carries_a_sans_face():
+    """Der `body` führt die Chrome-Ebene, weil sie die größere ist."""
+    body = re.search(r"body\s*\{[^}]*\}", _css()).group(0)
+    assert "system-ui" in body, f"der body traegt keine System-Sans: {body}"
+    assert "ui-monospace" not in body, "der body traegt weiterhin Monospace"
+
+
+def test_the_values_stay_monospace():
+    """**Die Gegenprobe, und sie ist der eigentliche Test.**
+
+    Ein Test, der nur *„Chrome ist Sans"* prüft, bliebe grün, wenn versehentlich
+    die **ganze** Seite auf Sans umgestellt würde — und das wäre die schlimmere
+    Regression: Zeiten, Hashes und Zähler verlören ihre Spaltentreue, und zwar
+    unauffällig, weil eine Sans-Tabelle nicht kaputt aussieht, sondern nur
+    unruhig.
+
+    Geprüft werden die Zellen der Jobs-Tabelle: sie sind der dichteste Ort mit
+    Werten und der einzige, an dem eine falsche Zuordnung sofort mehrere
+    Spalten träfe.
+    """
+    regel = re.search(r"table\.jobs td\s*\{[^}]*\}", _css())
+    assert regel and "ui-monospace" in regel.group(0), (
+        f"die Wertzellen tragen keine Monospace: {regel and regel.group(0)}")
+
+
+def test_number_columns_hold_their_width():
+    """Die Zusage aus dem Prüfumfang der Klammer: *Zahlenspalten tragen
+    `tabular-nums`*. Ohne sie zappelt eine Spalte beim Stellenwechsel — die
+    Design-Studie hat 39 % Breitenunterschied zwischen den Ziffern der
+    System-Sans gemessen, und mit Vorschlag 2 kommt genau diese Schrift ins
+    Spiel."""
+    css = _css()
+    for regel in ("table.jobs td", ".relia-p", ".dur"):
+        block = re.search(rf"{re.escape(regel)}\s*\{{[^}}]*\}}", css)
+        assert block and "tabular-nums" in block.group(0), regel
+
+
 def test_no_wireframe_brackets_in_the_markup():
     """#32: *„Eckige Klammern weg, überall — `[show]`, `[START]`, `[ATTRS]`,
     `[LOAD MORE]`. Das war ein Wireframe-Zeichen für ‚hier ist eine Aktion' und
