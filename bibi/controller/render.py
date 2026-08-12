@@ -154,9 +154,25 @@ td { padding: .4rem .5rem; border-bottom: 1px solid var(--line); }
    das Gegenteil bedeutet. */
 .st.starting { color: var(--blue); opacity: .7; }
 .st.running { color: var(--blue); }
-.st.awaiting { color: var(--amber); }
-.st.pending, .st.deferred { color: var(--dim); }
-.st.failed, .st.error, .st.killed, .st.zombie { color: var(--red); }
+/* Die Gruppen folgen dem Zustandsmodell, nicht dem ersten Eindruck (#68).
+
+   `failed` stand bis v0.8.3 bei den roten Endzuständen und ist keiner: es hat
+   Backoff, ein gesetztes `next_fire_at` und den Übergang RETRY → starting, und
+   `lifecycle.TERMINAL` führt es nicht. Wer die Zeile las, hielt den Job für
+   erledigt, während er auf seinen nächsten Versuch wartete.
+
+   `deferred` stand bei `pending` im Grau und gilt als **aktiv**:
+   `_live_placeholder_row()` zählt es zu den laufenden, `pending` ausdrücklich
+   nicht. Die Farbe gruppierte damit genau gegen die Logik.
+
+   Beide tragen jetzt Amber — zusammen mit `awaiting`, weil #33 alle drei auf
+   der hohen Aufmerksamkeitsstufe führt. **Was sie unterscheidet, ist Bewegung
+   und nicht Farbe:** `awaiting` steht still (es passiert nichts, bis jemand
+   handelt), `failed`/`deferred` tragen den Ruhepuls. Die Farbe sagt „hier ist
+   Aufmerksamkeit nötig", der Marker sagt „wer als nächstes handelt". */
+.st.awaiting, .st.failed, .st.deferred { color: var(--amber); }
+.st.pending { color: var(--dim); }
+.st.error, .st.killed, .st.zombie { color: var(--red); }
 .kind { font-family: ui-monospace, monospace; font-size: .82rem; color: var(--faint); }
 .handles { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center;
            margin: 1rem 0 .25rem; }
@@ -242,6 +258,19 @@ button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnlin
 .htmx-request .btn-spinner { opacity: 1; animation: bibi-pulse .9s ease-in-out infinite; }
 @keyframes bibi-pulse { 0%, 100% { opacity: .25; transform: scale(.7); }
                          50% { opacity: 1; transform: scale(1); } }
+
+/* Bewegung ist ab v0.8.3 Information, also braucht sie einen Weg ohne Bewegung
+   (#68 Punkt 4). Bis dahin gab es in dieser Datei kein einziges
+   `prefers-reduced-motion` — die eine vorhandene Animation lief ungefragt.
+
+   **Erhalten, nicht abschalten.** Ein Block, der nur `animation: none` setzt,
+   nimmt die Aussage mit weg: der Spinner bedeutet „die Anfrage läuft", und ein
+   unsichtbarer Spinner bedeutet nichts. Er steht deshalb still und sichtbar da,
+   statt zu pulsieren. Dieselbe Regel gilt für jeden Marker, der hier
+   dazukommt. */
+@media (prefers-reduced-motion: reduce) {
+  .htmx-request .btn-spinner { animation: none; opacity: 1; transform: none; }
+}
 .logbar { display: flex; gap: .6rem; align-items: center; margin: 1rem 0 .6rem;
           flex-wrap: wrap; }
 .logbar select, .logbar input { font: inherit; padding: .2rem .45rem; color: inherit;
