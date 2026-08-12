@@ -90,6 +90,36 @@ def _string_konstanten(baum: ast.Module) -> dict[str, str]:
     return out
 
 
+def _umleitungen(baum: ast.Module, routen: dict[str, str]) -> set[str]:
+    """Routen, deren Handler nichts tut als umzuleiten (`#162`).
+
+    **Eine Umleitung ist kein Ziel und deshalb auch keine tote Route.** Sie ist
+    der Rückweg für eine Adresse, die es einmal gab: `/-/live` stand ein halbes
+    Jahr hinter einem sichtbaren Tab und liegt in Lesezeichen. Dass kein Screen
+    auf sie zeigt, ist genau ihr Zweck — ein Verweis darauf wäre der Fehler.
+
+    **Erkannt wird das an der Sache, nicht an einer Liste.** Ein Eintrag in
+    ``_ERLAUBT_TOTE_ROUTEN`` wäre hier falsch: dort steht Schuld, und diese
+    Route schuldet nichts. Die Regel gilt zudem für die nächste Umleitung
+    mit, ohne dass jemand daran denkt.
+    """
+    out: set[str] = set()
+    namen = {n: p for p, n in routen.items()}
+    for n in ast.walk(baum):
+        if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if n.name not in namen:
+            continue
+        rueckgaben = [k for k in ast.walk(n) if isinstance(k, ast.Return)]
+        if not rueckgaben:
+            continue
+        if all(isinstance(r.value, ast.Call)
+               and getattr(r.value.func, "id", None) == "RedirectResponse"
+               for r in rueckgaben):
+            out.add(namen[n.name])
+    return out
+
+
 def _routen(baum: ast.Module) -> dict[str, str]:
     """Pfad → Name des Handlers. Nur die FE-Routen; `controller/__init__.py`
     führt keine Maschinen-API (die liegt in `daemon/`)."""
@@ -190,11 +220,28 @@ def test_every_route_can_be_reached_from_a_screen():
     hat `/-/ui/jobs/detail/…` einen Monat lang überlebt.
     """
     erreichte, _namen, routen, _ = _erreichbar()
-    tot = sorted(set(routen) - erreichte - _ERLAUBT_TOTE_ROUTEN)
+    _, ctrl_baum = _quelle("__init__.py")
+    tot = sorted(set(routen) - erreichte - _ERLAUBT_TOTE_ROUTEN
+                 - _umleitungen(ctrl_baum, routen))
     assert not tot, (
         f"{len(tot)} Routen sind von keinem Screen aus erreichbar: {tot}. "
         f"Entweder verlinken, entfernen — oder bewusst in "
         f"_ERLAUBT_TOTE_ROUTEN eintragen und im Commit begründen (#100).")
+
+
+def test_a_redirect_is_not_mistaken_for_a_screen():
+    """Die Gegenprobe zur Umleitungs-Regel (`#162`).
+
+    Ohne sie wäre die Regel ein Loch: sie müsste nur weit genug greifen, und
+    jede unerreichbare Route hieße „Umleitung". Geprüft wird deshalb beides —
+    dass ``/-/live`` als Umleitung erkannt wird **und** dass ein Screen, der
+    rendert, es nicht ist.
+    """
+    _, ctrl_baum = _quelle("__init__.py")
+    routen = _routen(ctrl_baum)
+    um = _umleitungen(ctrl_baum, routen)
+    assert "/-/live" in um
+    assert "/-/log" not in um and "/-/nodes" not in um
 
 
 def test_every_renderer_can_be_reached_from_a_screen():

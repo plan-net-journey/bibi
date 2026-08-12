@@ -1520,9 +1520,18 @@ _RESOLUTION_LABEL = {1440: "24h/1m", 480: "8h/1w", 180: "3h/3d", 120: "2h/2d",
 # leitet sich jetzt aus `_SORTIERBAR` ab — siehe `sortierbare_schluessel()`.
 
 
-#: Die sechs Screens, in der Reihenfolge der App-Bar. Feed und Jobs sind die
+#: Die fünf Screens, in der Reihenfolge der App-Bar. Feed und Jobs sind die
 #: täglichen, Journal steht neben Jobs (es war dessen drittes Segment), Nodes
-#: ist Betrieb, Live und Log sind Diagnose.
+#: ist Betrieb, Log ist Diagnose.
+#:
+#: **`Live` ist am 2026-08-12 gefallen** (`#162`). Er stand hier als sechster
+#: Tab und gab wörtlich `logs_page()` zurück — denselben Inhalt wie `Log`, seit
+#: dem v5-Umbau. Die geplante Trennung (Live ohne Gedächtnis, Log mit Historie,
+#: FE-Spezifikation §7) ist nie gebaut worden, und die Absicht selbst ist jetzt
+#: zurückgenommen: *„Es wird bis auf weiteres nicht dazu kommen, dass wir den
+#: Live Screen ausbauen"* (m.rau). **Eine Absicht, die niemand baut, ist keine.**
+#: Die Adresse bleibt als Umleitung auf `/-/log` — gespeicherte Lesezeichen
+#: sollen nicht ins Leere zeigen.
 #:
 #: **Archive bleibt gestrichen** (m.rau/bibi#130, FE-Spezifikation §1 und §6).
 #: `Journal` ist nicht seine Rücknahme, und der Unterschied muss sichtbar
@@ -1548,7 +1557,6 @@ SCREENS: tuple[tuple[str, str], ...] = (
     ("Jobs", "/-/jobs"),
     ("Journal", "/-/jobs/journal"),
     ("Nodes", "/-/nodes"),
-    ("Live", "/-/live"),
     ("Log", "/-/log"),
 )
 
@@ -1797,9 +1805,9 @@ def status_header(
 
 def _screen_nav(active: str, roles: list[str] | None = None, *,
                 sub: bool = False) -> str:
-    """Die App-Bar: sechs Screens, der aktive ohne Link — außer man steht darunter.
+    """Die App-Bar: fünf Screens, der aktive ohne Link — außer man steht darunter.
 
-    Auf **jedem** Knoten dieselben sechs — es gibt nur noch einen Client, und
+    Auf **jedem** Knoten dieselben fünf — es gibt nur noch einen Client, und
     der Scheduler ist Backend ohne eigenes Frontend (FE-Spezifikation §1). Die
     Leiste verzweigt deshalb nicht mehr nach Rolle; ``roles`` bleibt in der
     Signatur, weil die Aufrufer es durchreichen, und wird hier nicht gelesen.
@@ -1809,11 +1817,11 @@ def _screen_nav(active: str, roles: list[str] | None = None, *,
     weil es zwei Frontends gab. Ein Screenshot war ohne Kenntnis der Rolle
     nicht einzuordnen.
 
-    ``Live`` und ``Log`` sind getrennt, was vorher ein Tab war: der Unterschied
-    ist das Gedächtnis. Live hat keines und erzählt, was gerade geschieht; Log
-    hat Historie und ist zum Nachschlagen da (FE-Spezifikation §7). ``API
-    Docs`` ist aus der Leiste raus — die Route bleibt, aber eine generierte
-    Schema-Seite ist kein Screen dieser App.
+    ``Live`` und ``Log`` waren getrennt, was vorher ein Tab war — der
+    Unterschied sollte das Gedächtnis sein (FE-Spezifikation §7). Der zweite
+    Screen ist nie entstanden, und mit `#162` ist der Tab wieder gefallen; was
+    bleibt, ist ``Log``. ``API Docs`` ist aus der Leiste raus — die Route
+    bleibt, aber eine generierte Schema-Seite ist kein Screen dieser App.
 
     ``sub`` sagt, dass die zeigende Seite **unterhalb** von ``active`` liegt
     (m.rau/bibi#148). Dann bleibt der Tab hervorgehoben und wird zusätzlich
@@ -2185,10 +2193,10 @@ def log_page(daemon_status: dict | None = None, *, git_status: dict | None = Non
         "<!DOCTYPE html>\n"
         '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>bibi · Live-Log</title>"
+        "<title>bibi · Log</title>"
         f'<script src="{_HTMX}" crossorigin="anonymous"></script>'
         f"<style>{_CSS}</style></head><body>"
-        f"{_header('Live Log', status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{_header('Log', status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{_log_panel()}"
