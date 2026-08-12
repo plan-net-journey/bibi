@@ -317,6 +317,22 @@ td.cellflash { animation: bibi-cellflash 3.15s ease-out 1; }
   50%      { border-radius: 50%; transform: scale(.68); }
 }
 
+/* Der Fortschrittsbalken (#67 Schritt 3). Keine `transition` auf die Breite:
+   er wird im Sekundentakt neu gesetzt, und eine Uebergangsanimation darauf
+   waere Bewegung ohne Aussage — sie verschmierte genau den Sprung, an dem man
+   den Maszstabswechsel bei P90 erkennen soll. */
+.pbar { display: block; position: relative; height: 3px; margin-top: .25rem;
+        background: var(--line-hard); border-radius: 2px; overflow: hidden; }
+.pbar-fill { display: block; height: 100%; background: var(--blue); }
+/* Ab der Referenz rot — die Farbe haengt allein an vor/nach P90, nicht am
+   Status: der ist weiterhin `running`, und daran aendert eine lange Laufzeit
+   nichts. */
+.pbar.over .pbar-fill { background: var(--red); }
+/* Die Marke ist der abzulesende Bezug: sie steht bei `ref` und wandert nach
+   links, sobald die Achse mitwaechst. */
+.pbar-mark { position: absolute; top: 0; width: 1px; height: 100%;
+             background: var(--text); opacity: .55; }
+
 @media (prefers-reduced-motion: reduce) {
   .htmx-request .btn-spinner { animation: none; opacity: 1; transform: none; }
   /* **Die Unterscheidung ueberlebt, nur die Bewegung nicht** — Puls wird zum
@@ -1668,6 +1684,25 @@ _DURATION_JS = """
       // und genau die baut Welle 3 auf diese Zellen.
       if (el.textContent !== text) el.textContent = text;
     });
+    // Der Fortschrittsbalken (#67 Schritt 3) folgt derselben Uhr. Die Formel
+    // steht bewusst zweimal -- hier und in `_pbar_geometrie()` --, weil das
+    // Erstbild ohne JavaScript richtig sein soll und der Verlauf mit. Die
+    // Fallunterscheidung ist die Aussage: bis `ref` waechst der Kopf bis 100 %,
+    // danach steht er bei 80 % und die Marke wandert nach links.
+    document.querySelectorAll('[data-pbar]').forEach(function(el){
+      const at = parseFloat(el.getAttribute('data-at'));
+      const ref = parseFloat(el.getAttribute('data-ref'));
+      if (!isFinite(at) || !isFinite(ref) || ref <= 0) return;
+      const t = Math.max(0, jetzt - at);
+      let kopf, marke;
+      if (t <= ref) { kopf = Math.min(100, t / ref * 100); marke = 100; }
+      else { kopf = 80; marke = ref / (t * 1.25) * 100; }
+      const f = el.querySelector('.pbar-fill');
+      const m = el.querySelector('.pbar-mark');
+      if (f) f.style.width = kopf.toFixed(1) + '%';
+      if (m) m.style.left = marke.toFixed(1) + '%';
+      el.classList.toggle('over', t > ref);
+    });
   }
   tick(); setInterval(tick, 1000);
 })();
@@ -2850,6 +2885,15 @@ _DIFF_JS = """
   // ein positionsbasierter Vergleich blitzte dann die halbe Tabelle.
   let vorher = null;
 
+  // **Was von selbst weiterlaeuft, ist keine Nachricht.** Neben der statischen
+  // Abmeldung (`data-nodiff`, die RUNTIME-Spalte) faellt jede Zelle heraus, die
+  // einen eigenen Ticker traegt: seit #136 zaehlt die NEXT-Zelle waehrend eines
+  // Laufs hoch, und ohne diese Regel blitzte sie bei jedem Refetch.
+  function ausgenommen(td){
+    return td.hasAttribute('data-nodiff')
+        || td.querySelector('[data-dur],[data-pbar]') !== null;
+  }
+
   function schnappschuss(wurzel){
     const m = new Map();
     wurzel.querySelectorAll('tr[data-row]').forEach(function(tr){
@@ -2857,7 +2901,7 @@ _DIFF_JS = """
       let i = 0;
       tr.querySelectorAll('td').forEach(function(td){
         const n = i++;
-        if (td.hasAttribute('data-nodiff')) return;
+        if (ausgenommen(td)) return;
         m.set(key + '\u0000' + n, td.textContent.trim());
       });
     });
@@ -2888,7 +2932,7 @@ _DIFF_JS = """
       let i = 0;
       tr.querySelectorAll('td').forEach(function(td){
         const n = i++;
-        if (td.hasAttribute('data-nodiff')) return;
+        if (ausgenommen(td)) return;
         const k = key + '\u0000' + n;
         // **Eine neue Zeile ist keine Aenderung, sondern ein Zugang.** Ohne
         // diese Zeile blitzte beim ersten Refetch die ganze Tabelle auf.
@@ -3757,6 +3801,70 @@ _LEER = {
 _IN_ARBEIT = frozenset({"starting", "running", "awaiting"})
 
 
+def _pbar_geometrie(t: float, ref: float) -> tuple[float, float]:
+    """``(Kopf, Marke)`` in Prozent für einen Lauf der Dauer ``t`` (#67).
+
+    **Die Achse richtet sich an genau zwei Dingen aus:** an ``ref``, solange der
+    Lauf darunter bleibt, danach am aktuellen Wert × 1,25. Der Kopf steht
+    jenseits von ``ref`` deshalb konstant bei 80 %, und die Marke wandert nach
+    links — abgelesen wird der **Abstand zwischen beiden**.
+
+    **Es ist eine Fallunterscheidung und kein ``max()``**, und der Unterschied
+    ist nicht kosmetisch: ``max(ref, t × 1,25)`` griffe schon bei ``t = 0,8 ref``
+    und ließe den Kopf nie die 100 % erreichen. Die Marke wäre dann bei
+    Erreichen von ``ref`` nicht am rechten Rand, sondern bei 80 %, und die
+    Aussage *„so lange dauert dieser Job üblicherweise"* ginge verloren.
+
+    Beim Überschreiten springt der Kopf sichtbar von 100 % auf 80 % zurück. Das
+    ist gewollt: genau dort wechselt der Maßstab, und ein Maßstabswechsel, den
+    man nicht sieht, ist der Grund, warum Balken lügen.
+    """
+    if t <= 0 or ref <= 0:
+        return 0.0, 100.0
+    if t <= ref:
+        return min(100.0, t / ref * 100.0), 100.0
+    achse = t * 1.25
+    return 80.0, ref / achse * 100.0
+
+
+def _pbar(s: dict, now: float) -> str:
+    """Der Fortschrittsbalken eines laufenden Laufs — oder nichts.
+
+    **Nur ``running``.** ``starting`` hat per Invariante noch keine PID und
+    damit nichts Messbares; ``awaiting`` wartet auf einen Menschen;
+    ``failed``/``deferred`` haben keinen laufenden Prozess und bekommen deshalb
+    auch keinen Countdown-Balken mehr. Sie alle tragen den Marker, und der sagt
+    bereits, was zu sagen ist.
+
+    **Die Kaskade P90 → ``wall_time`` → nichts ist der Normalfall, nicht die
+    Kür:** von 149 Slugs im Journal haben 143 genau einen Lauf. Die eigene
+    Historie schlägt die Obergrenze, weil sie sagt, was üblich *ist*, und nicht,
+    was erlaubt wäre — und wo beides fehlt, entsteht kein Balken. **Ein
+    erfundener Maßstab ist schlimmer als keiner.**
+    """
+    if (s.get("row_status") or s.get("status")) != "running":
+        return ""
+    start = s.get("started_at")
+    if not isinstance(start, (int, float)):
+        return ""
+    ref, art = s.get("runtime_p90"), "p90"
+    if not ref:
+        ref, art = s.get("wall_time"), "wall"
+    if not ref:
+        return ""
+    t = max(0.0, now - start)
+    kopf, marke = _pbar_geometrie(t, float(ref))
+    # Ganze Klassenlisten statt einer Interpolation mitten im Namen: der
+    # Waechter aus #94 liest den Quelltext, und `class="pbar{...}"` ist fuer ihn
+    # kein `pbar`. Derselbe Fehler wie beim `mono` in `v0.8.2` -- eine Klasse,
+    # die der Waechter nicht sehen kann, ist eine, die er nicht bewacht.
+    klassen = "pbar over" if t > float(ref) else "pbar"
+    return (f'<span class="{klassen}" data-pbar data-at="{start}" '
+            f'data-ref="{float(ref)}" data-refkind="{art}" aria-hidden="true">'
+            f'<span class="pbar-fill" style="width:{kopf:.1f}%"></span>'
+            f'<span class="pbar-mark" style="left:{marke:.1f}%"></span></span>')
+
+
 #: Wie sich der Aktivitäts-Marker je Zustand verhält (#67 Schritt 2).
 #: Was hier fehlt, bekommt **gar keinen** Marker — terminale Zustände und
 #: `pending` haben keine Aktivität, über die er etwas sagen könnte, und ein
@@ -3836,7 +3944,11 @@ def _next_zelle(row, s: dict, now: float, ohne_zukunft: bool) -> str:
     # bewegt und dabei den falschen Zustand zeigt.
     laeuft = _laufender_start(s)
     if laeuft is not None:
-        return _dauer_span(_human_duration(now - laeuft), "since", laeuft)
+        # Der Balken steht **unter** der Laufzeit, nicht neben ihr: beide
+        # beantworten dieselbe Frage, die Zahl genau und der Balken im
+        # Verhältnis. Nebeneinander konkurrierten sie um denselben Blick (#67).
+        return (_dauer_span(_human_duration(now - laeuft), "since", laeuft)
+                + _pbar(s, now))
     ts = s.get("next_fire_at")
     zeit = _uhrzeit(ts, now)
     if ts is None or ts >= now:
