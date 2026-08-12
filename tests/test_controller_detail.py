@@ -547,7 +547,7 @@ def test_detail_live_panel_pending_shows_wartet_not_aktiver_lauf():
     s = {"slug": "a", "kind": "job", "trigger": "now"}
     job = {"id": "j", "slug": "a", "status": "pending", "next_fire_at": None}
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
-    assert 'class="st pending">pending' in html
+    assert 'st pending">pending' in html
     assert "waiting" in html
     assert "active run" not in html
 
@@ -556,7 +556,7 @@ def test_detail_live_panel_for_running_job():
     s = {"slug": "a", "kind": "job", "trigger": "now"}
     job = {"id": "j", "slug": "a", "status": "running", "started_at": 1.0}
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
-    assert 'class="live"' in html and 'class="st running">running' in html
+    assert 'class="live"' in html and 'st running">running' in html
     # Job-Lifecycle-Redesign (leichte Variante, 2026-07-27): ein laufender Job
     # ohne echte Journal-Zeilen zeigt jetzt eine reine Anzeige-Platzhalterzeile
     # statt "no runs yet" — verlinkt zurück auf die Live-Region (#live).
@@ -571,7 +571,7 @@ def test_detail_live_panel_deferred_shows_wartet_auf_retry():
     job = {"id": "j", "slug": "a", "status": "deferred", "started_at": 1.0,
            "next_fire_at": 20.0}
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
-    assert 'class="live"' in html and 'class="st deferred">deferred' in html
+    assert 'class="live"' in html and 'st deferred">deferred' in html
     assert "waiting for retry" in html
     assert "active run" not in html
     assert "next run" in html
@@ -593,7 +593,7 @@ def test_detail_live_panel_failed_shows_next_run():
     job = {"id": "j", "slug": "a", "status": "failed", "finished_at": 2.0,
            "next_fire_at": 15.0}
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
-    assert 'class="st failed">failed' in html
+    assert 'st failed">failed' in html
     assert "next run" in html
 
 
@@ -638,7 +638,7 @@ def test_detail_shows_live_panel_for_last_terminal_run():
     s = {"slug": "a", "kind": "job", "trigger": "now"}
     job = {"id": "j", "slug": "a", "status": "complete", "finished_at": 2.0}
     html = render.schedule_detail_inner(s, [], job, slug="a", now=5.0)
-    assert 'class="live"' in html and 'class="st complete">complete' in html
+    assert 'class="live"' in html and 'st complete">complete' in html
     assert "last run" in html
     # Seit #122 traegt die Dauer eine Huelle mit ihrem Anker — der Text
     # steht darin, zusammenhaengend ist er nicht mehr.
@@ -808,7 +808,10 @@ def test_journal_fragment_shows_live_placeholder_for_in_progress_job(status):
     job = {"id": "j", "slug": "a", "status": status, "started_at": 1.0}
     html = render.journal_fragment([], "a", now=5.0, live_job=job)
     assert "no runs yet" not in html
-    assert f'<td class="st {status}">{status}</td>' in html
+    # Seit #33 ein Chip aus `_status_chip()`. Welche Farbe er trägt, prüft
+    # `tests/test_status_vocabulary.py` und wird hier nicht wiederholt — was
+    # hier zählt, ist, dass der Platzhalter seinen Zustand überhaupt nennt.
+    assert f'st {status}">{status}</span>' in html
     assert '<a class="back" href="#live">↑ live</a>' in html
 
 
@@ -839,7 +842,8 @@ def test_journal_fragment_live_placeholder_defaults_missing_status_to_running():
     # — dieselbe Default-Regel wie _local_job_view() (Block 1).
     job = {"id": "j", "slug": "a", "started_at": 1.0}
     html = render.journal_fragment([], "a", now=5.0, live_job=job)
-    assert '<td class="st running">running</td>' in html
+    # Seit #33 ein Chip statt einer blanken `.st`-Zelle.
+    assert '<td><span class="chip chip-green st running">running</span></td>' in html
 
 
 def test_journal_runs_route_returns_next_batch_and_sentinel(app_with):

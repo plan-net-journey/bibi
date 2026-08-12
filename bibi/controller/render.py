@@ -57,9 +57,21 @@ _CSS = """
      sie sind das Geruest, an dem das Auge die Zeile findet, nicht der Wert. */
   --hdr-key: #5d7f9d;
   --btnbg: #00000008; --btnline: #00000022;
-  --greensoft: #3f7d5222; --bluesoft: #3a6f9e1a; --blueline: #3a6f9e55;
+  --greensoft: #3f7d5222; --greenline: #3f7d5255;
+  --bluesoft: #3a6f9e1a; --blueline: #3a6f9e55;
   --ambersoft: #a3762a22; --amberline: #a3762a55;
   --redsoft: #b0342b14; --redline: #b0342b44;
+  /* **Gelb und Orange sind zwei Farben** (#33). Bis v0.8.7 deckte `--amber`
+     beides ab und wurde dabei geteilt: `awaiting`, `failed` und `deferred`
+     trugen es gemeinsam, waehrend `error`, `killed` und `zombie` in Rot
+     standen. Die Tabelle braucht sie getrennt -- gelb heisst *wartet auf einen
+     Menschen*, orange heisst *ist schiefgegangen*.
+
+     `--yellow` traegt den bisherigen Amber-Wert: `awaiting` sieht damit aus wie
+     vorher, und nur das Neue ist neu. `--greenline` fehlte ohnehin (in #36
+     vermerkt) und kommt mit den Chips dazu. */
+  --yellow: #a3762a; --yellowsoft: #a3762a22; --yellowline: #a3762a55;
+  --orange: #c0561f; --orangesoft: #c0561f1c; --orangeline: #c0561f4d;
   --cell0: #00000009; --cell1: #3a6f9e33; --cell2: #3a6f9e66;
   --cell3: #3a6f9ea6; --cell4: #3a6f9e;
   /* Der Blitz einer geaenderten Zelle (#67). Bewusst **ohne Farbton**: die
@@ -84,9 +96,13 @@ _CSS = """
      sie sind das Geruest, an dem das Auge die Zeile findet, nicht der Wert. */
   --hdr-key: #8aa7c2;
     --btnbg: #ffffff0d; --btnline: #ffffff26;
-    --greensoft: #6aa87e26; --bluesoft: #6b9fd022; --blueline: #6b9fd055;
+    --greensoft: #6aa87e26; --greenline: #6aa87e55;
+    --bluesoft: #6b9fd022; --blueline: #6b9fd055;
     --ambersoft: #cb9a4a26; --amberline: #cb9a4a55;
     --redsoft: #d4534a1a; --redline: #d4534a44;
+    /* Gelb und Orange getrennt (#33) -- siehe die helle Palette. */
+    --yellow: #cb9a4a; --yellowsoft: #cb9a4a26; --yellowline: #cb9a4a55;
+    --orange: #e0894e; --orangesoft: #e0894e22; --orangeline: #e0894e55;
     --cell0: #ffffff0d; --cell1: #6b9fd033; --cell2: #6b9fd066;
     --cell3: #6b9fd0a6; --cell4: #6b9fd0;
   /* s. o. (#67) */
@@ -109,9 +125,21 @@ _CSS = """
      sie sind das Geruest, an dem das Auge die Zeile findet, nicht der Wert. */
   --hdr-key: #5d7f9d;
   --btnbg: #00000008; --btnline: #00000022;
-  --greensoft: #3f7d5222; --bluesoft: #3a6f9e1a; --blueline: #3a6f9e55;
+  --greensoft: #3f7d5222; --greenline: #3f7d5255;
+  --bluesoft: #3a6f9e1a; --blueline: #3a6f9e55;
   --ambersoft: #a3762a22; --amberline: #a3762a55;
   --redsoft: #b0342b14; --redline: #b0342b44;
+  /* **Gelb und Orange sind zwei Farben** (#33). Bis v0.8.7 deckte `--amber`
+     beides ab und wurde dabei geteilt: `awaiting`, `failed` und `deferred`
+     trugen es gemeinsam, waehrend `error`, `killed` und `zombie` in Rot
+     standen. Die Tabelle braucht sie getrennt -- gelb heisst *wartet auf einen
+     Menschen*, orange heisst *ist schiefgegangen*.
+
+     `--yellow` traegt den bisherigen Amber-Wert: `awaiting` sieht damit aus wie
+     vorher, und nur das Neue ist neu. `--greenline` fehlte ohnehin (in #36
+     vermerkt) und kommt mit den Chips dazu. */
+  --yellow: #a3762a; --yellowsoft: #a3762a22; --yellowline: #a3762a55;
+  --orange: #c0561f; --orangesoft: #c0561f1c; --orangeline: #c0561f4d;
   --cell0: #00000009; --cell1: #3a6f9e33; --cell2: #3a6f9e66;
   --cell3: #3a6f9ea6; --cell4: #3a6f9e;
   /* s. o. (#67) */
@@ -128,9 +156,13 @@ _CSS = """
      sie sind das Geruest, an dem das Auge die Zeile findet, nicht der Wert. */
   --hdr-key: #8aa7c2;
   --btnbg: #ffffff0d; --btnline: #ffffff26;
-  --greensoft: #6aa87e26; --bluesoft: #6b9fd022; --blueline: #6b9fd055;
+  --greensoft: #6aa87e26; --greenline: #6aa87e55;
+  --bluesoft: #6b9fd022; --blueline: #6b9fd055;
   --ambersoft: #cb9a4a26; --amberline: #cb9a4a55;
   --redsoft: #d4534a1a; --redline: #d4534a44;
+  /* Gelb und Orange getrennt (#33) -- siehe die helle Palette. */
+  --yellow: #cb9a4a; --yellowsoft: #cb9a4a26; --yellowline: #cb9a4a55;
+  --orange: #e0894e; --orangesoft: #e0894e22; --orangeline: #e0894e55;
   --cell0: #ffffff0d; --cell1: #6b9fd033; --cell2: #6b9fd066;
   --cell3: #6b9fd0a6; --cell4: #6b9fd0;
   /* s. o. (#67) */
@@ -171,32 +203,37 @@ th { text-align: left; color: var(--faint); font-weight: 500; padding: .35rem .5
      border-bottom: 1px solid var(--line); }
 td { padding: .4rem .5rem; border-bottom: 1px solid var(--line); }
 .st { font-family: ui-monospace, monospace; }
-.st.complete { color: var(--green); }
-/* starting (#38): Live-Farbe wie running, aber gedimmt — der Job ist aktiv, sein
-   Wrapper aber noch nicht gestartet. Ohne eigene Regel bliebe der Status
-   ungefärbt und wäre optisch nicht von "pending" zu unterscheiden, obwohl er
-   das Gegenteil bedeutet. */
-.st.starting { color: var(--blue); opacity: .7; }
-.st.running { color: var(--blue); }
-/* Die Gruppen folgen dem Zustandsmodell, nicht dem ersten Eindruck (#68).
+/* **Der Status als Text -- dieselbe Tabelle wie der Chip** (#33).
 
-   `failed` stand bis v0.8.3 bei den roten Endzuständen und ist keiner: es hat
-   Backoff, ein gesetztes `next_fire_at` und den Übergang RETRY → starting, und
-   `lifecycle.TERMINAL` führt es nicht. Wer die Zeile las, hielt den Job für
-   erledigt, während er auf seinen nächsten Versuch wartete.
+   Diese Regeln faerben, wo ein Zustand kein Chip ist, sondern eine
+   Ueberschrift: die `h1` der Lauf- und der Attribut-Seite traegt seine Farbe.
 
-   `deferred` stand bei `pending` im Grau und gilt als **aktiv**:
-   `_live_placeholder_row()` zählt es zu den laufenden, `pending` ausdrücklich
-   nicht. Die Farbe gruppierte damit genau gegen die Logik.
+   **Sie bilden `_ZUSTAND_VOKABULAR` ein zweites Mal ab, und das ist eine
+   bekannte Gefahr** -- zwei Implementierungen derselben Regel sind in diesem
+   Code schon zweimal auseinandergelaufen (#102, #126, beide am
+   Aktualitaets-Urteil). Weil ein Stylesheet keine Python-Tabelle lesen kann,
+   ist die Dopplung hier nicht zu vermeiden; sie ist stattdessen **bewacht**:
+   `tests/test_status_vocabulary.py::test_the_stylesheet_and_the_table_agree`
+   haelt jede dieser Zeilen gegen den Chip desselben Zustands. Eine sichtbare,
+   gepruefte Dopplung ist besser als eine versteckte.
 
-   Beide tragen jetzt Amber — zusammen mit `awaiting`, weil #33 alle drei auf
-   der hohen Aufmerksamkeitsstufe führt. **Was sie unterscheidet, ist Bewegung
-   und nicht Farbe:** `awaiting` steht still (es passiert nichts, bis jemand
-   handelt), `failed`/`deferred` tragen den Ruhepuls. Die Farbe sagt „hier ist
-   Aufmerksamkeit nötig", der Marker sagt „wer als nächstes handelt". */
-.st.awaiting, .st.failed, .st.deferred { color: var(--amber); }
-.st.pending { color: var(--dim); }
-.st.error, .st.killed, .st.zombie { color: var(--red); }
+   **Bis v0.8.7 sortierten diese Zeilen anders**, und beide Aenderungen sind
+   ausdruecklich erteilt: `running` war blau, weil Gruen `complete` gehoerte;
+   `error`, `killed` und `zombie` trugen Rot. Rot ist jetzt fuer „jetzt
+   handeln" reserviert -- getrennter Knoten, Merge-Konflikt, Lauf ueber seiner
+   `wall_time` -- und kommt in der Statusanzeige nicht mehr vor.
+
+   `starting` ist grau wie sein Chip: der Job ist aktiv, aber noch ist nichts
+   herausgekommen. Dass etwas anlaeuft, sagen die beiden Marker daneben, die
+   dort schon gelb sind. */
+.st.pending  { color: var(--faint); }
+.st.starting { color: var(--faint); }
+.st.running  { color: var(--green); }
+.st.deferred { color: var(--green); }
+.st.awaiting { color: var(--yellow); }
+.st.complete { color: var(--faint); }
+.st.failed, .st.error, .st.inactive,
+.st.killed, .st.zombie { color: var(--orange); }
 .kind { font-family: ui-monospace, monospace; font-size: .82rem; color: var(--faint); }
 .handles { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center;
            margin: 1rem 0 .25rem; }
@@ -307,27 +344,46 @@ button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnlin
 }
 td.cellflash { animation: bibi-cellflash 3.15s ease-out 1; }
 
-/* Der Aktivitaets-Marker (#67 Schritt 2): ein Quadrat, das zum Kreis wird.
+/* **Zwei Quadrate je Zeile, immer beide** (#33).
 
-   **Die Flaeche kommt aus `currentColor`**, und die Farbe aus der
-   `.st.<status>`-Regel, die der Marker mittraegt — dieselbe Quelle wie die
-   Statuszelle. Eine eigene Farbtabelle waere die Stelle, an der die beiden
-   Orte spaeter auseinanderlaufen.
+   Links laeuft eine Uhr, rechts laeuft ein Prozess. Das Blinken sagt, wie
+   dringlich; `.alt` laesst das rechte im Gegentakt laufen und sagt damit, dass
+   beide zusammengehoeren.
 
-   Der Morph laeuft ueber `border-radius` **und** `transform`: allein am Radius
-   ist der Unterschied bei 0,55em zu klein, um ihn im Augenwinkel zu bemerken —
-   und genau dort soll er bemerkt werden. */
-.act { display: inline-block; width: .55em; height: .55em; margin-right: .45em;
-       background: currentColor; border-radius: 0; }
-.act-run  { animation: bibi-act 1.1s ease-in-out infinite; }
-.act-rest { animation: bibi-act 2.9s ease-in-out infinite; }
-/* `awaiting` ist sichtbar und trotzdem unbewegt. Bewegung heisst „es passiert
-   etwas ohne dich" — hier passiert nichts, bis jemand handelt. */
-.act-still { opacity: .85; }
-@keyframes bibi-act {
-  0%, 100% { border-radius: 0;   transform: scale(1); }
-  50%      { border-radius: 50%; transform: scale(.68); }
+   **Der Platz ist fest, auch wo nichts blinkt.** Bis v0.8.7 gab es fuer die
+   meisten Zustaende gar kein Element, und der Slug jeder ruhenden Zeile
+   rutschte um einen Em nach links -- eine Tabelle, deren Spalten je nach
+   Zustand woanders anfangen, ist beim Ueberfliegen so viel wert wie keine. */
+.akt { display: inline-flex; gap: .18em; margin-right: .45em;
+       vertical-align: -.02em; }
+.mk { display: inline-block; width: .5em; height: .5em; background: currentColor;
+      border-radius: 1px; }
+.mk-grey   { color: var(--faint); }
+.mk-green  { color: var(--green); }
+.mk-yellow { color: var(--yellow); }
+.mk-orange { color: var(--orange); }
+.blink-fast { animation: bibi-blink 1.1s ease-in-out infinite; }
+.blink-slow { animation: bibi-blink 2.9s ease-in-out infinite; }
+/* Der Gegentakt ist eine halbe Periode Versatz, nicht eine eigene Animation --
+   sonst laufen die beiden bei jeder Aenderung der Dauer auseinander. */
+.blink-fast.alt { animation-delay: -.55s; }
+.blink-slow.alt { animation-delay: -1.45s; }
+@keyframes bibi-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .25; }
 }
+
+/* **Der Status als Chip** (#33). Die Farbe kommt aus `_status_chip()` und
+   damit aus derselben Tabelle wie die Marker; zwei Implementierungen derselben
+   Regel sind in diesem Code schon zweimal auseinandergelaufen (#102, #126). */
+.chip-grey   { background: var(--hover);      color: var(--dim);
+               box-shadow: inset 0 0 0 1px var(--line-hard); }
+.chip-green  { background: var(--greensoft);  color: var(--green);
+               box-shadow: inset 0 0 0 1px var(--greenline); }
+.chip-yellow { background: var(--yellowsoft); color: var(--yellow);
+               box-shadow: inset 0 0 0 1px var(--yellowline); }
+.chip-orange { background: var(--orangesoft); color: var(--orange);
+               box-shadow: inset 0 0 0 1px var(--orangeline); }
 
 /* Der Fortschrittsbalken (#67 Schritt 3). Keine `transition` auf die Breite:
    er wird im Sekundentakt neu gesetzt, und eine Uebergangsanimation darauf
@@ -347,13 +403,31 @@ td.cellflash { animation: bibi-cellflash 3.15s ease-out 1; }
 
 @media (prefers-reduced-motion: reduce) {
   .htmx-request .btn-spinner { animation: none; opacity: 1; transform: none; }
-  /* **Die Unterscheidung ueberlebt, nur die Bewegung nicht** — Puls wird zum
-     gefuellten Quadrat, Ruhepuls zum hohlen. Beide auf `animation: none` zu
-     setzen und sonst nichts machte sie ununterscheidbar, und dann waere der
-     Marker fuer diese Nutzer bloss noch ein Punkt. */
-  .act-run  { animation: none; background: currentColor; }
-  .act-rest { animation: none; background: transparent;
-              box-shadow: inset 0 0 0 1px currentColor; }
+  /* **Die Unterscheidung ueberlebt, nur die Bewegung nicht** (#33).
+
+     Hier stand dasselbe fuer `act-run`/`act-rest`, die mit dem Farbvokabular
+     gefallen sind: Puls wurde zum gefuellten Quadrat, Ruhepuls zum hohlen.
+     Beide auf `animation: none` zu setzen und sonst nichts machte sie
+     ununterscheidbar, und dann waere der Marker fuer diese Nutzer bloss noch
+     ein Punkt. Die Regel ueberlebt ihren Anlass.
+
+     `starting` und `awaiting` sind beide gelb/gelb; sie trennt allein das
+     Blinken. Ohne Bewegung waeren sie **ununterscheidbar**, und ein Teil der
+     Nutzer verloere zwei Zustaende -- lautlos, weil an keiner Stelle etwas
+     fehlt, das jemandem auffiele.
+
+     Die Form traegt es, und sie muss **drei** Faelle tragen, nicht zwei: still,
+     schnell, langsam. Der erste Entwurf hier gab nur `blink-fast` und
+     `blink-slow` eine Form und liess den stillen Marker, wie er war -- damit
+     sahen `starting` (still, gefuellt) und `awaiting` (schnell, gefuellt)
+     wieder gleich aus. Genau die Luecke, die dieser Block schliessen soll.
+
+     Jetzt: still = gefuelltes Quadrat, schnell = gefuellter Kreis, langsam =
+     hohles Quadrat. Rund heisst „in Bewegung" -- dieselbe Zuordnung, die der
+     gefallene `bibi-act`-Morph in seinem Wechsel Quadrat/Kreis benutzt hat. */
+  .blink-fast { animation: none; border-radius: 50%; }
+  .blink-slow { animation: none; background: transparent;
+                box-shadow: inset 0 0 0 1px currentColor; }
   /* **Erhalten, nicht abschalten.** Der Blitz sagt „hier hat sich etwas
      geaendert"; ohne ihn waere die Aenderung unsichtbar. Statt der Animation
      bleibt die Markierung deshalb stehen — dieselbe Aussage ohne Bewegung.
@@ -3613,7 +3687,7 @@ def _live_placeholder_row(job: dict | None, now: float) -> str:
     return (
         "<tr>"
         f"<td>{t_abs}</td>"
-        f'<td class="st {st}">{st}</td>'
+        f"<td>{_status_chip(st)}</td>"
         f"<td>—</td><td>—</td><td>{laufzeit}</td><td>—</td>"
         f'<td><a class="back" href="#live">↑ live</a></td>'
         "</tr>"
@@ -3696,7 +3770,7 @@ def _run_rows(runs: list[dict], slug: str, now: float) -> str:
         rows.append(
             "<tr>"
             f"<td>{t_abs}</td>"
-            f'<td class="st {st}">{st}</td>'
+            f"<td>{_status_chip(st)}</td>"
             f"<td>{_e(r.get('reason'))}</td>"
             f"<td>{_e(r.get('exit_code'))}</td>"
             f"<td>{_duration_cell(r)}</td>"
@@ -3812,7 +3886,7 @@ def _live_panel(job: dict | None, now: float, live_output: dict | None = None,
     else:
         label = "active run"
     return (f'<div class="live"><div class="live-head">'
-            f'<span class="st {st}">{st}</span>'
+            f"{_status_chip(st)}"
             f'<span class="muted">{label}{tail}</span>{app_link}</div>{out}</div>')
 
 
@@ -4056,7 +4130,7 @@ def _attr_table(e: dict) -> str:
     st = e.get("status")
     if st:
         rows.append(f'<tr><td><b>status</b></td>'
-                    f'<td><span class="st {_e(st)}">{_e(st)}</span></td></tr>')
+                    f"<td>{_status_chip(st)}</td></tr>")
     if e.get("exit_code") is not None:
         rows.append(f'<tr><td><b>exit_code</b></td><td>{e["exit_code"]}</td></tr>')
     rt = e.get("exec_runtime")
@@ -4425,37 +4499,156 @@ def _pbar(lauf: dict, mass: dict, now: float) -> str:
             f'<span class="pbar-mark" style="left:{marke:.1f}%"></span></span>')
 
 
-#: Wie sich der Aktivitäts-Marker je Zustand verhält (#67 Schritt 2).
-#: Was hier fehlt, bekommt **gar keinen** Marker — terminale Zustände und
-#: `pending` haben keine Aktivität, über die er etwas sagen könnte, und ein
-#: Zeichen, das immer da ist, trägt keine Information mehr.
-_AKTIVITAET = {
-    "starting": "act-run", "running": "act-run",
-    "failed": "act-rest", "deferred": "act-rest",
-    "awaiting": "act-still",
+#: **Das Farbvokabular: zwei Marker und ein Chip je Zustand** (`#33`).
+#:
+#: Ausgeschrieben von m.rau im `v0.8.7`-Durchgang, für alle elf Zustände aus
+#: ``schedule/models.py``. Bis dahin hielt `#33` nur eine *Absicht* fest —
+#: Aufmerksamkeitsstufen in Worten, nicht in Farben.
+#:
+#: **Drei Träger, drei Fragen — deshalb reichen vier Farben für elf Zustände.**
+#: Bisher trug *eine* Farbe alles und kollidierte deshalb: `failed`, `error`,
+#: `killed` und `zombie` teilten sich Rot, `pending` und `deferred` teilten sich
+#: Grau. Die Design-Studie hat diese Gruppierung schon am 2026-08-04 als *„nach
+#: Farbe statt nach Aktivität"* beanstandet.
+#:
+#: * **Die beiden Quadrate sagen, was gerade geschieht** — links läuft eine Uhr,
+#:   rechts läuft ein Prozess. Das Blinken sagt wie dringlich, das Abwechseln
+#:   sagt, dass beides zusammengehört.
+#: * **Der Chip sagt, was bisher herausgekommen ist** — grau *nichts zu melden*,
+#:   grün *läuft oder kommt von selbst zurück*, gelb *wartet auf einen
+#:   Menschen*, orange *ist schiefgegangen*.
+#: * **`starting` ist die einzige Zeile, in der Chip und rechtes Quadrat
+#:   verschieden sind**, und genau daran liest man die Regel ab: die Quadrate
+#:   sind schon gelb, weil etwas anläuft, der Chip ist noch grau, weil noch
+#:   nichts herausgekommen ist.
+#:
+#: **Rot verschwindet aus der Statusanzeige** und bleibt reserviert für *„jetzt
+#: handeln"*: getrennter Knoten, Merge-Konflikt, Lauf über seiner ``wall_time``.
+#: Das ist eine schärfere Zuständigkeit als vorher und der eigentliche Gewinn
+#: der vierten Farbe.
+#:
+#: **`running` wird grün, `complete` grau.** Das kehrt die Entscheidung vom
+#: 2026-08-05 um (*„Grün heißt in diesem System `complete`"*, weshalb `running`
+#: bis v0.8.7 blau war). Die Umkehr ist ausdrücklich erteilt und trägt, weil die
+#: Bedeutung jetzt an drei Orten verteilt liegt statt an einem.
+#:
+#: **`deferred` ist die einzige Zeile, an der die Tabelle das Ticket
+#: korrigiert** — dort steht *hoch*, hier steht ein grüner Chip. Und das ist
+#: richtig: `deferred` entsteht durch ``DEFER`` aus `running` und geht per
+#: ``RESUME`` dorthin zurück, es ist nichts schiefgegangen. Die Dringlichkeit
+#: trägt das langsame Blinken, nicht die Farbe.
+#:
+#: Format: ``(links, rechts, chip)``, je Marker ``(Farbe, Bewegung)``.
+#: Bewegung ``None`` still · ``"fast"`` schnell · ``"slow"`` langsam ·
+#: das Suffix ``-alt`` heißt „im Gegentakt zum linken" und steht nur rechts.
+_ZUSTAND_VOKABULAR: dict[
+        str, tuple[tuple[str, str | None], tuple[str, str | None], str]] = {
+    "pending":  (("yellow", None),   ("grey", None),         "grey"),
+    "starting": (("yellow", None),   ("yellow", None),       "grey"),
+    "running":  (("green", "fast"),  ("green", "fast-alt"),  "green"),
+    "failed":   (("yellow", "slow"), ("orange", None),       "orange"),
+    "error":    (("orange", None),   ("orange", None),       "orange"),
+    "deferred": (("yellow", "slow"), ("green", "slow-alt"),  "green"),
+    "inactive": (("orange", None),   ("orange", None),       "orange"),
+    "awaiting": (("yellow", "fast"), ("yellow", "fast-alt"), "yellow"),
+    "complete": (("grey", None),     ("grey", None),         "grey"),
+    "zombie":   (("orange", None),   ("orange", None),       "orange"),
+    "killed":   (("orange", None),   ("orange", None),       "orange"),
 }
+
+#: Der Rückfall für eine Zeile, für die kein Vokabular greift. In der Engine
+#: kommt das nicht vor — die Tabelle deckt ``Status`` vollständig ab, und
+#: ``tests/test_status_vocabulary.py`` hält das fest. Im **Betrieb** kommt es
+#: vor: eine Zeile ohne jeden Lauf hat gar keinen Zustand, und sie soll
+#: trotzdem zwei Plätze belegen, damit die Spalten daneben stehen bleiben.
+_RUHIG: tuple[tuple[str, str | None], tuple[str, str | None], str] = (
+    ("grey", None), ("grey", None), "grey")
+
+
+#: Klassenname je Farbe und je Takt — **ausgeschrieben, nicht zusammengesetzt**.
+#:
+#: `f"mk-{farbe}"` wäre kürzer und für ``test_every_css_rule_has_markup``
+#: unsichtbar: der Wächter sammelt Klassen aus ``class="…"`` und aus
+#: String-Literalen, und ein f-String mit Platzhalter ist keins von beidem. Die
+#: Regeln `.mk-green` und Genossen hätten als tot gegolten — und die richtige
+#: Antwort darauf ist, sie auffindbar zu machen, nicht den Wächter um eine
+#: Ausnahme zu erleichtern. Dieselbe Stelle gab es bei ``_icon()``.
+_MK_KLASSE = {"grey": "mk-grey", "green": "mk-green",
+              "yellow": "mk-yellow", "orange": "mk-orange"}
+_BLINK_KLASSE = {"fast": "blink-fast", "slow": "blink-slow"}
+#: „im Gegentakt zum linken". Als eigene Konstante und nicht inline verkettet,
+#: aus demselben Grund wie oben: `" alt"` mit fuehrendem Leerzeichen ist fuer
+#: den Waechter kein Klassenname.
+_ALT_KLASSE = "alt"
+_CHIP_KLASSE = {"grey": "chip-grey", "green": "chip-green",
+                "yellow": "chip-yellow", "orange": "chip-orange"}
+
+
+def _marker(farbe: str, bewegung: str | None) -> str:
+    klassen = [_MK_KLASSE[farbe]]
+    if bewegung:
+        takt, *alt = bewegung.split("-")
+        klassen.append(_BLINK_KLASSE[takt])
+        if alt:
+            klassen.append(_ALT_KLASSE)
+    return f'<i class="mk {" ".join(klassen)}"></i>'
+
+
+def _status_chip(zustand: str | None) -> str:
+    """Der Status als Chip — **die eine Stelle, an der ein Zustand Farbe bekommt**.
+
+    Marker und Chip stammen aus derselben Tabelle, und das ist kein
+    Ordnungsbedürfnis: zwei Implementierungen derselben Regel sind in diesem
+    Code schon zweimal auseinandergelaufen (`#102`, `#126`, beide am
+    Aktualitäts-Urteil, beide mit zwei Vokabularen für dasselbe). Der Chip-Teil
+    kommt deshalb aus `#36` hierher, wo die Farbtabelle liegt.
+
+    ``st <zustand>`` bleibt am Element, obwohl die Farbe jetzt aus
+    ``chip-<farbe>`` kommt: die Klasse ist der Anker, an dem Tests und der
+    Zell-Diff eine Statuszelle wiedererkennen.
+    """
+    z = zustand or ""
+    _l, _r, farbe = _ZUSTAND_VOKABULAR.get(z, _RUHIG)
+    return f'<span class="chip {_CHIP_KLASSE[farbe]} st {_e(z)}">{_e(z)}</span>'
 
 
 def _aktivitaets_marker(s: dict, l: dict) -> str:
-    """Das pulsende Quadrat am Zeilenanfang — oder nichts.
+    """Die beiden Quadrate am Zeilenanfang — **immer zwei, in jedem Zustand**.
 
     **Der Scheduler führt, der Client springt ein.** Ein Job, der beim
     Scheduler arbeitet, ist die Regel; einer, der nur lokal per ``/run`` läuft,
     soll aber genauso pulsen — sonst stünde die Zeile still, während er läuft.
 
-    **Die Farbe kommt aus derselben Regel wie die Statuszelle**
-    (``.st.<status>``), die Fläche aus ``currentColor``. Eine zweite Farbtabelle
-    wäre genau die Stelle, an der die beiden Orte später auseinanderlaufen — und
-    `running` ist blau, nicht grün, weil Grün `complete` gehört und keine Farbe
-    ihre Bedeutung wechselt.
+    **Bis v0.8.7 gab diese Funktion für die meisten Zustände gar nichts
+    zurück.** ``_AKTIVITAET`` kannte fünf; wer nicht darin stand — jeder
+    terminale Zustand, `pending`, `inactive` —, bekam kein Element, und der Slug
+    der Zeile rutschte um einen Em nach links. Die Begründung war *„ein Zeichen,
+    das immer da ist, trägt keine Information mehr"*, und sie stimmte für **ein**
+    Zeichen. Bei zweien trägt die Farbe die Information, und der feste Platz ist
+    die Voraussetzung dafür, dass die Spalten daneben übereinander stehen.
     """
-    for quelle in (s, l):
+    # **Wer arbeitet, führt — und erst danach der Scheduler** (`#146`).
+    #
+    # Die Reihenfolge ist neu, und der Grund ist eine Nebenwirkung dieses
+    # Umbaus. Bis `v0.8.7` kannte ``_AKTIVITAET`` nur fünf Zustände; ein
+    # Scheduler auf `complete` fiel schlicht **durch**, und der lokal laufende
+    # Einspringer kam zum Zug. Seit die Tabelle **alle elf** Zustände führt,
+    # fällt niemand mehr durch: `complete` gewänne gegen einen laufenden lokalen
+    # Lauf, und die Zeile stünde still, während er läuft.
+    #
+    # Genau diese Regel steht schon in ``_arbeitende_quelle()`` und war die
+    # Antwort auf `#146`. Sie gilt hier ab jetzt ausdrücklich, statt als
+    # Nebenwirkung einer unvollständigen Tabelle mitzulaufen.
+    arbeitet = _arbeitende_quelle(s, l)
+    for quelle in ((arbeitet, s, l) if arbeitet is not None else (s, l)):
         zustand = quelle.get("row_status") or quelle.get("status")
-        art = _AKTIVITAET.get(zustand or "")
-        if art:
-            return (f'<span class="act {art} st {zustand}" aria-hidden="true">'
-                    "</span>")
-    return ""
+        if zustand in _ZUSTAND_VOKABULAR:
+            links, rechts, _chip = _ZUSTAND_VOKABULAR[zustand]
+            break
+    else:
+        links, rechts, _chip = _RUHIG
+    return (f'<span class="akt" aria-hidden="true">'
+            f"{_marker(*links)}{_marker(*rechts)}</span>")
 
 
 def _laufender_start(s: dict, l: dict | None = None) -> float | None:
@@ -4627,6 +4820,16 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
             return wert
         return "offline" if scheduler_offline else "—"
 
+    def _sched_chip(sched, zustand: str) -> str:
+        """Der Zustand als Chip -- oder die Auskunft ueber den Host (#33).
+
+        Die Reihenfolge ist die Aussage: liegt ein Zustand vor, traegt er
+        seinen Chip; liegt keiner vor, sagt `_sched()`, ob das an einem
+        schweigenden Host liegt. **`offline` bekommt keinen Chip**, weil es
+        kein Zustand des Jobs ist.
+        """
+        return _status_chip(zustand) if zustand else sched("")
+
     return (
         # `data-row` ist der Wiedererkennungsschlüssel des Zell-Diffs (#67).
         # **Die Position taugt dafür nicht** — Sortierung und Filter verschieben
@@ -4700,7 +4903,14 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
         # Nur dieser Block, nicht die beiden Job-Zahlen darüber: dort heißt `—`
         # *noch nicht berechenbar* (P90 braucht fünf Läufe), und das bleibt
         # wahr, während der Host schweigt.
-        + f'<td>{_sched(s.get("row_status") or s.get("status") or "")}</td>'
+        # **Der Zustand als Chip** (#33). Bis v0.8.7 stand er hier als nackter
+        # Text -- ohne `class="st"`, also ohne jede Farbe. Die Statusfarben gab
+        # es seit jeher, aber ausgerechnet auf dem Screen, den man taeglich
+        # ansieht, kamen sie nie an.
+        #
+        # `_sched()` bleibt aussen: `offline` ist kein Zustand des Jobs, sondern
+        # eine Auskunft ueber den Host, und es traegt deshalb keinen Chip.
+        + f'<td>{_sched_chip(_sched, s.get("row_status") or s.get("status") or "")}</td>'
         + f'<td>{_sched(_uhrzeit(_laufender_start(s, l) or s.get("last_run_at"), now))}</td>'
         + (f"<td>{_sched(_next_zelle(row, s, l, now, ohne_zukunft))}</td>"
            if mit_next else "")
@@ -4712,7 +4922,10 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
         # lokale Lauf **fertig** war. Der Scheduler nennt daneben den Start
         # seines Laufs, und das ist kein Versehen: er weiss, wann etwas beginnt,
         # der Client sieht, wann es geendet hat.
-        + f'<td>{l.get("status") or "—"}</td>'
+        # Der Client-Zustand traegt denselben Chip aus derselben Tabelle. Ein
+        # eigener waere die dritte Implementierung -- #102 und #126 waren die
+        # ersten beiden.
+        + f'<td>{_status_chip(l.get("status")) if l.get("status") else "—"}</td>'
         + f'<td>{_uhrzeit(l.get("finished_at"), now)}</td>'
         + "</tr>"
     )

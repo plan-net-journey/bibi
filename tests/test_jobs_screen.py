@@ -185,7 +185,7 @@ def test_a_locally_running_job_shows_its_state(app_with, team_repo: Path):
                                         "status": "running"}})
     with TestClient(app) as c:
         html = c.get("/-/jobs", headers={"accept": "text/html"}).text
-    assert "<td>running</td>" in _zeile_von(html, "laeuft")
+    assert 'st running">running</span></td>' in _zeile_von(html, "laeuft")
 
 
 def test_the_running_run_beats_the_archived_one(app_with, team_repo: Path):
@@ -206,8 +206,8 @@ def test_the_running_run_beats_the_archived_one(app_with, team_repo: Path):
     with TestClient(app) as c:
         html = c.get("/-/jobs", headers={"accept": "text/html"}).text
     zeile = _zeile_von(html, "laeuft")
-    assert "<td>running</td>" in zeile
-    assert "<td>complete</td>" not in zeile
+    assert 'st running">running</span></td>' in zeile
+    assert 'st complete">complete</span></td>' not in zeile
 
 
 def test_without_a_running_run_the_archive_still_shows(app_with, team_repo: Path):
@@ -223,7 +223,7 @@ def test_without_a_running_run_the_archive_still_shows(app_with, team_repo: Path
                       "finished_at": NOW - 3600, "exec_runtime": 4.2}])
     with TestClient(app) as c:
         html = c.get("/-/jobs", headers={"accept": "text/html"}).text
-    assert "<td>complete</td>" in _zeile_von(html, "laeuft")
+    assert 'st complete">complete</span></td>' in _zeile_von(html, "laeuft")
 
 
 # ── Ein abwesender Scheduler kostet einen Versuch, nicht drei ──────────────
@@ -821,7 +821,7 @@ def test_runtime_stays_empty_without_a_p90():
             now=NOW),
         "EngineCI")
     assert "3m 51s" not in zeile
-    assert "<td>error</td>" in zeile, "der lokale Zustand bleibt, nur seine Dauer geht"
+    assert 'st error">error</span></td>' in zeile, "der lokale Zustand bleibt, nur seine Dauer geht"
 
 
 # ── Die Blockordnung: erst der Job, dann der Scheduler, dann der Client ────
