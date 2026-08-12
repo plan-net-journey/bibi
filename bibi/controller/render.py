@@ -3008,7 +3008,23 @@ _DIFF_JS = """
   // Der Schluessel ist `data-row` plus Zellindex *innerhalb der Zeile*, nicht
   // die Position in der Tabelle: Sortierung und Filter verschieben Zeilen, und
   // ein positionsbasierter Vergleich blitzte dann die halbe Tabelle.
-  let vorher = null;
+  // **Ein Schnappschuss je Ziel** (#145). Vorher stand hier `let vorher = null`
+  // -- EINE Variable fuer ALLE htmx-Ziele --, und jedes fremde `beforeSwap`
+  // nullte sie. `#feedstatus` traegt keine `tr[data-row]` und tat das
+  // regelmaessig: weil beide Bereiche unabhaengig pollen, draengt sich sein
+  // Swap zwischen `afterSwap` und `afterSettle` der Tabelle.
+  //
+  // **Beim Lauf-Ende traf das zuverlaessig**, weil dasselbe Ereignis beide
+  // Bereiche aendert -- also ausgerechnet im Moment, fuer den der Zell-Diff
+  // gebaut wurde. Dass ein Lauf begonnen hat, sieht man am Marker; dass er
+  // fertig ist, war die Nachricht.
+  //
+  // Eine `WeakMap` statt eines Ignorierens fremder Ziele: der billige Fix
+  // repariert den bekannten Fall und laesst den naechsten offen, sobald ein
+  // zweiter Bereich Zeilen traegt. Das Journal tut es bereits, auf seinem
+  // eigenen Screen. Und `Weak`, damit ein getauschtes Ziel nicht als Leiche im
+  // Speicher bleibt -- bei `outerHTML` ist genau das der Normalfall.
+  const schnappschuesse = new WeakMap();
 
   // **Was von selbst weiterlaeuft, ist keine Nachricht.** Neben der statischen
   // Abmeldung (`data-nodiff`, die RUNTIME-Spalte) faellt jede Zelle heraus, die
@@ -3035,13 +3051,17 @@ _DIFF_JS = """
 
   document.body.addEventListener('htmx:beforeSwap', function(ev){
     const t = ev.detail && ev.detail.target;
-    vorher = (t && t.querySelector && t.querySelector('tr[data-row]'))
-      ? schnappschuss(t) : null;
+    if (!t || !t.querySelector) return;
+    // Ein Ziel ohne Zeilen wird **uebergangen**, nicht geloescht — es hat mit
+    // diesem Diff nichts zu tun, und frueher loeschte es den fremden.
+    if (!t.querySelector('tr[data-row]')) return;
+    schnappschuesse.set(t, schnappschuss(t));
   });
 
   document.body.addEventListener('htmx:afterSettle', function(ev){
-    if (!vorher) return;
     const t = ev.detail && ev.detail.target;
+    const vorher = t ? schnappschuesse.get(t) : null;
+    if (!vorher) return;
     // Bei einem outerHTML-Swap ist das alte Ziel nicht mehr im Dokument — dann
     // ist die neue Tabelle ueber `document` zu finden, nicht ueber die Leiche.
     const wurzel = (t && t.isConnected) ? t : document;
@@ -3067,7 +3087,9 @@ _DIFF_JS = """
         td.classList.add('cellflash');
       });
     });
-    vorher = null;
+    // Verbraucht — sonst diffte der naechste Settle desselben Ziels gegen
+    // einen Stand von vorletztem Mal.
+    schnappschuesse.delete(t);
   });
 })();
 """
@@ -3952,8 +3974,35 @@ def _pbar_geometrie(t: float, ref: float) -> tuple[float, float]:
     return 80.0, ref / achse * 100.0
 
 
-def _pbar(s: dict, now: float) -> str:
+def _arbeitende_quelle(s: dict, l: dict) -> dict | None:
+    """Die Quelle, deren Lauf gerade arbeitet — Scheduler zuerst (#146).
+
+    **Dieselbe Regel wie in ``_aktivitaets_marker()``**, und das ist der ganze
+    Punkt dieser Funktion: der Marker kannte den Einspringer schon (*„einer, der
+    nur lokal per ``/run`` läuft, soll genauso pulsen"*), seine beiden Nachbarn
+    nicht. Die Zeile sagte deshalb zweierlei über denselben Lauf — der Marker
+    pulste, die Zelle daneben zeigte einen Strich.
+
+    **Sichtbar wurde das nur im Vergleich zweier Startwege.** Wer immer über den
+    Scheduler startet, sieht es nie; genau deshalb steht die Regel jetzt an
+    einer Stelle statt an dreien.
+    """
+    for quelle in (s, l):
+        if (quelle.get("row_status") or quelle.get("status")) in _IN_ARBEIT:
+            return quelle
+    return None
+
+
+def _pbar(lauf: dict, mass: dict, now: float) -> str:
     """Der Fortschrittsbalken eines laufenden Laufs — oder nichts.
+
+    **Zwei Quellen, und die Trennung ist die Aussage** (#146): ``lauf`` ist der
+    Datensatz, in dem der laufende Lauf steht — Scheduler oder Client, je
+    nachdem, wo gestartet wurde. ``mass`` ist immer der Scheduler-Datensatz,
+    weil P90 und ``wall_time`` Eigenschaften des **Jobs** sind und nicht seines
+    Startwegs. Ein lokal gestarteter Lauf misst sich an derselben Historie wie
+    ein ferngestarteter; alles andere hieße, zwei Maßstäbe für dieselbe Frage
+    zu führen.
 
     **Nur ``running``.** ``starting`` hat per Invariante noch keine PID und
     damit nichts Messbares; ``awaiting`` wartet auf einen Menschen;
@@ -3967,14 +4016,14 @@ def _pbar(s: dict, now: float) -> str:
     was erlaubt wäre — und wo beides fehlt, entsteht kein Balken. **Ein
     erfundener Maßstab ist schlimmer als keiner.**
     """
-    if (s.get("row_status") or s.get("status")) != "running":
+    if (lauf.get("row_status") or lauf.get("status")) != "running":
         return ""
-    start = s.get("started_at")
+    start = lauf.get("started_at")
     if not isinstance(start, (int, float)):
         return ""
-    ref, art = s.get("runtime_p90"), "p90"
+    ref, art = mass.get("runtime_p90"), "p90"
     if not ref:
-        ref, art = s.get("wall_time"), "wall"
+        ref, art = mass.get("wall_time"), "wall"
     if not ref:
         return ""
     t = max(0.0, now - start)
@@ -4023,7 +4072,7 @@ def _aktivitaets_marker(s: dict, l: dict) -> str:
     return ""
 
 
-def _laufender_start(s: dict) -> float | None:
+def _laufender_start(s: dict, l: dict | None = None) -> float | None:
     """Der Startzeitpunkt des Laufs, der gerade im Slot steht (#136).
 
     ``None`` heißt „hier läuft nichts" — dann sagen ``LAST`` und ``NEXT``
@@ -4033,14 +4082,18 @@ def _laufender_start(s: dict) -> float | None:
     ausdrücklich; ohne die zweite Prüfung zählte danach eine Zelle die Laufzeit
     eines Laufs hoch, den es nie gab — derselbe Fall, den ``slot_run()`` an
     seiner Stelle schon abfängt.
+
+    ``l`` ist der lokale Datensatz und der Einspringer aus #146. Er ist optional,
+    weil diese Funktion auch dort gerufen wird, wo es keinen Client-Zustand gibt.
     """
-    if (s.get("row_status") or s.get("status")) not in _IN_ARBEIT:
+    quelle = _arbeitende_quelle(s, l or {})
+    if quelle is None:
         return None
-    start = s.get("started_at")
+    start = quelle.get("started_at")
     return start if isinstance(start, (int, float)) else None
 
 
-def _next_zelle(row, s: dict, now: float, ohne_zukunft: bool) -> str:
+def _next_zelle(row, s: dict, l: dict, now: float, ohne_zukunft: bool) -> str:
     """Die NEXT-Zelle — mit Fälligkeitskennzeichen, wenn der Termin hinter uns
     liegt und der Job noch wartet (#11).
 
@@ -4067,13 +4120,13 @@ def _next_zelle(row, s: dict, now: float, ohne_zukunft: bool) -> str:
     # hier tickt, muss auch refetchen** — die Zeile hängt am Sammel-Target
     # `jobs`, sonst entstünde genau die Anzeige aus #131: eine, die sich
     # bewegt und dabei den falschen Zustand zeigt.
-    laeuft = _laufender_start(s)
+    laeuft = _laufender_start(s, l)
     if laeuft is not None:
         # Der Balken steht **unter** der Laufzeit, nicht neben ihr: beide
         # beantworten dieselbe Frage, die Zahl genau und der Balken im
         # Verhältnis. Nebeneinander konkurrierten sie um denselben Blick (#67).
         return (_dauer_span(_human_duration(now - laeuft), "since", laeuft)
-                + _pbar(s, now))
+                + _pbar(_arbeitende_quelle(s, l) or s, s, now))
     ts = s.get("next_fire_at")
     zeit = _uhrzeit(ts, now)
     if ts is None or ts >= now:
@@ -4238,8 +4291,8 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
         # *noch nicht berechenbar* (P90 braucht fünf Läufe), und das bleibt
         # wahr, während der Host schweigt.
         + f'<td>{_sched(s.get("row_status") or s.get("status") or "")}</td>'
-        + f'<td>{_sched(_uhrzeit(_laufender_start(s) or s.get("last_run_at"), now))}</td>'
-        + (f"<td>{_sched(_next_zelle(row, s, now, ohne_zukunft))}</td>"
+        + f'<td>{_sched(_uhrzeit(_laufender_start(s, l) or s.get("last_run_at"), now))}</td>'
+        + (f"<td>{_sched(_next_zelle(row, s, l, now, ohne_zukunft))}</td>"
            if mit_next else "")
         # ── Der Client-Block: was hier ankam.
         #

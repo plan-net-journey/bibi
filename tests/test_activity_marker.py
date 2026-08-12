@@ -92,3 +92,57 @@ def test_both_pulses_survive_reduced_motion_as_a_distinction():
     ruhe = block[block.find(".act-rest"):]
     assert lauf.split("}")[0] != ruhe.split("}")[0], \
         "beide Zustaende sehen unter reduced-motion gleich aus"
+
+
+# ── #146: der Einspringer fehlte dem Balken ────────────────────────────────
+#
+# **Der Marker prüft zwei Quellen, seine Nachbarn prüften eine.** Sein Docstring
+# benennt die Regel ausdrücklich — *„Der Scheduler führt, der Client springt
+# ein"* —, und genau sie fehlte `_laufender_start()` und `_pbar()`. Die Zeile
+# sagte deshalb zweierlei über denselben Lauf: der Marker pulste, die Zelle
+# daneben zeigte einen Strich.
+#
+# **Sichtbar wurde das nur, weil derselbe Job über zwei Wege gestartet wurde.**
+# Wer immer über den Scheduler startet, sieht es nie.
+
+
+def _zeile_lokal(status: str) -> str:
+    """Dieselbe Zeile, aber der Lauf steht im **lokalen** Datensatz.
+
+    **Die P90 bleibt beim Scheduler**, und das ist kein Versehen des
+    Testdatums, sondern der Gegenstand: der Balken misst *einen Lauf* gegen die
+    *Historie des Jobs*. Wo gestartet wurde, ändert nichts daran, woran sich
+    der Lauf messen lässt — zwei Maßstäbe für dieselbe Frage wären der
+    schlechtere Fix. Der erste Anlauf dieses Helfers ließ sie weg, und der
+    Balken blieb zu Recht aus.
+    """
+    row = JobRow(slug="x", segment=Segment.SCHEDULE,
+                 scheduler={"row_status": "complete", "next_fire_at": NOW + 3600,
+                            "runtime_p90": 16.0},
+                 local={"status": status, "started_at": NOW - 5},
+                 spec={"payload": "echo hi"})
+    return render._jobs_zeile(row, NOW)
+
+
+def test_a_locally_started_run_gets_its_elapsed_time():
+    """Was der Marker sagt, muss die Zelle daneben auch sagen."""
+    zeile = _zeile_lokal("running")
+    assert "act-run" in zeile, "der Marker pulst nicht — der Testfall trägt nicht"
+    assert 'data-dur' in zeile, "die laufende Zeit fehlt dem lokalen Lauf"
+
+
+def test_a_locally_started_run_gets_its_progress_bar():
+    assert "data-pbar" in _zeile_lokal("running"), (
+        "der Fortschrittsbalken fehlt dem lokalen Lauf")
+
+
+def test_a_job_running_nowhere_still_gets_no_bar():
+    """Die Gegenprobe, und sie ist der Grund für den Test: ein Fix, der den
+    lokalen Datensatz ungeprüft übernimmt, zeichnete überall einen Balken."""
+    row = JobRow(slug="x", segment=Segment.SCHEDULE,
+                 scheduler={"row_status": "complete", "next_fire_at": NOW + 3600},
+                 local={"status": "complete"},
+                 spec={"payload": "echo hi"})
+    zeile = render._jobs_zeile(row, NOW)
+    assert "data-pbar" not in zeile
+    assert "act-run" not in zeile

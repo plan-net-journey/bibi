@@ -55,6 +55,18 @@ class FeedEntry:
     last_commit_sha: str       # Commit, der last_changed erzeugt hat (Link zum Server)
     authors: frozenset[str]    # Job-Slug bei Agent-Herkunft, sonst git-Autor
     changes: int               # geänderte Dateien in dieser Einheit im Fenster
+    #: Trägt die Achse `case | vault` (#34/#36). **Nicht aus ``unit``
+    #: ableitbar**, obwohl es so aussieht: ein Case liefert einen Namen ohne
+    #: ``/``, eine Datei direkt unter ``vault/`` aber auch. Die Unterscheidung
+    #: *findet* in ``unit_for_path()`` statt — sie wurde nur nie festgehalten,
+    #: und ein Filter liest, was gespeichert ist, nicht was einmal bekannt war.
+    ist_case: bool = False
+    #: Trägt die Achse `agents | team` (#34). Werte: ``"agent"``, ``"team"``.
+    #: **Ein Set, kein Flag** — eine Einheit, an der beide gearbeitet haben,
+    #: gehört in beide Filter, sonst verschwindet sie, sobald man einen wählt.
+    #: ``authors`` kann das nicht leisten: dort sind Job-Slug und git-Name zu
+    #: einem String verschmolzen, und danach sieht ein Slug aus wie ein Name.
+    herkunft: frozenset[str] = frozenset()
 
 
 def _run_git(root: Path, args: list[str]) -> str:
@@ -270,6 +282,11 @@ def group_entries(
     """Reine Gruppierung schon gesammelter Commits, neueste Einheit zuerst."""
     buckets: dict[str, dict] = {}
     for c in commits:
+        # **Die Herkunft wird hier festgehalten, bevor sie verschmilzt** (#34).
+        # `slugs_by_sha` trifft genau dann, wenn der Commit aus einem
+        # Agent-Merge stammt; eine Zeile weiter sind Slug und git-Name
+        # derselbe String, und die Unterscheidung ist unwiederbringlich weg.
+        aus_agent = c.sha in slugs_by_sha
         who = _basis_slug(
             (slugs_by_sha.get(c.sha) or c.author).removeprefix(_JOB_AUTHOR_PREFIX))
         for path in c.paths:
@@ -277,15 +294,21 @@ def group_entries(
             if unit is None:
                 continue
             b = buckets.setdefault(
-                unit, {"last": c.epoch, "sha": c.sha, "authors": set(), "changes": 0})
+                unit, {"last": c.epoch, "sha": c.sha, "authors": set(),
+                       "changes": 0, "herkunft": set()})
             if c.epoch > b["last"]:
                 b["last"], b["sha"] = c.epoch, c.sha
             b["authors"].add(who)
+            b["herkunft"].add("agent" if aus_agent else "team")
             b["changes"] += 1
 
     entries = [
         FeedEntry(unit=unit, last_changed=b["last"], last_commit_sha=b["sha"],
-                  authors=frozenset(b["authors"]), changes=b["changes"])
+                  authors=frozenset(b["authors"]), changes=b["changes"],
+                  # `unit in cases` ist die Frage, die `unit_for_path()` schon
+                  # beantwortet hat — hier wird sie nur aufgeschrieben.
+                  ist_case=unit in cases,
+                  herkunft=frozenset(b["herkunft"]))
         for unit, b in buckets.items()
     ]
     return sorted(entries, key=lambda e: e.last_changed, reverse=True)

@@ -588,3 +588,54 @@ def test_a_deleted_file_contributes_no_time(repo: Path):
     hiesse, den Zeitpunkt des Ansehens als den der Aenderung auszugeben."""
     (repo / "vault/case/20260601.FooBar-aa11/README.md").unlink()
     assert uncommitted_units(repo)[0].last_changed is None
+
+
+# --- die zwei Filterachsen brauchen zwei Felder (#34, #36) --------------------
+#
+# **Beide Angaben liegen in `group_entries()` vor und wurden verworfen.** Die
+# Herkunft verschmolz zu einem String (`slugs_by_sha.get(sha) or c.author`), und
+# ob eine Einheit ein Case ist, entschied `unit_for_path()`, ohne es
+# festzuhalten.
+#
+# **`case | vault` ist am `unit`-Feld NICHT sicher ablesbar**, und das korrigiert
+# die Einschaetzung im `v0.8.4`-Zuschnitt: ein Case liefert einen Namen ohne
+# `/`, eine Datei direkt unter `vault/` aber auch. Ein Filter, der auf das
+# Zeichen prueft, sortierte sie falsch ein.
+
+
+def test_a_case_entry_knows_that_it_is_one(vault: Path):
+    cases = discover_cases(vault)
+    commits = [_c("a", 100.0, "m.rau", "vault/case/20260601.FooBar-aa11/README.md")]
+    assert group_entries(commits, {}, cases=cases)[0].ist_case is True
+
+
+def test_a_vault_entry_knows_that_it_is_not(vault: Path):
+    """Die Gegenprobe, und sie ist der Grund fuer das Feld: eine Datei direkt
+    unter `vault/` traegt ebenfalls einen Namen ohne `/`."""
+    cases = discover_cases(vault)
+    commits = [_c("a", 100.0, "m.rau", "vault/memo/News/x.md")]
+    assert group_entries(commits, {}, cases=cases)[0].ist_case is False
+
+
+def test_an_agent_commit_is_told_apart_from_a_human_one(vault: Path):
+    """`agents | team`: der Slug kam aus der Merge-Message, der Name aus git.
+
+    Nach der Verschmelzung waren beide derselbe String — die Achse konnte es
+    nicht mehr wissen.
+    """
+    cases = discover_cases(vault)
+    commits = [_c("a", 100.0, "m.rau", "vault/memo/News/x.md")]
+    von_agent = group_entries(commits, {"a": "news-aggregator"}, cases=cases)[0]
+    von_mensch = group_entries(commits, {}, cases=cases)[0]
+    assert von_agent.herkunft == frozenset({"agent"})
+    assert von_mensch.herkunft == frozenset({"team"})
+
+
+def test_an_entry_touched_by_both_carries_both(vault: Path):
+    """Eine Einheit, an der Mensch und Agent gearbeitet haben, gehoert in
+    **beide** Filter — sonst verschwindet sie, sobald man einen waehlt."""
+    cases = discover_cases(vault)
+    commits = [_c("a", 100.0, "m.rau", "vault/memo/News/x.md"),
+               _c("b", 200.0, "m.rau", "vault/memo/News/y.md")]
+    zeile = group_entries(commits, {"b": "news-aggregator"}, cases=cases)[0]
+    assert zeile.herkunft == frozenset({"team", "agent"})
