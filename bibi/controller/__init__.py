@@ -1095,9 +1095,15 @@ def add_controller_routes(
         from bibi.controller import jobs_view
         jetzt = _t.time()
         historie = _journal_for_rows()
+        # **Der Ausfall reist bis in die Klassifikation** (#147). Ohne ihn
+        # kann `build_rows()` nicht unterscheiden, ob der Host einen Job nicht
+        # mehr führt oder gerade nicht antwortet — beides ist eine leere Liste,
+        # weil `_host_schedules()` die Ausnahme defensiv abfängt. Derselbe
+        # Zustand steuert eine Zeile tiefer schon die `offline`-Zellen.
         zeilen = jobs_view.build_rows(
             local=_local_job_mds(), scheduler=_host_schedules(), journal=historie,
-            now=jetzt, local_runs=_local_run_status())
+            now=jetzt, local_runs=_local_run_status(),
+            scheduler_offline=not _scheduler_status()[0])
         _quoten(zeilen, historie, jetzt)
         return zeilen, _jobs_view(request, sort, dir), jetzt
 

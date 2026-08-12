@@ -457,9 +457,33 @@ table.jobs td.slug a:hover { text-decoration: underline; }
    Die Zeile ist bewusst leiser als die Koepfe darueber: sie ist ein Handle,
    keine Ueberschrift, und ohne die duennere Schrift konkurriert sie mit der
    Spaltenbeschriftung um dieselbe Aufmerksamkeit. */
+/* **Die Filterleiste misst ihre Spalte nicht aus** (#152, Befund m.rau:
+   *„so strukturiert und formatiert erzeugt nur der Filter eine unnoetig grosse
+   Spaltenbreite."*). Eine Tabellenzelle bestimmt die Breite ihrer Spalte mit --
+   `TYPE` musste `job claude app` fassen, `STATUS` musste `waiting running
+   stopped` fassen, und `RUNTIME` brach daneben um, obwohl es der kuerzere Text
+   ist.
+
+   **Die Zuordnung Filter-unter-Spalte bleibt** (#31, Vorgabe m.rau). Was faellt,
+   ist ihr Beitrag zur Breitenrechnung: die Knoepfe liegen in einer Huelle
+   ausserhalb des Flusses, verankert an der linken Kante ihrer Zelle. Sie stehen
+   damit weiter unter ihrer Spalte und werden nicht mehr gemessen.
+
+   **Die Hoehe muss ausdruecklich dastehen**, und das ist kein Detail: steht der
+   ganze Inhalt ausserhalb des Flusses, faellt die Zeile auf null zusammen und
+   die Leiste ueberlagert die erste Datenzeile. Der Rot-Schritt fuehrt diesen
+   Fall als eigenen Test.
+
+   **Was die Huelle ueberlappen darf, ist eine leere Nachbarzelle** -- rechts von
+   `TYPE` steht `RUNTIME` ohne Filter, rechts von `STATUS` steht `LAST/RUN` ohne
+   Filter. Ueberlappte sie einen Wert, waere der Tausch *zu breit* gegen
+   *unleserlich* gegangen; dass es genau diese zwei Nachbarn sind, gehoert
+   deshalb im Durchgang angesehen und nicht nur hier behauptet. */
 tr.fltr-kopf th { border-bottom: 1px solid var(--line); padding-bottom: .3rem;
-                  font-weight: normal; }
-th.fltr-zelle { white-space: nowrap; }
+                  font-weight: normal; height: 1.9rem; }
+th.fltr-zelle { white-space: nowrap; position: relative; }
+th.fltr-zelle .fltr-lage { position: absolute; left: 0; top: .1rem;
+                           display: flex; gap: .15rem; white-space: nowrap; }
 th.fltr-zelle .fltr { font-size: .82rem; padding: .05rem .35rem; }
 .fltr { background: none; border: 1px solid transparent; color: var(--dim);
         padding: .1rem .45rem; border-radius: 3px; cursor: pointer;
@@ -4551,9 +4575,11 @@ def _filter_zeile(typ: list[str], status: list[str],
     beim ersten Lauf gefangen. Genau dafür ist sie da.
     """
     def zellen(werte, aktiv):
-        return ('<th class="fltr-zelle">'
+        # Die Huelle ist der ganze Trick (#152): sie traegt die Knoepfe aus dem
+        # Tabellenfluss, damit die Spalte wieder von ihren Daten gemessen wird.
+        return ('<th class="fltr-zelle"><span class="fltr-lage">'
                 + "".join(_filter_knopf(w, aktiv) for w in werte)
-                + "</th>")
+                + "</span></th>")
 
     return (
         '<tr class="fltr-kopf">'

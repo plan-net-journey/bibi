@@ -1998,3 +1998,129 @@ def test_the_band_head_keeps_label_and_count():
         _zeilen(local=[_md("a"), _md("b")]), now=NOW)
     assert "gk-label" in html and "gk-zahl" in html
     assert re.search(r"SCHEDULE\D*2", html)
+
+
+# ── #152: die Filterleiste misst ihre Spalte nicht mehr aus ────────────────
+#
+# Befund m.rau: *„so strukturiert und formatiert erzeugt nur der Filter eine
+# unnötig große Spaltenbreite."* `TYPE` musste `job claude app` fassen, `STATUS`
+# musste `waiting running stopped` fassen — und `RUNTIME` brach daneben um,
+# obwohl es der kürzere Text ist.
+#
+# **Die Zuordnung Filter-unter-Spalte bleibt** (#31, Vorgabe m.rau). Was fällt,
+# ist ihr Beitrag zur Breitenrechnung.
+
+
+def _filterzeile(html: str) -> str:
+    return html.split('<tr class="fltr-kopf">', 1)[1].split("</tr>", 1)[0]
+
+
+def test_the_filter_bar_does_not_measure_its_column():
+    """Der Inhalt der Filterzelle steht **außerhalb des Tabellenflusses** —
+    eine Tabellenzelle bestimmt sonst die Breite ihrer Spalte mit.
+
+    Geprüft wird die aufgelöste `position`, nicht das Vorhandensein einer
+    Klasse: eine Klasse ohne Regel ist genau der Fehler aus `#148`.
+    """
+    from tests import _css
+
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    wurzel = _css.BODY + [("table", frozenset({"jobs"})), ("thead", frozenset()),
+                          ("tr", frozenset({"fltr-kopf"}))]
+    traeger = [k for k, m in _css.ketten(_filterzeile(html), wurzel)
+               if "fltr" in (m.get("class") or "").split()]
+    assert traeger, "keine Filterknöpfe in der Kopfzeile gefunden"
+    for kette in traeger:
+        # Der Knopf selbst darf im Fluss stehen — seine Hülle nicht.
+        huelle = kette[:-1]
+        assert _css.aufgeloest(huelle, "position") == "absolute", (
+            f"die Filterhülle steht im Fluss: {huelle[-1]}")
+
+
+def test_the_filter_row_keeps_its_height():
+    """**Die erste Gegenprobe.** Steht der ganze Inhalt außerhalb des Flusses,
+    hat die Zeile keine Höhe mehr und die Leiste überlagert die Datenzeilen.
+    Die Höhe muss deshalb ausdrücklich dastehen."""
+    from tests import _css
+
+    css = _css.stylesheet()
+    assert re.search(r"tr\.fltr-kopf th[^{]*\{[^}]*height:", css), (
+        "die Filterzeile hat keine eigene Höhe")
+
+
+def test_the_filters_stay_under_their_column():
+    """**Die zweite Gegenprobe, und die wichtigere.** Der billige Weg wäre, die
+    Leiste wieder als eigenen Block über die Tabelle zu legen — genau das hat
+    `#31` abgeschafft, weil `TYPE` und `STATUS` dann zweimal dastehen, einmal
+    als Kopf und einmal als Gruppenlabel.
+
+    Die Zellen bleiben deshalb Zellen, und ihre Anzahl bleibt die der Tabelle.
+    """
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    zeile = _filterzeile(html)
+    assert zeile.count("<th") == len(_JOBS_SPALTEN), (
+        "die Filterzeile passt nicht mehr zur Tabelle")
+    typ_zelle = zeile.split("<th", 2)[2]
+    assert 'data-filter="job"' in typ_zelle, "der TYPE-Filter hat seine Spalte verlassen"
+
+
+# ── #147: ein schweigender Scheduler ist kein leerer Scheduler ─────────────
+#
+# Befund m.rau: *„Wenn der Scheduler unerreichbar ist (disconnected), dann
+# erscheinen alle Jobs als dropped oder new. Das ist falsch."* — 19 Zeilen
+# zugleich, acht unter SCHEDULE und elf unter ADHOC.
+#
+# **Der Code hatte für „führt den Job nicht mehr" und „sagt gerade nichts"
+# denselben Ausdruck:** eine leere Liste. `_host_schedules()` fängt die
+# Ausnahme defensiv ab und liefert genau die.
+#
+# Entscheidung m.rau: **einheitlich `offline`, nicht leer.** Ein leeres Feld
+# hieße *unauffällig* — derselbe Fehler wie `dropped`, nur in die andere
+# Richtung. `offline` ist zudem das Wort, das `_sched()` im Scheduler-Block
+# seit `#32` schon führt.
+
+
+def test_a_silent_scheduler_says_offline_instead_of_dropped():
+    zeilen = _zeilen(local=[_md("a"), _md("b", schedule="adhoc")],
+                     scheduler=[], journal=[{"slug": "a"}],
+                     scheduler_offline=True)
+    assert {z.relation for z in zeilen} == {"offline"}
+
+
+def test_a_speaking_scheduler_still_drops_what_it_forgot():
+    """**Die Gegenprobe, und sie ist der eigentliche Test.**
+
+    Ein Fix, der den Chip pauschal ersetzt, wäre grün und hätte die Aussage
+    verloren: `dropped` heißt *„der Host hat ihn archiviert, die MD liegt noch
+    da"*, und das bleibt eine Auskunft, die jemand braucht.
+    """
+    zeilen = _zeilen(local=[_md("a")], scheduler=[], journal=[{"slug": "a"}],
+                     scheduler_offline=False)
+    assert [z.relation for z in zeilen] == ["dropped"]
+
+
+def test_what_the_vault_alone_knows_survives_the_outage():
+    """`duplicate` und `modified` entstehen **allein aus dem Vault** und wissen
+    vom Host nichts. Sie bei Ausfall zu verschweigen hieße, eine Auskunft
+    wegzuwerfen, die weiterhin gilt — und `duplicate` ist die einzige, die
+    Handeln verlangt."""
+    doppelt = _zeilen(local=[_md("a"), _md("a")], scheduler=[],
+                      scheduler_offline=True)
+    assert [z.relation for z in doppelt] == ["duplicate"]
+    # **Realistisch: der Host schweigt, also ist seine Liste leer.** Ein Test
+    # mit gefuellter Scheduler-Liste *und* Ausfall pruefte einen Zustand, den
+    # es nicht gibt — und haette den Verlust von `modified` nicht gefangen.
+    geaendert = _zeilen(local=[_md("a", git_status="modified")],
+                        scheduler=[], scheduler_offline=True)
+    assert [z.relation for z in geaendert] == ["modified"]
+
+
+def test_the_gone_filter_stays_out_of_it_while_the_host_is_silent():
+    """Der `gone`-Filter greift auf `dropped`/`deleted`. Bliebe die
+    Fehlklassifikation stehen, träfe er bei Ausfall **jede** Zeile — ein
+    Filter, der alles zeigt, ist kein Filter."""
+    from bibi.controller import jobs_view
+
+    zeilen = _zeilen(local=[_md("a")], scheduler=[], journal=[{"slug": "a"}],
+                     scheduler_offline=True)
+    assert not any(jobs_view.trifft_filter(z, typ=[], status=[], journal=["gone"]) for z in zeilen)
