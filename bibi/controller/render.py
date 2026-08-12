@@ -62,6 +62,12 @@ _CSS = """
   --redsoft: #b0342b14; --redline: #b0342b44;
   --cell0: #00000009; --cell1: #3a6f9e33; --cell2: #3a6f9e66;
   --cell3: #3a6f9ea6; --cell4: #3a6f9e;
+  /* Der Blitz einer geaenderten Zelle (#67). Bewusst **ohne Farbton**: die
+     Palette traegt Semantikfarben nur an Zustandsstellen und Terracotta genau
+     eine Bedeutung. Eine Wertaenderung ist keins von beidem — blitzte sie in
+     Amber, saehe die Zelle drei Sekunden lang aus wie ein Zustand, den sie
+     nicht hat. Sie blitzt deshalb ueber Helligkeit. */
+  --flashbg: #1f1e1b14; --flashfg: #1f1e1b;
   --term-bg: #1c1b18; --term-text: #e8e5dc; --term-link: #d97757;
 }
 /* Wer nichts gewaehlt hat, bekommt was sein System sagt. Die ausdrueckliche
@@ -83,6 +89,8 @@ _CSS = """
     --redsoft: #d4534a1a; --redline: #d4534a44;
     --cell0: #ffffff0d; --cell1: #6b9fd033; --cell2: #6b9fd066;
     --cell3: #6b9fd0a6; --cell4: #6b9fd0;
+  /* s. o. (#67) */
+  --flashbg: #e8e5dc1a; --flashfg: #e8e5dc;
     --term-bg: #1c1b18; --term-text: #e8e5dc; --term-link: #d97757;
   }
 }
@@ -106,6 +114,8 @@ _CSS = """
   --redsoft: #b0342b14; --redline: #b0342b44;
   --cell0: #00000009; --cell1: #3a6f9e33; --cell2: #3a6f9e66;
   --cell3: #3a6f9ea6; --cell4: #3a6f9e;
+  /* s. o. (#67) */
+  --flashbg: #1f1e1b14; --flashfg: #1f1e1b;
   --term-bg: #1c1b18; --term-text: #e8e5dc; --term-link: #d97757;
 }
 :root[data-theme="dark"] {
@@ -123,6 +133,8 @@ _CSS = """
   --redsoft: #d4534a1a; --redline: #d4534a44;
   --cell0: #ffffff0d; --cell1: #6b9fd033; --cell2: #6b9fd066;
   --cell3: #6b9fd0a6; --cell4: #6b9fd0;
+  /* s. o. (#67) */
+  --flashbg: #e8e5dc1a; --flashfg: #e8e5dc;
   --term-bg: #1c1b18; --term-text: #e8e5dc; --term-link: #d97757;
 }
 /* Monospace ist gemessen, nicht geschaetzt (Canvas-measureText an den echten
@@ -268,8 +280,28 @@ button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnlin
    unsichtbarer Spinner bedeutet nichts. Er steht deshalb still und sichtbar da,
    statt zu pulsieren. Dieselbe Regel gilt für jeden Marker, der hier
    dazukommt. */
+/* Der Wertwechsel (#67 Schritt 1): Eingang schnell, Ausgang langsam.
+
+   150 ms rein und 3 s raus — das Verhaeltnis ist die Aussage. Ein Blitz, der so
+   schnell verschwindet, wie er kommt, wird uebersehen; einer, der gleich
+   schnell ein- und ausblendet, sieht aus wie ein Flackern. Der schnelle Eingang
+   holt den Blick, der lange Ausgang laesst ihn ankommen.
+
+   4,76 % von 3150 ms sind die 150 ms des Eingangs. */
+@keyframes bibi-cellflash {
+    0%    { background: transparent;    color: inherit; }
+    4.76% { background: var(--flashbg); color: var(--flashfg); }
+  100%    { background: transparent;    color: inherit; }
+}
+td.cellflash { animation: bibi-cellflash 3.15s ease-out 1; }
+
 @media (prefers-reduced-motion: reduce) {
   .htmx-request .btn-spinner { animation: none; opacity: 1; transform: none; }
+  /* **Erhalten, nicht abschalten.** Der Blitz sagt „hier hat sich etwas
+     geaendert"; ohne ihn waere die Aenderung unsichtbar. Statt der Animation
+     bleibt die Markierung deshalb stehen — dieselbe Aussage ohne Bewegung.
+     `_DIFF_JS` nimmt sie beim naechsten Swap wieder weg. */
+  td.cellflash { animation: none; background: var(--flashbg); color: var(--flashfg); }
 }
 .logbar { display: flex; gap: .6rem; align-items: center; margin: 1rem 0 .6rem;
           flex-wrap: wrap; }
@@ -1222,6 +1254,7 @@ def clients_page(workers: list[dict], now: float | None = None, *,
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{clients_fragment(workers, now)}"
         f"<script>{_EVENTS_JS}</script>"
+        f"<script>{_DIFF_JS}</script>"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"
@@ -1836,6 +1869,7 @@ def log_page(daemon_status: dict | None = None, *, git_status: dict | None = Non
         f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{_log_panel()}"
         f"<script>{_EVENTS_JS}</script>"
+        f"<script>{_DIFF_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
@@ -2252,6 +2286,7 @@ def feed_page(
         f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{feed_fragment(feed_data, days=days, now=now)}"
         f"<script>{_EVENTS_JS}</script>"
+        f"<script>{_DIFF_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"
         "</body></html>"
@@ -2772,6 +2807,74 @@ _EVENTS_JS = """
 #: eingehaengtes Element hat scrollTop=0. Beide Regionen abgedeckt (#live Host,
 #: — die Region bekommt durch den Bus erstmals lebende
 #: Output-Boxen, s. FE-Live-Update-Briefing Befund 1).
+_DIFF_JS = """
+(function(){
+  // Der Zell-Diff (#67 Schritt 1) — `watch -d` fuer die Jobs-Tabelle.
+  //
+  // **Der Vergleich lebt im Browser, weil nur er weiss, was dieser Betrachter
+  // zuletzt gesehen hat.** Der Server kennt den neuen Stand, nicht den alten
+  // dieses einen Fensters; zwei Tabs mit verschiedenem Scrollstand und
+  // verschiedenem Refetch-Zeitpunkt haetten sonst dieselbe Markierung.
+  //
+  // Der Schluessel ist `data-row` plus Zellindex *innerhalb der Zeile*, nicht
+  // die Position in der Tabelle: Sortierung und Filter verschieben Zeilen, und
+  // ein positionsbasierter Vergleich blitzte dann die halbe Tabelle.
+  let vorher = null;
+
+  function schnappschuss(wurzel){
+    const m = new Map();
+    wurzel.querySelectorAll('tr[data-row]').forEach(function(tr){
+      const key = tr.getAttribute('data-row');
+      let i = 0;
+      tr.querySelectorAll('td').forEach(function(td){
+        const n = i++;
+        if (td.hasAttribute('data-nodiff')) return;
+        m.set(key + '\u0000' + n, td.textContent.trim());
+      });
+    });
+    return m;
+  }
+
+  document.body.addEventListener('htmx:beforeSwap', function(ev){
+    const t = ev.detail && ev.detail.target;
+    vorher = (t && t.querySelector && t.querySelector('tr[data-row]'))
+      ? schnappschuss(t) : null;
+  });
+
+  document.body.addEventListener('htmx:afterSettle', function(ev){
+    if (!vorher) return;
+    const t = ev.detail && ev.detail.target;
+    // Bei einem outerHTML-Swap ist das alte Ziel nicht mehr im Dokument — dann
+    // ist die neue Tabelle ueber `document` zu finden, nicht ueber die Leiche.
+    const wurzel = (t && t.isConnected) ? t : document;
+    const jetzt = schnappschuss(wurzel);
+    // Erst raeumen: unter `prefers-reduced-motion` laeuft keine Animation, die
+    // Markierung bliebe sonst fuer immer stehen. Und ein Neustart derselben
+    // Animation braucht ohnehin ein Entfernen dazwischen.
+    wurzel.querySelectorAll('td.cellflash').forEach(function(td){
+      td.classList.remove('cellflash');
+    });
+    wurzel.querySelectorAll('tr[data-row]').forEach(function(tr){
+      const key = tr.getAttribute('data-row');
+      let i = 0;
+      tr.querySelectorAll('td').forEach(function(td){
+        const n = i++;
+        if (td.hasAttribute('data-nodiff')) return;
+        const k = key + '\u0000' + n;
+        // **Eine neue Zeile ist keine Aenderung, sondern ein Zugang.** Ohne
+        // diese Zeile blitzte beim ersten Refetch die ganze Tabelle auf.
+        if (!vorher.has(k)) return;
+        if (vorher.get(k) === jetzt.get(k)) return;
+        void td.offsetWidth;   // Reflow erzwingen, sonst greift der Neustart nicht
+        td.classList.add('cellflash');
+      });
+    });
+    vorher = null;
+  });
+})();
+"""
+
+
 _SCROLL_JS = """
 (function(){
   const isLiveRegion = (t) => t && t.id === 'live';
@@ -3317,6 +3420,7 @@ def schedule_detail_page(
         f"{schedule_detail_inner(schedule, runs, job, slug, now, live_output=live_output, public_host=public_host, output_stream_url=output_stream_url)}"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_EVENTS_JS}</script>"
+        f"<script>{_DIFF_JS}</script>"
         f"<script>{_SCROLL_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"
@@ -3731,7 +3835,12 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
     # die an genau diesen Köpfen hängen soll, der falsche Weg.
     ohne_zukunft = row.segment is Segment.JOURNAL
     return (
-        "<tr>"
+        # `data-row` ist der Wiedererkennungsschlüssel des Zell-Diffs (#67).
+        # **Die Position taugt dafür nicht** — Sortierung und Filter verschieben
+        # sie, und dann vergliche der Diff die Zelle eines Jobs mit der eines
+        # anderen und blitzte die halbe Tabelle. Der Job-uid ist über beide
+        # Screens und beide Knoten derselbe.
+        f'<tr data-row="{job_uid(row.slug)}">'
         f'<td class="slug"><a href="/-/jobs/{job_uid(row.slug)}" title="{row.slug}">'
         f"{_slug_kurz(row.slug)}</a>{beziehung}</td>"
         # Das `@` traegt die Gruppenzugehoerigkeit an der Zeile (m.rau/bibi#134):
@@ -3764,7 +3873,13 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
         # P90 der letzten 30 Läufe, nicht die Dauer des letzten. Die sprang —
         # derselbe Job zeigte mal `2.8s`, mal `4m 34s`, je nachdem was zuletzt
         # geschah. Unter fünf Läufen liefert der Scheduler bewusst nichts.
-        f'<td>{_human_duration(s.get("runtime_p90"))}</td>'
+        # `data-nodiff`: die einzige Zelle, die sich vom Aufflammen abmeldet
+        # (#67). Sie zählt im Sekundentakt hoch, und gegen 3 s Ausklingzeit wäre
+        # ihre Markierung dauerhaft an. **Dass sie hochzählt, ist erwartet und
+        # damit keine Nachricht.** Die Abmeldung steht im Markup und nicht als
+        # Spaltenindex im JavaScript — eine Ausnahme, die an einer Position
+        # hängt, bricht beim ersten Spaltenumbau, und #135 baut sie um.
+        f'<td data-nodiff>{_human_duration(s.get("runtime_p90"))}</td>'
         f'<td>{"—" if ohne_zukunft else (row.quote or "—")}</td>'
         "</tr>"
     )
@@ -4296,6 +4411,7 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         # allein bewirkt nichts, den Strom baut ausschliesslich `_EVENTS_JS`
         # auf. Beim Neubau der v5-Seiten blieb es aus — als einzige Screens.
         f"<script>{_EVENTS_JS}</script>"
+        f"<script>{_DIFF_JS}</script>"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"
@@ -4330,6 +4446,7 @@ def journal_page_v5(rows: list, *, now: float, daemon_status: dict | None = None
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f'{journal_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group, public_host=public_host)}'
         f"<script>{_EVENTS_JS}</script>"
+        f"<script>{_DIFF_JS}</script>"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOBS_JS}</script>"
@@ -5045,6 +5162,7 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
         # keinen Strom, an dem sich die Regionen anmelden koennten — `#tiles`
         # an `live:<slug>`, `#runs` seit #43 an `journal:<slug>`.
         f"<script>{_EVENTS_JS}</script>"
+        f"<script>{_DIFF_JS}</script>"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_JOB_DETAIL_JS}</script>"

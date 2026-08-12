@@ -250,7 +250,7 @@ _SPALTEN = ("slug", "type", "client", "scheduler", "last", "next", "runtime", "2
 def _zelle(html: str, spalte: str) -> str:
     """Der Text der Zelle `spalte` aus der ersten Datenzeile."""
     import re
-    zeilen = re.findall(r"<tr>(?:(?!</tr>).)*</tr>", html, re.S)
+    zeilen = re.findall(r"<tr[ >](?:(?!</tr>).)*</tr>", html, re.S)
     daten = [z for z in zeilen if 'class="slug"' in z]
     assert daten, f"keine Datenzeile im HTML gefunden (Spalte {spalte})"
     zellen = re.findall(r"<td[^>]*>(.*?)</td>", daten[0], re.S)
