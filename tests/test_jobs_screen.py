@@ -1887,3 +1887,34 @@ def test_the_tile_offers_a_way_to_the_run():
     wert = render.job_tiles_fragment(
         [_kachel(last_at=NOW - 3 * 86400, slot={})], now=NOW, slug="j", job_uid="u")
     assert 'href="#runs"' in wert, f"kein Weg zum Lauf: {wert[:400]}"
+
+
+# ── `offline` statt `—`, wo der Wert am Scheduler hängt (#32) ──────────────
+#
+# **Befund m.rau:** *„Offline oder nicht gesetzt?"* — `—` heißt heute beides,
+# und die beiden Fälle verlangen Verschiedenes. *Nicht gesetzt* ist ein
+# Zustand des Jobs, den man hinnimmt; *nicht verfügbar* ist ein Zustand des
+# Systems, dem man nachgeht. **Redundanz ist hier billiger als Zweideutigkeit.**
+
+
+def test_scheduler_cells_say_offline_instead_of_a_dash():
+    """Nur der Scheduler-Block, und das ist die Grenze dieses Fixes.
+
+    `P90 RUNTIME` und `RELIABILITY` stehen seit #135 im Job-Block. Ihre Werte
+    stammen zwar auch vom Scheduler, aber ihr `—` heißt dort etwas anderes:
+    *noch nicht berechenbar* (unter fünf Läufen liefert der Scheduler bewusst
+    nichts). Das mit `offline` zu überschreiben ersetzte eine Zweideutigkeit
+    durch eine Falschaussage.
+    """
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW,
+                              scheduler_offline=True)
+    for spalte in ("scheduler", "last", "next"):
+        assert _zelle(html, spalte) == "offline", spalte
+
+
+def test_an_online_scheduler_still_shows_a_dash():
+    """Die Gegenprobe, und sie ist der Grund für den Parameter: online heißt
+    `—` weiterhin *nicht gesetzt*, und das ist dann die richtige Auskunft. Ohne
+    diesen Test wäre ein Fix grün, der überall `offline` schreibt."""
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    assert _zelle(html, "scheduler") == "—"

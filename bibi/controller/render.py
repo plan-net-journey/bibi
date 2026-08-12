@@ -4056,7 +4056,7 @@ def _reliability_zelle(quote, ohne_zukunft: bool) -> str:
 
 
 def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
-                mit_next: bool = True) -> str:
+                mit_next: bool = True, scheduler_offline: bool = False) -> str:
     """Eine Zeile: ein Slug, zwei Zustandsblöcke.
 
     ``mit_next=False`` lässt die `NEXT`-Zelle ganz weg — für den Journal-Screen,
@@ -4110,6 +4110,21 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
     # zweiten Tabellenkopf zu führen, und das ist für die Filterzeile aus #31,
     # die an genau diesen Köpfen hängen soll, der falsche Weg.
     ohne_zukunft = row.segment is Segment.JOURNAL
+
+    def _sched(wert: str) -> str:
+        """Ein Scheduler-Wert, oder `offline`, wenn der Host schweigt (#32).
+
+        **`offline` tritt nur an die Stelle eines Strichs, nicht an die eines
+        Wertes.** Der letzte bekannte Zustand bleibt stehen — dieselbe
+        Entscheidung wie beim Header, der gedimmt wird und seine Werte behält
+        (FE §2), und wie bei den Slot-Kacheln, die gesperrt statt leer sind.
+        Einen vorhandenen Zustand durch `offline` zu ersetzen hieße, eine
+        Auskunft gegen eine Meldung einzutauschen.
+        """
+        if wert and wert != "—":
+            return wert
+        return "offline" if scheduler_offline else "—"
+
     return (
         # `data-row` ist der Wiedererkennungsschlüssel des Zell-Diffs (#67).
         # **Die Position taugt dafür nicht** — Sortierung und Filter verschieben
@@ -4161,9 +4176,19 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
         # nicht die des vorigen. Wer auf die Zeile sieht, während der Job
         # arbeitet, sucht diesen Lauf und nicht seinen Vorgänger; der steht
         # ohnehin im Journal.
-        + f'<td>{s.get("row_status") or s.get("status") or "—"}</td>'
-        + f'<td>{_uhrzeit(_laufender_start(s) or s.get("last_run_at"), now)}</td>'
-        + (f"<td>{_next_zelle(row, s, now, ohne_zukunft)}</td>" if mit_next else "")
+        # **`offline` statt `—`, wenn der Host nicht antwortet** (#32). Befund
+        # m.rau: *„Offline oder nicht gesetzt?"* — `—` hieß beides, und die
+        # beiden Fälle verlangen Verschiedenes: *nicht gesetzt* nimmt man hin,
+        # *nicht verfügbar* geht man nach. Redundanz ist hier billiger als
+        # Zweideutigkeit.
+        #
+        # Nur dieser Block, nicht die beiden Job-Zahlen darüber: dort heißt `—`
+        # *noch nicht berechenbar* (P90 braucht fünf Läufe), und das bleibt
+        # wahr, während der Host schweigt.
+        + f'<td>{_sched(s.get("row_status") or s.get("status") or "")}</td>'
+        + f'<td>{_sched(_uhrzeit(_laufender_start(s) or s.get("last_run_at"), now))}</td>'
+        + (f"<td>{_sched(_next_zelle(row, s, now, ohne_zukunft))}</td>"
+           if mit_next else "")
         # ── Der Client-Block: was hier ankam.
         #
         # `status` heisst dieses Feld in der lokalen Job-DB; in den
@@ -4408,7 +4433,8 @@ def _sichtbar(rows: list, *, typ: list[str], status: list[str],
 def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
                 status: list[str] | None = None, journal: list[str] | None = None,
                 sort: str | None = None, direction: str = "asc",
-                group: bool = True, public_host: str = "localhost") -> str:
+                group: bool = True, public_host: str = "localhost",
+                scheduler_offline: bool = False) -> str:
     """Die **zwei** Bänder mit ihren Zeilen — oder eine Liste ohne Unterteilung.
 
     Beide stehen immer da, auch leer: sonst verschöbe sich das Layout je
@@ -4472,7 +4498,9 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
     if not group:
         # Eine Liste ohne Unterteilung. Die Sortierung wirkt damit über alles,
         # statt innerhalb jedes Bandes — genau der Zweck des Schalters.
-        zeilen = "".join(_jobs_zeile(r, now, public_host=public_host) for r in rows)
+        zeilen = "".join(_jobs_zeile(r, now, public_host=public_host,
+                                 scheduler_offline=scheduler_offline)
+                     for r in rows)
         return f'{leiste}<table class="jobs">{kopf}<tbody>{zeilen}</tbody></table>'
 
     teile = []
@@ -4483,7 +4511,9 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
             f'<span class="muted">{len(drin)}</span></td></tr>'
         )
         if drin:
-            teile.extend(_jobs_zeile(r, now, public_host=public_host) for r in drin)
+            teile.extend(_jobs_zeile(r, now, public_host=public_host,
+                                      scheduler_offline=scheduler_offline)
+                         for r in drin)
         else:
             teile.append(f'<tr class="leer-band"><td colspan="{_JOBS_SPALTEN}">'
                          f"— {_LEER[seg]}</td></tr>")
@@ -4495,7 +4525,8 @@ def journal_screen(rows: list, now: float, *, typ: list[str] | None = None,
                    status: list[str] | None = None,
                    journal: list[str] | None = None,
                    sort: str | None = None, direction: str = "asc",
-                   public_host: str = "localhost") -> str:
+                   public_host: str = "localhost",
+                   scheduler_offline: bool = False) -> str:
     """Das dritte Segment, jetzt auf eigenem Screen (#38).
 
     **Ein Umzug, kein neuer Screen** — und der Unterschied zum gestrichenen
@@ -4529,7 +4560,8 @@ def journal_screen(rows: list, now: float, *, typ: list[str] | None = None,
     if not rows:
         return f'{leiste}<div class="leer"><p class="muted">— {_LEER[Segment.JOURNAL]}</p></div>'
 
-    zeilen = "".join(_jobs_zeile(r, now, public_host=public_host, mit_next=False)
+    zeilen = "".join(_jobs_zeile(r, now, public_host=public_host, mit_next=False,
+                                 scheduler_offline=scheduler_offline)
                      for r in rows)
     kopf = _jobs_kopf(sort, direction, typ=typ, status=status,
                       status_filter=False, mit_next=False)
@@ -4647,7 +4679,8 @@ def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
                        status: list[str] | None = None,
                        journal: list[str] | None = None,
                        sort: str | None = None, direction: str = "asc",
-                       group: bool = True, public_host: str = "localhost") -> str:
+                       group: bool = True, public_host: str = "localhost",
+                       scheduler_offline: bool = False) -> str:
     """Die Bänder **samt ihrem Bus-Wrapper** — das Nachlade-Ziel des Bus.
 
     Der Wrapper gehört ins Fragment, nicht nur in die Seite: ``_EVENTS_JS``
@@ -4676,7 +4709,8 @@ def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
         + '">'
         + jobs_screen(rows, now, typ=typ, status=status, journal=journal,
                       sort=sort, direction=direction, group=group,
-                      public_host=public_host)
+                      public_host=public_host,
+                      scheduler_offline=scheduler_offline)
         + "</div>"
     )
 
@@ -4686,7 +4720,8 @@ def journal_list_fragment(rows: list, now: float, *, typ: list[str] | None = Non
                           journal: list[str] | None = None,
                           sort: str | None = None, direction: str = "asc",
                           group: bool = True,
-                          public_host: str = "localhost") -> str:
+                          public_host: str = "localhost",
+                          scheduler_offline: bool = False) -> str:
     """Die Journal-Liste samt Bus-Wrapper — dieselbe Form wie bei Jobs.
 
     ``data-bus="jobs"``, weil es dieselben Ereignisse sind: ein Job, der
@@ -4700,7 +4735,8 @@ def journal_list_fragment(rows: list, now: float, *, typ: list[str] | None = Non
                            direction=direction, group=group)
         + '">'
         + journal_screen(rows, now, typ=typ, status=status, journal=journal,
-                         sort=sort, direction=direction, public_host=public_host)
+                         sort=sort, direction=direction, public_host=public_host,
+                         scheduler_offline=scheduler_offline)
         + "</div>"
     )
 
@@ -4734,7 +4770,7 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         # `hx-trigger="bibiJobsChanged"` ist entfallen: das Ereignis hat nie
         # jemand gefeuert (einzige Fundstelle im Repo war der Trigger selbst),
         # und mit `hx-swap="innerHTML"` widersprach es dem `outerHTML` des Bus.
-        f'{jobs_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group, public_host=public_host)}'
+        f'{jobs_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group, public_host=public_host, scheduler_offline=bool(scheduler_stale_since))}'
         # Der Empfaenger zur Anmeldung darueber (m.rau/bibi#153): `data-bus`
         # allein bewirkt nichts, den Strom baut ausschliesslich `_EVENTS_JS`
         # auf. Beim Neubau der v5-Seiten blieb es aus — als einzige Screens.
@@ -4772,7 +4808,7 @@ def journal_page_v5(rows: list, *, now: float, daemon_status: dict | None = None
         "</head><body>"
         f"{_header('Journal', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
-        f'{journal_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group, public_host=public_host)}'
+        f'{journal_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group, public_host=public_host, scheduler_offline=bool(scheduler_stale_since))}'
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_DIFF_JS}</script>"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"

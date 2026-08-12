@@ -1317,10 +1317,15 @@ def add_controller_routes(
         # `jobs_list_fragment`, nicht `jobs_screen`: die Antwort muss ihren
         # Bus-Wrapper mitbringen, weil `_EVENTS_JS` mit `outerHTML` swappt —
         # sonst ist die Region nach genau einem Update abgemeldet.
+        # Der Ausfall gehoert in JEDEN Refetch (#32): der Bus swappt diese
+        # Region bei jedem Job-Wechsel, und ohne den Zustand faellt `offline`
+        # dabei still auf `—` zurueck -- also genau dann, wenn sich etwas tut.
+        _, _stale = _scheduler_status()
         resp = HTMLResponse(render.jobs_list_fragment(
             zeilen, jetzt, typ=v["typ"], status=v["status"],
             journal=v["journal"], sort=v["sort"], direction=v["direction"],
-            group=v["group"], public_host=config.public_host()))
+            group=v["group"], public_host=config.public_host(),
+            scheduler_offline=bool(_stale)))
         # **Auch hier merken** (#83). Bis dahin las diese Route den Cookie und
         # schrieb ihn nie — und ein Filter-Klick geht auf genau sie. Die Wahl
         # ueberlebte damit jeden Bus-Refetch (dafuer traegt die Refetch-URL
@@ -1389,10 +1394,15 @@ def add_controller_routes(
         """Nur die Liste — das Nachlade-Ziel des Bus."""
         from bibi import config
         zeilen, v, jetzt = _jobs_zeilen_und_view(request, sort, dir)
+        # Der Ausfall gehoert in JEDEN Refetch (#32): der Bus swappt diese
+        # Region bei jedem Job-Wechsel, und ohne den Zustand faellt `offline`
+        # dabei still auf `—` zurueck -- also genau dann, wenn sich etwas tut.
+        _, _stale = _scheduler_status()
         resp = HTMLResponse(render.journal_list_fragment(
             zeilen, jetzt, typ=v["typ"], status=v["status"],
             journal=v["journal"], sort=v["sort"], direction=v["direction"],
-            group=v["group"], public_host=config.public_host()))
+            group=v["group"], public_host=config.public_host(),
+            scheduler_offline=bool(_stale)))
         _merke_jobs_view(resp, v)
         return resp
 
