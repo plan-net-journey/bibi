@@ -1642,8 +1642,18 @@ def status_header(
     # sondern benennt die, die daneben steht — es gehört in die Farbe der
     # Spalte links. Der Doppelpunkt fällt damit weg: er hat getrennt, was die
     # Farbe jetzt trennt, und die Zeilen daneben kommen seit jeher ohne ihn aus.
-    heartbeat = (f'{_uhrzeit(hb, now)}, '
-                 f'<span class="hdr-inline">auto-sync</span> {auto}')
+    # **Zwei Felder in einer Zeile, und die Regeln gelten je Feld** (#156).
+    # Die Uhrzeit entsteht im Betrieb -- Sans, und im Alarmfall rot. Die
+    # `auto-sync`-Einstellung steht in der Konfiguration -- Monospace, und
+    # niemals rot: **eine Einstellung ist kein Fehler.**
+    #
+    # Bis v0.8.6 trug die ganze Zeile eine Klasse, und beide Regeln griffen
+    # deshalb zeilenweise. Aufgefallen ist es erst, als #148 `.bad` ueberhaupt
+    # eine Farbe gab -- vorher war `test_auto_sync_off_is_not_an_error` gruen,
+    # weil es nichts zu faerben gab.
+    heartbeat = (f'<span class="{hb_klasse}">{_uhrzeit(hb, now)}</span>, '
+                 f'<span class="mono"><span class="hdr-inline">auto-sync</span> '
+                 f'{auto}</span>')
 
     zweig = git_status.get("branch") or "—"
     baum = git_status.get("tree") or "—"
@@ -1682,7 +1692,7 @@ def status_header(
         f'<div class="hdr-block"><div class="hdr-title">'
         f'<span class="{eigen_klasse}">●</span> CLIENT'
         f'<span class="hdr-host">{eigener}</span></div>'
-        + _hdr_row("heartbeat", heartbeat, klasse=hb_klasse)
+        + _hdr_row("heartbeat", heartbeat)
         + _hdr_row("project", projekt, klasse=projekt_klasse, mono=True)
         # **Auf jedem Screen** (#151, Entscheidung m.rau 2026-08-12: *„es gibt
         # nicht 2 Header Ansichten"*). Hier stand bis v0.8.6 die Kürzung aus
@@ -4100,7 +4110,21 @@ def _pbar(lauf: dict, mass: dict, now: float) -> str:
     start = lauf.get("started_at")
     if not isinstance(start, (int, float)):
         return ""
+    # **Drei Stufen, und die mittlere ist neu** (#150). Bis v0.8.6 stand hier
+    # `P90 des Schedulers → wall_time → nichts`, und `wall_time` kam nie an.
+    # Vor allem aber gab es fuer einen Job, der **nur lokal** laeuft, keinen
+    # Massstab: `runtime_p90()` rechnet ausdruecklich nur ueber
+    # `domain='scheduled'`, und dort sammelt er nie Laeufe. Der Massstab
+    # existierte genau fuer den Weg, den man nicht benutzt hat.
+    #
+    # **Der Scheduler behaelt das erste Wort.** Traegt er eine P90, misst sich
+    # auch ein lokal gestarteter Lauf an ihr: es ist derselbe Job, und die
+    # laengere Historie ist die bessere Auskunft. Erst wenn sie fehlt, zaehlt
+    # die eigene — getrennt gerechnet und nie zugemischt, denn ein gemeinsamer
+    # Topf mischte zwei Maschinen in ein Perzentil.
     ref, art = mass.get("runtime_p90"), "p90"
+    if not ref:
+        ref, art = lauf.get("runtime_p90"), "p90"
     if not ref:
         ref, art = mass.get("wall_time"), "wall"
     if not ref:
@@ -4217,7 +4241,8 @@ def _next_zelle(row, s: dict, l: dict, now: float, ohne_zukunft: bool) -> str:
     return f'{zeit} <span class="due" title="overdue — the scheduler will pick it up on its next tick">due</span>'
 
 
-def _reliability_zelle(quote, ohne_zukunft: bool) -> str:
+def _reliability_zelle(quote, ohne_zukunft: bool,
+                       scheduler_offline: bool = False) -> str:
     """Zähler und Prozent als zwei Felder, damit die Prozente fluchten (#135).
 
     **Befund m.rau (2026-08-11):** *„alle Prozentwerte sollen aligned werden (im
@@ -4233,6 +4258,16 @@ def _reliability_zelle(quote, ohne_zukunft: bool) -> str:
     kennen — die „eigene Spalte ohne Header", die der Befund verlangt.
     """
     if ohne_zukunft or quote is None or quote.prozent is None:
+        # **`offline` statt eines Strichs, wenn der Host schweigt** (#157).
+        # Die Quote rechnet ueber das Journal, und das kommt vom Scheduler --
+        # bei Ausfall ist sie nicht *abwesend*, sondern *unbekannt*. Dieselbe
+        # Unterscheidung, die #147 eine Spalte weiter links getroffen hat.
+        #
+        # `ohne_zukunft` (Journal-Segment) schlaegt das: dort hat die Kennzahl
+        # gar keine Aussage, und die haette sie auch bei erreichbarem Host
+        # nicht.
+        if scheduler_offline and not ohne_zukunft:
+            return '<td class="relia">offline</td>'
         return '<td class="relia">—</td>'
     return (f'<td class="relia"><span class="relia-n">{quote.complete}/'
             f"{quote.expected}+{quote.manual}</span>"
@@ -4354,8 +4389,19 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
         # damit keine Nachricht.** Die Abmeldung steht im Markup und nicht als
         # Spaltenindex im JavaScript — eine Ausnahme, die an einer Position
         # hängt, bricht beim ersten Spaltenumbau, und #135 ist genau der.
-        + f'<td data-nodiff>{_human_duration(s.get("runtime_p90"))}</td>'
-        + _reliability_zelle(row.quote, ohne_zukunft)
+        # **Auch diese beiden sagen `offline`, wenn der Host schweigt** (#157).
+        # Hier stand bis v0.8.6 ein blankes `—`, mit der Begruendung, es heisse
+        # *noch nicht berechenbar* (P90 braucht fuenf Laeufe) und bleibe damit
+        # wahr, waehrend der Host schweigt. **Das Argument ist an einer Stelle
+        # falsch:** eine P90 ist eine Eigenschaft des Jobs -- erhoben und
+        # ausgeliefert wird sie vom Scheduler. Schweigt er, ist der Wert nicht
+        # abwesend, sondern unbekannt, und die Zeile fuehrte drei Vokabeln fuer
+        # einen Zustand.
+        #
+        # `_sched()` ersetzt nur einen Strich und nie einen Wert -- eine P90,
+        # die noch im Speicher steht, bleibt also stehen.
+        + f'<td data-nodiff>{_sched(_human_duration(s.get("runtime_p90")))}</td>'
+        + _reliability_zelle(row.quote, ohne_zukunft, scheduler_offline)
         # ── Der Scheduler-Block: die Instanz, die den Job führt.
         #
         # **`LAST` nennt den Lauf, der gerade läuft** (#136) — seine Startzeit,

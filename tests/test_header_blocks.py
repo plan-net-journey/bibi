@@ -119,11 +119,6 @@ def test_offline_marks_the_scheduler_hostname_red():
         "der Scheduler-Hostname muss bei Ausfall rot sein"
 
 
-def test_auto_sync_off_is_not_an_error():
-    """Eine Einstellung, kein Fehler — sie bleibt neutral."""
-    html = _header()
-    zeile = [z for z in html.splitlines() if "auto-sync" in z]
-    assert zeile and not any("bad" in z or "danger" in z for z in zeile)
 
 
 # ── was der Header nicht mehr trägt ─────────────────────────────────────────
@@ -517,3 +512,80 @@ def test_the_hostname_carries_failure_only():
     assert 'class="hdr-host"' in titel, "der ruhige Hostname trägt keine Zustandsklasse"
     assert "hdr-host ok" not in ruhig, "der Hostname ist im Normalbetrieb neutral"
     assert "hdr-host bad" in _alarm_html(), "der Hostname trägt den Ausfall nicht"
+
+
+# ── #156: die heartbeat-Zeile trägt zwei Felder ───────────────────────────
+#
+# `16:43:07, auto-sync on` — eine flüchtige Uhrzeit und eine committete
+# Einstellung in einer Zeile. Beide Regeln aus `v0.8.6` greifen zeilenweise,
+# obwohl beide **feldweise** gemeint sind (#148 Alarm, #149 Herkunft).
+
+
+
+def _heartbeat_felder(stale: bool):
+    from tests import _css
+    aus = dict(CLIENT_STATUS)
+    if stale:
+        aus["connect"] = {"ok": False, "last_at": NOW - 300}
+    html = render.status_header(aus, GIT, scheduler=SCHEDULER_STATUS, now=NOW,
+                                scheduler_host="sarasate")
+    zeile = [z for z in re.findall(r'<div class="hdr-row">.*?</div>', html, re.S)
+             if "heartbeat" in z][0]
+    # **Die Zeile haengt an ihren echten Vorfahren.** `.hdr .bad` braucht den
+    # `.hdr`-Block ueber sich; ein Fragment ohne ihn ergaebe ein Markup, das so
+    # nie ausgeliefert wird — und der Test meldete einen Befund, den es nicht
+    # gibt.
+    wurzel = _css.BODY + [("div", frozenset({"hdr"})),
+                          ("div", frozenset({"hdr-block"}))]
+    ketten = _css.ketten(zeile, wurzel)
+    # **Ueber den Inhalt gewaehlt, nicht ueber die Abwesenheit von Klassen.**
+    # Der erste Anlauf schloss `hdr-value`, `hdr-inline` und `mono` aus und
+    # griff damit die **Beschriftung** — auch sie ist ein Span ohne diese
+    # Klassen, und sie steht zuerst. Der Test meldete daraufhin die Farbe der
+    # Beschriftung als die der Uhrzeit.
+    uhr = re.search(r"<span[^>]*>(\d{2}:\d{2}:\d{2})</span>", zeile).group(1)
+    zeit = next(k for k, m in ketten
+                if k[-1][0] == "span" and m.get("__text__") == uhr)
+    sync = next(k for k, m in ketten if "mono" in (m.get("class") or "").split())
+    return zeit, sync
+
+
+def test_the_clock_and_the_setting_carry_their_own_face():
+    """Die Uhrzeit entsteht im Betrieb, die Einstellung steht in der Config —
+    m.rau zählt die *„sync Einstellung"* ausdrücklich zu den committeten
+    Werten (#149)."""
+    from tests import _css
+
+    zeit, sync = _heartbeat_felder(stale=False)
+    assert "ui-monospace" in (_css.aufgeloest(sync, "font-family") or "")
+    assert "system-ui" in (_css.aufgeloest(zeit, "font-family") or "")
+
+
+def test_the_alarm_stops_at_the_setting():
+    """**Die Gegenprobe, und sie ist die eigentliche Zusage.**
+
+    Bricht der Heartbeat ab, wird die **Uhrzeit** rot — nicht die Einstellung
+    daneben. `test_auto_sync_off_is_not_an_error` sagt das seit jeher und war
+    trotzdem grün: er sucht die Zeichenkette `bad`, die eine Ebene höher sitzt,
+    und bis `v0.8.6` trug `.bad` ohnehin keine Farbe.
+    """
+    from tests import _css
+
+    zeit, sync = _heartbeat_felder(stale=True)
+    assert _css.aufgeloest(zeit, "color") == "var(--red)", "die Uhrzeit warnt nicht"
+    assert _css.aufgeloest(sync, "color") != "var(--red)", (
+        "die Einstellung wird als Fehler gefärbt")
+
+def test_auto_sync_off_is_not_an_error():
+    """Eine Einstellung, kein Fehler — sie bleibt neutral.
+
+    **Dieser Test war fuenf Releases lang gruen und konnte den Fall nicht
+    sehen, den er beschreibt** (#156). Er suchte die Zeichenkette `bad` in der
+    Zeile; die Klasse sass eine Ebene hoeher, und bis `v0.8.6` trug `.bad`
+    ohnehin keine Farbe. Er prueft jetzt die **aufgeloeste Farbe** am Feld —
+    und zwar in dem Zustand, in dem die Zeile tatsaechlich Alarm traegt.
+    """
+    from tests import _css
+
+    _, sync = _heartbeat_felder(stale=True)
+    assert _css.aufgeloest(sync, "color") != "var(--red)"

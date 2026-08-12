@@ -164,9 +164,19 @@ class _Baum(HTMLParser):
         merkmale = dict(attrs)
         klassen = frozenset((merkmale.get("class") or "").split())
         self.stapel.append((tag, klassen))
+        # `__text__` ist der eigene Text des Elements, ohne den seiner Kinder.
+        # Ein Feld ueber seinen Inhalt zu greifen ist verlaesslicher als ueber
+        # die Abwesenheit von Klassen — eine Beschriftung und ein Wert sehen
+        # als Klassenmenge oft gleich aus.
+        merkmale["__text__"] = ""
         self.elemente.append((list(self.stapel), merkmale))
+        self._offen = merkmale
         if tag in self.LEER:
             self.stapel.pop()
+
+    def handle_data(self, daten) -> None:
+        if getattr(self, "_offen", None) is not None:
+            self._offen["__text__"] = (self._offen["__text__"] + daten).strip()
 
     def handle_startendtag(self, tag, attrs) -> None:
         self.handle_starttag(tag, attrs)
@@ -174,6 +184,10 @@ class _Baum(HTMLParser):
             self.stapel.pop()
 
     def handle_endtag(self, tag) -> None:
+        # **Ohne diese Zeile sammelt das zuletzt geoeffnete Element weiter.**
+        # Nach `</span>` floss das `, ` der Zeile noch in den Text der Uhrzeit,
+        # und ein Vergleich auf den Inhalt fand sie nicht mehr.
+        self._offen = None
         for i in range(len(self.stapel) - 1, -1, -1):
             if self.stapel[i][0] == tag:
                 del self.stapel[i:]
