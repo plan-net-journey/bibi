@@ -1783,6 +1783,20 @@ _SPALTEN = ("slug", "type", "runtime", "24h",
             "client", "client_last")
 
 
+def _zelle_text(zeile: str, spalte: str) -> str:
+    """Der Text einer Zelle **einer schon gegriffenen Zeile**, nach Kopfnamen.
+
+    `_zelle()` daneben greift die erste Datenzeile einer ganzen Seite; hier ist
+    die Zeile schon bekannt. Beide gehen ueber den Namen und nicht ueber einen
+    festen Index — eine Regel, die an einer Spaltenposition haengt, ueberlebt
+    keinen Spaltenumbau (#135).
+    """
+    import re as _re
+    i = _JOBS_SPALTEN.index(spalte)
+    zellen = _re.findall(r"<td[^>]*>(.*?)</td>", zeile, _re.S)
+    return _re.sub(r"<[^>]+>", "", zellen[i]).strip()
+
+
 def _zelle(html: str, spalte: str) -> str:
     """Der Text der Zelle `spalte` aus der ersten Datenzeile."""
     import re
@@ -1834,7 +1848,10 @@ def _last_wert(html: str) -> str:
     Ohne diese Abgrenzung greift ein naives Slicing das `/` aus `</div>` mit
     und der Test ist grün, gleich was die Kachel sagt."""
     import re
-    m = re.search(r"last ([^<·]+)", html)
+    # **Auszeichnung erst wegdenken, dann greifen.** Seit #139 steht jeder
+    # Zeitpunkt in einer Huelle mit Anker; `[^<·]+` bricht am oeffnenden Tag
+    # ab und faende nur noch die leere Zeichenkette.
+    m = re.search(r"last ([^<·]+)", re.sub(r"<[^>]+>", "", html))
     assert m, f"die Kachel nennt kein `last`: {html[:200]}"
     return m.group(1).strip()
 
@@ -2124,3 +2141,53 @@ def test_the_gone_filter_stays_out_of_it_while_the_host_is_silent():
     zeilen = _zeilen(local=[_md("a")], scheduler=[], journal=[{"slug": "a"}],
                      scheduler_offline=True)
     assert not any(jobs_view.trifft_filter(z, typ=[], status=[], journal=["gone"]) for z in zeilen)
+
+
+# ── #157: zwei Vokabeln im Ausfall, nicht drei ────────────────────────────
+#
+# **Dieser Abschnitt korrigiert eine Empfehlung, die ich gegeben habe.** Im
+# `v0.8.5`-Durchgang hat m.rau gefragt, ob RUNTIME und REL. bei Ausfall nicht
+# `offline` heißen müssten. Ich habe abgeraten, mit der Regel aus `_sched()`:
+# eine P90 sei eine Eigenschaft des Jobs und keine Auskunft des Hosts.
+#
+# **Der Fix für `#147` führt vor, dass das an einer Stelle falsch ist.** Eine
+# P90 *ist* eine Job-Eigenschaft — erhoben und ausgeliefert wird sie vom
+# Scheduler. Schweigt er, ist der Wert nicht abwesend, sondern **unbekannt**.
+
+
+def _offline_zeile(**kw):
+    zeilen = _zeilen(local=[_md("a")], scheduler=[], journal=[{"slug": "a"}],
+                     scheduler_offline=True, **kw)
+    return _zeile_von(render.jobs_screen(zeilen, now=NOW,
+                                         scheduler_offline=True), "a")
+
+
+def test_runtime_and_reliability_say_offline_too():
+    zeile = _offline_zeile()
+    assert _zelle_text(zeile, "RUNTIME") == "offline"
+    assert _zelle_text(zeile, "REL.") == "offline"
+
+
+def test_a_dash_still_means_not_yet_computable():
+    """**Die Gegenprobe, und sie rettet den gültigen Teil des alten
+    Arguments.**
+
+    Bei erreichbarem Host und weniger als fünf Läufen steht weiterhin `—`.
+    *Noch nicht berechenbar* und *gerade nicht bekannt* sind zwei Aussagen;
+    sie zusammenzuwerfen wäre derselbe Fehler in die dritte Richtung.
+    """
+    zeilen = _zeilen(local=[_md("a")],
+                     scheduler=[{"slug": "a", "status": "complete",
+                                 "schedule": "0 * * * *"}])
+    zeile = _zeile_von(render.jobs_screen(zeilen, now=NOW), "a")
+    assert _zelle_text(zeile, "RUNTIME") == "—"
+    assert _zelle_text(zeile, "REL.") == "—"
+
+
+def test_the_client_block_keeps_its_dash_while_the_host_is_silent():
+    """Der Client-Block sagt weiter `—`: **dieser Knoten hat wirklich
+    nichts.** `offline` dort hieße, auch die eigene Auskunft sei unbekannt —
+    und das ist sie nicht."""
+    zeile = _offline_zeile()
+    zellen = re.findall(r"<td[^>]*>(.*?)</td>", zeile, re.S)
+    assert [re.sub(r"<[^>]+>", "", z).strip() for z in zellen[-2:]] == ["—", "—"]

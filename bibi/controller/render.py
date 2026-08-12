@@ -1580,6 +1580,17 @@ def _uhrzeit(ts: float | None, now: float) -> str:
 
     Der Preis ist eine Subtraktion im Kopf. Er ist klein, weil die Uhr in der
     App-Bar unmittelbar daneben steht.
+
+    **Seit #139 in einer Huelle mit Anker.** Der Browser kann daraus eine
+    Relativangabe machen, wenn jemand umschaltet; `data-abs` traegt die
+    absolute Form mit, damit der Rueckweg keine zweite Datumsregel in
+    JavaScript braucht. **Der Vorgabewert bleibt absolut** — der Umschalter ist
+    eine Zugabe und keine Umkehr der Entscheidung vom 2026-08-03.
+
+    **Ein fehlender Zeitpunkt bleibt ein nackter Strich**, ohne Huelle. Das ist
+    keine Sparsamkeit: `_sched()` ersetzt einen Strich durch `offline` und
+    prueft dafuer auf Gleichheit mit `—`. Ein umhuellter Strich waere nie mehr
+    gleich, und `#147` fiele stillschweigend aus.
     """
     if ts is None:
         return "—"
@@ -1587,8 +1598,15 @@ def _uhrzeit(ts: float | None, now: float) -> str:
     t = _dt.datetime.fromtimestamp(ts)
     # Aelter (oder ferner) als ein Tag: ohne Datum waere die Uhrzeit mehrdeutig.
     if abs(now - ts) >= 86400:
-        return t.strftime("%d/%m %H:%M")
-    return t.strftime("%H:%M:%S")
+        text = t.strftime("%d/%m %H:%M")
+    else:
+        text = t.strftime("%H:%M:%S")
+    # **Ohne Klasse, nur mit Daten-Attributen.** Eine Klasse ohne CSS-Regel
+    # ist genau der Fehler aus #148, und der Waechter
+    # `test_every_markup_class_has_a_css_rule` hat den ersten Entwurf dieser
+    # Zeile sofort gefangen. Der Ticker greift ueber `[data-tp]`; ein Name
+    # allein fuer die Lesbarkeit waere ein Versprechen ohne Deckung.
+    return f'<span data-tp="{ts}" data-abs="{text}">{text}</span>'
 
 
 def _hdr_row(label: str, wert: str, *, klasse: str = "",
@@ -1642,8 +1660,18 @@ def status_header(
     # sondern benennt die, die daneben steht — es gehört in die Farbe der
     # Spalte links. Der Doppelpunkt fällt damit weg: er hat getrennt, was die
     # Farbe jetzt trennt, und die Zeilen daneben kommen seit jeher ohne ihn aus.
-    heartbeat = (f'{_uhrzeit(hb, now)}, '
-                 f'<span class="hdr-inline">auto-sync</span> {auto}')
+    # **Zwei Felder in einer Zeile, und die Regeln gelten je Feld** (#156).
+    # Die Uhrzeit entsteht im Betrieb -- Sans, und im Alarmfall rot. Die
+    # `auto-sync`-Einstellung steht in der Konfiguration -- Monospace, und
+    # niemals rot: **eine Einstellung ist kein Fehler.**
+    #
+    # Bis v0.8.6 trug die ganze Zeile eine Klasse, und beide Regeln griffen
+    # deshalb zeilenweise. Aufgefallen ist es erst, als #148 `.bad` ueberhaupt
+    # eine Farbe gab -- vorher war `test_auto_sync_off_is_not_an_error` gruen,
+    # weil es nichts zu faerben gab.
+    heartbeat = (f'<span class="{hb_klasse}">{_uhrzeit(hb, now)}</span>, '
+                 f'<span class="mono"><span class="hdr-inline">auto-sync</span> '
+                 f'{auto}</span>')
 
     zweig = git_status.get("branch") or "—"
     baum = git_status.get("tree") or "—"
@@ -1682,7 +1710,7 @@ def status_header(
         f'<div class="hdr-block"><div class="hdr-title">'
         f'<span class="{eigen_klasse}">●</span> CLIENT'
         f'<span class="hdr-host">{eigener}</span></div>'
-        + _hdr_row("heartbeat", heartbeat, klasse=hb_klasse)
+        + _hdr_row("heartbeat", heartbeat)
         + _hdr_row("project", projekt, klasse=projekt_klasse, mono=True)
         # **Auf jedem Screen** (#151, Entscheidung m.rau 2026-08-12: *„es gibt
         # nicht 2 Header Ansichten"*). Hier stand bis v0.8.6 die Kürzung aus
@@ -1861,8 +1889,38 @@ _DURATION_JS = """
     return 'in ' + Math.trunc(d/86400) + ' d';
   }
   window.__bibiDauer = { dauer: dauer, ago: ago, until: until };
+  // **Die Wahl steht am Wurzelelement, nicht in einer Variablen** (#139).
+  // Header und Tabelle werden vom Bus ausgetauscht; ein Zustand, der nur im
+  // Modul lebt, ueberlebt das zwar -- aber der Ticker unten scannt das DOM in
+  // jedem Intervall ohnehin neu, und damit greift die Wahl auf frisch
+  // eingetauschte Zeilen ohne einen eigenen Wiederherstellungspfad. Genau der
+  // waere die Stelle, an der es schiefgeht: #106 war gebaut, sein Test gruen,
+  // und im Betrieb feuerte nichts.
+  try {
+    const w = localStorage.getItem('bibiTimeFmt');
+    if (w) document.documentElement.dataset.tfmt = w;
+  } catch (_) {}
   function tick(){
     const jetzt = Date.now()/1000;
+    // **Zeitpunkte, nicht Dauern** (#139). `data-abs` traegt die absolute Form
+    // mit: der Rueckweg braucht damit keine zweite Datumsregel in JavaScript,
+    // und der Server bleibt die einzige Stelle, die entscheidet, wann eine
+    // Uhrzeit ihr Datum dazubekommt.
+    // `documentElement` defensiv: der Pruefstand in `tests/assets/` faehrt
+    // dieses Skript ohne DOM und belegt damit, dass Server und Browser
+    // dieselbe Dauer gleich schreiben. Ein Zugriff, der ihn zerlegt, nimmt
+    // eine Zusage mit, die nichts mit Zeitformaten zu tun hat.
+    const wurzel = document.documentElement;
+    const relativ = !!wurzel && wurzel.dataset.tfmt === 'rel';
+    document.querySelectorAll('[data-tp]').forEach(function(el){
+      const at = parseFloat(el.getAttribute('data-tp'));
+      if (!isFinite(at)) return;
+      const text = relativ
+        ? (at <= jetzt ? ago(Math.max(0, Math.trunc(jetzt - at)))
+                       : until(Math.trunc(at - jetzt)))
+        : el.getAttribute('data-abs');
+      if (text != null && el.textContent !== text) el.textContent = text;
+    });
     document.querySelectorAll('[data-dur]').forEach(function(el){
       const at = parseFloat(el.getAttribute('data-at'));
       if (!isFinite(at)) return;
@@ -1965,14 +2023,23 @@ def _header(active: str, status: dict | None = None, *,
             scheduler: dict | None = None, sub: bool = False,
             scheduler_now: float | None = None, now: float | None = None) -> str:
     """Gemeinsame obere Navigationsleiste: links Titel + reine Tab-Leiste,
-    rechts alle Toggles (FOLLOW/RESCAN/MAINT/Datum-Uhrzeit/THEME) — Bibi4-
+    rechts alle Toggles (RESCAN/MAINT/Zeitformat/Verbindung/THEME) — Bibi4-
     Iteration, User-Fund: "Tabs links, Toggles rechts" (löst die PLAN-21-
     Aufteilung ab, in der FOLLOW/RESCAN/MAINT noch links neben den Tabs
     standen). ``git_status`` fällt hier weg (PLAN-21 Befund 2, Sync-Dopplung:
     der Sync-Zustand steht jetzt nur noch in der Git-Karte, RESCAN zeigt
     wieder die generische Beschriftung). Rollen für ``_screen_nav()``
     (PLAN-20 Befund 6) kommen aus ``status["roles"]`` — schon vorhanden
-    (``/-/status``), keine neue Datenquelle nötig."""
+    (``/-/status``), keine neue Datenquelle nötig.
+
+    **Diese Aufzählung war bis `v0.8.7` falsch, und der Fehler hat zwei
+    Runden gekostet** (#139). Sie nannte *„FOLLOW/RESCAN/MAINT/Datum-Uhrzeit/
+    THEME"* — eine Liste aus der bibi4-Zeit, die den v5-Umbau überlebt hat,
+    während die Funktion es nicht tat: `FOLLOW` gibt es nicht mehr, und den
+    Zeitumschalter gab es nie. Zweimal ist jemand danach suchen gegangen und
+    mit leeren Händen zurückgekommen, und beide Male sah die erfolglose Suche
+    plausibel aus — **die Doku sagte, es gebe das, der Code sagte nichts, und
+    niemand hat die beiden nebeneinandergehalten.**"""
     roles = (status or {}).get("roles")
     left = f'<h1>bibi</h1>{_screen_nav(active, roles, sub=sub)}'
     # Die Uhr zeigt die Zeit des Schedulers, nicht die eigene — deshalb reisen
@@ -2661,6 +2728,17 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
         '<nav class="handles">'
         '<button id="rescan" class="toggle" title="rescan the vault">⟳</button>'
         f"{maint_btn}"
+        # **Der vierte Handle, und es ist der erste** (#139). Bis v0.8.6 gab es
+        # ihn nicht — der Docstring von `_header()` zaehlte ihn seit der
+        # bibi4-Zeit auf, die Funktion hat ihn nie gerendert, und zweimal ist
+        # jemand danach suchen gegangen und mit leeren Haenden zurueckgekommen.
+        #
+        # `◷` und nicht `◐`: ein Zifferblatt ist eine Zeitangabe, ein halb
+        # gefuellter Kreis ein Zustand zwischen an und aus. Genau diese
+        # Verwechslung war der Befund — m.rau klickte auf Maintenance und
+        # suchte die Zeit dahinter.
+        '<button id="tfmt" class="toggle" '
+        'title="timestamps: absolute — click for relative">◷</button>'
         f'<span id="conn-dot" class="conn-dot {dot_cls}" title="{dot_titel}">●</span>'
         "</nav>"
     )
@@ -2672,6 +2750,34 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
 #: bei Fehler bleibt der Zustand).
 _OPS_HANDLES_JS = """
 (function(){
+  // **Der Zeitumschalter** (#139). Er schreibt nur die Wahl; das Umrechnen
+  // macht der Ticker in `_DURATION_JS`, der ohnehin jede Sekunde ueber das DOM
+  // laeuft. Zwei Stellen, die dieselben Elemente anfassen, waeren die
+  // naechste, an der etwas auseinanderlaeuft.
+  const tfmt = document.getElementById('tfmt');
+  if (tfmt) {
+    const zeige = () => {
+      const rel = document.documentElement.dataset.tfmt === 'rel';
+      tfmt.classList.toggle('on', rel);
+      tfmt.title = rel ? 'timestamps: relative — click for absolute'
+                       : 'timestamps: absolute — click for relative';
+    };
+    zeige();
+    tfmt.addEventListener('click', () => {
+      const rel = document.documentElement.dataset.tfmt === 'rel';
+      if (rel) delete document.documentElement.dataset.tfmt;
+      else document.documentElement.dataset.tfmt = 'rel';
+      // **Absolut ist der Vorgabewert und bleibt es** (#30): die abweichende
+      // Wahl wird gespeichert, die Vorgabe geloescht. Ein gespeichertes
+      // `'abs'` waere dasselbe Ergebnis mit einem Eintrag mehr, den spaeter
+      // jemand fuer eine Absicht haelt.
+      try {
+        if (rel) localStorage.removeItem('bibiTimeFmt');
+        else localStorage.setItem('bibiTimeFmt', 'rel');
+      } catch (_) {}
+      zeige();
+    });
+  }
   const rescan = document.getElementById('rescan');
   if (rescan) {
     const idleIcon = rescan.textContent;   // "⟳"
@@ -4100,7 +4206,21 @@ def _pbar(lauf: dict, mass: dict, now: float) -> str:
     start = lauf.get("started_at")
     if not isinstance(start, (int, float)):
         return ""
+    # **Drei Stufen, und die mittlere ist neu** (#150). Bis v0.8.6 stand hier
+    # `P90 des Schedulers → wall_time → nichts`, und `wall_time` kam nie an.
+    # Vor allem aber gab es fuer einen Job, der **nur lokal** laeuft, keinen
+    # Massstab: `runtime_p90()` rechnet ausdruecklich nur ueber
+    # `domain='scheduled'`, und dort sammelt er nie Laeufe. Der Massstab
+    # existierte genau fuer den Weg, den man nicht benutzt hat.
+    #
+    # **Der Scheduler behaelt das erste Wort.** Traegt er eine P90, misst sich
+    # auch ein lokal gestarteter Lauf an ihr: es ist derselbe Job, und die
+    # laengere Historie ist die bessere Auskunft. Erst wenn sie fehlt, zaehlt
+    # die eigene — getrennt gerechnet und nie zugemischt, denn ein gemeinsamer
+    # Topf mischte zwei Maschinen in ein Perzentil.
     ref, art = mass.get("runtime_p90"), "p90"
+    if not ref:
+        ref, art = lauf.get("runtime_p90"), "p90"
     if not ref:
         ref, art = mass.get("wall_time"), "wall"
     if not ref:
@@ -4217,7 +4337,8 @@ def _next_zelle(row, s: dict, l: dict, now: float, ohne_zukunft: bool) -> str:
     return f'{zeit} <span class="due" title="overdue — the scheduler will pick it up on its next tick">due</span>'
 
 
-def _reliability_zelle(quote, ohne_zukunft: bool) -> str:
+def _reliability_zelle(quote, ohne_zukunft: bool,
+                       scheduler_offline: bool = False) -> str:
     """Zähler und Prozent als zwei Felder, damit die Prozente fluchten (#135).
 
     **Befund m.rau (2026-08-11):** *„alle Prozentwerte sollen aligned werden (im
@@ -4233,6 +4354,16 @@ def _reliability_zelle(quote, ohne_zukunft: bool) -> str:
     kennen — die „eigene Spalte ohne Header", die der Befund verlangt.
     """
     if ohne_zukunft or quote is None or quote.prozent is None:
+        # **`offline` statt eines Strichs, wenn der Host schweigt** (#157).
+        # Die Quote rechnet ueber das Journal, und das kommt vom Scheduler --
+        # bei Ausfall ist sie nicht *abwesend*, sondern *unbekannt*. Dieselbe
+        # Unterscheidung, die #147 eine Spalte weiter links getroffen hat.
+        #
+        # `ohne_zukunft` (Journal-Segment) schlaegt das: dort hat die Kennzahl
+        # gar keine Aussage, und die haette sie auch bei erreichbarem Host
+        # nicht.
+        if scheduler_offline and not ohne_zukunft:
+            return '<td class="relia">offline</td>'
         return '<td class="relia">—</td>'
     return (f'<td class="relia"><span class="relia-n">{quote.complete}/'
             f"{quote.expected}+{quote.manual}</span>"
@@ -4354,8 +4485,19 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
         # damit keine Nachricht.** Die Abmeldung steht im Markup und nicht als
         # Spaltenindex im JavaScript — eine Ausnahme, die an einer Position
         # hängt, bricht beim ersten Spaltenumbau, und #135 ist genau der.
-        + f'<td data-nodiff>{_human_duration(s.get("runtime_p90"))}</td>'
-        + _reliability_zelle(row.quote, ohne_zukunft)
+        # **Auch diese beiden sagen `offline`, wenn der Host schweigt** (#157).
+        # Hier stand bis v0.8.6 ein blankes `—`, mit der Begruendung, es heisse
+        # *noch nicht berechenbar* (P90 braucht fuenf Laeufe) und bleibe damit
+        # wahr, waehrend der Host schweigt. **Das Argument ist an einer Stelle
+        # falsch:** eine P90 ist eine Eigenschaft des Jobs -- erhoben und
+        # ausgeliefert wird sie vom Scheduler. Schweigt er, ist der Wert nicht
+        # abwesend, sondern unbekannt, und die Zeile fuehrte drei Vokabeln fuer
+        # einen Zustand.
+        #
+        # `_sched()` ersetzt nur einen Strich und nie einen Wert -- eine P90,
+        # die noch im Speicher steht, bleibt also stehen.
+        + f'<td data-nodiff>{_sched(_human_duration(s.get("runtime_p90")))}</td>'
+        + _reliability_zelle(row.quote, ohne_zukunft, scheduler_offline)
         # ── Der Scheduler-Block: die Instanz, die den Job führt.
         #
         # **`LAST` nennt den Lauf, der gerade läuft** (#136) — seine Startzeit,

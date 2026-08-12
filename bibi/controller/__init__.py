@@ -217,11 +217,35 @@ def _local_run_status_aus(eintraege: list[dict]) -> dict:
         return m.group(1) if m else slug
 
     aus: dict = {}
+    dauern: dict[str, list[tuple[float, float]]] = {}
     for e in eintraege:
         b = basis(e.get("slug") or "")
         vorher = aus.get(b)
         if vorher is None or (e.get("finished_at") or 0) > (vorher.get("finished_at") or 0):
             aus[b] = e
+        # **Die lokale P90 entsteht hier** (#150). Bis v0.8.6 gab es sie nicht:
+        # `job_db.runtime_p90()` rechnet ausdruecklich nur ueber
+        # `domain='scheduled'`, und ein Job, der ausschliesslich per `/run`
+        # laeuft, sammelt dort nie Laeufe. Der Fortschrittsbalken hatte damit
+        # genau fuer den Startweg keinen Massstab, den man benutzt hatte.
+        #
+        # Nur `complete`, wie drueben: ein Lauf, der abgebrochen wurde, hat nie
+        # zu Ende gerechnet und beantwortet die Frage der Spalte nicht.
+        if e.get("status") == "complete" and isinstance(
+                e.get("exec_runtime"), (int, float)):
+            dauern.setdefault(b, []).append(
+                (e.get("finished_at") or 0, float(e["exec_runtime"])))
+    from bibi.daemon.job_db import _P90_FENSTER, p90_rang
+    for slug, paare in dauern.items():
+        if slug not in aus:
+            continue
+        # Die juengsten `_P90_FENSTER` Laeufe, wie in der SQL-Abfrage.
+        paare.sort(key=lambda p: p[0], reverse=True)
+        # **Dieselbe Funktion wie die Scheduler-Seite**, nicht dieselbe Formel:
+        # zwei Implementierungen einer Regel sind hier schon zweimal
+        # auseinandergelaufen (#102, #126).
+        rang = p90_rang([d for _, d in paare[:_P90_FENSTER]])
+        aus[slug] = {**aus[slug], "runtime_p90": rang}
     return aus
 
 

@@ -776,11 +776,32 @@ def runtime_p90(conn: sqlite3.Connection, *, fenster: int = _P90_FENSTER,
         werte.setdefault(r["slug"], []).append(float(r["exec_runtime"]))
     aus: dict[str, float] = {}
     for slug, v in werte.items():
-        if len(v) < mindestbestand:
-            continue
-        v.sort()
-        aus[slug] = v[math.ceil(0.9 * len(v)) - 1]
+        rang = p90_rang(v, mindestbestand)
+        if rang is not None:
+            aus[slug] = rang
     return aus
+
+
+def p90_rang(werte: list[float],
+             mindestbestand: int = _P90_MINDESTBESTAND) -> float | None:
+    """Der 90. Perzentil einer Laufzeitreihe, nearest-rank — oder ``None``.
+
+    **Die Regel steht seit #150 an genau einer Stelle**, und der Grund ist
+    Erfahrung aus diesem Code: zwei Implementierungen derselben Regel sind hier
+    schon zweimal auseinandergelaufen (`#102`, `#126`, beide am
+    Aktualitäts-Urteil, mit zwei Vokabularen für dasselbe Urteil).
+
+    Die Scheduler-Seite füttert sie aus SQL, die Client-Seite aus der
+    Journal-Liste ihres eigenen Daemons — **verschiedene Quellen, dieselbe
+    Rechnung.** Das ist der ganze Zweck dieser Funktion.
+
+    ``None`` unter ``mindestbestand`` Werten: *ein P90 über drei Werte ist eine
+    Behauptung* (m.rau/bibi#132).
+    """
+    if len(werte) < mindestbestand:
+        return None
+    v = sorted(werte)
+    return v[math.ceil(0.9 * len(v)) - 1]
 
 
 def list_schedules(conn: sqlite3.Connection) -> list[dict]:
@@ -966,6 +987,13 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None, *,
         # (m.rau/bibi#132). Steht neben `next_fire_at`, weil beide Fragen dem
         # Scheduler gehören: wann es *wieder* läuft, und wie lange es *dauert*.
         "runtime_p90": runtime_p90,
+        # **Die Obergrenze, und sie hat hier gefehlt** (#150). `_pbar()`
+        # beschreibt eine Kaskade `P90 → wall_time → nichts` als Normalfall;
+        # ohne dieses Feld war `mass.get("wall_time")` immer `None` und die
+        # mittlere Stufe seit ihrem Bau tot. Die Spalte steht in der Tabelle,
+        # `job_full_view()` gab sie längst aus — nur die schlankere Sicht, die
+        # der Jobs-Screen liest, führte sie nicht.
+        "wall_time": row["wall_time"],
         # One-shot (at:) hat kein wiederkehrendes schedule — Basis fürs Archiv (§4.4).
         "oneshot": row["schedule"] is None,
         # kind ist seit PLAN-10 (Unified Job Model) immer "job" — payload/app_port
