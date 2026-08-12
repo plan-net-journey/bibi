@@ -142,7 +142,9 @@ def _zeile_von(html: str, slug: str) -> str:
     nicht das Element. ``running`` steht auch im Filter-Knopf der Kopfleiste,
     ein Test darauf wäre grün, ohne dass die Zelle je gefüllt würde.
     """
-    for tr in re.findall(r"<tr>.*?</tr>", html, re.S):
+    # `<tr` statt `<tr>`: die Zeile traegt seit #67 ein `data-row`, an dem der
+    # Zell-Diff sie ueber einen Swap hinweg wiedererkennt.
+    for tr in re.findall(r"<tr[ >].*?</tr>", html, re.S):
         if f'title="{slug}"' in tr:
             return tr
     raise AssertionError(f"keine Zeile für {slug!r} im Screen")
@@ -548,8 +550,11 @@ def test_a_job_never_run_locally_shows_dashes():
     Strich — keine Null, keine leere Zelle.
     """
     html = render.jobs_screen(_zeilen(local=[_md("nie-gelaufen")]), now=NOW)
-    zeile = [z for z in html.split("<tr>") if "nie-gelaufen" in z][0]
-    assert zeile.count("<td>—</td>") >= 2, "STATUS und RUNTIME der lokalen Seite"
+    zeile = [z for z in re.split(r"<tr[ >]", html) if "nie-gelaufen" in z][0]
+    # Beide Formen zaehlen: die RUNTIME-Zelle meldet sich seit #67 vom Zell-Diff
+    # ab und traegt dafuer ein Attribut, die STATUS-Zelle nicht.
+    striche = zeile.count("<td>—</td>") + zeile.count("<td data-nodiff>—</td>")
+    assert striche >= 2, "STATUS und RUNTIME der lokalen Seite"
 
 
 def test_the_screen_reloads_itself_on_job_changes():
@@ -796,7 +801,7 @@ def test_runtime_shows_the_p90_from_the_scheduler():
                 scheduler=[{"slug": "EngineCI", "status": "complete",
                             "schedule": "0 * * * *", "runtime_p90": 231.9}]),
         now=NOW)
-    assert "<td>3m 51s</td>" in _zeile_von(html, "EngineCI")
+    assert "<td data-nodiff>3m 51s</td>" in _zeile_von(html, "EngineCI")
 
 
 def test_runtime_stays_empty_without_a_p90():
@@ -1715,7 +1720,7 @@ _SPALTEN = ("slug", "type", "client", "scheduler", "last", "next", "runtime", "2
 def _zelle(html: str, spalte: str) -> str:
     """Der Text der Zelle `spalte` aus der ersten Datenzeile."""
     import re
-    zeilen = re.findall(r"<tr>(?:(?!</tr>).)*</tr>", html, re.S)
+    zeilen = re.findall(r"<tr[ >](?:(?!</tr>).)*</tr>", html, re.S)
     daten = [z for z in zeilen if 'class="slug"' in z]
     assert daten, f"keine Datenzeile im HTML gefunden (Spalte {spalte})"
     zellen = re.findall(r"<td[^>]*>(.*?)</td>", daten[0], re.S)
