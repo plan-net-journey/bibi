@@ -154,3 +154,68 @@ def test_an_ordinary_cell_still_flashes_when_its_text_changes(seite):
     n = seite.evaluate(
         "() => document.querySelectorAll('td.cellflash').length")
     assert n == 1
+
+
+def _swap_outer(page, neues_ziel: str) -> None:
+    """Ein Swap, der das **Ziel ersetzt** statt seinen Inhalt zu tauschen.
+
+    Das ist ``hx-swap="outerHTML"``, und es ist der Fall, den `#163` gefunden
+    hat: htmx feuert ``afterSettle`` auf dem alten Element, und das hängt nach
+    dem Swap **nicht mehr im Dokument** — ein Event von dort bubbelt nicht zu
+    ``document.body``, wo der Haken aus `#160` registriert ist.
+    """
+    page.evaluate(
+        """(html) => {
+            const alt = document.getElementById('kopf');
+            document.body.dispatchEvent(new CustomEvent(
+                'htmx:beforeSwap', {detail: {target: alt}}));
+            const neu = document.createElement('div');
+            neu.innerHTML = html;
+            alt.replaceWith(neu.firstElementChild);
+            // htmx feuert auf dem ALTEN Ziel -- es haengt jetzt nirgends mehr.
+            alt.dispatchEvent(new CustomEvent(
+                'htmx:afterSettle', {detail: {target: alt}, bubbles: true}));
+        }""", neues_ziel)
+
+
+def _kopf(at: float, abs_text: str) -> str:
+    """Die Kopf-Karte, verkuerzt auf das, worum es geht: ein Zeitpunkt."""
+    return (f'<div id="kopf"><span data-tp="{at}" data-abs="{abs_text}">'
+            f"{abs_text}</span></div>")
+
+
+def test_replacing_a_target_rewrites_its_timestamps_too(seite):
+    """**Der Rot-Schritt von `#163`**, und er misst, was `test_time_swap` bisher
+    nicht messen konnte.
+
+    Die bestehenden Tests hier tauschen ``tbody.innerHTML`` — das Ziel bleibt
+    im Dokument, das Event bubbelt, der Ticker läuft. Deshalb waren sie grün,
+    während die Kopf-Karte im Betrieb 1,5 Sekunden lang absolute Zeiten zeigte.
+
+    **Die Lehre lag zwanzig Zeilen entfernt im Haus:** ``_DIFF_JS`` behandelt
+    dieselbe Falle ausdrücklich — *„Bei einem outerHTML-Swap ist das alte Ziel
+    nicht mehr im Dokument — dann ist die neue Tabelle über `document` zu
+    finden, nicht über die Leiche."* ``_DURATION_JS`` hat den Haken bekommen,
+    ohne die Lehre daneben mitzunehmen.
+    """
+    seite.set_content(
+        f'<html data-tfmt="rel"><body>{_kopf(_AT, "17:16:39")}'
+        f"<script>{render._DIFF_JS}</script>"
+        f"<script>{render._DURATION_JS}</script>"
+        "</body></html>")
+    _swap_outer(seite, _kopf(_AT, "17:16:39"))
+    text = seite.eval_on_selector("[data-tp]", "el => el.textContent")
+    assert "17:16:39" not in text, f"absolute Zeit nach dem outerHTML-Swap: {text!r}"
+
+
+def test_the_inner_swap_still_works(seite):
+    """**Die Gegenprobe**: der bestehende Weg bleibt heil.
+
+    Ohne sie wäre ein Fix grün, der den ``afterSettle``-Haken gegen etwas
+    tauscht, das nur den einen Fall trifft.
+    """
+    _seite(seite, tfmt="rel", zeilen=_zeile(at=_AT, abs_text="17:16:39"))
+    _swap(seite, _zeile(at=_AT, abs_text="17:16:39"))
+    text = seite.eval_on_selector("[data-tp]", "el => el.textContent")
+    assert "17:16:39" not in text, text
+    assert _flash_auf_zeitzellen(seite) == 0

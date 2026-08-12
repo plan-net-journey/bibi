@@ -2091,8 +2091,41 @@ _DURATION_JS = """
   //
   // `document.body` defensiv: der Pruefstand in `tests/assets/` faehrt dieses
   // Skript gegen einen DOM-Stub ohne `body`.
+  //
   if (document.body && document.body.addEventListener) {
     document.body.addEventListener('htmx:afterSettle', tick);
+  }
+  // **Und ein Beobachter am DOM daneben** (#163). Bei einem
+  // `hx-swap="outerHTML"` haengt das alte Ziel nach dem Swap nicht mehr im
+  // Dokument; htmx feuert `afterSettle` darauf, und ein Ereignis von einem
+  // abgehaengten Element erreicht `document.body` **nie** -- auch nicht in der
+  // Einfangphase, denn es gibt keinen Pfad mehr dorthin. Die Kopf-Karte
+  // (`#feedstatus`) tauscht genau so und zeigte deshalb nach jedem Swap rund
+  // anderthalb Sekunden lang absolute Zeiten, waehrend die Jobs-Tabelle
+  // daneben -- die ihren Inhalt tauscht -- sofort richtig stand.
+  //
+  // **Dieselbe Falle kennt `_DIFF_JS` seit jeher** und behandelt sie
+  // ausdruecklich: „Bei einem outerHTML-Swap ist das alte Ziel nicht mehr im
+  // Dokument -- dann ist die neue Tabelle ueber `document` zu finden, nicht
+  // ueber die Leiche." Der Haken oben ist gesetzt worden, ohne die Lehre
+  // daneben mitzunehmen.
+  //
+  // **Ein `MutationObserver` statt eines zweiten Ereignisses**, und das ist
+  // die Verallgemeinerung: er haengt am Baum und nicht an einem Absender. Was
+  // auch immer das DOM aendert -- htmx, der Bus, ein kuenftiger dritter Weg --,
+  // die Zeitpunkte stehen danach richtig. Ein Haken auf `htmx:load` traefe nur
+  // htmx und verschoebe dieselbe Frage auf den naechsten Mechanismus.
+  //
+  // Entprellt und gegen sich selbst geschuetzt: `tick()` schreibt
+  // `textContent`, was den Beobachter erneut ausloest. Ohne das Flag entstuende
+  // eine Schleife, die den Hauptthread belegt.
+  if (window.MutationObserver && document.body) {
+    let geplant = false;
+    new MutationObserver(function(){
+      if (geplant) return;
+      geplant = true;
+      Promise.resolve().then(function(){ geplant = false; tick(); });
+    }).observe(document.body, {childList: true, subtree: true});
   }
 })();
 """
