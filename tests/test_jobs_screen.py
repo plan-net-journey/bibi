@@ -1848,7 +1848,10 @@ def _last_wert(html: str) -> str:
     Ohne diese Abgrenzung greift ein naives Slicing das `/` aus `</div>` mit
     und der Test ist grün, gleich was die Kachel sagt."""
     import re
-    m = re.search(r"last ([^<·]+)", html)
+    # **Auszeichnung erst wegdenken, dann greifen.** Seit #139 steht jeder
+    # Zeitpunkt in einer Huelle mit Anker; `[^<·]+` bricht am oeffnenden Tag
+    # ab und faende nur noch die leere Zeichenkette.
+    m = re.search(r"last ([^<·]+)", re.sub(r"<[^>]+>", "", html))
     assert m, f"die Kachel nennt kein `last`: {html[:200]}"
     return m.group(1).strip()
 

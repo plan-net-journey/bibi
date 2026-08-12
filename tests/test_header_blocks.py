@@ -85,7 +85,7 @@ def test_scheduler_block_has_its_four_rows():
     for label in ("clients", "next job", "uptime"):
         assert label in html, label
     # Seit der Kuerzung: "2, connected <Uhrzeit>" statt "2 connected".
-    assert re.search(r"2, connected \d{2}:\d{2}:\d{2}", html)
+    assert re.search(r"2, connected \d{2}:\d{2}:\d{2}", _ohne_tags(html))
 
 
 # ── Offline: dimmen, nicht leeren ───────────────────────────────────────────
@@ -101,7 +101,7 @@ def test_offline_keeps_the_last_values_and_dates_them():
     # dieses Tests ist unverändert — der Stand bleibt stehen und wird datiert —,
     # nur trug ihn vorher das Wort `connected`, und das behauptete bei Ausfall
     # eine Verbindung, die es nicht mehr gab.
-    assert re.search(r"as of \d{2}", html), "das Alter des Standes fehlt"
+    assert re.search(r"as of \d{2}", _ohne_tags(html)), "das Alter des Standes fehlt"
     assert "connected" not in html, "`connected` behauptet offline eine Verbindung"
     assert re.search(r'<span class="hdr-value">2</span>', html), \
         "die letzten Werte bleiben stehen"
@@ -290,6 +290,13 @@ def test_no_colons_inside_header_values():
         assert not trenner.search(ohne_tags), f"Doppelpunkt in {wert!r}"
 
 
+def _ohne_tags(html: str) -> str:
+    """Der sichtbare Text. Seit #139 steht jeder Zeitpunkt in einer Huelle mit
+    Anker; ein Muster auf `2, connected 16:39:21` findet ihn sonst nicht mehr,
+    obwohl genau das dasteht."""
+    return re.sub(r"<[^>]+>", "", html)
+
+
 def _labels(html: str) -> list[str]:
     return re.findall(r'<span class="hdr-label">([^<]+)</span>', html)
 
@@ -362,9 +369,9 @@ def test_uptime_and_clients_are_terse():
     html = _header()
     # Unter 24 h nur die Uhrzeit, darueber mit Datum — hier liegt der Start
     # 13,4 h zurueck.
-    assert re.search(r"up \d{2}:\d{2}:\d{2}", html)
+    assert re.search(r"up \d{2}:\d{2}:\d{2}", _ohne_tags(html))
     assert "up since" not in html
-    assert re.search(r"2, connected \d{2}:\d{2}:\d{2}", html)
+    assert re.search(r"2, connected \d{2}:\d{2}:\d{2}", _ohne_tags(html))
     assert "2 connected" not in html
 
 

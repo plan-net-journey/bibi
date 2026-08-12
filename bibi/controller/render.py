@@ -1580,6 +1580,17 @@ def _uhrzeit(ts: float | None, now: float) -> str:
 
     Der Preis ist eine Subtraktion im Kopf. Er ist klein, weil die Uhr in der
     App-Bar unmittelbar daneben steht.
+
+    **Seit #139 in einer Huelle mit Anker.** Der Browser kann daraus eine
+    Relativangabe machen, wenn jemand umschaltet; `data-abs` traegt die
+    absolute Form mit, damit der Rueckweg keine zweite Datumsregel in
+    JavaScript braucht. **Der Vorgabewert bleibt absolut** — der Umschalter ist
+    eine Zugabe und keine Umkehr der Entscheidung vom 2026-08-03.
+
+    **Ein fehlender Zeitpunkt bleibt ein nackter Strich**, ohne Huelle. Das ist
+    keine Sparsamkeit: `_sched()` ersetzt einen Strich durch `offline` und
+    prueft dafuer auf Gleichheit mit `—`. Ein umhuellter Strich waere nie mehr
+    gleich, und `#147` fiele stillschweigend aus.
     """
     if ts is None:
         return "—"
@@ -1587,8 +1598,15 @@ def _uhrzeit(ts: float | None, now: float) -> str:
     t = _dt.datetime.fromtimestamp(ts)
     # Aelter (oder ferner) als ein Tag: ohne Datum waere die Uhrzeit mehrdeutig.
     if abs(now - ts) >= 86400:
-        return t.strftime("%d/%m %H:%M")
-    return t.strftime("%H:%M:%S")
+        text = t.strftime("%d/%m %H:%M")
+    else:
+        text = t.strftime("%H:%M:%S")
+    # **Ohne Klasse, nur mit Daten-Attributen.** Eine Klasse ohne CSS-Regel
+    # ist genau der Fehler aus #148, und der Waechter
+    # `test_every_markup_class_has_a_css_rule` hat den ersten Entwurf dieser
+    # Zeile sofort gefangen. Der Ticker greift ueber `[data-tp]`; ein Name
+    # allein fuer die Lesbarkeit waere ein Versprechen ohne Deckung.
+    return f'<span data-tp="{ts}" data-abs="{text}">{text}</span>'
 
 
 def _hdr_row(label: str, wert: str, *, klasse: str = "",
@@ -1871,8 +1889,38 @@ _DURATION_JS = """
     return 'in ' + Math.trunc(d/86400) + ' d';
   }
   window.__bibiDauer = { dauer: dauer, ago: ago, until: until };
+  // **Die Wahl steht am Wurzelelement, nicht in einer Variablen** (#139).
+  // Header und Tabelle werden vom Bus ausgetauscht; ein Zustand, der nur im
+  // Modul lebt, ueberlebt das zwar -- aber der Ticker unten scannt das DOM in
+  // jedem Intervall ohnehin neu, und damit greift die Wahl auf frisch
+  // eingetauschte Zeilen ohne einen eigenen Wiederherstellungspfad. Genau der
+  // waere die Stelle, an der es schiefgeht: #106 war gebaut, sein Test gruen,
+  // und im Betrieb feuerte nichts.
+  try {
+    const w = localStorage.getItem('bibiTimeFmt');
+    if (w) document.documentElement.dataset.tfmt = w;
+  } catch (_) {}
   function tick(){
     const jetzt = Date.now()/1000;
+    // **Zeitpunkte, nicht Dauern** (#139). `data-abs` traegt die absolute Form
+    // mit: der Rueckweg braucht damit keine zweite Datumsregel in JavaScript,
+    // und der Server bleibt die einzige Stelle, die entscheidet, wann eine
+    // Uhrzeit ihr Datum dazubekommt.
+    // `documentElement` defensiv: der Pruefstand in `tests/assets/` faehrt
+    // dieses Skript ohne DOM und belegt damit, dass Server und Browser
+    // dieselbe Dauer gleich schreiben. Ein Zugriff, der ihn zerlegt, nimmt
+    // eine Zusage mit, die nichts mit Zeitformaten zu tun hat.
+    const wurzel = document.documentElement;
+    const relativ = !!wurzel && wurzel.dataset.tfmt === 'rel';
+    document.querySelectorAll('[data-tp]').forEach(function(el){
+      const at = parseFloat(el.getAttribute('data-tp'));
+      if (!isFinite(at)) return;
+      const text = relativ
+        ? (at <= jetzt ? ago(Math.max(0, Math.trunc(jetzt - at)))
+                       : until(Math.trunc(at - jetzt)))
+        : el.getAttribute('data-abs');
+      if (text != null && el.textContent !== text) el.textContent = text;
+    });
     document.querySelectorAll('[data-dur]').forEach(function(el){
       const at = parseFloat(el.getAttribute('data-at'));
       if (!isFinite(at)) return;
@@ -1975,14 +2023,23 @@ def _header(active: str, status: dict | None = None, *,
             scheduler: dict | None = None, sub: bool = False,
             scheduler_now: float | None = None, now: float | None = None) -> str:
     """Gemeinsame obere Navigationsleiste: links Titel + reine Tab-Leiste,
-    rechts alle Toggles (FOLLOW/RESCAN/MAINT/Datum-Uhrzeit/THEME) — Bibi4-
+    rechts alle Toggles (RESCAN/MAINT/Zeitformat/Verbindung/THEME) — Bibi4-
     Iteration, User-Fund: "Tabs links, Toggles rechts" (löst die PLAN-21-
     Aufteilung ab, in der FOLLOW/RESCAN/MAINT noch links neben den Tabs
     standen). ``git_status`` fällt hier weg (PLAN-21 Befund 2, Sync-Dopplung:
     der Sync-Zustand steht jetzt nur noch in der Git-Karte, RESCAN zeigt
     wieder die generische Beschriftung). Rollen für ``_screen_nav()``
     (PLAN-20 Befund 6) kommen aus ``status["roles"]`` — schon vorhanden
-    (``/-/status``), keine neue Datenquelle nötig."""
+    (``/-/status``), keine neue Datenquelle nötig.
+
+    **Diese Aufzählung war bis `v0.8.7` falsch, und der Fehler hat zwei
+    Runden gekostet** (#139). Sie nannte *„FOLLOW/RESCAN/MAINT/Datum-Uhrzeit/
+    THEME"* — eine Liste aus der bibi4-Zeit, die den v5-Umbau überlebt hat,
+    während die Funktion es nicht tat: `FOLLOW` gibt es nicht mehr, und den
+    Zeitumschalter gab es nie. Zweimal ist jemand danach suchen gegangen und
+    mit leeren Händen zurückgekommen, und beide Male sah die erfolglose Suche
+    plausibel aus — **die Doku sagte, es gebe das, der Code sagte nichts, und
+    niemand hat die beiden nebeneinandergehalten.**"""
     roles = (status or {}).get("roles")
     left = f'<h1>bibi</h1>{_screen_nav(active, roles, sub=sub)}'
     # Die Uhr zeigt die Zeit des Schedulers, nicht die eigene — deshalb reisen
@@ -2671,6 +2728,17 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
         '<nav class="handles">'
         '<button id="rescan" class="toggle" title="rescan the vault">⟳</button>'
         f"{maint_btn}"
+        # **Der vierte Handle, und es ist der erste** (#139). Bis v0.8.6 gab es
+        # ihn nicht — der Docstring von `_header()` zaehlte ihn seit der
+        # bibi4-Zeit auf, die Funktion hat ihn nie gerendert, und zweimal ist
+        # jemand danach suchen gegangen und mit leeren Haenden zurueckgekommen.
+        #
+        # `◷` und nicht `◐`: ein Zifferblatt ist eine Zeitangabe, ein halb
+        # gefuellter Kreis ein Zustand zwischen an und aus. Genau diese
+        # Verwechslung war der Befund — m.rau klickte auf Maintenance und
+        # suchte die Zeit dahinter.
+        '<button id="tfmt" class="toggle" '
+        'title="timestamps: absolute — click for relative">◷</button>'
         f'<span id="conn-dot" class="conn-dot {dot_cls}" title="{dot_titel}">●</span>'
         "</nav>"
     )
@@ -2682,6 +2750,34 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
 #: bei Fehler bleibt der Zustand).
 _OPS_HANDLES_JS = """
 (function(){
+  // **Der Zeitumschalter** (#139). Er schreibt nur die Wahl; das Umrechnen
+  // macht der Ticker in `_DURATION_JS`, der ohnehin jede Sekunde ueber das DOM
+  // laeuft. Zwei Stellen, die dieselben Elemente anfassen, waeren die
+  // naechste, an der etwas auseinanderlaeuft.
+  const tfmt = document.getElementById('tfmt');
+  if (tfmt) {
+    const zeige = () => {
+      const rel = document.documentElement.dataset.tfmt === 'rel';
+      tfmt.classList.toggle('on', rel);
+      tfmt.title = rel ? 'timestamps: relative — click for absolute'
+                       : 'timestamps: absolute — click for relative';
+    };
+    zeige();
+    tfmt.addEventListener('click', () => {
+      const rel = document.documentElement.dataset.tfmt === 'rel';
+      if (rel) delete document.documentElement.dataset.tfmt;
+      else document.documentElement.dataset.tfmt = 'rel';
+      // **Absolut ist der Vorgabewert und bleibt es** (#30): die abweichende
+      // Wahl wird gespeichert, die Vorgabe geloescht. Ein gespeichertes
+      // `'abs'` waere dasselbe Ergebnis mit einem Eintrag mehr, den spaeter
+      // jemand fuer eine Absicht haelt.
+      try {
+        if (rel) localStorage.removeItem('bibiTimeFmt');
+        else localStorage.setItem('bibiTimeFmt', 'rel');
+      } catch (_) {}
+      zeige();
+    });
+  }
   const rescan = document.getElementById('rescan');
   if (rescan) {
     const idleIcon = rescan.textContent;   // "⟳"
