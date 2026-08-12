@@ -656,7 +656,6 @@ th a:hover { text-decoration: underline; }
 .gk-zahl { color: var(--dim); }
 .gk-zahl::after { content: ""; }
 .gkopf .gk-zahl { order: 2; }
-.gk-summe { order: 4; font-variant-numeric: tabular-nums; }
 .gkopf::after { content: ""; flex: 1; border-top: 1px solid var(--line);
                 order: 3; }
 table.jobs tr.band .gkopf { margin: 0; }
@@ -4481,27 +4480,33 @@ def _jobs_kopf(sort: str | None, direction: str, *,
         # naheliegend — aber das ist eine Erweiterung der Vorgabe, keine Folge
         # aus ihr.
         #
-        # **`P90 RUNTIME` statt `RUNTIME`** (#135): m.rau führt die Spalte in
-        # beiden Listen unter diesem Namen. Der Kopf nennt damit die Größe und
-        # nicht nur ihre Einheit — dieselbe Bewegung wie `24H` → `RELIABILITY`,
-        # nur ohne eigene Zeile im Ticket.
-        + "<th>P90 RUNTIME</th>"
-        # **`RELIABILITY` statt `24H`** (#135): der alte Name nennt ein
-        # Zeitfenster, die Spalte trägt aber eine Aussage über Verlässlichkeit —
-        # das Fenster ist ihre Grundlage, nicht ihr Gegenstand. Der
-        # Sortierschlüssel bleibt `24h`: er steht in URLs, die jemand geteilt
-        # haben kann, und benennt die Rechnung, nicht die Überschrift.
-        + _sort_kopf("24h", "RELIABILITY", sort, direction)
+        # **`RUNTIME`** (#153, Vorgabe m.rau 2026-08-12). Hier stand seit #135
+        # `P90 RUNTIME` — die Größe statt nur ihrer Einheit. Der Zusatz kostete
+        # aber einen Zeilenumbruch im Kopf, sobald die Filterleiste daneben die
+        # Spaltenbreite bestimmte (#152), und *was* für eine Runtime dort steht,
+        # sagt der Kommentar an der Zelle und die Doku — nicht die Überschrift.
+        + "<th>RUNTIME</th>"
+        # **`REL.` statt `RELIABILITY`** (#153). Die Bewegung von #135 bleibt —
+        # der Name nennt die Aussage und nicht mehr ihr Zeitfenster (`24H`) —,
+        # nur kürzer. **Der Sortierschlüssel bleibt `24h`**: er steht in URLs,
+        # die jemand geteilt haben kann, und benennt die Rechnung, nicht die
+        # Überschrift. Das gilt bei jeder Umbenennung dieser Spalte, und es ist
+        # jetzt die zweite.
+        + _sort_kopf("24h", "REL.", sort, direction)
         + _sort_kopf("status", "STATUS", sort, direction)
-        + _sort_kopf("last", "LAST", sort, direction)
+        # **`LAST/RUN` und `NEXT/RUN`** (#153). Die Köpfe benennen, was #136 in
+        # diese Zellen gelegt hat: solange ein Lauf läuft, steht dort **seine**
+        # Zeit und nicht der nächste Termin. Die Zelle konnte damit zweierlei
+        # zeigen, während die Überschrift nur eins nannte.
+        + _sort_kopf("last", "LAST/RUN", sort, direction)
         # `NEXT` entfällt im Journal **ganz**, nicht nur sein Inhalt (#135):
         # dort steht ausschliesslich, was keine Zukunft mehr hat. #130 hat die
         # Behauptung bereits aus der Zelle genommen; hier fällt die Spalte.
-        + (_sort_kopf("next", "NEXT", sort, direction) if mit_next else "")
+        + (_sort_kopf("next", "NEXT/RUN", sort, direction) if mit_next else "")
         # Die Client-Spalten sind nicht sortierbar — `status` und `last`
         # sortieren nach dem Scheduler-Zustand und taten das immer schon.
         + "<th>STATUS</th>"
-        + "<th>LAST</th>"
+        + "<th>LAST/RUN</th>"
         + "</tr>"
         # **Die Filterwerte hängen unter der Spalte, die sie einschränken (#31).**
         #
@@ -4554,7 +4559,7 @@ def _filter_zeile(typ: list[str], status: list[str],
         '<tr class="fltr-kopf">'
         "<th></th>"                            # SLUG
         + zellen(_FILTER_OBEN[0][1], typ)      # TYPE
-        + "<th></th><th></th>"                 # P90 RUNTIME, RELIABILITY
+        + "<th></th><th></th>"                 # RUNTIME, REL.
         # `STATUS` hängt unter der **Scheduler**-Spalte (Klarstellung m.rau) —
         # seit #135 ist das die fünfte Zelle statt der vierten.
         + (zellen(_FILTER_OBEN[1][1], status) if status_filter else "<th></th>")
@@ -4565,8 +4570,7 @@ def _filter_zeile(typ: list[str], status: list[str],
     )
 
 
-def _gruppenkopf(label: str, anzahl: int | None = None, *,
-                 aggregat: str = "") -> str:
+def _gruppenkopf(label: str, anzahl: int | None = None) -> str:
     """Die Kopfzeile einer Gruppe — **eine** Quelle für zwei Screens (#31).
 
     Vorschlag 1 der Design-Studie verlangt dieselbe Kopfzeile für die
@@ -4581,35 +4585,17 @@ def _gruppenkopf(label: str, anzahl: int | None = None, *,
     Inhalt und die Form, nicht das Markup drumherum — und daran waren die
     beiden auseinandergelaufen, nicht am Element.
 
-    ``aggregat`` trägt die Summe der Gruppe (FE §4.4: *„Die Bandkopfzeile trägt
-    die Summe."*). Leer, wenn es nichts zu summieren gibt: ``0/0+0`` läse sich
-    als schlechtester Wert, gemeint wäre *„dazu gibt es nichts zu sagen"*.
+    **Ohne Summe seit #154** (Vorgabe m.rau 2026-08-12: *„Diese Zusammenfassung
+    weglassen."*). Sie kam aus FE §4.4 — *„Die Bandkopfzeile trägt die Summe"* —
+    und die Zeile dort ist mitgefallen. **Eine Spezifikation, die etwas
+    verlangt, das bewusst entfernt wurde, erzeugt beim nächsten Leser den Umbau
+    zurück.**
     """
     teile = [f'<span class="gk-label">{label}</span>']
     if anzahl is not None:
         teile.append(f'<span class="gk-zahl">{anzahl}</span>')
-    if aggregat:
-        teile.append(f'<span class="gk-summe">{aggregat}</span>')
     return f'<div class="gkopf">{"".join(teile)}</div>'
 
-
-def _band_summe(zeilen: list) -> str:
-    """Die Summe der Kennzahlen eines Bandes, oder ``""``.
-
-    **Addiert wird über die drei Zähler, nicht über die Prozente:** ein
-    Mittelwert von Prozentwerten gewichtete einen Job mit zwei erwarteten
-    Läufen so stark wie einen mit 288, und dann sagt die Summe etwas über die
-    Anzahl der Jobs statt über ihre Verlässlichkeit.
-    """
-    from bibi.controller.jobs_view import Quote
-
-    quoten = [z.quote for z in zeilen if getattr(z, "quote", None)]
-    if not quoten:
-        return ""
-    summe = Quote(complete=sum(q.complete for q in quoten),
-                  expected=sum(q.expected for q in quoten),
-                  manual=sum(q.manual for q in quoten))
-    return "" if summe.prozent is None else str(summe)
 
 
 #: Die leere Seite, bevor überhaupt ein Job existiert. Sie sagt, was fehlt
@@ -4718,8 +4704,7 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
         drin = [r for r in rows if r.segment is seg]
         teile.append(
             f'<tr class="band"><td colspan="{_JOBS_SPALTEN}">'
-            + _gruppenkopf(seg.value.upper(), len(drin),
-                           aggregat=_band_summe(drin))
+            + _gruppenkopf(seg.value.upper(), len(drin))
             + "</td></tr>"
         )
         if drin:

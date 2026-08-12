@@ -858,8 +858,10 @@ def _kopfzeilen(html: str) -> tuple[list[str], list[str]]:
 
 #: Die Spaltenfolge des Jobs-Screens nach #135. `NEXT` ist die einzige Spalte,
 #: die dem Journal fehlt — dort gibt es keine Zukunft mehr (#130).
-_JOBS_SPALTEN = ["SLUG", "TYPE", "P90 RUNTIME", "RELIABILITY",
-                 "STATUS", "LAST", "NEXT", "STATUS", "LAST"]
+# Die Beschriftungen seit #153. `LAST/RUN` und `NEXT/RUN` sagen, was #136 in
+# diese Zellen gelegt hat: solange ein Lauf laeuft, steht dort seine Zeit.
+_JOBS_SPALTEN = ["SLUG", "TYPE", "RUNTIME", "REL.",
+                 "STATUS", "LAST/RUN", "NEXT/RUN", "STATUS", "LAST/RUN"]
 
 
 def test_the_columns_read_job_then_scheduler_then_client():
@@ -883,7 +885,7 @@ def test_the_journal_carries_the_same_order_minus_next():
     gruppen, spalten = _kopfzeilen(
         render.journal_screen(_zeilen(journal=[_historie("alt")]), now=NOW))
     assert gruppen == ["SCHEDULER", "CLIENT"]
-    assert spalten == [s for s in _JOBS_SPALTEN if s != "NEXT"]
+    assert spalten == [s for s in _JOBS_SPALTEN if s != "NEXT/RUN"]
 
 
 # ── Die Baenderung ist abschaltbar, das `@` macht die Zeile selbsttragend ──
@@ -1106,8 +1108,8 @@ def test_next_stays_with_the_scheduler_who_alone_knows_it():
     seinen Läufen, sagt aber etwas über den Job aus, nicht über ihn.
     """
     _, spalten = _kopfzeilen(render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW))
-    assert spalten[4:7] == ["STATUS", "LAST", "NEXT"], "der Scheduler-Block"
-    assert spalten[7:] == ["STATUS", "LAST"], "der Client-Block"
+    assert spalten[4:7] == ["STATUS", "LAST/RUN", "NEXT/RUN"], "der Scheduler-Block"
+    assert spalten[7:] == ["STATUS", "LAST/RUN"], "der Client-Block"
 
 
 # ── Der Faltzustand überlebt einen Bus-Refetch (#44) ───────────────────────
@@ -1891,34 +1893,6 @@ def test_the_tile_offers_a_way_to_the_run():
     assert 'href="#runs"' in wert, f"kein Weg zum Lauf: {wert[:400]}"
 
 
-def test_the_jobs_band_head_carries_the_sum():
-    """FE §4.4: *„Die Bandkopfzeile trägt die Summe."* — bisher nicht gebaut.
-
-    **Die Summe ist der Grund, warum die Kennzahl eine Zahl ist und kein
-    Chart:** sie lässt sich addieren. Ein Bandkopf, der nur zählt, wie viele
-    Jobs darin liegen, sagt weniger als einer, der sagt, wie verlässlich sie
-    zusammen liefen.
-    """
-    from bibi.controller import jobs_view
-
-    zeilen = _zeilen(local=[_md("a"), _md("b")])
-    zeilen[0].quote = jobs_view.Quote(complete=20, expected=24, manual=0)
-    zeilen[1].quote = jobs_view.Quote(complete=4, expected=4, manual=2)
-    kopf = render.jobs_screen(zeilen, now=NOW).split('class="band"', 1)[1] \
-                                              .split("</tr>", 1)[0]
-    assert "24/28+2" in kopf, f"die Summe fehlt im Bandkopf: {kopf}"
-
-
-def test_a_band_without_any_quota_says_nothing_about_it():
-    """Die Gegenprobe: ein Band ohne Kennzahlen trägt keine leere Summe.
-
-    `0/0+0` läse sich als schlechtester Wert; gemeint wäre *„dazu gibt es
-    nichts zu sagen"*. Dieselbe Erwägung wie bei `Quote.prozent`, das für
-    diesen Fall ausdrücklich `None` liefert und nicht `0`.
-    """
-    kopf = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW) \
-                 .split('class="band"', 1)[1].split("</tr>", 1)[0]
-    assert "+0" not in kopf and "0/0" not in kopf, kopf
 
 
 # ── `offline` statt `—`, wo der Wert am Scheduler hängt (#32) ──────────────
@@ -1950,3 +1924,77 @@ def test_an_online_scheduler_still_shows_a_dash():
     diesen Test wäre ein Fix grün, der überall `offline` schreibt."""
     html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
     assert _zelle(html, "scheduler") == "—"
+
+
+# ── #153/#154: die Köpfe sagen kürzer, was die Zelle zeigt ─────────────────
+
+
+def test_the_column_headers_name_the_value():
+    """Vorgabe m.rau (2026-08-12): `P90 RUNTIME` → `RUNTIME`, `RELIABILITY` →
+    `REL.`, `NEXT` → `NEXT/RUN`, `LAST` → `LAST/RUN`.
+
+    **Die letzten beiden sind mehr als eine Abkürzung.** Sie benennen, was
+    `#136` in diese Zellen gelegt hat: solange ein Lauf läuft, steht dort seine
+    Zeit und nicht der nächste Termin. Der Kopf hat diese zweite Bedeutung
+    bisher nicht getragen — die Zelle konnte zweierlei zeigen, die Überschrift
+    nannte nur eins.
+    """
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    kopf = html.split("<tbody", 1)[0]
+    for neu in ("RUNTIME", "REL.", "NEXT/RUN", "LAST/RUN"):
+        assert neu in kopf, neu
+    assert "P90 RUNTIME" not in kopf
+    assert "RELIABILITY" not in kopf
+
+
+def test_the_sort_keys_survive_the_rename():
+    """**Die Gegenprobe, und sie gehört in denselben Test.**
+
+    Die Schlüssel stehen in URLs, die jemand geteilt haben kann. Wer nur die
+    Beschriftung prüft, merkt nicht, dass der Schlüssel mitgewandert ist —
+    dieselbe Trennung, die `#135` beim Umbenennen von `24H` auf `RELIABILITY`
+    schon getroffen hat.
+    """
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    kopf = html.split("<tbody", 1)[0]
+    for schluessel in ("24h", "next", "last"):
+        assert f'data-sort="{schluessel}"' in kopf, schluessel
+
+
+def test_the_band_head_carries_no_sum():
+    """Vorgabe m.rau: *„Diese Zusammenfassung weglassen."*
+
+    Die Summe kam aus FE §4.4 (*„Die Bandkopfzeile trägt die Summe"*). Die
+    Spezifikation wird hier überstimmt und **nachgezogen**, nicht
+    stehengelassen: eine, die etwas verlangt, das bewusst entfernt wurde,
+    erzeugt beim nächsten Leser den Umbau zurück.
+    """
+    # **Die Quoten von Hand setzen.** `build_rows()` rechnet sie nicht — das
+    # tut `_quoten()` im Controller. Ohne sie waere dieser Test gruen, bevor
+    # irgendetwas entfernt ist, und zwar aus dem falschen Grund.
+    from bibi.controller.jobs_view import Quote
+    zeilen = _zeilen(local=[_md("a"), _md("b")],
+                     scheduler=[{"slug": "a", "status": "complete",
+                                 "schedule": "0 * * * *"}])
+    for z in zeilen:
+        z.quote = Quote(complete=10, expected=12, manual=1)
+    html = render.jobs_screen(zeilen, now=NOW)
+    assert "gk-summe" not in html
+    # **Die Bandkoepfe, nicht die Seite** — die RELIABILITY-Zelle traegt
+    # dasselbe Zahlenmuster, und ein Test darauf waere rot geblieben, obwohl
+    # die Summe laengst weg ist.
+    for kopf in re.findall(r'class="band".*?</tr>', html, re.S):
+        assert not re.search(r"\d+/\d+\+\d+", kopf), f"Summe im Bandkopf: {kopf}"
+    assert not hasattr(render, "_band_summe"), (
+        "die Funktion lebt ohne Verbraucher weiter — das ist toter Code, "
+        "anders als eine benannte Vorarbeit")
+
+
+def test_the_band_head_keeps_label_and_count():
+    """**Die Gegenprobe:** der Bandkopf ist seit `#31` dieselbe Quelle wie die
+    Feed-Tagesgruppe. Ein Rückbau, der zu viel aus `_gruppenkopf()` nimmt,
+    trifft beide Screens."""
+    html = render.jobs_screen(
+        _zeilen(local=[_md("a"), _md("b")]), now=NOW)
+    assert "gk-label" in html and "gk-zahl" in html
+    assert re.search(r"SCHEDULE\D*2", html)

@@ -364,8 +364,11 @@ def test_both_screens_still_share_one_table_head():
 
     def spalten(html: str) -> list[str]:
         kopf = html.split("</thead>", 1)[0]
-        return re.findall(r"<th[^>]*>([A-Z0-9 ]+)</th>", kopf)
+        # `.` und `/` gehoeren ins Muster, seit #153 `REL.` und `LAST/RUN`
+        # beschriftet — ohne sie faende der Test die halben Spalten nicht und
+        # meldete eine Differenz, die es nicht gibt.
+        return re.findall(r"<th[^>]*>([A-Z0-9 ./]+)</th>", kopf)
 
-    assert [s for s in spalten(b) if s != "NEXT"] == spalten(j)
-    for spalte in ("RELIABILITY", "P90 RUNTIME"):
+    assert [s for s in spalten(b) if s != "NEXT/RUN"] == spalten(j)
+    for spalte in ("REL.", "RUNTIME"):
         assert spalte in spalten(j), f"{spalte} fehlt im Journal-Kopf"
