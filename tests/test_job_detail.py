@@ -537,7 +537,11 @@ def test_both_tiles_appear_side_by_side_when_both_sides_know_the_job():
     staendig vergleicht („laeuft es beim Scheduler, aber lokal nicht?")."""
     kacheln = _liste(scheduler_slot={"row_status": "pending"},
                      client_slot={"status": "error"}).tiles
-    assert [k.quelle for k in kacheln] == ["CLIENT", "SCHEDULER"]  # #147
+    # **Scheduler zuerst seit #135** — dieselbe Ordnung wie in den Spalten
+    # unten. Kacheln oben und Tabelle darunter gegenlaeufig zu fuehren hiesse,
+    # beim Blick von der einen in die andere ueber Kreuz zu vergleichen, und
+    # zwar unbemerkt: beide Ansichten sehen fuer sich stimmig aus.
+    assert [k.quelle for k in kacheln] == ["SCHEDULER", "CLIENT"]
 
 
 def test_an_empty_slot_still_gets_its_tile():
@@ -845,7 +849,9 @@ def test_a_run_row_offers_show_instead_of_a_link_away(client):
     c, root = _md_job(client)
     _seed_run(root)
     text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
-    assert "[show]" in text
+    # Ohne eckige Klammern seit #32 — die Form des CTA trägt jetzt, was das
+    # Wireframe-Zeichen trug.
+    assert ">show</button>" in text
     assert "/-/ui/run/" not in text  # kein Weg auf den alten Lauf-Screen
 
 
@@ -1502,8 +1508,8 @@ def test_a_oneshot_greys_out_its_client_tile():
     liste = _liste(scheduler_slot={"id": "s1", "row_status": "pending"},
                    client_slot={"id": "c1", "status": "complete"},
                    oneshot=True)
-    assert [k.quelle for k in liste.tiles] == ["CLIENT", "SCHEDULER"]
-    client = liste.tiles[0]
+    assert [k.quelle for k in liste.tiles] == ["SCHEDULER", "CLIENT"]  # #135
+    client = liste.tiles[1]
     assert client.disabled, "die CLIENT-Kachel ist nicht als gesperrt markiert"
     assert client.aktionen == frozenset(), "eine gesperrte Kachel bietet keine Verben"
 
@@ -1536,7 +1542,7 @@ def test_a_recurring_job_keeps_its_client_tile():
     lokalem Slot — sonst verschwaende sie die halbe Seite."""
     liste = _liste(scheduler_slot={"id": "s1", "row_status": "pending"},
                    client_slot={"id": "c1", "status": "complete"})
-    assert [k.quelle for k in liste.tiles] == ["CLIENT", "SCHEDULER"]  # #147
+    assert [k.quelle for k in liste.tiles] == ["SCHEDULER", "CLIENT"]  # #135
 
 
 def test_the_oneshots_local_runs_are_still_listed():

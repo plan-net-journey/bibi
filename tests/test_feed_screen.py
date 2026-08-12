@@ -236,6 +236,35 @@ def test_every_markup_class_has_a_css_rule():
         f"{len(ohne_regel)} Klassen ohne CSS-Regel: {', '.join(ohne_regel)}")
 
 
+def test_no_wireframe_brackets_in_the_markup():
+    """#32: *„Eckige Klammern weg, überall — `[show]`, `[START]`, `[ATTRS]`,
+    `[LOAD MORE]`. Das war ein Wireframe-Zeichen für ‚hier ist eine Aktion' und
+    wurde wörtlich gebaut; im Browser trägt die Form das schon."*
+
+    **Der Test greift die Quelle und nicht einen gerenderten Screen**, weil die
+    Klammern über fünf Screens verteilt sind und der letzte Rest sonst genau
+    dort stehen bliebe, wo kein Test hinsieht. Dieselbe Bauart wie der
+    Klassen-Wächter darüber, aus demselben Grund.
+
+    Gesucht wird nur **sichtbarer** Text: eckige Klammern in Regexen,
+    JS-Arrays, CSS-Selektoren und Typannotationen sind keine Wireframe-Zeichen,
+    und ein Test, der sie mitmeldet, wird nach dem zweiten Fehlalarm entschärft
+    statt befolgt.
+    """
+    quelle = Path(render.__file__).read_text()
+    #: Ein Wireframe-Zeichen steht als Beschriftung **zwischen** Tags. Die
+    #: zweite Form fängt die Fälle, in denen der Text am Zeilenanfang steht und
+    #: das öffnende Tag eine Zeile höher — beim ersten Anlauf fehlten dadurch
+    #: `[ LOAD MORE ]` und `[attrs]`, und der Test hätte zwei von sechs
+    #: Klammern durchgelassen.
+    klammer = r"\[\s*[A-Za-z][A-Za-z ]*\s*\]"
+    treffer = (re.findall(rf">{klammer}<", quelle)
+               + re.findall(rf"{klammer}</", quelle)
+               + re.findall(rf"""textContent = ['"]{klammer}['"]""", quelle))
+    assert not treffer, (
+        f"{len(treffer)} Wireframe-Klammern im Markup: {', '.join(treffer)}")
+
+
 #: Klassennamen, die es im Stylesheet gibt und die trotzdem nirgends als
 #: ``class="…"``-Literal stehen — jede mit ihrem Grund. **Ohne diese Liste
 #: waere die Gegenrichtung nicht haltbar**, und ohne Gruende waere sie eine

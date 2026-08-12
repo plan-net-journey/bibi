@@ -69,16 +69,19 @@ def test_scheduler_hostname_comes_from_the_client():
 
 
 def test_client_block_has_its_four_rows():
-    html = _header()
+    # `voll=True`: die `bibi`-Zeile steht seit #30 nur im Feed.
+    html = _header(voll=True)
     for label in ("heartbeat", "project", "bibi"):
         assert label in html, label
-    assert "auto-sync: off" in html
+    # Ohne Doppelpunkt seit #30 — die Beschriftungsfarbe trennt jetzt.
+    assert '<span class="hdr-inline">auto-sync</span> off' in html
     assert "trunk" in html and "modified" in html
     assert "v0.6.0" in html
 
 
 def test_scheduler_block_has_its_four_rows():
-    html = _header()
+    # `voll=True`: `uptime` steht seit #30 nur im Feed.
+    html = _header(voll=True)
     for label in ("clients", "next job", "uptime"):
         assert label in html, label
     # Seit der Kuerzung: "2, connected <Uhrzeit>" statt "2 connected".
@@ -94,7 +97,14 @@ def test_offline_keeps_the_last_values_and_dates_them():
     „2 connected" von vor einer Minute oder von gestern stammt."""
     html = _header(scheduler=SCHEDULER_STATUS, scheduler_stale_since=NOW - 240)
     assert "no contact for" in html
-    assert re.search(r"2, connected", html), "die letzten Werte bleiben stehen"
+    # **Seit #30 in der Titelzeile statt in der `clients`-Zeile.** Die Zusage
+    # dieses Tests ist unverändert — der Stand bleibt stehen und wird datiert —,
+    # nur trug ihn vorher das Wort `connected`, und das behauptete bei Ausfall
+    # eine Verbindung, die es nicht mehr gab.
+    assert re.search(r"as of \d{2}", html), "das Alter des Standes fehlt"
+    assert "connected" not in html, "`connected` behauptet offline eine Verbindung"
+    assert re.search(r'<span class="hdr-value">2</span>', html), \
+        "die letzten Werte bleiben stehen"
     assert "dimmed" in html or "stale" in html
 
 
@@ -131,15 +141,19 @@ def test_no_job_matrix_and_no_status_cards():
 
 
 def test_project_row_shows_the_short_commit():
-    """`synced: 4715f43` — der Stand gehört an die Sync-Angabe, sonst sagt
+    """`synced 4715f43` — der Stand gehört an die Sync-Angabe, sonst sagt
     „synced" nur, dass es *irgendwann* stimmte. Das Feld heißt `oid` und ist
-    der volle Hash; angezeigt werden sieben Zeichen."""
+    der volle Hash; angezeigt werden sieben Zeichen.
+
+    Seit #30 ohne Doppelpunkt: `synced` ist die Beschriftung des Hashes und
+    trägt deren Farbe.
+    """
     git = dict(GIT)
     git.pop("commit", None)
     git["oid"] = "4715f4319ab2c8d7e6f5a4b3c2d1e0f9a8b7c6d5"
     html = render.status_header(CLIENT_STATUS, git, scheduler=SCHEDULER_STATUS, now=NOW,
                                 scheduler_host="sarasate")
-    assert "synced: 4715f43" in html
+    assert '<span class="hdr-inline">synced</span> 4715f43' in html
     assert "4715f4319ab2" not in html, "gekürzt, nicht voll"
 
 
@@ -198,7 +212,8 @@ def test_times_older_than_a_day_carry_their_date():
     """Ohne Datum waere die Uhrzeit mehrdeutig — 08:15 von wann?"""
     alt = dict(SCHEDULER_STATUS)
     alt["started_at"] = NOW - 3 * 86400
-    html = _header(scheduler=alt)
+    # Der alte Zeitstempel steckt in `uptime` — nur in der vollen Form.
+    html = _header(scheduler=alt, voll=True)
     assert re.search(r"\d{2}/\d{2} \d{2}:\d{2}", html), "kein Datum bei altem Zeitstempel"
 
 
@@ -215,10 +230,24 @@ def test_both_blocks_carry_a_bullet():
     Für den Client heißt das, ob sein Heartbeat durchkommt.
     """
     html = _header()
-    links = html.split("CLIENT", 1)[0]
-    mitte = html.split("CLIENT", 1)[1].split("SCHEDULER", 1)[0]
-    assert "●" in links, "der CLIENT-Block braucht denselben Punkt"
-    assert "●" in mitte, "der SCHEDULER-Punkt steht weiterhin vor seinem Wort"
+    # **Scheduler links seit #135/#30**, vorher stand der Client dort (#147).
+    links = html.split("SCHEDULER", 1)[0]
+    mitte = html.split("SCHEDULER", 1)[1].split("CLIENT", 1)[0]
+    assert "●" in links, "der SCHEDULER-Block braucht denselben Punkt"
+    assert "●" in mitte, "der CLIENT-Punkt steht weiterhin vor seinem Wort"
+
+
+def test_the_header_leads_with_the_scheduler():
+    """#30: *„Scheduler links, Client rechts — einheitlich in Header und
+    Jobs-Tabelle."*
+
+    Der Header war die Stelle, an der #147 die alte Regel zuerst festgelegt
+    hatte (FE §2: links, was dieser Knoten selbst weiß). **Ihn stehenzulassen,
+    während die Tabelle dreht, wäre der schlechteste der drei Zustände** — dann
+    stünde dieselbe Frage auf einem Screen zweimal verschieden beantwortet.
+    """
+    html = _header()
+    assert html.index("SCHEDULER") < html.index("CLIENT")
 
 
 def test_the_client_bullet_reports_the_heartbeat():
@@ -228,8 +257,12 @@ def test_the_client_bullet_reports_the_heartbeat():
     aus["connect"] = {"ok": False, "last_at": NOW - 300}
     html = render.status_header(aus, GIT, scheduler=SCHEDULER_STATUS, now=NOW,
                                 scheduler_host="sarasate")
-    kopf = html.split("SCHEDULER", 1)[0]
-    assert "bad" in kopf
+    # **Der Block wird gegriffen, nicht die Seite** — seit #135 steht der Client
+    # rechts, und ein Test, der eine Hälfte abschneidet, prüft nach jedem Dreh
+    # den anderen Block. Sein Punkt steht zudem *vor* dem Wort `CLIENT`, ein
+    # Schnitt am eigenen Titel verlöre ihn also ohnehin.
+    client = next(b for b in html.split('<div class="hdr-block') if "CLIENT" in b)
+    assert "bad" in client
 
 
 def test_labels_are_tinted():
@@ -240,10 +273,68 @@ def test_labels_are_tinted():
     assert "--hdr-key" in render._CSS
 
 
+def test_no_colons_inside_header_values():
+    """#30: *„Doppelpunkte weg: `auto-sync off` statt `auto-sync: off`, `synced
+    4257a7b` statt `synced: 4257a7b`."*
+
+    **Der Doppelpunkt war die Ersatzform für eine Auszeichnung, die es nicht
+    gab.** Er trennte eine Beschriftung von ihrem Wert, weil beide dieselbe
+    Farbe trugen — sobald die Beschriftung ihren eigenen Ton hat, trennt die
+    Farbe, und das Zeichen ist doppelt gemoppelt. Die Zeile links tut es seit
+    jeher ohne: dort steht `heartbeat` neben seinem Wert, nicht `heartbeat:`.
+    """
+    # **Uhrzeiten sind ausgenommen, und der Rot-Schritt hat das erzwungen:** der
+    # erste Anlauf dieses Tests meldete `2, connected 01:21:40` als Befund.
+    # Gesucht ist der Doppelpunkt als *Trennzeichen* — einer zwischen Ziffern
+    # gehört zu einem Zeitwert und trennt gar nichts.
+    trenner = re.compile(r"(?<!\d):(?!\d)")
+    werte = re.findall(r'<span class="hdr-value"[^>]*>(.*?)</span>', _header())
+    assert werte, "keine Header-Werte gefunden"
+    for wert in werte:
+        ohne_tags = re.sub(r"<[^>]+>", "", wert)
+        assert not trenner.search(ohne_tags), f"Doppelpunkt in {wert!r}"
+
+
+def _labels(html: str) -> list[str]:
+    return re.findall(r'<span class="hdr-label">([^<]+)</span>', html)
+
+
+def test_the_header_is_compact_outside_the_feed():
+    """#30: *„Kompakt ab Screen 2: zweizeilig (`heartbeat`/`project` links,
+    `clients`/`next job` rechts), voll nur im Feed. Vier Zeilen über einer
+    Liste, die man scrollt, sind zu viel."*
+
+    **Kompakt ist der Normalfall, nicht die Ausnahme** — der Feed ist ein
+    Screen von sechs. Ein Vorgabewert, der auf fünf Screens falsch ist, wird
+    genau dort vergessen, wo er zählt.
+    """
+    kompakt = _labels(_header())
+    voll = _labels(_header(voll=True))
+    assert kompakt == ["clients", "next job", "heartbeat", "project"], (
+        "die kompakte Form trägt zwei Zeilen je Block, Scheduler zuerst")
+    for zusatz in ("uptime", "bibi"):
+        assert zusatz in voll, f"{zusatz} fehlt in der vollen Form"
+        assert zusatz not in kompakt, f"{zusatz} steht in der kompakten Form"
+
+
+def test_inline_labels_carry_the_label_colour():
+    """#30: *„`auto-sync` und `synced` in der Beschriftungsfarbe — blau ist die
+    Farbe der Beschriftung, nicht des Wertes; beide sind Beschriftungen mitten
+    im Wert."*
+
+    Geprüft wird die Auszeichnung, nicht die Farbe selbst: welche Farbe
+    `--hdr-key` trägt, entscheidet das Theme, und ein Test darauf prüfte die
+    Palette statt der Zuordnung.
+    """
+    html = _header()
+    for wort in ("auto-sync", "synced"):
+        assert f'<span class="hdr-inline">{wort}</span>' in html, wort
+
+
 def test_uptime_and_clients_are_terse():
     """„bei uptime schreib kürzer: up 01/08 23:32" und „bei clients: 2,
     connected 14:19:23". Beide Zeilen brachen vorher um."""
-    html = _header()
+    html = _header(voll=True)
     # Unter 24 h nur die Uhrzeit, darueber mit Datum — hier liegt der Start
     # 13,4 h zurueck.
     assert re.search(r"up \d{2}:\d{2}:\d{2}", html)

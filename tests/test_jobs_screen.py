@@ -824,15 +824,66 @@ def test_runtime_stays_empty_without_a_p90():
     assert "<td>error</td>" in zeile, "der lokale Zustand bleibt, nur seine Dauer geht"
 
 
-def test_runtime_sits_on_the_scheduler_side_of_the_row():
-    """FE §4.3: *„der Scheduler weiss, wann es wieder laeuft, und wie lange es
-    dauert. Beide Angaben sind gefragt, beide gehoeren ihm."* Also steht die
-    Spalte unter `SCHEDULER` neben `NEXT` — nicht unter `LOCAL`, wo die
-    ASCII-Skizze aus §4.2 sie noch fuehrte.
+# ── Die Blockordnung: erst der Job, dann der Scheduler, dann der Client ────
+#
+# **#135 dreht um, was m.rau/bibi#147 am 2026-08-05 festgelegt hatte**, und das
+# gehört benannt, weil der Code die alte Regel an drei Stellen zitiert. Sie
+# lautete *„Client links, Scheduler rechts — in jedem Screen"*, begründet mit
+# dem Ausfall: was wegfallen kann, steht rechts.
+#
+# Die neue Ordnung sortiert nach einer anderen Frage — **worüber macht diese
+# Spalte eine Aussage?** Erst was den Job beschreibt (Slug, Typ, seine Laufzeit,
+# seine Verlässlichkeit), dann der Scheduler, der ihn führt, dann der Client,
+# der zeigt, was hier ankam. Beide Ordnungen sind begründbar; die jüngere ist
+# entschieden (m.rau, 2026-08-11, Originalnotizen im Akzeptanz-Memo zu `v0.8.1`:
+# *„dann Scheduler Spalten (zuerst) … dann erst Client Spalten"*).
+
+
+def _kopfzeilen(html: str) -> tuple[list[str], list[str]]:
+    """Gruppenzeile und Spaltenköpfe als **Listen**.
+
+    Die Listenform ist der Gegenstand: ein Test auf das Vorhandensein einzelner
+    Zellen wäre auch bei falscher Reihenfolge grün, und geprüft wird hier genau
+    die Reihenfolge.
     """
-    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
-    assert '<th colspan="4" class="grp">SCHEDULER</th>' in html
-    assert '<th colspan="1" class="grp">CLIENT</th>' in html
+    thead = html.split("<thead>", 1)[1].split("</thead>", 1)[0]
+    zeilen = re.findall(r"<tr[^>]*>(.*?)</tr>", thead, re.S)
+
+    def zellen(roh: str) -> list[str]:
+        return [re.sub(r"<[^>]+>", "", z).replace("↑", "").replace("↓", "").strip()
+                for z in re.findall(r"<th[^>]*>(.*?)</th>", roh, re.S)]
+
+    return [z for z in zellen(zeilen[0]) if z], zellen(zeilen[1])
+
+
+#: Die Spaltenfolge des Jobs-Screens nach #135. `NEXT` ist die einzige Spalte,
+#: die dem Journal fehlt — dort gibt es keine Zukunft mehr (#130).
+_JOBS_SPALTEN = ["SLUG", "TYPE", "P90 RUNTIME", "RELIABILITY",
+                 "STATUS", "LAST", "NEXT", "STATUS", "LAST"]
+
+
+def test_the_columns_read_job_then_scheduler_then_client():
+    """#135: der Scheduler führt den Job, der Client zeigt, was hier ankam."""
+    gruppen, spalten = _kopfzeilen(
+        render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW))
+    assert gruppen == ["SCHEDULER", "CLIENT"]
+    assert spalten == _JOBS_SPALTEN
+
+
+def test_the_journal_carries_the_same_order_minus_next():
+    """Beide Screens tragen dieselbe Ordnung — das ist die Zusage von #135.
+
+    Verglichen werden die Kopfzeilen **gegeneinander**, nicht jede für sich:
+    zwei Screens, die einzeln stimmen und voneinander abweichen, sind genau der
+    Fall, den dieses Ticket meint (*„Eine Reihenfolge, die nur an einer Stelle
+    gilt, ist keine."*).
+    """
+    from tests.test_journal_screen import _historie
+
+    gruppen, spalten = _kopfzeilen(
+        render.journal_screen(_zeilen(journal=[_historie("alt")]), now=NOW))
+    assert gruppen == ["SCHEDULER", "CLIENT"]
+    assert spalten == [s for s in _JOBS_SPALTEN if s != "NEXT"]
 
 
 # ── Die Baenderung ist abschaltbar, das `@` macht die Zeile selbsttragend ──
@@ -1006,33 +1057,33 @@ def test_the_dead_cookie_helpers_from_the_old_screen_are_gone():
         assert name not in quelle, name
 
 
-# ── Client links, Scheduler rechts — überall (m.rau/bibi#147) ──────────────
+# ── Scheduler zuerst, dann der Client — überall (#135) ─────────────────────
 #
-# **Befund m.rau, 2026-08-05:** *„Header: client links, scheduler rechts,
-# Jobs: Scheduler links, Client rechts. Einheitlich den Client links."*
+# **Diese Überschrift stand bis `v0.8.4` andersherum hier**, und die Umkehr
+# gehört mit ihrer Vorgeschichte notiert, sonst liest sie sich später wie ein
+# versehentlicher Rückschritt. m.rau/bibi#147 hatte am 2026-08-05 festgelegt:
+# *„Header: client links, scheduler rechts, Jobs: Scheduler links, Client
+# rechts. Einheitlich den Client links."* Begründet mit dem Ausfall — fällt der
+# Host weg, verlieren genau die rechten Werte ihre Gültigkeit, und was wegfallen
+# kann, steht rechts.
 #
-# Die Anordnung ist keine Formsache, sondern die Lesekonvention dieses UI: FE §2
-# begründet die Header-Aufteilung damit, dass links steht, *was dieser Knoten
-# selbst weiß*, und rechts, *was der Scheduler sagt* — mit dem Ausfall als
-# Argument: fällt der Host weg, verlieren genau die rechten Werte ihre
-# Gültigkeit. Eine Tabelle, die es umdreht, macht aus der Regel eine Ausnahme,
-# und der Leser muss in jedem Screen neu nachsehen.
+# **#135 sortiert nach einer anderen Frage** (m.rau, 2026-08-11): worüber macht
+# diese Spalte eine Aussage? Erst der Job selbst, dann die Instanz, die ihn
+# führt, dann die, die zeigt, was hier ankam. Beide Ordnungen sind begründbar;
+# die jüngere ist entschieden — und sie gilt genauso einheitlich, in Tabelle,
+# Header und den Kacheln des Job-Details.
+#
+# **Was aus #147 unverändert weitergilt:** `CLIENT`, nicht `LOCAL`. Ein Wort für
+# eine Sache; die Umkehr betrifft die Reihenfolge, nicht die Benennung.
 
 
-def test_the_client_block_comes_before_the_scheduler_block():
-    """Die Gruppenkopfzeile in Dokumentreihenfolge — vorher `SCHEDULER` zuerst."""
-    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
-    kopf = html.split("</thead>", 1)[0]
-    assert kopf.index('class="grp">CLIENT') < kopf.index('class="grp">SCHEDULER')
-
-
-def test_the_client_status_cell_comes_before_the_scheduler_one():
+def test_the_scheduler_status_cell_comes_before_the_client_one():
     """Nicht nur die Beschriftung dreht sich, sondern die Spalte selbst.
 
-    Ohne diesen Test wäre eine Kopfzeile denkbar, die `CLIENT` links behauptet,
-    während die Zellen darunter unverändert in der alten Ordnung stehen — die
-    Beschriftung stünde dann über der falschen Spalte, und das ist schlimmer
-    als die alte Reihenfolge.
+    Ohne diesen Test wäre eine Kopfzeile denkbar, die `SCHEDULER` zuerst
+    behauptet, während die Zellen darunter in der alten Ordnung stehen — die
+    Beschriftung stünde dann über der falschen Spalte, und das ist schlimmer als
+    jede der beiden Reihenfolgen für sich.
     """
     zeile = _zeile_von(render.jobs_screen(
         _zeilen(local=[_md("EngineCI")],
@@ -1040,17 +1091,23 @@ def test_the_client_status_cell_comes_before_the_scheduler_one():
                             "schedule": "0 * * * *"}],
                 local_runs={"EngineCI": {"status": "error"}}),
         now=NOW), "EngineCI")
-    assert zeile.index("error") < zeile.index("complete")
+    assert zeile.index("complete") < zeile.index("error")
 
 
-def test_the_scheduler_block_still_spans_its_four_columns():
-    """Die Gegenprobe zum Dreh: `RUNTIME`, `LAST` und `NEXT` bleiben beim
-    Scheduler (FE §4.3, m.rau/bibi#132). Wer die Spalten umordnet, könnte
-    versehentlich auch die Zuordnung verschieben — dann stünde `NEXT` über dem
-    Client, der gar nicht weiß, wann es wieder läuft."""
-    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
-    assert '<th colspan="4" class="grp">SCHEDULER</th>' in html
-    assert '<th colspan="1" class="grp">CLIENT</th>' in html
+def test_next_stays_with_the_scheduler_who_alone_knows_it():
+    """Die Gegenprobe zum Dreh: `LAST` und `NEXT` bleiben beim Scheduler.
+
+    Wer Spalten umordnet, könnte die Zuordnung mitverschieben — dann stünde
+    `NEXT` über dem Client, der gar nicht weiß, wann es wieder läuft.
+
+    **`P90 RUNTIME` ist mit #135 bewusst aus diesem Block herausgewandert** und
+    steht jetzt beim Job. Bis dahin galt FE §4.3 (*„der Scheduler weiss, wann es
+    wieder laeuft, und wie lange es dauert"*); die Zahl entsteht weiterhin aus
+    seinen Läufen, sagt aber etwas über den Job aus, nicht über ihn.
+    """
+    _, spalten = _kopfzeilen(render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW))
+    assert spalten[4:7] == ["STATUS", "LAST", "NEXT"], "der Scheduler-Block"
+    assert spalten[7:] == ["STATUS", "LAST"], "der Client-Block"
 
 
 # ── Der Faltzustand überlebt einen Bus-Refetch (#44) ───────────────────────
@@ -1714,7 +1771,14 @@ def test_a_terminal_job_with_a_stale_date_is_not_touched():
 #: greift, ist deshalb hier keine Nachlässigkeit, sondern die einzige ehrliche
 #: Möglichkeit: eine Klasse zu erfinden, damit der Test hübscher wird, hieße den
 #: Prüfgegenstand für die Prüfung zu ändern.
-_SPALTEN = ("slug", "type", "client", "scheduler", "last", "next", "runtime", "24h")
+#:
+#: **Seit #135 neun statt acht**, in der Ordnung Job → Scheduler → Client. Der
+#: Helfer hat den Umbau beim ersten Lauf gefangen und dabei genau das getan,
+#: wofür seine Zusicherung da ist: er ist nicht still falsch geworden, sondern
+#: hat gesagt, dass er nachziehen muss. `client_last` ist neu.
+_SPALTEN = ("slug", "type", "runtime", "24h",
+            "scheduler", "last", "next",
+            "client", "client_last")
 
 
 def _zelle(html: str, spalte: str) -> str:

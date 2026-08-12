@@ -466,6 +466,11 @@ table.jobs th:nth-child(5), table.jobs th:nth-child(6) { min-width: 6.5rem; }
    Werte darunter nicht verdraengt, aber im selben Blickfeld bleibt. */
 .hdr-row { display: flex; gap: .8rem; line-height: 1.5; }
 .hdr-label { color: var(--hdr-key); min-width: 5.5rem; flex: 0 0 auto; }
+/* Eine Beschriftung, die *im* Wert steht (#30): `auto-sync off`, `synced
+   4257a7b`. Dieselbe Farbe wie die Spalte links, aber ohne deren Breite — die
+   `min-width` dort baut das Raster der Zeile und wuerde hier mitten im Text
+   eine Luecke reissen. */
+.hdr-inline { color: var(--hdr-key); }
 .hdr-row .hdr-value { color: var(--fg); }
 /* Ausfall: der Block behaelt seine Werte und wird gedimmt. Ein alter Wert mit
    Datum sagt mehr als acht Platzhalter. */
@@ -484,6 +489,17 @@ th a:hover { text-decoration: underline; }
    `tabular-nums` haelt sie konstant (7,83 px). Vor #122 fiel das nicht auf,
    weil keine dieser Zellen sich je von selbst geaendert hat. */
 .dur { font-variant-numeric: tabular-nums; }
+/* RELIABILITY: der Zaehler links, der Prozentsatz an einem eigenen Rand (#135).
+   Befund m.rau: die Prozente sollen fluchten, "im Sinne einer eigenen Spalte,
+   aber ohne eigenen Header". `inline-block` mit fester Breite gibt dem
+   Prozentfeld genau das — es steht immer an derselben Stelle der Zelle,
+   unabhaengig davon, wie breit der Zaehler davor geraten ist. Vier Zeichen
+   reichen bis `100%`, `tabular-nums` haelt sie auch beim Wechsel von 9 % auf
+   10 % ruhig. */
+.relia { white-space: nowrap; }
+.relia-n { color: var(--dim); }
+.relia-p { display: inline-block; width: 4ch; text-align: right;
+           margin-left: .5ch; font-variant-numeric: tabular-nums; }
 .chip { font-family: ui-monospace, monospace; font-size: .7rem; font-weight: 700;
         padding: .1rem .45rem; border-radius: .3rem; display: inline-block; white-space: nowrap; }
 /* Git-Status je Job-MD (PLAN-21 Befund 10) — löst die vorherige Lokal/Remote-
@@ -677,10 +693,17 @@ th a:hover { text-decoration: underline; }
                   color: var(--faint); padding-top: .8rem;
                   border-bottom: 1px solid var(--line-hard); }
 .runs .t { font-family: ui-monospace, monospace; white-space: nowrap; }
+/* **Die Form traegt jetzt, was die Klammern trugen** (#32). `[ATTRS]` war ein
+   Wireframe-Zeichen fuer „hier ist eine Aktion", woertlich gebaut — nimmt man
+   es ersatzlos weg, bleibt grauer Text, der WENIGER sagt als vorher. Ein
+   dezenter Rahmen sagt dasselbe in der Sprache des Browsers: anfassbar, aber
+   nicht laut. Er ersetzt zugleich das `text-decoration: underline` beim Hover,
+   das die Zeile um einen Pixel verschob. */
 .cta { color: var(--dim); text-decoration: none; font-size: .8rem;
-       white-space: nowrap; cursor: pointer; background: none; border: 0;
-       font-family: inherit; padding: 0; }
-.cta:hover { color: var(--brand); text-decoration: underline; }
+       white-space: nowrap; cursor: pointer; background: none;
+       border: 1px solid var(--line); border-radius: .3rem;
+       font-family: inherit; padding: .05rem .4rem; display: inline-block; }
+.cta:hover { color: var(--brand); border-color: var(--brand); }
 .run-show { text-align: right; }
 
 /* Ausgeklappter Output: feste Hoehe, eigener Scrollbereich. */
@@ -1458,6 +1481,7 @@ def status_header(
     status: dict | None, git_status: dict | None, *,
     scheduler: dict | None = None, now: float,
     scheduler_host: str | None = None, scheduler_stale_since: float | None = None,
+    voll: bool = False,
 ) -> str:
     """Der Header: links dieser Knoten, rechts der Scheduler.
 
@@ -1488,7 +1512,12 @@ def status_header(
     # kein Schönheitsfehler — der Knoten gilt dem Host nach 60 s als stale.
     hb_klasse = "bad" if hb_alt is not None and hb_alt > 60 else ""
     auto = "on" if status.get("auto_sync") else "off"
-    heartbeat = f'{_uhrzeit(hb, now)}, auto-sync: {auto}'
+    # **Beschriftung mitten im Wert** (#30): `auto-sync` ist keine Auskunft,
+    # sondern benennt die, die daneben steht — es gehört in die Farbe der
+    # Spalte links. Der Doppelpunkt fällt damit weg: er hat getrennt, was die
+    # Farbe jetzt trennt, und die Zeilen daneben kommen seit jeher ohne ihn aus.
+    heartbeat = (f'{_uhrzeit(hb, now)}, '
+                 f'<span class="hdr-inline">auto-sync</span> {auto}')
 
     zweig = git_status.get("branch") or "—"
     baum = git_status.get("tree") or "—"
@@ -1497,7 +1526,10 @@ def status_header(
     # genuegen und sind das, was man weitergibt. `commit` bleibt als Alias
     # zugelassen, weil aeltere Aufrufer ihn kurz uebergeben.
     oid = git_status.get("oid") or git_status.get("commit")
-    projekt = f'{zweig} · {baum} · {sync}' + (f': {oid[:7]}' if oid else "")
+    # `synced` benennt den Hash dahinter und ist damit dieselbe Art Wort wie
+    # `auto-sync` eine Zeile höher (#30) — Beschriftungsfarbe, kein Doppelpunkt.
+    projekt = (f'{zweig} · {baum} · <span class="hdr-inline">{sync}</span>'
+               + (f" {oid[:7]}" if oid else ""))
     # Eskalierte Merge-Quarantäne (`stuck`) gehört in diese Zeile, obwohl die
     # FE-Spezifikation §2 sie nicht nennt: bisher hatte sie eine eigene Zahl in
     # der Git-Kachel, und ein Branch, der dreimal nicht mergen konnte, wartet
@@ -1520,17 +1552,29 @@ def status_header(
     # muessen auch gleich aussehen (m.rau, 2026-08-03).
     hb_ok = (status.get("connect") or {}).get("ok")
     eigen_klasse = "ok" if hb_ok is not False else "bad"
-    links = (
+    client_block = (
         f'<div class="hdr-block"><div class="hdr-title">'
         f'<span class="{eigen_klasse}">●</span> CLIENT'
         f'<span class="hdr-host">{eigener}</span></div>'
         + _hdr_row("heartbeat", heartbeat, klasse=hb_klasse)
         + _hdr_row("project", projekt, klasse=projekt_klasse)
-        + _hdr_row("bibi", version)
+        # **Nur im Feed** (#30): *„Vier Zeilen über einer Liste, die man
+        # scrollt, sind zu viel."* Die installierte Version ändert sich
+        # zwischen zwei Blicken nicht — sie gehört dorthin, wo man hinsieht,
+        # nicht dorthin, wo man vorbeiscrollt.
+        #
+        # **Es sei denn, sie verlangt etwas.** Trägt die Zeile `requires
+        # upgrade`, bleibt sie auf jedem Screen stehen: eine Warnung, die man
+        # nur auf einem von sechs Screens sieht, ist keine. Der Rot-Schritt zu
+        # #30 hat genau das gefangen — die Kürzung hätte die Aussage von `#100`
+        # still auf den Feed eingeschränkt, und niemand hätte es bemerkt, weil
+        # der Normalfall (kein Update nötig) unverändert aussieht.
+        + (_hdr_row("bibi", version)
+           if voll or engine.get("needs_update") else "")
         + "</div>"
     )
 
-    # ── rechts: was der Scheduler sagt ──────────────────────────────────────
+    # ── der Scheduler-Block: was die führende Instanz sagt ──────────────────
     sched = scheduler or {}
     host = scheduler_host or sched.get("hostname") or "—"
     punkt = "○" if stale else "●"
@@ -1542,6 +1586,13 @@ def status_header(
     titel_zusatz = (f' — no contact for '
                     f'{_human_duration(now - scheduler_stale_since, seit=scheduler_stale_since)}'
                     if stale else "")
+    # **`connected 17:17:23` behauptet eine bestehende Verbindung** (#30) — und
+    # tut das ausgerechnet dann, wenn keine mehr besteht. Bei Ausfall wandert
+    # die Zeit als *Alter des Standes* in die Titelzeile, wo der ganze Block
+    # ohnehin als überholt markiert ist; die `clients`-Zeile trägt dann nur noch
+    # ihre Zahl, und auch die ist ein Stand und keine Meldung.
+    #
+    # Online bleibt alles, wie es war: dort ist `connected` wahr.
 
     clients = len(sched.get("workers") or [])
     counts_quelle = sched.get("job_stats") or {}
@@ -1556,22 +1607,35 @@ def status_header(
 
     hoch = sched.get("started_at")
     verbunden = (status.get("connect") or {}).get("since") or status.get("started_at")
+    if stale:
+        titel_zusatz += f", as of {_uhrzeit(verbunden, now)}"
+        clients_zeile = str(clients)
+    else:
+        clients_zeile = f"{clients}, connected {_uhrzeit(verbunden, now)}"
     # Knapp, weil beide Zeilen sonst umbrechen: das "since" ist aus "up"
     # ohnehin zu lesen, und "connected" ist zur clients-Zeile gewandert — dort
     # gehoert es hin, weil es diese Verbindung meint (m.rau, 2026-08-03).
     uptime = f'up {_uhrzeit(hoch, now)}'
 
     dim = " dimmed" if stale else ""
-    rechts = (
+    scheduler_block = (
         f'<div class="hdr-block{dim}"><div class="hdr-title">'
         f'<span class="{host_klasse}">{punkt}</span> SCHEDULER'
         f'<span class="hdr-host {host_klasse}">{host}</span>{titel_zusatz}</div>'
-        + _hdr_row("clients", f"{clients}, connected {_uhrzeit(verbunden, now)}")
+        + _hdr_row("clients", clients_zeile)
         + _hdr_row("next job", next_job)
-        + _hdr_row("uptime", uptime)
+        + (_hdr_row("uptime", uptime) if voll else "")
         + "</div>"
     )
-    return f'<div class="hdr">{links}{rechts}</div>'
+    # **Scheduler links, Client rechts** (#30, #135). Die Blöcke heißen seit
+    # diesem Umbau nach ihrer Quelle und nicht mehr nach ihrer Seite: die Seite
+    # hat innerhalb einer Woche zweimal gewechselt, die Quelle nie.
+    #
+    # FE §2 hatte die umgekehrte Ordnung begründet (*„links, was dieser Knoten
+    # selbst weiß"*, mit dem Ausfall als Argument), m.rau/bibi#147 sie dann auf
+    # alle Screens ausgedehnt. #135 sortiert stattdessen nach Führung: erst die
+    # Instanz, die den Job führt, dann die, die zeigt, was hier ankam.
+    return f'<div class="hdr">{scheduler_block}{client_block}</div>'
 
 
 def _screen_nav(active: str, roles: list[str] | None = None, *,
@@ -1967,6 +2031,7 @@ def feed_status_fragment(
     status: dict, git_status: dict | None, host_url: str | None, now: float,
     *, client_rows: list[dict] | None = None,
     scheduler: dict | None = None, scheduler_stale_since: float | None = None,
+    voll: bool = False,
 ) -> str:
     """Die Feed-Header-Kacheln (PLAN-19 Befund 4: Host-Connection, Mode,
     Git — löst die bisherigen 6 Kacheln von PLAN-18 Stufe 18.3 ab, u. a. fällt
@@ -2013,14 +2078,20 @@ def feed_status_fragment(
         host = urlparse(host_url).hostname or host_url
     body = status_header(status, git_status, scheduler=scheduler, now=now,
                          scheduler_host=host,
-                         scheduler_stale_since=scheduler_stale_since)
+                         scheduler_stale_since=scheduler_stale_since, voll=voll)
     # "bibiMaintChanged from:body" (User-Fund: "ein Klick auf Maintenance muss
     # ein Update nach sich ziehen") — der MAINT-Toggle lebt im gemeinsamen
     # Header, unabhängig davon, ob dieses Fragment auf der Seite existiert;
     # ohne Treffer im DOM ist das Event ein No-op.
+    # **Die Form gehört in die Refetch-URL** (#30): das Fragment kennt seinen
+    # Screen nicht, und der Bus holt es unter einer festen Adresse nach. Ohne
+    # den Parameter fiele der Feed-Header beim ersten Job-Wechsel still auf die
+    # kompakte Fassung zurück — ein Fehler, den niemand dem Bus zuschreibt, weil
+    # er wie ein Rendering-Zufall aussieht und nur nach einem Ereignis auftritt.
+    q = "?full=1" if voll else ""
     attrs = ('id="feedstatus" data-bus="feedstatus" '
-             'data-bus-refetch="/-/ui/feed/status" '
-             'hx-get="/-/ui/feed/status" '
+             f'data-bus-refetch="/-/ui/feed/status{q}" '
+             f'hx-get="/-/ui/feed/status{q}" '
              'hx-trigger="bibiMaintChanged from:body" hx-swap="outerHTML"')
     return f'<div {attrs}>{body}</div>'
 
@@ -2347,7 +2418,9 @@ def feed_page(
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Feed', status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
-        f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
+        # `voll=True`: der Feed ist der einzige Screen mit der vollen
+        # Header-Form (#30) — hier sieht man hin, statt vorbeizuscrollen.
+        f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since, voll=True)}"
         f"{feed_fragment(feed_data, days=days, now=now)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_DIFF_JS}</script>"
@@ -3960,8 +4033,37 @@ def _next_zelle(row, s: dict, now: float, ohne_zukunft: bool) -> str:
     return f'{zeit} <span class="due" title="overdue — the scheduler will pick it up on its next tick">due</span>'
 
 
-def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
-    """Eine Zeile: ein Slug, zwei Zustandsblöcke."""
+def _reliability_zelle(quote, ohne_zukunft: bool) -> str:
+    """Zähler und Prozent als zwei Felder, damit die Prozente fluchten (#135).
+
+    **Befund m.rau (2026-08-11):** *„alle Prozentwerte sollen aligned werden (im
+    Sinne einer ‚eigenen Spalte', aber ohne eigenen Header)"*. Heute steht der
+    Prozentsatz im Fließtext hinter dem Zähler und springt mit dessen
+    Stellenzahl — `7/24+0 29%` und `128/288+2 44%` legen ihre Prozentangaben
+    vier Zeichen versetzt übereinander.
+
+    **Zwei Spans statt einer ausgerichteten Zelle**, und der Unterschied ist
+    nicht kosmetisch: ein `text-align: right` an der ganzen Zelle rückte den
+    Zähler mit, eine feste Breite am Zähler bräche bei dreistelligen Werten.
+    Getrennte Felder halten beide Teile an ihrem eigenen Rand, ohne einander zu
+    kennen — die „eigene Spalte ohne Header", die der Befund verlangt.
+    """
+    if ohne_zukunft or quote is None or quote.prozent is None:
+        return '<td class="relia">—</td>'
+    return (f'<td class="relia"><span class="relia-n">{quote.complete}/'
+            f"{quote.expected}+{quote.manual}</span>"
+            f'<span class="relia-p">{quote.prozent}%</span></td>')
+
+
+def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
+                mit_next: bool = True) -> str:
+    """Eine Zeile: ein Slug, zwei Zustandsblöcke.
+
+    ``mit_next=False`` lässt die `NEXT`-Zelle ganz weg — für den Journal-Screen,
+    dessen Kopf sie ebenfalls nicht führt (#135). Bis dahin blieb die Spalte
+    stehen und trug nur einen Strich; **die Zellenzahl von Kopf und Zeile muss
+    dieselbe sein**, deshalb hängt der Schalter an beiden.
+    """
     from bibi.schedule.models import job_uid
 
     beziehung = ""
@@ -4035,31 +4137,44 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
         # Slot-Kacheln, die ihn ueber `Tile.host` kennen.
         f'<td>{"@" if row.oneshot else ""}'
         f'{_jobs_type_cell(row.spec, public_host, link=False)}</td>'
-        # Client zuerst (m.rau/bibi#147) — dieselbe Ordnung wie im Header und in
-        # den Kacheln des Job-Details. `status` heisst dieses Feld in der
-        # lokalen Job-DB; in den Scheduler-Zeilen heisst es `row_status` (live
-        # abgenommen 2026-08-03).
-        f'<td>{l.get("status") or "—"}</td>'
-        f'<td>{s.get("row_status") or s.get("status") or "—"}</td>'
-        # **`LAST` nennt den Lauf, der gerade läuft** (#136) — seine Startzeit,
-        # nicht die des vorigen. Wer auf die Zeile sieht, während der Job
-        # arbeitet, sucht diesen Lauf und nicht seinen Vorgänger; der steht
-        # ohnehin im Journal.
-        f'<td>{_uhrzeit(_laufender_start(s) or s.get("last_run_at"), now)}</td>'
-        f"<td>{_next_zelle(row, s, now, ohne_zukunft)}</td>"
-        # RUNTIME gehört auf diese Seite und ist ein Perzentil (m.rau/bibi#132):
-        # P90 der letzten 30 Läufe, nicht die Dauer des letzten. Die sprang —
-        # derselbe Job zeigte mal `2.8s`, mal `4m 34s`, je nachdem was zuletzt
-        # geschah. Unter fünf Läufen liefert der Scheduler bewusst nichts.
+        # ── Der Job-Block: was diesen Job beschreibt, unabhängig davon, wer
+        # gerade über ihn spricht (#135). Beide Zahlen entstehen aus
+        # Scheduler-Läufen — das macht sie nicht zu Scheduler-Angaben. **Woher
+        # eine Zahl stammt und worüber sie eine Aussage macht, sind zwei
+        # verschiedene Dinge**, und diese Ordnung sortiert nach dem zweiten.
+        #
+        # RUNTIME ist ein Perzentil (m.rau/bibi#132): P90 der letzten 30 Läufe,
+        # nicht die Dauer des letzten. Die sprang — derselbe Job zeigte mal
+        # `2.8s`, mal `4m 34s`, je nachdem was zuletzt geschah. Unter fünf
+        # Läufen liefert der Scheduler bewusst nichts.
         # `data-nodiff`: die einzige Zelle, die sich vom Aufflammen abmeldet
         # (#67). Sie zählt im Sekundentakt hoch, und gegen 3 s Ausklingzeit wäre
         # ihre Markierung dauerhaft an. **Dass sie hochzählt, ist erwartet und
         # damit keine Nachricht.** Die Abmeldung steht im Markup und nicht als
         # Spaltenindex im JavaScript — eine Ausnahme, die an einer Position
-        # hängt, bricht beim ersten Spaltenumbau, und #135 baut sie um.
-        f'<td data-nodiff>{_human_duration(s.get("runtime_p90"))}</td>'
-        f'<td>{"—" if ohne_zukunft else (row.quote or "—")}</td>'
-        "</tr>"
+        # hängt, bricht beim ersten Spaltenumbau, und #135 ist genau der.
+        + f'<td data-nodiff>{_human_duration(s.get("runtime_p90"))}</td>'
+        + _reliability_zelle(row.quote, ohne_zukunft)
+        # ── Der Scheduler-Block: die Instanz, die den Job führt.
+        #
+        # **`LAST` nennt den Lauf, der gerade läuft** (#136) — seine Startzeit,
+        # nicht die des vorigen. Wer auf die Zeile sieht, während der Job
+        # arbeitet, sucht diesen Lauf und nicht seinen Vorgänger; der steht
+        # ohnehin im Journal.
+        + f'<td>{s.get("row_status") or s.get("status") or "—"}</td>'
+        + f'<td>{_uhrzeit(_laufender_start(s) or s.get("last_run_at"), now)}</td>'
+        + (f"<td>{_next_zelle(row, s, now, ohne_zukunft)}</td>" if mit_next else "")
+        # ── Der Client-Block: was hier ankam.
+        #
+        # `status` heisst dieses Feld in der lokalen Job-DB; in den
+        # Scheduler-Zeilen heisst es `row_status` (live abgenommen 2026-08-03).
+        # `LAST` ist hier `finished_at` — der Zeitpunkt, zu dem der letzte
+        # lokale Lauf **fertig** war. Der Scheduler nennt daneben den Start
+        # seines Laufs, und das ist kein Versehen: er weiss, wann etwas beginnt,
+        # der Client sieht, wann es geendet hat.
+        + f'<td>{l.get("status") or "—"}</td>'
+        + f'<td>{_uhrzeit(l.get("finished_at"), now)}</td>'
+        + "</tr>"
     )
 
 
@@ -4079,8 +4194,21 @@ _FILTER_OBEN = (("TYPE", ("job", "claude", "app")),
 _FILTER_JOURNAL = ("local", "1shot", "gone")
 
 #: Klickbare Spalten. Der Schlüssel ist zugleich der Query-Parameter.
+#:
+#: `24h` behält seinen Schlüssel, obwohl die Spalte seit #135 `RELIABILITY`
+#: heißt: er steht in URLs, die jemand geteilt oder gespeichert haben kann, und
+#: er benennt die Rechnung (24 Stunden), nicht die Überschrift.
 _SORTIERBAR = (("slug", "SLUG"), ("type", "TYPE"), ("status", "STATUS"),
-               ("last", "LAST"), ("next", "NEXT"), ("24h", "24H"))
+               ("last", "LAST"), ("next", "NEXT"), ("24h", "RELIABILITY"))
+
+#: Zellen je Zeile des Jobs-Screens — der Bezug jedes `colspan`, das quer über
+#: die Tabelle geht (Bandkopf, leeres Band).
+#:
+#: **Als Konstante, weil #135 den Wert von acht auf neun gehoben hat** und drei
+#: Stellen ihn getrennt als Literal führten. Eine davon wäre stehengeblieben,
+#: und ein zu kurzes `colspan` verschiebt keine Zeile sichtbar — es lässt die
+#: Bandkopfzeile nur eine Spalte vor dem Rand enden.
+_JOBS_SPALTEN = 9
 
 
 def sortierbare_schluessel() -> frozenset[str]:
@@ -4128,7 +4256,8 @@ def _sort_kopf(schluessel: str, label: str, sort: str | None, richtung: str) -> 
 def _jobs_kopf(sort: str | None, direction: str, *,
                typ: list[str] | None = None,
                status: list[str] | None = None,
-               status_filter: bool = True) -> str:
+               status_filter: bool = True,
+               mit_next: bool = True) -> str:
     """Der Tabellenkopf — **eine** Quelle für Jobs- und Journal-Screen.
 
     Beide führen dieselbe Einheit (ein Slug = eine Zeile) und dieselben acht
@@ -4139,37 +4268,52 @@ def _jobs_kopf(sort: str | None, direction: str, *,
     """
     return (
         "<thead>"
-        '<tr class="gruppen"><th></th><th></th>'
-        # **Client links, Scheduler rechts** (m.rau/bibi#147): links steht, was
-        # dieser Knoten selbst weiss, rechts, was der Scheduler sagt — mit dem
-        # Ausfall als Argument (FE §2): faellt der Host weg, verlieren genau die
-        # rechten Werte ihre Gueltigkeit. Die Tabelle drehte das bisher um und
-        # machte aus der Regel eine Ausnahme.
+        # **Scheduler zuerst, dann der Client** (#135, m.rau 2026-08-11). Das
+        # dreht m.rau/bibi#147 vom 2026-08-05 um, das *„Client links, Scheduler
+        # rechts — in jedem Screen"* festgelegt hatte, begründet mit dem
+        # Ausfall: was wegfallen kann, steht rechts.
+        #
+        # **Die neue Ordnung sortiert nach einer anderen Frage** — worüber macht
+        # diese Spalte eine Aussage? Erst der Job selbst, dann die Instanz, die
+        # ihn führt, dann die, die zeigt, was hier ankam. Die alte Ordnung
+        # sortierte nach Verlässlichkeit der Anzeige; beide sind begründbar, und
+        # entschieden ist die jüngere.
         #
         # `CLIENT`, nicht `LOCAL`: ein Wort fuer eine Sache. `LOCAL` ist nur aus
-        # Sicht des Betrachters lokal, `CLIENT` benennt die Herkunft — und der
-        # Header sagte ohnehin schon `CLIENT`.
-        #
-        # RUNTIME ist seit m.rau/bibi#132 eine Scheduler-Eigenschaft: er weiss,
-        # wann es *wieder* laeuft, und wie lange es *dauert*. Beide Angaben sind
-        # gefragt, beide gehoeren ihm — der Client bleibt der reine Zustand.
-        '<th colspan="1" class="grp">CLIENT</th>'
-        '<th colspan="4" class="grp">SCHEDULER</th><th></th></tr>'
+        # Sicht des Betrachters lokal, `CLIENT` benennt die Herkunft — das aus
+        # #147 gilt weiter, nur seine Reihenfolge nicht.
+        '<tr class="gruppen"><th></th><th></th><th></th><th></th>'
+        f'<th colspan="{3 if mit_next else 2}" class="grp">SCHEDULER</th>'
+        '<th colspan="2" class="grp">CLIENT</th></tr>'
         "<tr>"
         + _sort_kopf("slug", "SLUG", sort, direction)
         + _sort_kopf("type", "TYPE", sort, direction)
-        # Die Client-Spalte ist nicht sortierbar — `status` sortiert nach dem
-        # Scheduler-Zustand und tat das immer schon.
-        + "<th>STATUS</th>"
-        + _sort_kopf("status", "STATUS", sort, direction)
-        + _sort_kopf("last", "LAST", sort, direction)
-        + _sort_kopf("next", "NEXT", sort, direction)
         # Nicht sortierbar: FE §4.6 fuehrt sechs klickbare Spalten, RUNTIME ist
         # keine davon. Dass die Zahl jetzt tragfaehig ist, macht das Sortieren
         # naheliegend — aber das ist eine Erweiterung der Vorgabe, keine Folge
         # aus ihr.
-        + "<th>RUNTIME</th>"
-        + _sort_kopf("24h", "24H", sort, direction)
+        #
+        # **`P90 RUNTIME` statt `RUNTIME`** (#135): m.rau führt die Spalte in
+        # beiden Listen unter diesem Namen. Der Kopf nennt damit die Größe und
+        # nicht nur ihre Einheit — dieselbe Bewegung wie `24H` → `RELIABILITY`,
+        # nur ohne eigene Zeile im Ticket.
+        + "<th>P90 RUNTIME</th>"
+        # **`RELIABILITY` statt `24H`** (#135): der alte Name nennt ein
+        # Zeitfenster, die Spalte trägt aber eine Aussage über Verlässlichkeit —
+        # das Fenster ist ihre Grundlage, nicht ihr Gegenstand. Der
+        # Sortierschlüssel bleibt `24h`: er steht in URLs, die jemand geteilt
+        # haben kann, und benennt die Rechnung, nicht die Überschrift.
+        + _sort_kopf("24h", "RELIABILITY", sort, direction)
+        + _sort_kopf("status", "STATUS", sort, direction)
+        + _sort_kopf("last", "LAST", sort, direction)
+        # `NEXT` entfällt im Journal **ganz**, nicht nur sein Inhalt (#135):
+        # dort steht ausschliesslich, was keine Zukunft mehr hat. #130 hat die
+        # Behauptung bereits aus der Zelle genommen; hier fällt die Spalte.
+        + (_sort_kopf("next", "NEXT", sort, direction) if mit_next else "")
+        # Die Client-Spalten sind nicht sortierbar — `status` und `last`
+        # sortieren nach dem Scheduler-Zustand und taten das immer schon.
+        + "<th>STATUS</th>"
+        + "<th>LAST</th>"
         + "</tr>"
         # **Die Filterwerte hängen unter der Spalte, die sie einschränken (#31).**
         #
@@ -4189,13 +4333,13 @@ def _jobs_kopf(sort: str | None, direction: str, *,
         # Clients: der Filter wirkt ausschliesslich auf den Scheduler-Zustand
         # (Klarstellung m.rau), der Client-Zustand ist Anzeige. Die leere Zelle
         # dazwischen sagt das deutlicher als jeder Kommentar es könnte.
-        + _filter_zeile(typ or [], status or [], status_filter)
+        + _filter_zeile(typ or [], status or [], status_filter, mit_next)
         + "</thead>"
     )
 
 
 def _filter_zeile(typ: list[str], status: list[str],
-                  status_filter: bool = True) -> str:
+                  status_filter: bool = True, mit_next: bool = True) -> str:
     """Die dritte Kopfzeile: Filterwerte unter ihren Spalten (#31).
 
     Acht Zellen, damit die Zeile zur Tabelle passt — gefüllt sind zwei. Die
@@ -4220,11 +4364,15 @@ def _filter_zeile(typ: list[str], status: list[str],
 
     return (
         '<tr class="fltr-kopf">'
-        "<th></th>"
+        "<th></th>"                            # SLUG
         + zellen(_FILTER_OBEN[0][1], typ)      # TYPE
-        + "<th></th>"                          # CLIENT — Anzeige, kein Filter
+        + "<th></th><th></th>"                 # P90 RUNTIME, RELIABILITY
+        # `STATUS` hängt unter der **Scheduler**-Spalte (Klarstellung m.rau) —
+        # seit #135 ist das die fünfte Zelle statt der vierten.
         + (zellen(_FILTER_OBEN[1][1], status) if status_filter else "<th></th>")
-        + "<th></th><th></th><th></th><th></th>"
+        + "<th></th>"                          # SCHEDULER LAST
+        + ("<th></th>" if mit_next else "")    # SCHEDULER NEXT
+        + "<th></th><th></th>"                 # CLIENT STATUS, CLIENT LAST
         + "</tr>"
     )
 
@@ -4331,13 +4479,14 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
     for seg in (Segment.SCHEDULE, Segment.ADHOC):
         drin = [r for r in rows if r.segment is seg]
         teile.append(
-            f'<tr class="band"><td colspan="8">{seg.value.upper()} '
+            f'<tr class="band"><td colspan="{_JOBS_SPALTEN}">{seg.value.upper()} '
             f'<span class="muted">{len(drin)}</span></td></tr>'
         )
         if drin:
             teile.extend(_jobs_zeile(r, now, public_host=public_host) for r in drin)
         else:
-            teile.append(f'<tr class="leer-band"><td colspan="8">— {_LEER[seg]}</td></tr>')
+            teile.append(f'<tr class="leer-band"><td colspan="{_JOBS_SPALTEN}">'
+                         f"— {_LEER[seg]}</td></tr>")
 
     return f'{leiste}<table class="jobs">{kopf}<tbody>{"".join(teile)}</tbody></table>'
 
@@ -4380,9 +4529,10 @@ def journal_screen(rows: list, now: float, *, typ: list[str] | None = None,
     if not rows:
         return f'{leiste}<div class="leer"><p class="muted">— {_LEER[Segment.JOURNAL]}</p></div>'
 
-    zeilen = "".join(_jobs_zeile(r, now, public_host=public_host) for r in rows)
+    zeilen = "".join(_jobs_zeile(r, now, public_host=public_host, mit_next=False)
+                     for r in rows)
     kopf = _jobs_kopf(sort, direction, typ=typ, status=status,
-                      status_filter=False)
+                      status_filter=False, mit_next=False)
     return (f'{leiste}<table class="jobs">{kopf}'
             f"<tbody>{zeilen}</tbody></table>")
 
@@ -4687,9 +4837,9 @@ _JOB_DETAIL_JS = """
     if (!show) return;
     const zeile = document.getElementById('run-' + show.dataset.run);
     if (!zeile) return;
-    if (!zeile.hidden) { zeile.hidden = true; show.textContent = '[show]'; return; }
+    if (!zeile.hidden) { zeile.hidden = true; show.textContent = 'show'; return; }
     zeile.hidden = false;
-    show.textContent = '[hide]';
+    show.textContent = 'hide';
     await ladeOutput(zeile, show);
   });
   // Der Faltzustand ueberlebt einen Bus-Refetch (#44).
@@ -4757,7 +4907,7 @@ _JOB_DETAIL_JS = """
         else if (lebt) { if (window.__bibiInitBoxes) window.__bibiInitBoxes(); }
         else if (b) { ladeOutput(z, b); }
       }
-      if (b) b.textContent = '[hide]';
+      if (b) b.textContent = 'hide';
     }
     offen = null;
   });
@@ -5111,7 +5261,7 @@ def _mehr_tage(basis: str, aktiv: dict, tage: int) -> str:
         if aktiv.get(a):
             teile.append(f"{a}={','.join(aktiv[a])}")
     return (f'<div class="more"><a class="cta" href="{basis}?{"&".join(teile)}">'
-            "[ LOAD MORE ]</a></div>")
+            "LOAD MORE</a></div>")
 
 
 #: Die terminalen Zustände, nach denen die Lauf-Liste filtert (FE §5.3). Es
@@ -5223,7 +5373,7 @@ def _run_zeile(r: dict, *, basis: str = "") -> str:
     attrs = ""
     if basis and not im_slot and r.get("id") is not None:
         attrs = (f' <a class="cta" href="{basis}/runs/{_e(r.get("id"))}/attrs">'
-                 "[attrs]</a>")
+                 "attrs</a>")
     return (
         f'<tr class="{"run run-in-slot" if im_slot else "run"}">'
         f'<td class="mark">{marke}</td>'
@@ -5240,7 +5390,7 @@ def _run_zeile(r: dict, *, basis: str = "") -> str:
         f'<td>{_duration_cell(r)}</td>'
         f'<td>{_e((r.get("commit_sha") or "")[:7])}</td>'
         f'<td><button class="cta run-show" {holen} '
-        f'data-run="{_e(r.get("run_id"))}">[show]</button>{attrs}</td>'
+        f'data-run="{_e(r.get("run_id"))}">show</button>{attrs}</td>'
         "</tr>"
         # Der Ausklappbereich gehoert zum **Lauf**, nicht zur Zeilenposition —
         # deshalb ueberlebt der Deep-Link `#run=` die Archivierung (§5.4).
@@ -5300,7 +5450,7 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
         f'<span class="jd-slug">{_e(slug)}</span>{rel}'
         f'<span class="jd-meta">{_e(typ)} &middot; {_e(str(trigger))}</span>'
         f'{app_cta}'
-        f'<a class="cta" href="/-/jobs/{_uid(slug)}/attrs">[ATTRS]</a>'
+        f'<a class="cta" href="/-/jobs/{_uid(slug)}/attrs">ATTRS</a>'
         "</div>"
     )
     return (
