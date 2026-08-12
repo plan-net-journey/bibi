@@ -732,8 +732,8 @@ def test_run_app_deferred_via_bibi_job_exception(tmp_path):
     c = job_db.connect(db_path)
     c.execute(
         "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempts, backoff, "
-        "silence_timeout, hitl_timeout) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        ("d1", "d1", "d1.md", "job", "echo hi", "running", 1, "fixed", 3600, 172800),
+        "silence_timeout) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("d1", "d1", "d1.md", "job", "echo hi", "running", 1, "fixed", 3600),
     )
     c.close()
 
@@ -768,8 +768,8 @@ def test_run_app_failed_via_bibi_job_exception_with_seconds(tmp_path):
     c = job_db.connect(db_path)
     c.execute(
         "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempt, attempts, "
-        "backoff, silence_timeout, hitl_timeout) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        ("f1", "f1", "f1.md", "job", "echo hi", "running", 0, 2, "fixed", 3600, 172800),
+        "backoff, silence_timeout) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("f1", "f1", "f1.md", "job", "echo hi", "running", 0, 2, "fixed", 3600),
     )
     c.close()
 

@@ -27,7 +27,7 @@ def _seed(repo_root: Path, rel: str, text: str) -> None:
 
 def test_rescan_inserts_and_job_list(sched):
     client, root = sched
-    _seed(root, "hello/README.md", '---\nschedule: now\njob: "echo hi"\n---\n')
+    _seed(root, "hello/hello.md", '---\nschedule: now\njob: "echo hi"\n---\n')
     r = client.post("/-/rescan").json()
     assert r["inserted"] == 1
     jobs = client.get("/-/job").json()
@@ -46,7 +46,7 @@ def test_schedule_lists(sched):
 
 def test_job_get_and_404(sched):
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
     jid = client.get("/-/job").json()[0]["id"]
     assert client.get(f"/-/job/{jid}").json()["slug"] == "a"
@@ -56,7 +56,7 @@ def test_job_get_and_404(sched):
 
 def test_job_status_filter(sched):
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
     assert len(client.get("/-/job", params={"status": "pending"}).json()) == 1
     assert client.get("/-/job", params={"status": "running"}).json() == []
@@ -64,8 +64,9 @@ def test_job_status_filter(sched):
 
 def test_rescan_reports_collision(sched):
     client, root = sched
-    _seed(root, "a.md", '---\nslug: dup\nschedule: now\njob: "x"\n---\n')
-    _seed(root, "b.md", '---\nslug: dup\nschedule: now\njob: "y"\n---\n')
+    # Gleicher Dateistamm in zwei Ordnern (#143).
+    _seed(root, "x/dup.md", '---\nschedule: now\njob: "x"\n---\n')
+    _seed(root, "y/dup.md", '---\nschedule: now\njob: "y"\n---\n')
     r = client.post("/-/rescan").json()
     assert r["collisions"][0]["slug"] == "dup"
     assert client.get("/-/job").json() == []
@@ -73,8 +74,8 @@ def test_rescan_reports_collision(sched):
 
 def test_scheduler_next_reserves_priority_first(sched):
     client, root = sched
-    _seed(root, "z/README.md", '---\nschedule: now\njob: "echo z"\npriority: 0\n---\n')
-    _seed(root, "p/README.md", '---\nschedule: now\njob: "echo p"\npriority: 5\n---\n')
+    _seed(root, "z/z.md", '---\nschedule: now\njob: "echo z"\npriority: 0\n---\n')
+    _seed(root, "p/p.md", '---\nschedule: now\njob: "echo p"\npriority: 5\n---\n')
     client.post("/-/rescan")
     r = client.post("/-/scheduler/next").json()
     assert r["slug"] == "p"                       # höchste Priorität zuerst
@@ -93,7 +94,7 @@ def test_scheduler_next_empty_is_204(sched):
 def test_scheduler_next_paused_in_maintenance(sched, monkeypatch):
     # Wartungsmodus pausiert auch den Remote-Dispatch (Route gibt 204).
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
     monkeypatch.setattr("bibi.state.get_maintenance", lambda: True)
     assert client.post("/-/scheduler/next").status_code == 204
@@ -104,7 +105,7 @@ def test_scheduler_next_paused_in_maintenance(sched, monkeypatch):
 
 def test_scheduler_status_running_to_complete(sched):
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
     jid = client.post("/-/scheduler/next").json()["id"]
     r = client.post(f"/-/scheduler/status/{jid}", json={"status": "complete", "exit_code": 0})
@@ -114,7 +115,7 @@ def test_scheduler_status_running_to_complete(sched):
 
 def test_scheduler_status_illegal_is_409(sched):
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
     jid = client.get("/-/job").json()[0]["id"]   # noch pending
     r = client.post(f"/-/scheduler/status/{jid}", json={"status": "complete"})
@@ -142,7 +143,7 @@ def test_non_scheduler_job_is_501_stub(team_repo):
 def test_scheduler_status_awaiting_stores_app_url(sched):
     """POST /-/scheduler/status awaiting + app_url → app_url in GET /-/job/{id}."""
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: echo x\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: echo x\n---\n')
     client.post("/-/rescan")
     jid = client.post("/-/scheduler/next").json()["id"]
     client.post(f"/-/scheduler/status/{jid}", json={"status": "running"})
@@ -160,7 +161,7 @@ def test_scheduler_status_awaiting_stores_app_url(sched):
 def test_scheduler_status_running_clears_app_url(sched):
     """Status running nach awaiting → app_url in DB wird gelöscht."""
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: echo x\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: echo x\n---\n')
     client.post("/-/rescan")
     jid = client.post("/-/scheduler/next").json()["id"]
     client.post(f"/-/scheduler/status/{jid}", json={"status": "running"})

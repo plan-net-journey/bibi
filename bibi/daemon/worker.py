@@ -948,7 +948,22 @@ def _pinned_row(slug: str, *, db_path: Path | None = None, host: str | None = No
             placeholders = ",".join("?" * len(statuses))
             sql += f" AND status IN ({placeholders})"
             params.extend(statuses)
-        sql += " ORDER BY enqueued_at DESC LIMIT 1"
+        # **Aktualität, nicht Einreihung** (#140). Bis `v0.8.2` stand hier
+        # `enqueued_at DESC`, und das ist etwas anderes: ein Lauf, der hängt und
+        # erst Tage später zombiet, wird *früher* eingereiht als ein kurzer, der
+        # danach startet und sofort scheitert. Der Jobs-Screen liest die
+        # Historie und zeigte den langen, das Job-Detail las diese Zeile und
+        # zeigte den kurzen — zwei Screens, ein Job, zwei Zustände.
+        #
+        # Die Reihenfolge in Worten: erst ein Lauf, der noch läuft (er hat kein
+        # `finished_at` und ist per Definition der aktuellste), dann der zuletzt
+        # beendete, und `enqueued_at` nur noch als Gleichstandsregel.
+        #
+        # Für `_pinned_live_row()` ändert das nichts: dort sind alle Kandidaten
+        # nicht-terminal, tragen also kein `finished_at`, und es bleibt bei der
+        # Einreihung.
+        sql += (" ORDER BY (finished_at IS NULL) DESC, finished_at DESC, "
+                "enqueued_at DESC LIMIT 1")
         return conn.execute(sql, params).fetchone()
     finally:
         conn.close()

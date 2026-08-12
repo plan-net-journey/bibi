@@ -266,7 +266,7 @@ def test_next_fire_at_parsed():
 
 
 def test_rescan_inserts_then_lists(conn, tmp_path: Path):
-    _write(tmp_path / "case" / "hello" / "README.md", '---\nschedule: now\njob: "echo hi"\n---\n')
+    _write(tmp_path / "case" / "hello" / "hello.md", '---\nschedule: now\njob: "echo hi"\n---\n')
     res = job_db.rescan(conn, vault_root=tmp_path / "case")
     assert res["inserted"] == 1 and res["updated"] == 0 and res["removed"] == 0
     jobs = job_db.list_jobs(conn)
@@ -278,7 +278,7 @@ def test_rescan_inserts_then_lists(conn, tmp_path: Path):
 
 
 def test_rescan_update_preserves_id_and_status(conn, tmp_path: Path):
-    md = tmp_path / "case" / "hello" / "README.md"
+    md = tmp_path / "case" / "hello" / "hello.md"
     _write(md, '---\nschedule: now\njob: "echo a"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = job_db.list_jobs(conn)[0]["id"]
@@ -299,7 +299,7 @@ def test_rescan_preserves_next_fire_at_while_failed(conn, tmp_path: Path):
     # Timer von Worker/Sweep, kein aus dem Schedule ableitbares Datum. Rescan
     # (z.B. periodischer Sync) darf ihn nicht auf den nächsten (fernen) Cron-Tick
     # überschreiben — sonst retryt/eskaliert der Job nie.
-    md = tmp_path / "case" / "hello" / "README.md"
+    md = tmp_path / "case" / "hello" / "hello.md"
     _write(md, '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = job_db.list_jobs(conn)[0]["id"]
@@ -316,7 +316,7 @@ def test_rescan_preserves_next_fire_at_while_complete(conn, tmp_path: Path):
     # Lazy Rearm (§5.2): next_fire_at eines complete-Jobs ist der Timer bis zum
     # nächsten Dispatch — ein Rescan darf ihn nicht auf einen anderen Cron-Tick
     # verschieben (derselbe Bug wie bei `failed`/`deferred`, s.o.).
-    md = tmp_path / "case" / "hello" / "README.md"
+    md = tmp_path / "case" / "hello" / "hello.md"
     _write(md, '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = job_db.list_jobs(conn)[0]["id"]
@@ -336,7 +336,7 @@ def test_rescan_recomputes_next_fire_at_when_stuck_at_none_while_complete(conn, 
     # einfrieren — ohne echten Timer muss ein Rescan neu rechnen dürfen,
     # sonst verlangt reserve_next() ("next_fire_at IS NOT NULL") auf ewig
     # ins Leere.
-    md = tmp_path / "case" / "hello" / "README.md"
+    md = tmp_path / "case" / "hello" / "hello.md"
     _write(md, '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = job_db.list_jobs(conn)[0]["id"]
@@ -359,7 +359,7 @@ def test_rescan_does_not_rearm_completed_oneshot(conn, tmp_path: Path):
     # 3 Zyklen reserve_next→complete→rescan feuerten je erneut). Ein
     # abgeschlossener Einzelauftrag ("schicke einmal diese Mail") darf sich
     # nicht von selbst wiederholen.
-    md = tmp_path / "case" / "once" / "README.md"
+    md = tmp_path / "case" / "once" / "once.md"
     _write(md, '---\nat: "2020-01-01T00:00:00"\njob: "echo a"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = job_db.list_jobs(conn)[0]["id"]
@@ -375,7 +375,7 @@ def test_rescan_still_heals_recurring_complete_stuck_at_none(conn, tmp_path: Pat
     # Regressionsschutz: der Befund-1-Fix darf die bestehende Heilung für
     # WIEDERKEHRENDE Schedules (schedule != None) nicht antasten — nur echte
     # oneshots (schedule=None) werden bei complete eingefroren.
-    md = tmp_path / "case" / "hello" / "README.md"
+    md = tmp_path / "case" / "hello" / "hello.md"
     _write(md, '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = job_db.list_jobs(conn)[0]["id"]
@@ -396,7 +396,7 @@ def test_rescan_never_rearms_frozen_statuses(conn, tmp_path: Path):
     # feuert der Job doch wieder automatisch, sobald der nächste periodische
     # Rescan ihm einen frischen Cron-Tick verpasst.
     for status in ("error", "killed", "inactive", "zombie"):
-        _write(tmp_path / "case" / status / "README.md",
+        _write(tmp_path / "case" / status / f"{status}.md",
                '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     for status in ("error", "killed", "inactive", "zombie"):
@@ -412,7 +412,7 @@ def test_rescan_never_rearms_frozen_statuses(conn, tmp_path: Path):
 def test_rescan_deactivates_vanished_instead_of_deleting(conn, tmp_path: Path):
     # PLAN-14 Stufe 14.5: die Zeile bleibt (Journal-Historie erreichbar), nur
     # active=0 statt DELETE — ersetzt den früheren test_rescan_removes_vanished.
-    md = tmp_path / "case" / "hello" / "README.md"
+    md = tmp_path / "case" / "hello" / "hello.md"
     _write(md, '---\nschedule: now\njob: "x"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = conn.execute("SELECT id FROM jobs WHERE slug='hello'").fetchone()["id"]
@@ -425,7 +425,7 @@ def test_rescan_deactivates_vanished_instead_of_deleting(conn, tmp_path: Path):
 
 
 def test_rescan_reactivates_rediscovered_slug(conn, tmp_path: Path):
-    md = tmp_path / "case" / "hello" / "README.md"
+    md = tmp_path / "case" / "hello" / "hello.md"
     _write(md, '---\nschedule: now\njob: "x"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     md.unlink()
@@ -438,8 +438,10 @@ def test_rescan_reactivates_rediscovered_slug(conn, tmp_path: Path):
 
 def test_rescan_reports_errors_and_collisions(conn, tmp_path: Path):
     _write(tmp_path / "case" / "bad.md", '---\nschedule: "broken"\njob: "x"\n---\n')
-    _write(tmp_path / "case" / "a.md", '---\nslug: dup\nschedule: now\njob: "x"\n---\n')
-    _write(tmp_path / "case" / "b.md", '---\nslug: dup\nschedule: now\njob: "y"\n---\n')
+    # Seit #143 entsteht eine Kollision aus dem gleichen Dateistamm in zwei
+    # Ordnern, nicht mehr aus zwei gleichen `slug:`-Overrides.
+    _write(tmp_path / "case" / "x" / "dup.md", '---\nschedule: now\njob: "x"\n---\n')
+    _write(tmp_path / "case" / "y" / "dup.md", '---\nschedule: now\njob: "y"\n---\n')
     res = job_db.rescan(conn, vault_root=tmp_path / "case")
     assert any("cron" in e["error"].lower() for e in res["errors"])
     assert res["collisions"][0]["slug"] == "dup"
@@ -447,7 +449,7 @@ def test_rescan_reports_errors_and_collisions(conn, tmp_path: Path):
 
 
 def test_list_jobs_status_filter_and_get(conn, tmp_path: Path):
-    _write(tmp_path / "case" / "a" / "README.md", '---\nschedule: now\njob: "x"\n---\n')
+    _write(tmp_path / "case" / "a" / "a.md", '---\nschedule: now\njob: "x"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     jid = job_db.list_jobs(conn, status="pending")[0]["id"]
     assert job_db.list_jobs(conn, status="running") == []
@@ -1386,7 +1388,7 @@ def test_rescan_clears_a_leftover_next_fire_at_on_a_frozen_job(conn, tmp_path: P
     Bestand von vor dem 2026-07-05 trägt ihn aber, live nachgewiesen am
     2026-08-09 an `20260702.at-080500-aa2b` (NEXT `02/07 08:05`, 38 Tage alt).
     """
-    _write(tmp_path / "case" / "leiche" / "README.md",
+    _write(tmp_path / "case" / "leiche" / "leiche.md",
            '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
     # Der historische Zustand: terminal UND mit Termin.
@@ -1416,10 +1418,10 @@ def test_rescan_clears_a_leftover_next_fire_at_even_without_its_md(conn, tmp_pat
     Ein Fix, der den einzigen nachweisbaren Fall stehen lässt, erfüllt das
     "unabhängig davon, wann er dorthin geriet" des Tickets nicht.
     """
-    _write(tmp_path / "case" / "weg" / "README.md",
+    _write(tmp_path / "case" / "weg" / "weg.md",
            '---\nschedule: "05 */2 * * *"\njob: "echo a"\n---\n')
     job_db.rescan(conn, vault_root=tmp_path / "case")
-    (tmp_path / "case" / "weg" / "README.md").unlink()
+    (tmp_path / "case" / "weg" / "weg.md").unlink()
     job_db.rescan(conn, vault_root=tmp_path / "case")  # -> active=0
     # Der Live-Zustand: MD weg, Zeile terminal, Termin steht noch.
     conn.execute("UPDATE jobs SET status='error', next_fire_at=? WHERE slug='weg'",

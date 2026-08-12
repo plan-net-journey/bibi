@@ -13,10 +13,10 @@ def _write(p: Path, text: str) -> None:
 
 
 def test_walk_skips_dot_dirs(tmp_path: Path):
-    _write(tmp_path / "case" / "a" / "README.md", "---\nschedule: now\njob: x\n---\n")
+    _write(tmp_path / "case" / "a" / "a.md", "---\nschedule: now\njob: x\n---\n")
     _write(tmp_path / ".git" / "b.md", "---\nschedule: now\njob: x\n---\n")
     found = {p.name for p in walk(tmp_path)}
-    assert "README.md" in found
+    assert "a.md" in found
     # .git-MD wird nicht gelaufen
     assert all(".git" not in p.parts for p in walk(tmp_path))
 
@@ -26,7 +26,7 @@ def test_walk_missing_vault_is_empty(tmp_path: Path):
 
 
 def test_discover_groups_found(tmp_path: Path):
-    _write(tmp_path / "case" / "hello" / "README.md", '---\nschedule: now\njob: "echo hi"\n---\n')
+    _write(tmp_path / "case" / "hello" / "hello.md", '---\nschedule: now\njob: "echo hi"\n---\n')
     _write(tmp_path / "case" / "daily.md", '---\nschedule: "0 9 * * *"\njob: "claude: x"\n---\n')
     res = discover(tmp_path)
     assert set(res.found) == {"hello", "daily"}
@@ -49,12 +49,12 @@ def test_discover_skips_non_schedule_mds(tmp_path: Path):
 
 
 def test_discover_detects_slug_collision(tmp_path: Path):
-    # zwei MDs mit explizit gleichem Slug → Kollision, keine in found
-    _write(tmp_path / "case" / "a.md", '---\nslug: dup\nschedule: now\njob: "x"\n---\n')
-    _write(tmp_path / "case" / "b.md", '---\nslug: dup\nschedule: now\njob: "y"\n---\n')
+    # zwei MDs mit gleichem Dateistamm → Kollision, keine in found (#143)
+    _write(tmp_path / "case" / "x" / "dup.md", '---\nschedule: now\njob: "x"\n---\n')
+    _write(tmp_path / "case" / "y" / "dup.md", '---\nschedule: now\njob: "y"\n---\n')
     res = discover(tmp_path)
     assert res.found == {}
     assert len(res.collisions) == 1
     c = res.collisions[0]
     assert c.slug == "dup"
-    assert c.schedule_refs == ("case/a.md", "case/b.md")
+    assert c.schedule_refs == ("case/x/dup.md", "case/y/dup.md")

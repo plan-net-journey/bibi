@@ -28,7 +28,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle, slot
 from bibi.schedule.models import Kind, Status, display_kind, job_uid
 from bibi.schedule.parser import SPECIAL_SCHEDULES, ParseResult
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 25
 
 #: Terminalzustände, die den Slot **blockieren** statt ihn freizugeben — alle
 #: außer ``complete`` (Archivierungsregel A2, Zustandsmodell §3). Sie bleiben in
@@ -251,6 +251,44 @@ def _mig_bootstrap_tokens(conn: sqlite3.Connection) -> None:  # v21 → v22
     )
 
 
+def _mig_run_snapshot(conn: sqlite3.Connection) -> None:  # v22 → v23
+    # Die Lauf-Attribute bekommen einen eigenen Behälter (#129). Bis hierher
+    # folgten vier Quellen derselben Frage "womit läuft dieser Lauf", und nur
+    # die Prozess-Env des Wrappers bestimmte, was tatsächlich passierte.
+    #
+    # Der Rückweg bleibt ein Pin, und das ist hier nachgerechnet: eine ältere
+    # Engine trifft auf `user_version` 23, `_ensure_schema()` kehrt bei
+    # ">= SCHEMA_VERSION" ohne Schreibzugriff zurück, und `run_snapshot` ist
+    # nullable — kein alter INSERT nennt die Spalte, keiner bricht.
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "run_snapshot"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN run_snapshot TEXT")
+    # `hitl_timeout` ist eine Karteileiche: der Parser hat sie am 2026-07-04 mit
+    # `silence_timeout` zusammengelegt, `_spec_columns()` kennt sie seither
+    # nicht, und geschrieben hat sie zuletzt der DEFAULT. Sie fällt hier, weil
+    # die Attributseite sonst weiter ein Feld führt, das es fachlich nicht mehr
+    # gibt. Ein Entfernen ist die einzige nicht-additive Stelle dieser
+    # Migration — unschädlich, weil kein Produktivpfad die Spalte je liest.
+    if _has_table(conn, "jobs") and _has_column(conn, "jobs", "hitl_timeout"):
+        conn.execute("ALTER TABLE jobs DROP COLUMN hitl_timeout")
+
+
+def _mig_conflict_refs(conn: sqlite3.Connection) -> None:  # v23 → v24
+    # Eine Slug-Kollision bekommt einen eigenen Zustand (#142). Bis hierher
+    # wurde sie wie eine gelöschte MD behandelt — `active=0` —, und ein Job,
+    # der still verschwindet, fällt nicht auf: er fehlt.
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "conflict_refs"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN conflict_refs TEXT")
+
+
+def _mig_drop_slug_explicit(conn: sqlite3.Connection) -> None:  # v24 → v25
+    # Karteileiche seit #143: der Slug kommt ausschließlich aus dem Dateistamm,
+    # `slug_explicit` war danach dauerhaft 0. Eine Spalte, die nur noch eine
+    # Antwort kennt, ist keine Angabe — sie geht im selben Durchgang raus, in
+    # dem ihr Sinn entfallen ist.
+    if _has_table(conn, "jobs") and _has_column(conn, "jobs", "slug_explicit"):
+        conn.execute("ALTER TABLE jobs DROP COLUMN slug_explicit")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -276,6 +314,9 @@ _MIGRATIONS: dict[int, list] = {
     19: [_mig_job_uid],
     20: [_mig_jobs_commit],
     21: [_mig_bootstrap_tokens],
+    22: [_mig_run_snapshot],
+    23: [_mig_conflict_refs],
+    24: [_mig_drop_slug_explicit],
 }
 
 
@@ -431,7 +472,6 @@ def _spec_columns(pr: ParseResult, now: float) -> dict:
         "slug": s.slug,
         "job_uid": job_uid(s.slug),
         "schedule_ref": pr.schedule_ref,
-        "slug_explicit": 1 if pr.slug_explicit else 0,
         "kind": s.kind.value,
         "payload": s.payload,
         "schedule": s.schedule,
@@ -832,6 +872,39 @@ def job_full_view(row: sqlite3.Row) -> dict:
     }
 
 
+def _lauf_attribute(row: sqlite3.Row) -> dict:
+    """Die bei START eingefrorenen Lauf-Attribute dieser Zeile (#129).
+
+    ``{}``, solange keine da sind — das deckt drei Fälle mit derselben Antwort
+    ab: ein Job ohne laufenden Lauf, der allererste Lauf vor seiner
+    Reservierung, und jede Zeile aus einer DB von vor der Migration. Ein
+    unlesbarer Snapshot zählt bewusst dazu: er ist kein Grund, eine Auskunft zu
+    verweigern, die auch aus der Zeile zu haben ist.
+    """
+    if "run_snapshot" not in row.keys():
+        return {}          # eine Teil-Auswahl ohne die Spalte
+    roh = row["run_snapshot"]
+    if not roh:
+        return {}
+    try:
+        return json.loads(roh)
+    except ValueError:
+        return {}
+
+
+def _lauf_wert(row: sqlite3.Row, feld: str):
+    """Der Wert, mit dem **dieser Lauf** läuft — sonst der der Zeile.
+
+    Die Prüffrage für jede Fundstelle lautet *„beschreibt diese Aussage den Lauf
+    oder den Job?"*. Nur für die erste Sorte ist dieser Helfer gedacht:
+    ``schedule``, ``at_iso`` und ``next_fire_at`` beschreiben den **nächsten**
+    Lauf; läse der Scheduler sie hier, wäre der Terminplan eingefroren und ein
+    wiederkehrender Job feuerte nie wieder.
+    """
+    snap = _lauf_attribute(row)
+    return snap[feld] if feld in snap else row[feld]
+
+
 def get_job_by_slug(conn: sqlite3.Connection, slug: str) -> dict | None:
     row = conn.execute("SELECT * FROM jobs WHERE slug=?", (slug,)).fetchone()
     return job_full_view(row) if row else None
@@ -942,7 +1015,12 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None, *,
         # Sie stehen zusammen, weil sie einzeln nichts aussagen. Wer nur die
         # Dauer hat, kennt kein Ziel; wer nur den Zeitpunkt hat, weiß nicht,
         # wie lange er noch gilt.
-        "silence_timeout": row["silence_timeout"],
+        #
+        # Die Dauer kommt aus den Lauf-Attributen (#129): sie ist eine Aussage
+        # über *diesen* Lauf, und der Wrapper überwacht ihn gegen den Wert, den
+        # er bei START mitbekommen hat. Aus der Zeile gelesen lief die Uhr auf
+        # dem Screen gegen ein Ziel, das der Wrapper nicht kennt.
+        "silence_timeout": _lauf_wert(row, "silence_timeout"),
         "last_ping_at": row["last_ping_at"],
     }
 
@@ -970,10 +1048,24 @@ def rescan(conn: sqlite3.Connection, vault_root: Path | None = None) -> dict:
         else:
             upsert_schedule(conn, pr, now)
             inserted += 1
+    # ── Eine Kollision ist kein Verschwinden (#142) ──────────────────────────
+    # Ein kollidierender Slug steht nicht in `found` — bis `v0.8.2` landete er
+    # damit in derselben Menge wie eine gelöschte MD und wurde deaktiviert.
+    # `active` sagt aber *„MD im Vault vorhanden"*, und bei einer Kollision sind
+    # **beide** vorhanden. Der Zustand bekommt deshalb eine eigene Spalte, und
+    # die Deaktivierungsmenge lässt ihn aus.
+    #
+    # Erst räumen, dann setzen: ein aufgelöster Konflikt muss wieder weggehen,
+    # und die erste Anweisung trifft nur Zeilen, die überhaupt eine tragen.
+    kollidiert = {c.slug: sorted(c.schedule_refs) for c in result.collisions}
+    conn.execute("UPDATE jobs SET conflict_refs=NULL WHERE conflict_refs IS NOT NULL")
+    for slug, refs in kollidiert.items():
+        conn.execute("UPDATE jobs SET conflict_refs=? WHERE slug=?",
+                     (json.dumps(refs, ensure_ascii=False), slug))
     # "removed" heißt seit PLAN-14 Stufe 14.5 "deaktiviert" (Zeile bleibt,
     # active=0) — Feldname aus Kompatibilität zu bibi/ctrl/job_cmd.py,
     # bibi/daemon/rescanner.py unverändert belassen (nur Logging, kein Branch).
-    removed = deactivate_slugs(conn, existing - discovered)
+    removed = deactivate_slugs(conn, existing - discovered - set(kollidiert))
     _sweep_karteileichen(conn)
     conn.commit()
 
@@ -1009,31 +1101,52 @@ def _set_offset(conn: sqlite3.Connection, value: float) -> None:
 
 def reservation_view(row: sqlite3.Row) -> dict:
     """Antwort auf ``/-/scheduler/next`` (§4.4): der reservierte Job + Env-Stub.
-    Den vollständigen Env-Bau übernimmt die Typ-Registry des Wrappers (Stufe 3.3)."""
+    Den vollständigen Env-Bau übernimmt die Typ-Registry des Wrappers (Stufe 3.3).
+
+    **Was die Ausführung steuert, kommt aus den Lauf-Attributen** (#129) — dem
+    Snapshot, den ``reserve_next()`` bei START geschrieben hat. Ohne diesen
+    Schritt liefe Versuch 2 eines Retrys mit anderen Werten als denen, die der
+    Snapshot über ihn aussagt: dieselbe Divergenz, nur an einer neuen Stelle.
+
+    **Drei Felder bleiben bewusst an der Zeile.** ``attempt`` zählt *innerhalb*
+    des Laufs und ist keine Konfiguration; ``fire`` benennt den Lauf selbst;
+    ``app_port`` trägt nach ``set_app_port()`` den **gemeldeten** statt des
+    konfigurierten Ports — die Spalte sauber zu bekommen ist ein eigener
+    Vorgang, und ihn hier mitzuerledigen hieße, den Wrapper an einen Port zu
+    schicken, an dem nichts lauscht.
+    """
+    snap = _lauf_attribute(row)
+
+    def cfg(name: str):
+        """Der Wert des Laufs, sonst der der Zeile (einmal geparst, s. o.)."""
+        return snap[name] if name in snap else row[name]
+
     return {
-        "id": row["id"], "slug": row["slug"], "kind": row["kind"],
-        "payload": row["payload"], "model": row["model"],
-        "soul": row["soul"], "session": row["session"],
+        "id": row["id"], "slug": row["slug"], "kind": cfg("kind"),
+        "payload": cfg("payload"), "model": cfg("model"),
+        "soul": cfg("soul"), "session": cfg("session"),
         # fire (Pro-Lauf-Zähler, §5.2): der Worker bildet daraus run_id=slug:fire
         # → per-Run-Output-Pfad (kein Akkumulieren über Läufe).
         "fire": row["fire"],
         # Ausführungs-/Retry-Parameter, damit ein Remote-Worker (ohne lokale DB)
         # überwachen + Backoff rechnen kann (§3.6).
-        "attempt": row["attempt"], "attempts": row["attempts"],
-        "backoff": row["backoff"], "wall_time": row["wall_time"],
-        "silence_timeout": row["silence_timeout"],
-        "app_port": row["app_port"], "app_prefix": row["app_prefix"],
-        "exec_mode": row["exec_mode"],
+        "attempt": row["attempt"], "attempts": cfg("attempts"),
+        "backoff": cfg("backoff"), "wall_time": cfg("wall_time"),
+        "silence_timeout": cfg("silence_timeout"),
+        "app_port": row["app_port"], "app_prefix": cfg("app_prefix"),
+        "exec_mode": cfg("exec_mode"),
         # PLAN-24 Befund 1: image war zwar in der DB (_spec_columns), ging aber
         # nie an den Worker durch — dasselbe Bug-Muster wie app_port/exec_mode
         # vor PLAN-22 und oneshot vor PLAN-23.
-        "image": row["image"],
-        "docker_args": json.loads(row["docker_args"]) if row["docker_args"] else None,
-        "defer_time": row["defer_time"],
-        "error_time": row["error_time"],
+        "image": cfg("image"),
+        "docker_args": json.loads(cfg("docker_args")) if cfg("docker_args") else None,
+        "defer_time": cfg("defer_time"),
+        "error_time": cfg("error_time"),
         # Vault-relativer Pfad der Schedule-MD (unter case_dir) — der Worker
         # leitet daraus das Job-cwd ab (Verzeichnis der MD, nicht Worktree-Root).
-        "schedule_ref": row["schedule_ref"],
+        # Aus dem Lauf: wird die MD während eines Retrys verschoben, gehört der
+        # zweite Versuch trotzdem dorthin, wo der erste lief.
+        "schedule_ref": cfg("schedule_ref"),
         "env": {},
     }
 
@@ -1107,7 +1220,14 @@ def reserve_next(
         # nie mehr erreicht.
         rows = conn.execute(
             "SELECT id, slug, status, priority, enqueued_at, rowid AS seq FROM jobs "
-            f"WHERE active=1 AND locked_at IS NULL AND {pin_clause} AND ("
+            # `conflict_refs IS NULL` (#142): bei zwei MDs mit demselben Slug
+            # ist nicht entscheidbar, welche gilt — beide schreiben über
+            # `upsert_schedule()` in dieselbe Zeile, und wer gewinnt, hängt an
+            # der Scan-Reihenfolge. **Einen der beiden Zufallssieger
+            # auszuführen wäre schlimmer, als gar nichts zu tun.** Die Sperre
+            # sitzt hier und nicht an `active`, damit die Zeile sichtbar bleibt.
+            f"WHERE active=1 AND conflict_refs IS NULL AND locked_at IS NULL "
+            f"AND {pin_clause} AND ("
             "  (status='pending' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='failed' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='deferred' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
@@ -1152,6 +1272,27 @@ def reserve_next(
         global _dispatch_count
         _dispatch_count += 1
         row = conn.execute("SELECT * FROM jobs WHERE id=?", (chosen["id"],)).fetchone()
+        # ── Die Lauf-Attribute frieren hier ein (#129) ──────────────────────
+        # In derselben Transaktion wie das Status-UPDATE, damit es keinen
+        # Moment gibt, in dem ein Lauf begonnen hat und noch keine
+        # Konfiguration trägt.
+        #
+        # Geschrieben wird nur beim Beginn eines neuen `run_id`. `fire` steigt
+        # ausschließlich aus `complete` heraus (s. o.) — ein Retry
+        # (failed → starting) und ein Resume (deferred → starting) behalten
+        # denselben Lauf. Schriebe jede Reservierung neu, trüge ein Lauf über
+        # seine Versuche hinweg wechselnde Konfiguration; bei `attempts: 3`
+        # plus Backoff sind das Stunden, kein Randfall.
+        #
+        # `run_snapshot IS NULL` fängt zwei Fälle mit ab: den allerersten Lauf
+        # eines Jobs und jede Zeile aus einer DB von vor dieser Migration.
+        if chosen["status"] == "complete" or row["run_snapshot"] is None:
+            conn.execute(
+                "UPDATE jobs SET run_snapshot=? WHERE id=?",
+                (json.dumps(job_full_view(row), ensure_ascii=False), chosen["id"]),
+            )
+            row = conn.execute(
+                "SELECT * FROM jobs WHERE id=?", (chosen["id"],)).fetchone()
         conn.execute("COMMIT")
         return reservation_view(row)
     except Exception:
@@ -1435,9 +1576,19 @@ def sweep(conn: sqlite3.Connection, now: float | None = None) -> dict:
     ).fetchall():
         report_status(conn, r["id"], status="error", now=now)
         errored += 1
+    # Die Frist gehört dem Lauf, nicht dem Job (#129): gemessen wird gegen den
+    # `defer_max`, den dieser Lauf bei START mitbekommen hat. Ein Rescan, der
+    # die MD verkürzt, darf einen bereits wartenden Zyklus nicht rückwirkend
+    # für abgelaufen erklären.
+    #
+    # `CASE` statt `COALESCE`, und das ist der Unterschied, auf den es ankommt:
+    # ein Snapshot, der `defer_max: null` sagt, ist eine Aussage — der Lauf hat
+    # keine Frist. `COALESCE` würde an dieser Stelle auf die Spalte
+    # zurückfallen und dem Lauf eine Frist geben, die er nie hatte.
     for r in conn.execute(
         "SELECT id FROM jobs WHERE status='deferred' AND deferred_at IS NOT NULL "
-        "AND defer_max IS NOT NULL AND (? - deferred_at) >= defer_max", (now,)
+        "AND (? - deferred_at) >= CASE WHEN run_snapshot IS NULL THEN defer_max "
+        "ELSE json_extract(run_snapshot, '$.defer_max') END", (now,)
     ).fetchall():
         report_status(conn, r["id"], status="inactive", reason="deferred_expired", now=now)
         inactivated += 1
@@ -1541,9 +1692,16 @@ def start_now(conn: sqlite3.Connection, job_id: str, now: float | None = None) -
     unfällig (User-Feedback, PLAN-14 14.2). ``ok`` | ``invalid`` (running/awaiting)
     | ``not_found``."""
     now = time.time() if now is None else now
-    row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+    row = conn.execute(
+        "SELECT status, conflict_refs FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return "not_found"
+    if row["conflict_refs"]:
+        # **Der Grund gehört in die Antwort** (#142). Ein `invalid` hier schickte
+        # den Menschen an die Zustandsmaschine, während das Problem im Vault
+        # liegt: zwei MDs beanspruchen denselben Slug, und welche gilt, ist
+        # nicht entscheidbar. Die Auflösung ist eine Umbenennung, kein START.
+        return "conflict"
     if row["status"] == slot.DONE:
         # Verbrauchter Oneshot: START zeigt nichts an, was ginge. Wer ihn
         # erneut laufen lassen will, legt eine neue `at`-Datei an oder macht
@@ -1860,11 +2018,21 @@ def _write_journal(
             "branch": branch if branch is not None else row["branch"],
             "payload": row["payload"],
             "pinned_host": row["pinned_host"],
-            # job_full_view() statt job_view() (User-Feedback 2026-07-03: "ein
-            # Schedule oder Attempts kann sich ändern" — der Snapshot muss ALLE
-            # Konfig-Felder einfrieren, nicht nur die kleine Live-Sicht, sonst
-            # verliert man z. B. attempts/backoff/model rückwirkend).
-            "snapshot": json.dumps(job_full_view(row), ensure_ascii=False),
+            # Der Snapshot wird **kopiert, nicht neu berechnet** (#129): er
+            # entsteht bei START, nicht beim Archivieren. Vorher las diese
+            # Stelle die `jobs`-Zeile ein zweites Mal — und damit den Stand
+            # nach jedem Rescan, der während des Laufs stattgefunden hatte.
+            #
+            # Damit fällt die Auskunft weg, ob die MD *während* des Laufs
+            # geändert wurde. Bewusst (m.rau, 2026-08-11): ein
+            # Diagnose-Sonderfall, dessen verständliche Darstellung in der
+            # Ansicht mehr kostet, als er einbringt.
+            #
+            # Der Rückfall deckt Zeilen ab, die nie über `reserve_next()`
+            # gelaufen sind — ein leeres Snapshot-Feld wäre der schlechtere
+            # Tausch, weil die Lauf-Attributseite dann gar nichts zeigt.
+            "snapshot": row["run_snapshot"] or json.dumps(
+                job_full_view(row), ensure_ascii=False),
             "archived_at": archived_at,
         },
     )

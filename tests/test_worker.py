@@ -136,7 +136,7 @@ def _wait_row(root: Path, jid: str, hit, what: str, timeout: float) -> dict:
 
 @pytest.mark.slow
 def test_tick_runs_job_to_complete(gitrepo: Path):
-    jid = _seed(gitrepo, "run1/README.md",
+    jid = _seed(gitrepo, "run1/run1.md",
                 '---\nschedule: now\njob: "echo hallo && echo fertig"\n---\n')
     assert _worker(gitrepo).tick_once() is True
     row = _wait_terminal(gitrepo, jid)
@@ -167,8 +167,10 @@ def test_tick_runs_job_to_complete(gitrepo: Path):
 def test_job_runs_with_cwd_at_schedule_md_directory(gitrepo: Path):
     """User-Feedback 2026-07-05: Job-cwd = Verzeichnis der Schedule-MD, nicht
     Worktree-Root — auch wenn die MD tiefer im Case verschachtelt liegt."""
-    jid = _seed(gitrepo, "run1/sub/README.md",
-                '---\nschedule: now\nslug: nested\njob: "pwd > here.txt"\n---\n')
+    # Der Slug kommt aus dem Dateistamm (#143) — die Verschachtelung, um die es
+    # hier geht, steckt im Pfad und nicht mehr in einem Override.
+    jid = _seed(gitrepo, "run1/sub/nested.md",
+                '---\nschedule: now\njob: "pwd > here.txt"\n---\n')
     assert _worker(gitrepo).tick_once() is True
     _wait_terminal(gitrepo, jid)
     job_dir = gitrepo / "data" / "worktrees" / "nested" / "vault" / "case" / "run1" / "sub"
@@ -179,7 +181,7 @@ def test_job_runs_with_cwd_at_schedule_md_directory(gitrepo: Path):
 
 @pytest.mark.slow
 def test_branch_created_on_run(gitrepo: Path):
-    jid = _seed(gitrepo, "run1/README.md", '---\nschedule: now\njob: "echo x"\n---\n')
+    jid = _seed(gitrepo, "run1/run1.md", '---\nschedule: now\njob: "echo x"\n---\n')
     _worker(gitrepo).tick_once()
     _wait_terminal(gitrepo, jid)
     assert "agent/run1" in _git(gitrepo, "branch", "--list", "agent/run1")
@@ -196,7 +198,7 @@ def test_failing_job_without_explicit_attempts_reaches_error_immediately(gitrepo
     # Parser-Default statt expliziter Frontmatter-Angabe. Test war bis jetzt
     # nicht nachgezogen worden (@pytest.mark.slow, lief nicht in der schnellen
     # Suite, die der attempts-Fix damals validiert hat).
-    jid = _seed(gitrepo, "boom/README.md", '---\nschedule: now\njob: "exit 7"\n---\n')
+    jid = _seed(gitrepo, "boom/boom.md", '---\nschedule: now\njob: "exit 7"\n---\n')
     _worker(gitrepo).tick_once()
     row = _wait_terminal(gitrepo, jid)
     assert row["status"] == "error" and row["exit_code"] == 7
@@ -211,7 +213,7 @@ def test_tick_empty_returns_false(gitrepo: Path):
 @pytest.mark.slow
 def test_tick_skips_during_maintenance(gitrepo: Path, monkeypatch):
     # Wartungsmodus muss respektiert werden: kein Dispatch, Job bleibt pending.
-    _seed(gitrepo, "run1/README.md", '---\nschedule: now\njob: "echo x"\n---\n')
+    _seed(gitrepo, "run1/run1.md", '---\nschedule: now\njob: "echo x"\n---\n')
     monkeypatch.setattr("bibi.state.get_maintenance", lambda: True)
     w = _worker(gitrepo)
     assert w.tick_once() is False
@@ -228,7 +230,7 @@ def test_tick_skips_during_maintenance(gitrepo: Path, monkeypatch):
 
 @pytest.mark.slow
 def test_wall_time_kills_job(gitrepo: Path):
-    jid = _seed(gitrepo, "slow/README.md",
+    jid = _seed(gitrepo, "slow/slow.md",
                 '---\nschedule: now\njob: "sleep 30"\nwall_time: 1\n---\n')
     _worker(gitrepo).tick_once()
     row = _wait_terminal(gitrepo, jid)
@@ -246,7 +248,7 @@ def test_wall_time_kills_job(gitrepo: Path):
 
 @pytest.mark.slow
 def test_silence_zombies_job(gitrepo: Path):
-    jid = _seed(gitrepo, "hang/README.md",
+    jid = _seed(gitrepo, "hang/hang.md",
                 '---\nschedule: now\njob: "sleep 30"\nsilence_timeout: 1\n---\n')
     w = _worker(gitrepo)
     assert w.tick_once() is True
@@ -266,7 +268,7 @@ def test_retry_then_error(gitrepo: Path, monkeypatch):
     # synchrone Erschoepfung aus (failed->error im selben Wrapper-Aufruf,
     # kein Sweep mehr noetig).
     monkeypatch.setenv("BIBI_RETRY_BASE", "0")  # kein Warten zwischen Versuchen
-    jid = _seed(gitrepo, "boom/README.md",
+    jid = _seed(gitrepo, "boom/boom.md",
                 '---\nschedule: now\njob: "exit 1"\nattempts: 2\n---\n')
     w = _worker(gitrepo)
     dbp = gitrepo / "data" / "jobs.sqlite"
@@ -314,7 +316,7 @@ def test_attempts_zero_reaches_error_without_hanging(gitrepo: Path, monkeypatch)
     Retry nie bedient: der Job blieb für immer "failed" hängen (nicht
     TERMINAL), landete nie im Journal."""
     monkeypatch.setenv("BIBI_RETRY_BASE", "0")
-    jid = _seed(gitrepo, "boom0/README.md",
+    jid = _seed(gitrepo, "boom0/boom0.md",
                 '---\nschedule: now\njob: "exit 1"\nattempts: 0\n---\n')
     assert _worker(gitrepo).tick_once() is True
     row = _wait_terminal(gitrepo, jid)
@@ -339,7 +341,7 @@ def test_retry_exponential_3x_to_error(gitrepo: Path, monkeypatch):
     1/2/3, erst der VIERTE Versuch erschoepft synchron zu error, kein Sweep
     mehr noetig)."""
     monkeypatch.setenv("BIBI_RETRY_BASE", "0")  # sofort retribar
-    jid = _seed(gitrepo, "boom3/README.md",
+    jid = _seed(gitrepo, "boom3/boom3.md",
                 '---\nschedule: now\njob: "exit 2"\nattempts: 3\nbackoff: exponential\n---\n')
     w = _worker(gitrepo)
     dbp = gitrepo / "data" / "jobs.sqlite"
@@ -380,7 +382,7 @@ def test_retry_exponential_3x_to_error(gitrepo: Path, monkeypatch):
 @pytest.mark.slow
 def test_execute_reservation_skips_if_already_terminal(gitrepo: Path):
     # Wird der Job vor Abschluss killed, überschreibt der Wrapper nicht.
-    jid = _seed(gitrepo, "r/README.md", '---\nschedule: now\njob: "echo hi"\n---\n')
+    jid = _seed(gitrepo, "r/r.md", '---\nschedule: now\njob: "echo hi"\n---\n')
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     res = job_db.reserve_next(conn)  # → running
     conn.execute("UPDATE jobs SET status='killed', reason='by_user' WHERE id=?", (jid,))
@@ -403,7 +405,7 @@ def test_execute_reservation_setup_failure_does_not_hang_running(gitrepo: Path, 
     # Härtung Fund B (PLAN-5 §5.3): schlägt Setup/Run VOR der Statusmeldung fehl,
     # darf der Job nicht in `running` hängen — er wird als `failed` gemeldet.
     import bibi.daemon.worker as W
-    jid = _seed(gitrepo, "boom/README.md", '---\nschedule: now\njob: "echo hi"\n---\n')
+    jid = _seed(gitrepo, "boom/boom.md", '---\nschedule: now\njob: "echo hi"\n---\n')
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     res = job_db.reserve_next(conn)  # → running
     conn.close()
@@ -444,7 +446,7 @@ def test_execute_reservation_retries_pid_report_after_lock_error(gitrepo: Path, 
     # PLAN-31 Baustein B: ein kurzer Lock beim PID-Report direkt nach dem
     # Wrapper-Start darf den Job nicht als Setup-Fehler markieren.
     import bibi.daemon.worker as W
-    jid = _seed(gitrepo, "lockpid/README.md", '---\nschedule: now\njob: "echo hi"\n---\n')
+    jid = _seed(gitrepo, "lockpid/lockpid.md", '---\nschedule: now\njob: "echo hi"\n---\n')
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     res = job_db.reserve_next(conn)
     conn.close()
@@ -521,7 +523,7 @@ def test_execute_reservation_passes_schedule_image_override(gitrepo: Path, monke
     # (job_db._spec_columns), reservation_view() gab es aber nie an den Worker
     # weiter — komplett totes Feld, exakt wie oneshot vor PLAN-23.
     import bibi.daemon.worker as W
-    jid = _seed(gitrepo, "customimg/README.md",
+    jid = _seed(gitrepo, "customimg/customimg.md",
                 '---\nschedule: now\njob: "echo hi"\nimage: "registry.local/custom:7"\n---\n')
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     res = job_db.reserve_next(conn)
@@ -1191,7 +1193,7 @@ def test_per_run_output_isolation(gitrepo: Path):
     # Wiederkehrender Job läuft zweimal (fire 0, dann 1) → **getrennte** Output-
     # Dateien je run_id, kein Anhängen an eine geteilte job_id-Datei (Bug 27s #4).
     from bibi.wrapper import output
-    jid = _seed(gitrepo, "tick/README.md",
+    jid = _seed(gitrepo, "tick/tick.md",
                 '---\nschedule: "* * * * *"\njob: "echo hallo"\n---\n')
     dbp = gitrepo / "data" / "jobs.sqlite"
     w = _worker(gitrepo)
@@ -1231,7 +1233,7 @@ def test_per_run_output_isolation(gitrepo: Path):
 def test_output_path_resolves_current_run(gitrepo: Path):
     # Die Live-Route fragt worker.output_path(job_id) — das muss den AKTUELLEN
     # Lauf (slug:fire) treffen, nicht die stabile job_id.
-    jid = _seed(gitrepo, "r/README.md", '---\nschedule: now\njob: "echo x"\n---\n')
+    jid = _seed(gitrepo, "r/r.md", '---\nschedule: now\njob: "echo x"\n---\n')
     w = _worker(gitrepo)
     run_id = job_db.run_id_for("r", jid, 0)
     assert w.output_path(jid) == gitrepo / "data" / "job" / run_id / "output.jsonl"
@@ -1423,7 +1425,7 @@ def test_wait_terminal_names_the_timeout(gitrepo: Path):
     Ein Timeout muss sich als Timeout melden. Sonst sucht man den Fehler im
     Code, wo keiner ist — und das kostet mehr als die Wartezeit selbst.
     """
-    jid = _seed(gitrepo, "nie/README.md",
+    jid = _seed(gitrepo, "nie/nie.md",
                 '---\nschedule: never\njob: "echo unerreichbar"\n---\n')
     with pytest.raises(AssertionError, match="terminal"):
         _wait_terminal(gitrepo, jid, timeout=0.3)
@@ -1447,7 +1449,7 @@ def test_wait_status_sees_nonterminal_states(gitrepo: Path):
     wo ein Test auf einen Zustand wartet, der per Definition nie eintritt.
     Deshalb hier ein eigener Helfer statt einer größeren Frist.
     """
-    jid = _seed(gitrepo, "zwischen/README.md",
+    jid = _seed(gitrepo, "zwischen/zwischen.md",
                 '---\nschedule: never\njob: "exit 1"\n---\n')
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     try:

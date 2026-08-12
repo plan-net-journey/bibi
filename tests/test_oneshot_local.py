@@ -46,8 +46,8 @@ def _seed(root: Path, rel: str, body: str) -> None:
 def test_a_oneshot_refuses_to_run_locally(team_repo: Path):
     """Der Kern: `bibi-ctrl run` auf einem `at`-Job bricht ab, statt einen
     zweiten Verbrauch desselben Termins anzulegen."""
-    _seed(team_repo, "once/README.md",
-          '---\nslug: OnceOnly\nat: "2026-08-05T10:00:00"\njob: "echo hi"\n---\n')
+    _seed(team_repo, "once/OnceOnly.md",
+          '---\nat: "2026-08-05T10:00:00"\njob: "echo hi"\n---\n')
     with pytest.raises(ValueError, match="OnceOnly"):
         run_pinned(slug="OnceOnly", repo_root=team_repo,
                    db_path=team_repo / "data" / "jobs.sqlite")
@@ -59,8 +59,8 @@ def test_the_refusal_says_why_and_what_to_do_instead(team_repo: Path):
 
     Fertigstellungsbedingung 5 des Umbauplans — jeder Schritt bringt seine
     Fehlertexte aus Nutzersicht mit."""
-    _seed(team_repo, "once/README.md",
-          '---\nslug: OnceOnly\nat: "2026-08-05T10:00:00"\njob: "echo hi"\n---\n')
+    _seed(team_repo, "once/OnceOnly.md",
+          '---\nat: "2026-08-05T10:00:00"\njob: "echo hi"\n---\n')
     with pytest.raises(ValueError) as exc:
         run_pinned(slug="OnceOnly", repo_root=team_repo,
                    db_path=team_repo / "data" / "jobs.sqlite")
@@ -72,8 +72,8 @@ def test_the_refusal_says_why_and_what_to_do_instead(team_repo: Path):
 def test_no_row_is_left_behind(team_repo: Path):
     """Der Abbruch passiert vor dem INSERT — sonst bliebe eine gepinnte Zeile
     stehen, die nie laeuft und im Jobs-Screen als Leiche erscheint."""
-    _seed(team_repo, "once/README.md",
-          '---\nslug: OnceOnly\nat: "2026-08-05T10:00:00"\njob: "echo hi"\n---\n')
+    _seed(team_repo, "once/OnceOnly.md",
+          '---\nat: "2026-08-05T10:00:00"\njob: "echo hi"\n---\n')
     with pytest.raises(ValueError):
         run_pinned(slug="OnceOnly", repo_root=team_repo,
                    db_path=team_repo / "data" / "jobs.sqlite")
@@ -90,8 +90,8 @@ def test_a_recurring_job_still_runs_locally(team_repo: Path):
     """Die Gegenprobe: nur `at` ist betroffen. `schedule`, `startup` und
     `adhoc` geben die Garantie "genau einmal" nicht und duerfen lokal laufen —
     ein zweiter Lauf ist dort kein Wortbruch, sondern der Sinn der Sache."""
-    _seed(team_repo, "often/README.md",
-          '---\nslug: Often\nschedule: "0 * * * *"\njob: "echo hi"\n---\n')
+    _seed(team_repo, "often/Often.md",
+          '---\nschedule: "0 * * * *"\njob: "echo hi"\n---\n')
     res = run_pinned(slug="Often", repo_root=team_repo,
                      db_path=team_repo / "data" / "jobs.sqlite")
     assert res

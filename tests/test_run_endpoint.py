@@ -166,7 +166,8 @@ def test_run_endpoint_runs_in_place_and_never_commits(gitrepo: Path):
 
     job_dir = gitrepo / "vault" / "case" / "myjob"
     job_dir.mkdir(parents=True)
-    (job_dir / "README.md").write_text(
+    # Der Dateiname trägt den Slug (#143) — aus `README.md` wäre `README` geworden.
+    (job_dir / "myjob.md").write_text(
         '---\nschedule: never\njob: "cat dirty.txt && echo touched >> new.txt"\n---\n',
         encoding="utf-8")
     _git(gitrepo, "add", "-A")

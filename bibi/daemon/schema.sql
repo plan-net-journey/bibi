@@ -20,7 +20,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- uid seines *Basis*-Slugs, nicht den seines Suffix-Slugs.
     job_uid         TEXT,
     schedule_ref    TEXT NOT NULL,             -- MD-Pfad relativ zum Vault
-    slug_explicit   INTEGER NOT NULL DEFAULT 0,
     kind            TEXT NOT NULL,             -- job | claude | app (§5.3)
     payload         TEXT NOT NULL,             -- Shell-Cmd | Prompt | Entrypoint
 
@@ -51,19 +50,31 @@ CREATE TABLE IF NOT EXISTS jobs (
     defer_time      INTEGER,
     defer_max       INTEGER,
     error_time      INTEGER,
-    hitl_timeout    INTEGER NOT NULL DEFAULT 172800,
 
     -- Registrierung (PLAN-14 Stufe 14.5): ist die MD noch im Vault entdeckt?
     -- Orthogonal zum Lifecycle-Status — ein `error`-Job kann sein MD genauso
     -- verlieren wie ein `pending`-Job. rescan() markiert verschwundene Slugs
     -- als inactive statt die Zeile zu löschen (Journal-Historie bleibt erreichbar).
     active          INTEGER NOT NULL DEFAULT 1,
+    -- Slug-Kollision (#142): JSON-Liste der MDs, die denselben Slug
+    -- beanspruchen; NULL = kein Konflikt. Ein eigener Zustand neben `active`,
+    -- nicht in ihm: `active` sagt "MD im Vault vorhanden", und bei einer
+    -- Kollision sind *beide* vorhanden. Solange die Spalte gefüllt ist, ist der
+    -- Job nicht startbar — welche der beiden MDs gälte, ist nicht entscheidbar.
+    conflict_refs   TEXT,
 
     -- Live-Zustand (§5.4/§5.5)
     status          TEXT NOT NULL DEFAULT 'pending',
     reason          TEXT,
     attempt         INTEGER NOT NULL DEFAULT 0,
     fire            INTEGER NOT NULL DEFAULT 0, -- Zähler je Trigger (cron-Recurrence, §5.2)
+    -- Die Lauf-Attribute (#129): `job_full_view()` als JSON, geschrieben bei
+    -- START in derselben Transaktion wie das Status-UPDATE, unveränderlich für
+    -- die Dauer des Laufs. Die übrigen Spec-Spalten dieser Zeile folgen jedem
+    -- Rescan — sie sind eine Projektion der MD, kein Speicher. Wer zur Laufzeit
+    -- wissen will, womit *dieser* Lauf läuft, liest hier. Eine Spalte statt 26
+    -- duplizierter: jedes neue Attribut kostet sonst zwei Migrationen.
+    run_snapshot    TEXT,
     deferred_at     REAL,                      -- erster Defer-Zeitpunkt (§5.5 defer_max)
     locked_at       REAL,
     started_at      REAL,

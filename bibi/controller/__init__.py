@@ -2013,8 +2013,13 @@ def add_controller_routes(
             return JSONResponse(status_code=404,
                                 content={"error": "run not found", "id": jid})
         _sched = _scheduler_status()
+        spec = _local_schedules().get(slug) or {}
         return HTMLResponse(render.run_attrs_page_v5(
-            slug=slug, lauf=zeile, job_spec=_local_schedules().get(slug) or {},
+            slug=slug, lauf=zeile, job_spec=spec,
+            # Dieselben Vorgabewerte wie auf der Job-Seite (#132) — sie stehen
+            # in einer Funktion, damit die beiden Seiten nicht zwei Meinungen
+            # darüber bekommen, was ein Default ist.
+            defaults=_vorgabewerte(spec),
             now=_t.time(), daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), scheduler=_sched[0],
             scheduler_stale_since=_sched[1]))
@@ -2141,12 +2146,31 @@ def add_controller_routes(
                 return slug, e
         return slug, {}
 
+    def _vorgabewerte(spec: dict) -> dict:
+        """Die Defaults, gegen die *„gesetzt oder geerbt"* entschieden wird.
+
+        **Eine Funktion für beide Attributseiten** (#132): die Job-Seite und die
+        Lauf-Seite beantworten dieselbe Teilfrage, und zwei Kopien dieser
+        Tabelle wären zwei Meinungen darüber, was ein Vorgabewert ist.
+
+        Der ``silence_timeout`` hängt am Typ — ein App-Job darf 48 h schweigen,
+        ein Shell-Job nicht.
+        """
+        from bibi.schedule import models
+        kind = "app" if spec.get("app_port") else "job"
+        return {
+            "attempts": 1, "backoff": "fixed",
+            "defer_time": models.DEFAULT_DEFER_TIME,
+            "defer_max": models.DEFAULT_DEFER_MAX,
+            "silence_timeout": (models.DEFAULT_SILENCE_TIMEOUT_APP if kind == "app"
+                                else models.DEFAULT_SILENCE_TIMEOUT_JOB),
+        }
+
     @app.get("/-/jobs/{job_uid}/attrs", include_in_schema=False)
     def screen_job_attrs(request: Request, job_uid: str):  # noqa: ARG001
         """Alle Konfigurationswerte des Jobs (FE-Spezifikation §5.5)."""
         import time as _t
 
-        from bibi.schedule import models
         treffer = _job_by_uid(job_uid)
         if treffer is None:
             return JSONResponse(status_code=404,
@@ -2157,17 +2181,7 @@ def add_controller_routes(
         # (Slug, Trigger, Payload, Port). Hier geht es um jeden
         # Konfigurationswert.
         spec = _local_schedules().get(slug) or {}
-        # Die Defaults, gegen die „gesetzt oder geerbt" entschieden wird. Der
-        # silence_timeout hängt am Typ — ein App-Job darf 48 h schweigen, ein
-        # Shell-Job nicht.
-        kind = "app" if spec.get("app_port") else "job"
-        vorgabe = {
-            "attempts": 1, "backoff": "fixed",
-            "defer_time": models.DEFAULT_DEFER_TIME,
-            "defer_max": models.DEFAULT_DEFER_MAX,
-            "silence_timeout": (models.DEFAULT_SILENCE_TIMEOUT_APP if kind == "app"
-                                else models.DEFAULT_SILENCE_TIMEOUT_JOB),
-        }
+        vorgabe = _vorgabewerte(spec)
         _sched = _scheduler_status()
         return HTMLResponse(render.job_attrs_page_v5(
             slug=slug, spec=spec, defaults=vorgabe, now=_t.time(),

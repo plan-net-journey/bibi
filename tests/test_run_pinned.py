@@ -75,7 +75,7 @@ def test_run_pinned_with_cmd_creates_pinned_row_and_dispatches(gitrepo, monkeypa
 
 def test_run_pinned_with_slug_resolves_existing_schedule(gitrepo, monkeypatch):
     import bibi.daemon.worker as W
-    _seed(gitrepo, "myjob/README.md", '---\nschedule: never\njob: "echo from md"\n---\n')
+    _seed(gitrepo, "myjob/myjob.md", '---\nschedule: never\njob: "echo from md"\n---\n')
     monkeypatch.setattr(W, "_run_wrapper", _fake_run_wrapper(gitrepo))
     res = run_pinned(slug="myjob", repo_root=gitrepo, host="mac")
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
@@ -83,7 +83,7 @@ def test_run_pinned_with_slug_resolves_existing_schedule(gitrepo, monkeypatch):
     conn.close()
     from bibi.daemon.worker import pin_identity
     assert row["payload"] == "echo from md"
-    assert row["schedule_ref"] == "myjob/README.md"
+    assert row["schedule_ref"] == "myjob/myjob.md"
     assert row["pinned_host"] == pin_identity()   # m.rau/bibi#88, s. oben
 
 
@@ -158,7 +158,7 @@ def test_delete_pinned_job_refuses_scheduler_owned_row(gitrepo):
     # Sicherheitsnetz: eine normale (nicht gepinnte) Zeile darf dieser Pfad
     # nicht loeschen -- das waere Datenverlust, den nur der reguläre
     # Reconcile-Pfad (inactive/rescan) verantworten darf.
-    _seed(gitrepo, "myjob/README.md", '---\nschedule: never\njob: "echo hi"\n---\n')
+    _seed(gitrepo, "myjob/myjob.md", '---\nschedule: never\njob: "echo hi"\n---\n')
     conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
     job_db.rescan(conn, vault_root=gitrepo / "vault" / "case")
     row = conn.execute("SELECT id FROM jobs WHERE slug='myjob'").fetchone()
@@ -202,7 +202,7 @@ def test_run_pinned_without_use_schedule_retry_ignores_schedule_lifecycle(gitrep
     # Default False: unveraendertes CLI-sicheres Verhalten (kein Retry, egal
     # was die Schedule-MD sagt) — genau das, was bibi-ctrl run braucht.
     import bibi.daemon.worker as W
-    _seed(gitrepo, "retryjob/README.md",
+    _seed(gitrepo, "retryjob/retryjob.md",
           '---\nschedule: never\njob: "exit 1"\nattempts: 2\nbackoff: exponential\n'
           'defer_time: 15\nerror_time: 10\n---\n')
     monkeypatch.setattr(W, "_run_wrapper", _fake_run_wrapper(gitrepo))
@@ -223,7 +223,7 @@ def test_run_pinned_with_use_schedule_retry_takes_over_schedule_lifecycle(gitrep
     # error_time kommen jetzt aus der Schedule-MD, nicht mehr den No-Retry-
     # Defaults.
     import bibi.daemon.worker as W
-    _seed(gitrepo, "retryjob/README.md",
+    _seed(gitrepo, "retryjob/retryjob.md",
           '---\nschedule: never\njob: "exit 1"\nattempts: 2\nbackoff: exponential\n'
           'defer_time: 15\nerror_time: 10\n---\n')
     monkeypatch.setattr(W, "_run_wrapper", _fake_run_wrapper(gitrepo))
@@ -284,7 +284,7 @@ def _capturing_run_wrapper(tmp_path: Path, captured: dict):
 
 def test_run_pinned_passes_app_port_and_exec_mode_to_wrapper(gitrepo, monkeypatch):
     import bibi.daemon.worker as W
-    _seed(gitrepo, "myapp/README.md",
+    _seed(gitrepo, "myapp/myapp.md",
           '---\nschedule: "never"\njob: "python3 myapp.py"\napp_port: 9100\n'
           'app_prefix: /myapp\nexec_mode: host\n---\n# myapp\n')
     captured: dict = {}
@@ -297,7 +297,7 @@ def test_run_pinned_passes_app_port_and_exec_mode_to_wrapper(gitrepo, monkeypatc
 
 def test_run_pinned_passes_schedule_image_override_to_wrapper(gitrepo, monkeypatch):
     import bibi.daemon.worker as W
-    _seed(gitrepo, "customimg/README.md",
+    _seed(gitrepo, "customimg/customimg.md",
           '---\nschedule: "never"\njob: "python3 customimg.py"\n'
           'image: "registry.local/custom:7"\n---\n# customimg\n')
     captured: dict = {}
@@ -312,7 +312,7 @@ def test_run_pinned_plain_job_passes_none_for_app_fields(gitrepo, monkeypatch):
     # _run_wrapper()/exec_backend.build_exec() als "gesetzt" missverstehen
     # könnte).
     import bibi.daemon.worker as W
-    _seed(gitrepo, "plainjob/README.md", '---\nschedule: "never"\njob: "echo hi"\n---\n# plain\n')
+    _seed(gitrepo, "plainjob/plainjob.md", '---\nschedule: "never"\njob: "echo hi"\n---\n# plain\n')
     captured: dict = {}
     monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
     run_pinned(slug="plainjob", repo_root=gitrepo, host="mac")
@@ -352,7 +352,7 @@ def test_run_pinned_slug_uses_parser_silence_timeout_default(gitrepo, monkeypatc
     # — kein ungewollter Default mehr, reines Opt-in in der MD.
     from bibi.schedule.models import DEFAULT_SILENCE_TIMEOUT_JOB
     import bibi.daemon.worker as W
-    _seed(gitrepo, "plainjob/README.md", '---\nschedule: "never"\njob: "echo hi"\n---\n# plain\n')
+    _seed(gitrepo, "plainjob/plainjob.md", '---\nschedule: "never"\njob: "echo hi"\n---\n# plain\n')
     captured: dict = {}
     monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
     run_pinned(slug="plainjob", repo_root=gitrepo, host="mac")
@@ -365,7 +365,7 @@ def test_run_pinned_slug_uses_app_silence_timeout_default_when_app_port_set(gitr
     # behält den langen 48h-Default, im Unterschied zum einfachen Job oben.
     from bibi.schedule.models import DEFAULT_SILENCE_TIMEOUT_APP
     import bibi.daemon.worker as W
-    _seed(gitrepo, "appjob/README.md",
+    _seed(gitrepo, "appjob/appjob.md",
           '---\nschedule: "never"\njob: "echo hi"\napp_port: 9100\n---\n# app\n')
     captured: dict = {}
     monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
@@ -375,7 +375,7 @@ def test_run_pinned_slug_uses_app_silence_timeout_default_when_app_port_set(gitr
 
 def test_run_pinned_slug_passes_explicit_silence_timeout_and_wall_time(gitrepo, monkeypatch):
     import bibi.daemon.worker as W
-    _seed(gitrepo, "withlimits/README.md",
+    _seed(gitrepo, "withlimits/withlimits.md",
           '---\nschedule: "never"\njob: "echo hi"\nsilence_timeout: 300\nwall_time: 120\n'
           '---\n# withlimits\n')
     captured: dict = {}

@@ -148,8 +148,8 @@ def _seed_job(db_path: Path, job_id: str) -> None:
     c = job_db.connect(db_path)
     c.execute(
         "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, status, attempts, "
-        "backoff, silence_timeout, hitl_timeout) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (job_id, job_id, f"{job_id}.md", "job", "x", "running", 1, "fixed", 3600, 172800),
+        "backoff, silence_timeout) VALUES (?,?,?,?,?,?,?,?,?)",
+        (job_id, job_id, f"{job_id}.md", "job", "x", "running", 1, "fixed", 3600),
     )
     c.close()
 

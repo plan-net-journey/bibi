@@ -3589,6 +3589,29 @@ _LEER = {
 }
 
 
+#: Zustände, in denen ein Lauf im Slot **in Arbeit** ist: er hat begonnen und
+#: ist nicht terminal. `failed` und `deferred` gehören ausdrücklich nicht dazu —
+#: dort wartet der Slot auf einen Termin, und genau den soll `NEXT` dann nennen.
+_IN_ARBEIT = frozenset({"starting", "running", "awaiting"})
+
+
+def _laufender_start(s: dict) -> float | None:
+    """Der Startzeitpunkt des Laufs, der gerade im Slot steht (#136).
+
+    ``None`` heißt „hier läuft nichts" — dann sagen ``LAST`` und ``NEXT``
+    weiterhin, was sie immer gesagt haben.
+
+    **Ein Zustand allein macht keinen Lauf.** ``RESET`` räumt ``started_at``
+    ausdrücklich; ohne die zweite Prüfung zählte danach eine Zelle die Laufzeit
+    eines Laufs hoch, den es nie gab — derselbe Fall, den ``slot_run()`` an
+    seiner Stelle schon abfängt.
+    """
+    if (s.get("row_status") or s.get("status")) not in _IN_ARBEIT:
+        return None
+    start = s.get("started_at")
+    return start if isinstance(start, (int, float)) else None
+
+
 def _next_zelle(row, s: dict, now: float, ohne_zukunft: bool) -> str:
     """Die NEXT-Zelle — mit Fälligkeitskennzeichen, wenn der Termin hinter uns
     liegt und der Job noch wartet (#11).
@@ -3607,6 +3630,18 @@ def _next_zelle(row, s: dict, now: float, ohne_zukunft: bool) -> str:
     """
     if ohne_zukunft:
         return "—"
+    # **Solange ein Lauf läuft, ist die Laufzeit die Zukunft** (#136). Ein
+    # Termin, der neben einem laufenden Lauf steht, beantwortet eine Frage, die
+    # in diesem Moment niemand stellt — und er ist zugleich die eine Angabe
+    # dieser Zeile, die ein Rescan mitten im Lauf neu berechnet.
+    #
+    # Der Server liefert den Anker, der Browser zählt (`_DURATION_JS`). **Was
+    # hier tickt, muss auch refetchen** — die Zeile hängt am Sammel-Target
+    # `jobs`, sonst entstünde genau die Anzeige aus #131: eine, die sich
+    # bewegt und dabei den falschen Zustand zeigt.
+    laeuft = _laufender_start(s)
+    if laeuft is not None:
+        return _dauer_span(_human_duration(now - laeuft), "since", laeuft)
     ts = s.get("next_fire_at")
     zeit = _uhrzeit(ts, now)
     if ts is None or ts >= now:
@@ -3690,7 +3725,11 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
         # abgenommen 2026-08-03).
         f'<td>{l.get("status") or "—"}</td>'
         f'<td>{s.get("row_status") or s.get("status") or "—"}</td>'
-        f'<td>{_uhrzeit(s.get("last_run_at"), now)}</td>'
+        # **`LAST` nennt den Lauf, der gerade läuft** (#136) — seine Startzeit,
+        # nicht die des vorigen. Wer auf die Zeile sieht, während der Job
+        # arbeitet, sucht diesen Lauf und nicht seinen Vorgänger; der steht
+        # ohnehin im Journal.
+        f'<td>{_uhrzeit(_laufender_start(s) or s.get("last_run_at"), now)}</td>'
         f"<td>{_next_zelle(row, s, now, ohne_zukunft)}</td>"
         # RUNTIME gehört auf diese Seite und ist ein Perzentil (m.rau/bibi#132):
         # P90 der letzten 30 Läufe, nicht die Dauer des letzten. Die sprang —
@@ -3877,7 +3916,9 @@ _KEINE_JOBS = (
     "<p class=\"muted\">bibi finds its work in your vault: add "
     "<code>schedule:</code> to the frontmatter of a markdown file for a "
     "recurring job, or <code>at:</code> for a one-off. "
-    "Then press <span class=\"mono\">⟳</span> to rescan.</p>"
+    # `<code>` statt einer Monospace-Klasse ohne CSS-Regel: dieselbe Auszeichnung
+    # wie bei `schedule:` und `at:` eine Zeile darüber, und eine, die es gibt.
+    "Then press <code>⟳</code> to rescan.</p>"
     "</div>"
 )
 
@@ -4986,15 +5027,57 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
 
 #: Scheduling-Werte der Attribut-Seite in der Reihenfolge, in der sie dort
 #: stehen — Trigger zuerst, dann Retry-Verhalten, dann die Fristen.
-_ATTR_FELDER = ("schedule", "at", "attempts", "backoff",
+#: `hitl_timeout` stand hier bis `v0.8.2` und ist mit #129 gefallen: der Parser
+#: hat es am 2026-07-04 mit `silence_timeout` zusammengelegt, `_spec_columns()`
+#: kennt es seither nicht — die Seite führte ein Feld, das es fachlich nicht
+#: mehr gibt und das nur noch sein eigener DEFAULT füllte.
+#: **Alle** Konfigurationswerte, in der Reihenfolge, in der man sie liest (#141):
+#: erst wer (`slug`) und was (`kind`/`payload`), dann wann, dann wie oft und wie
+#: lange, dann womit — und ganz am Ende, woher der Job kommt.
+#:
+#: `slug` steht vorn, weil er die **Identität** ist und die einzige Angabe, die
+#: man sonst nirgends verlässlich abliest: in der Tabelle gekürzt, in der URL
+#: als `md5(slug)`. Wer ihn sicher wissen wollte, musste die MD öffnen.
+#: `schedule_ref` ist die zweite Hälfte derselben Auskunft — aus welcher Datei
+#: dieser Job kommt. Zusammen beantworten sie *„wie heißt der Job wirklich, und
+#: warum heißt er so?"*, und das wiegt schwerer, seit der Dateiname allein die
+#: Identität trägt (#143).
+_ATTR_FELDER = ("slug", "kind", "payload",
+                "schedule", "at",
+                "attempts", "backoff",
                 "defer_time", "defer_max", "error_time", "silence_timeout",
-                "wall_time", "hitl_timeout")
+                "wall_time",
+                "model", "soul", "session", "priority",
+                "app_port", "app_prefix", "exec_mode", "image",
+                "schedule_ref")
 
-#: Die Konfigurationswerte eines **Laufs** (#40). Weiter als `_ATTR_FELDER`,
-#: weil ein Lauf mehr erbt als seinen Zeitplan: `model` und `soul` erklären
-#: zwei Läufe desselben Jobs, die verschieden ausgehen, oft allein.
-_LAUF_KONFIG = (*_ATTR_FELDER, "model", "soul", "session", "exec_mode",
-                "image", "priority", "app_port", "app_prefix")
+#: Die Konfigurationswerte eines **Laufs** (#40) sind dieselben (#141). Hier
+#: stand bis `v0.8.2` eine eigene, längere Liste — die Job-Seite trug nur den
+#: Zeitplan, und die Lauf-Seite musste ergänzen. Jetzt zeigen beide alles, und
+#: **eine Liste statt zweier** ist der Punkt: `_ATTR_FELDER` und `_LAUF_KONFIG`
+#: überschnitten sich fast vollständig, und die Warnung dazu stand im Ticket —
+#: kombiniert ein Renderer die eine Liste mit der anderen Datenquelle, ist die
+#: Vermischung wieder da, und sie sieht plausibel aus.
+_LAUF_KONFIG = _ATTR_FELDER
+
+#: Felder, die nur für einen bestimmten Typ etwas bedeuten (#132). Ein
+#: Shell-Job trägt ein `model` aus der Job-Zeile, das für seinen Lauf keine
+#: Rolle spielt — für die Frage *„warum ging dieser Lauf anders aus als jener"*
+#: ist es Rauschen. Der Typ steht in `display_kind()` und muss dafür nicht neu
+#: erfunden werden.
+_TYP_GEBUNDEN = {
+    "model": ("claude",), "soul": ("claude",), "session": ("claude",),
+    "app_port": ("app",), "app_prefix": ("app",),
+}
+
+
+def _gilt_fuer(feld: str, snap: dict) -> bool:
+    """Ob ``feld`` für einen Lauf dieses Typs überhaupt etwas aussagt (#132)."""
+    from bibi.schedule.models import display_kind
+    erlaubt = _TYP_GEBUNDEN.get(feld)
+    if erlaubt is None:
+        return True
+    return display_kind(snap.get("payload"), snap.get("app_port")) in erlaubt
 
 #: Die Laufzeit-Werte, in der Reihenfolge, in der man sie liest: erst wer und
 #: wo, dann wie lange und mit welchem Ausgang, dann woran (Commit) und wohin
@@ -5073,20 +5156,29 @@ def job_attrs_page_v5(*, slug: str, spec: dict, defaults: dict, now: float,
     )
 
 
-def _attr_zeile(feld: str, wert, herkunft: str) -> str:
+def _attr_zeile(feld: str, wert, herkunft: str, *, geerbt: bool = False) -> str:
     """Eine Zeile der Lauf-Attribute: Feld, Wert, Herkunft.
 
     Dieselbe Form wie auf der Job-Attribut-Seite, um eine dritte Spalte
     erweitert. Zwei Signale wie dort: die Herkunft steht als Wort da **und**
     färbt den Wert — Dimmung allein geht in hellen Themes verloren.
+
+    ``geerbt`` trägt die **zweite** Unterscheidung (#132): ein Vorgabewert wird
+    gedimmt und in Klammern gesetzt, genau wie auf der Job-Seite. Sie ist von
+    der Herkunft unabhängig — ein geerbter Wert kann trotzdem vom heutigen
+    Job-Wert abweichen, und dann sagen beide Signale verschiedenes über
+    dieselbe Zeile. Genau dafür sind es zwei.
     """
     klasse = {"job": "attr-default", "run": "attr-set", "runtime": "attr-set"}[herkunft]
+    if geerbt:
+        klasse = "attr-default"
     return (f'<div class="attr-row"><span class="attr-key">{_e(feld)}</span>'
             f'<span class="{klasse}">{_e(wert)}</span>'
             f'<span class="attr-src muted">{herkunft}</span></div>')
 
 
 def run_attrs_page_v5(*, slug: str, lauf: dict, job_spec: dict, now: float,
+                      defaults: dict | None = None,
                       daemon_status: dict | None = None,
                       git_status: dict | None = None, host_url: str | None = None,
                       scheduler: dict | None = None,
@@ -5140,14 +5232,28 @@ def run_attrs_page_v5(*, slug: str, lauf: dict, job_spec: dict, now: float,
             wert = _human_duration(wert)
         zeilen.append(_attr_zeile(feld, wert, "runtime"))
 
+    vorgabe = defaults or {}
     for feld in _LAUF_KONFIG:
         wert = schnapp.get(feld)
         if wert is None:
             continue
-        # `run`, wo der Lauf einen anderen Wert trug als der Job heute — mit
-        # dem Vorbehalt oben. `job`, wo beide dasselbe sagen.
+        # Felder, die für den Typ dieses Laufs nichts bedeuten, stehen nicht in
+        # der Tabelle (#132) — das Modell eines Shell-Jobs beantwortet keine
+        # Frage, die hierher führt.
+        if not _gilt_fuer(feld, schnapp):
+            continue
+        # `run`, wo der Lauf einen anderen Wert trug als der Job heute.
+        # `job`, wo beide dasselbe sagen.
         abweichend = feld in job_spec and job_spec.get(feld) != wert
-        zeilen.append(_attr_zeile(feld, wert, "run" if abweichend else "job"))
+        # **Zwei Fragen, zwei Signale, nebeneinander statt ineinander** (#132).
+        # `SOURCE` beantwortet *Lauf gegen Job*; die Klammern beantworten
+        # *gesetzt gegen Vorgabe*. Die Job-Seite kann das seit jeher, die
+        # Lauf-Seite hatte es nicht übernommen — wer von der einen zur anderen
+        # wechselte, verlor eine Auskunft, die einen Schritt vorher noch da war.
+        geerbt = feld in vorgabe and wert == vorgabe[feld]
+        zeilen.append(_attr_zeile(feld, f"({wert})" if geerbt else wert,
+                                  "run" if abweichend else "job",
+                                  geerbt=geerbt))
 
     if not zeilen:
         zeilen.append('<div class="empty">Nothing recorded for this run — its '
@@ -5171,12 +5277,19 @@ def run_attrs_page_v5(*, slug: str, lauf: dict, job_spec: dict, now: float,
         '<div class="attrs-head"><span class="attr-key">FIELD</span>'
         '<span>VALUE</span><span class="attr-src">SOURCE</span></div>'
         f'<div class="attrs">{"".join(zeilen)}</div>'
-        '<p class="muted attrs-note">The snapshot is frozen when the run is '
-        "archived, not when it starts &mdash; under rule A2 a terminal run "
-        "waits in its slot until someone presses START or RESET. A "
-        "<span class=\"mono\">run</span> therefore means &bdquo;this run held a "
-        "different value than the job holds today&ldquo;, which is not the same "
-        "as &bdquo;the run set it&ldquo;.</p>"
+        # Hier stand bis `v0.8.2` ein Vorbehalt: der Snapshot entstehe beim
+        # Archivieren und nicht beim Start, ein `run` heisse deshalb nur
+        # „anderer Wert als heute" und nicht „der Lauf setzte ihn". Mit #129
+        # friert der Snapshot bei START ein — der Satz ist gegenstandslos
+        # geworden und faellt, statt als beruhigende Fussnote stehenzubleiben.
+        # Die frühere Monospace-Klasse steht hier nicht mehr: sie hatte nie eine
+        # CSS-Regel und blieb nur deshalb unbemerkt, weil ihre Escaping-Form sie
+        # vor dem Klassen-Wächter aus #94 verbarg. Die Seite ist ohnehin
+        # durchgehend Monospace.
+        '<p class="muted attrs-note">A <b>run</b> means this '
+        "run held a different value than the job holds today: its attributes "
+        "were frozen when it started. Values in parentheses are defaults the "
+        "job never set.</p>"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
         f"<script>{_OPS_HANDLES_JS}</script>"
         f"<script>{_THEME_JS}</script>"

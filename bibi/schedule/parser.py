@@ -87,9 +87,6 @@ def _strip_comment(value):
     return value.split("#", 1)[0]
 
 
-#: Dateinamen, bei denen der Ordnername den Slug bestimmt (§6.6).
-SCHEDULE_FILENAMES: frozenset[str] = frozenset({"README.md", "SCHEDULE.md"})
-
 #: Frontmatter-Key → Typ (§5.3, PLAN-10 Stufe 10.0). Nur noch ``job:``.
 _TYPE_KEYS: dict[str, Kind] = {"job": Kind.JOB}
 
@@ -98,12 +95,15 @@ _VALID_BACKOFF: frozenset[str] = frozenset({"fixed", "linear", "exponential"})
 
 @dataclass(frozen=True, slots=True)
 class ParseResult:
-    """Ergebnis des Parsens einer MD. ``slug_explicit``/``mtime`` tragen die
-    Dateisystem-Metadaten, die der Discovery/Reconcile braucht (nicht der Spec)."""
+    """Ergebnis des Parsens einer MD. ``mtime`` trägt die Dateisystem-Metadaten,
+    die der Discovery/Reconcile braucht (nicht der Spec).
+
+    ``slug_explicit`` stand hier bis `v0.8.2` und ist mit #143 entfallen: seit
+    der Slug ausschließlich aus dem Dateistamm kommt, war das Feld dauerhaft
+    ``False`` — eine Angabe, die nur noch eine Antwort kennt, ist keine."""
 
     schedule_ref: str
     spec: ScheduleSpec | None = None
-    slug_explicit: bool = False
     mtime: float = 0.0
     error: str | None = None
 
@@ -120,14 +120,25 @@ class ParseResult:
         return self.error is not None
 
 
-def derive_slug(path: Path, fm: dict[str, Any]) -> tuple[str, bool]:
-    """``(slug, is_explicit)`` (§6.6)."""
-    explicit = fm.get("slug")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip(), True
-    if path.name in SCHEDULE_FILENAMES:
-        return path.parent.name, False
-    return path.stem, False
+def derive_slug(path: Path) -> str:
+    """Der Slug einer Schedule-MD: **ihr Dateistamm** (§6.6, #143).
+
+    **Eine Regel statt drei.** Bis `v0.8.2` gewann ein explizites ``slug:``,
+    dann galt bei ``README.md``/``SCHEDULE.md`` der Ordnername, sonst der
+    Stamm. Damit war *„wie heißt dieser Job?"* nur durch Öffnen der Datei zu
+    beantworten — für die Frage, an der jede Umbenennung hängt, ein Schritt zu
+    viel.
+
+    Beide Sonderregeln hatten bei ihrer Abschaffung null Nutzer: der
+    README-Fall traf auf keine Schedule-MD zu, und die vier Overrides waren am
+    2026-08-11 durch Umbenennen aufgelöst. Nachgezählt am 2026-08-12: 21
+    Schedule-MDs, kein Override, keine zwei gleichen Stämme.
+
+    **``fm`` wird nicht mehr gelesen, und der Parameter ist deshalb weg.**
+    ``slug:`` in einer Case-``README.md`` bedeutet etwas anderes — die
+    Case-Identität — und bleibt unangetastet; diese Funktion sieht Schedule-MDs.
+    """
+    return path.stem
 
 
 def _validate_cron(expr: str) -> str | None:
@@ -321,7 +332,7 @@ def parse_text(
     exec_mode = fm["exec_mode"].strip().lower() if isinstance(fm.get("exec_mode"), str) and fm["exec_mode"].strip() else None
     image = fm["image"].strip() if isinstance(fm.get("image"), str) and fm["image"].strip() else None
 
-    slug, slug_explicit = derive_slug(path, fm)
+    slug = derive_slug(path)
 
     spec = ScheduleSpec(
         slug=slug, kind=kind, payload=payload,
@@ -333,9 +344,7 @@ def parse_text(
         app_port=app_port, app_prefix=app_prefix, exec_mode=exec_mode, image=image,
         docker_args=docker_args,
     )
-    return ParseResult(
-        schedule_ref=schedule_ref, spec=spec, slug_explicit=slug_explicit, mtime=mtime
-    )
+    return ParseResult(schedule_ref=schedule_ref, spec=spec, mtime=mtime)
 
 
 def parse_file(path: Path, *, vault_root: Path) -> ParseResult:

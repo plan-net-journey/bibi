@@ -72,7 +72,7 @@ def test_journal_commit_migration_v5_to_v6(tmp_path: Path):
 
 def test_journal_commit_persisted_via_report(sched):
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
     jid = client.post("/-/scheduler/next").json()["id"]
     r = client.post(
@@ -89,7 +89,7 @@ def test_journal_commit_persisted_via_report(sched):
 def test_journal_commit_absent_is_null(sched):
     # Ein vom Sweeper/ohne Worker-Commit erzeugter Terminal hat keinen SHA.
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
     jid = client.post("/-/scheduler/next").json()["id"]
     client.post(f"/-/scheduler/status/{jid}", json={"status": "complete", "exit_code": 0})
@@ -103,7 +103,7 @@ def test_journal_commit_absent_is_null(sched):
 
 def test_journal_delete_removes_row(sched):
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
     jid = client.post("/-/scheduler/next").json()["id"]
     client.post(f"/-/scheduler/status/{jid}", json={"status": "complete", "exit_code": 0})
@@ -125,7 +125,7 @@ def test_journal_delete_unknown_is_404(sched):
 
 def test_status_verdict_clean_is_ok(sched):
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: never\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: never\njob: "x"\n---\n')
     client.post("/-/rescan")
     v = client.get("/-/status").json()["verdict"]
     assert v["ok"] is True
@@ -136,7 +136,7 @@ def test_status_verdict_clean_is_ok(sched):
 
 def test_status_verdict_counts_problems(sched):
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
     jid = client.post("/-/scheduler/next").json()["id"]
     client.post(f"/-/scheduler/status/{jid}", json={"status": "failed", "exit_code": 1})
@@ -151,7 +151,7 @@ def test_status_verdict_flags_failing_recurring_job(sched):
     # Wiederkehrender Job re-armt nach Fehlschlag zu `pending` (Zeile harmlos), aber
     # der LETZTE LAUF im Journal ist `error` → Verdikt darf NICHT „alles lief" sein.
     client, root = sched
-    _seed(root, "witzy/README.md", '---\nschedule: "*/3 * * * *"\njob: "claude: x"\n---\n')
+    _seed(root, "witzy/witzy.md", '---\nschedule: "*/3 * * * *"\njob: "claude: x"\n---\n')
     client.post("/-/rescan")  # jobs-Zeile pending
     c = job_db.connect()
     try:
@@ -171,7 +171,7 @@ def test_status_verdict_flags_failing_recurring_job(sched):
 def test_status_verdict_running_not_flagged_by_old_failure(sched):
     # Läuft der Job gerade (running), zählt ein alter Fehllauf NICHT als Abweichung.
     client, root = sched
-    _seed(root, "busy/README.md", '---\nschedule: now\njob: "claude: x"\n---\n')
+    _seed(root, "busy/busy.md", '---\nschedule: now\njob: "claude: x"\n---\n')
     client.post("/-/rescan")
     jid = client.post("/-/scheduler/next").json()["id"]  # sofort fällig → running
     assert jid
@@ -190,7 +190,7 @@ def test_status_verdict_running_not_flagged_by_old_failure(sched):
 
 def test_status_verdict_counts_overdue(sched):
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: "0 9 * * *"\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: "0 9 * * *"\njob: "x"\n---\n')
     client.post("/-/rescan")
     # next_fire_at künstlich in die Vergangenheit ziehen → überfällig.
     c = job_db.connect()
@@ -216,7 +216,7 @@ def test_status_verdict_absent_without_scheduler_role(team_repo):
 
 def test_status_job_stats_counts_and_running_since_uptime(sched):
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
     client.post("/-/scheduler/next")  # a → starting (#38: running erst nach dem Spawn)
     stats = client.get("/-/status").json()["job_stats"]
@@ -234,7 +234,7 @@ def test_status_job_stats_includes_next_due_at(sched):
     # PLAN-26 Befund 3 Redesign — Sub-Zeile "Nächster Job in …" der Job-
     # Status-Kachel.
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
     stats = client.get("/-/status").json()["job_stats"]
     assert stats["next_due_at"] is not None
@@ -246,7 +246,7 @@ def test_status_job_stats_includes_complete_since_uptime(sched):
     # Live-Zählung aus counts (die sinkt, sobald abgeschlossene Jobs archiviert
     # werden).
     client, root = sched
-    _seed(root, "a/README.md", '---\nschedule: now\njob: "x"\n---\n')
+    _seed(root, "a/a.md", '---\nschedule: now\njob: "x"\n---\n')
     client.post("/-/rescan")
     jid = client.post("/-/scheduler/next").json()["id"]
     client.post(f"/-/scheduler/status/{jid}", json={"status": "complete", "exit_code": 0})
