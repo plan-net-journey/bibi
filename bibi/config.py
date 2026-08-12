@@ -49,6 +49,15 @@ KEYS: dict[str, str] = {
     # als jeder andere Wert hier NIE interaktiv abgefragt (init_cmd.py
     # special-cased das) — ein Mensch soll nie eine UUID eintippen müssen.
     "BIBI_NODE_ID": "",
+    # Die Hostnamen, unter denen dieser Knoten schon einmal gelaufen ist (#144)
+    # — komma-getrennt, waechst bei jedem Start um den aktuellen Namen.
+    #
+    # **Sie erweitern das Nachschlagen, nicht das Pinnen.** Geschrieben wird
+    # seit #88 nur noch unter `BIBI_NODE_ID`; die Liste haelt den Bestand
+    # erreichbar, der noch Hostnamen traegt (auf dem Mac rund 130 Zeilen unter
+    # zwei Namen, weil er `Air2024.local` und `Mac.fritz.box` im Wechsel
+    # fuehrt).
+    "BIBI_NODE_ALIASES": "",
     # Startschlüssel für den allerersten Heartbeat dieses Knotens
     # (m.rau/bibi#141, Nodes.md §3.3). **Der einzige Wert hier, der sich selbst
     # wieder löscht:** nach dem ersten erfolgreichen Heartbeat schreibt der
@@ -334,6 +343,54 @@ def node_id() -> str:
     existing["BIBI_NODE_ID"] = new_id
     write_env(existing)
     return new_id
+
+
+def node_aliases() -> tuple[str, ...]:
+    """Die Hostnamen, unter denen dieser Knoten schon einmal lief (`#144`).
+
+    **Nur lesend.** Eingetragen wird in :func:`record_hostname`, und die
+    Trennung ist Absicht: ``pin_lookup_ids()`` ruft diese Funktion in jeder
+    Datenbankabfrage. Wäre das Eintragen hier eingebaut — nach dem Vorbild von
+    :func:`node_id`, das sich beim ersten Zugriff selbst heilt —, schriebe
+    jede Abfrage in die Konfigurationsdatei.
+
+    **Der wichtigere Grund ist aber die Zusage:** wer nachschlägt, fragt oft
+    unter einem *fremden* Namen (dafür ist der ``host``-Parameter da). Ein
+    Nachschlagen, das einträgt, machte aus jeder Fremdanfrage einen eigenen
+    Namen — und damit aus der Pin-Zusage eine Selbstbedienung.
+    """
+    roh = read_env().get("BIBI_NODE_ALIASES", "")
+    return tuple(dict.fromkeys(t.strip() for t in roh.split(",") if t.strip()))
+
+
+def record_hostname(name: str | None = None) -> tuple[str, ...]:
+    """Den Namen, unter dem dieser Knoten gerade läuft, in die Liste aufnehmen.
+
+    **Gerufen beim Start eines Daemons, nicht beim Nachschlagen** — die Liste
+    wächst damit ausschließlich aus dem *eigenen Lauf* und **nie** aus der
+    Datenbank. Das ist die eine Zeile, an der die Pin-Zusage hängt (`#144`,
+    Weg 1, Entscheidung m.rau 2026-08-12): ein Alias, der aus einer
+    ``jobs``-Zeile stammte, wäre der Weg, auf dem ein fremder Name in die
+    eigene Menge käme — unbemerkt, weil er danach aussähe wie ein eigener.
+
+    **Zwei Rechner, die je einmal ``Air.local`` hießen, erben einander
+    trotzdem nicht:** jeder führt seine eigene ``env``-Datei, und ein Name
+    kommt nur hinein, wenn *dieser* Prozess ihn getragen hat.
+
+    Idempotent: derselbe Name zweimal verlängert die Liste nicht. Ohne das
+    wüchse sie bei jedem Daemon-Start um einen Eintrag, und eine Liste, die
+    nur wächst, ist irgendwann eine ``IN``-Klausel mit tausend Parametern.
+    """
+    import socket
+    jetzt = (name or socket.gethostname() or "").strip()
+    bekannt = list(node_aliases())
+    if not jetzt or jetzt in bekannt:
+        return tuple(bekannt)
+    bekannt.append(jetzt)
+    existing = read_env()
+    existing["BIBI_NODE_ALIASES"] = ",".join(bekannt)
+    write_env(existing)
+    return tuple(bekannt)
 
 
 # ── PLAN-32 Stufe 32.2/32.3: Credential-Distribution (Host → Client) ────────

@@ -903,11 +903,30 @@ def pin_lookup_ids(host: str | None = None) -> tuple[str, ...]:
     tragen. Ohne beides schriebe ``run_pinned()`` eine Zeile, die anschließend
     niemand reservieren kann — der Lauf bliebe für immer ``pending``.
 
+    **Dazu die Namen, die dieser Knoten selbst schon getragen hat** (`#144`).
+    Der Mac wechselt seinen Hostnamen im Betrieb; seine Bestandszeilen liegen
+    dadurch unter **zwei** Namen in derselben Tabelle. Bis `v0.8.8` kannte
+    diese Funktion nur den *aktuellen* — jede Ansicht sah deshalb die Hälfte
+    der eigenen Läufe, und **welche Hälfte, entschied das Netz.** Der Befund
+    kippte mit dem Hostnamen: dieselbe Seite zeigte am 11. den einen und am 12.
+    den anderen Lauf, ohne dass sich Code oder Daten geändert hätten.
+
     Die Pin-Zusage bleibt in beide Richtungen gültig: was einem anderen Knoten
-    gehört, steht unter dessen Namen und ist in keiner der beiden Angaben
-    enthalten.
+    gehört, steht unter dessen Namen und ist in keiner der Angaben enthalten.
+    **Das trägt gerade weil die Alias-Liste aus dem eigenen Lauf wächst und nie
+    aus der Datenbank** (`config.record_hostname()`, gerufen beim Daemon-Start)
+    — zwei Rechner, die je einmal `Air.local` hießen, erben einander nicht.
+
+    Nur das **Nachschlagen** ist erweitert. Geschrieben wird weiterhin
+    ausschließlich unter :func:`pin_identity`, sonst wüchse der Bestand
+    weiter, den die Liste zusammenhalten muss.
     """
-    ids = [host or "", pin_identity(), socket.gethostname()]
+    from bibi import config
+    try:
+        aliasse = list(config.node_aliases())
+    except Exception:  # noqa: BLE001 — defensiv (§2.7), wie in `pin_identity()`
+        aliasse = []
+    ids = [host or "", pin_identity(), socket.gethostname(), *aliasse]
     # ``dict.fromkeys`` statt ``set``: die Reihenfolge bleibt stabil, und damit
     # bleiben es auch die SQL-Parameter — sonst wanderten sie zwischen zwei
     # Läufen, ohne dass sich etwas geändert hätte.
