@@ -57,6 +57,18 @@ def _faellig(conn, jid: str) -> None:
     conn.execute("UPDATE jobs SET next_fire_at=0 WHERE id=?", (jid,))
 
 
+def _startup_job(conn, slug: str = "s", **fm) -> str:
+    """Ein ``schedule: startup``-Job — der eine Trigger, den ``fire_startup()``
+    per direktem SQL wieder fällig stellt, ohne ``report_status()`` zu rufen."""
+    zeilen = "".join(f"{k}: {v}\n" for k, v in fm.items())
+    pr = parser.parse_text(
+        f"---\nslug: {slug}\nschedule: startup\njob: echo hi\n{zeilen}---\n",
+        schedule_ref=f"case/x/{slug}.md", path=Path(f"case/x/{slug}.md"),
+    )
+    assert pr.is_ok, pr.error
+    return job_db.upsert_schedule(conn, pr, 1000.0)
+
+
 # ── 1: der Snapshot entsteht bei START ───────────────────────────────────────
 
 
@@ -119,6 +131,70 @@ def test_a_new_run_id_gets_a_fresh_snapshot(conn):
     job_db.reserve_next(conn)  # lazy Rearm — fire+1, also ein neuer Lauf
     row = conn.execute("SELECT fire, run_snapshot FROM jobs WHERE id=?", (jid,)).fetchone()
     assert row["fire"] == 1
+    assert json.loads(row["run_snapshot"])["attempts"] == 9
+
+
+# ── 2b: ein Lauf, der über `pending` beginnt, ist auch ein neuer Lauf ────────
+#
+# Live-Befund 2026-08-12 (Countdown-Testjob auf sarasate): ein Job stand mit
+# `attempts: 3` und `defer_time: 15` in der Zeile und lief trotzdem mit
+# `attempts=0` und dem 360-s-Default — er fiel beim ersten `raise` sofort auf
+# `error` statt auf `failed`. Sein Snapshot trug `fire: 0`, stammte also vom
+# allerersten Lauf und war nie erneuert worden.
+#
+# Die Erneuerung hing an `chosen["status"] == "complete"`. Ein terminaler Job
+# geht über RESET/START aber nach **pending** (`start_now()` →
+# `report_status(pending)`), nie über `complete` — die Bedingung greift dort
+# nie. `report_status()`s PENDING-Zweig wiederum nullt seit dem 2026-07-03
+# started_at/finished_at/exit_code/output_ref mit der Begründung, „der
+# Lauf-Snapshot des vorigen Zyklus" dürfe nicht stehen bleiben; die Spalte
+# `run_snapshot` kam später (#129) und wurde dort nicht nachgezogen.
+
+
+def test_reset_to_pending_clears_the_run_snapshot(conn):
+    """Was der PENDING-Zweig für die Statusfelder tut, muss er auch für die
+    Spalte tun, die dieselbe Frage beantwortet — sonst zeigt eine Zeile ohne
+    Lauf weiter die Konfiguration eines abgeschlossenen."""
+    jid = _job(conn, "a", attempts=5)
+    job_db.reserve_next(conn)
+    job_db.report_status(conn, jid, status="running")
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    assert job_db.report_status(conn, jid, status="pending") == "ok"
+    row = conn.execute("SELECT run_snapshot FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["run_snapshot"] is None
+
+
+def test_a_run_after_reset_gets_a_fresh_snapshot(conn):
+    """Der Live-Fall als Test: Job auf ``error``, MD korrigiert, START — der
+    nächste Lauf muss die korrigierten Werte tragen. Ohne den Fix läuft er mit
+    denen des ersten Laufs weiter, und zwar für immer: aus ``error`` führt kein
+    Weg zurück nach ``complete``."""
+    jid = _job(conn, "a", attempts=5)
+    job_db.reserve_next(conn)
+    job_db.report_status(conn, jid, status="running")
+    job_db.report_status(conn, jid, status="failed")
+    job_db.report_status(conn, jid, status="error")
+    job_db.upsert_schedule(conn, _md("a", attempts=9), 2000.0)
+    assert job_db.start_now(conn, jid) == "ok"
+    job_db.reserve_next(conn)
+    row = conn.execute("SELECT run_snapshot FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert json.loads(row["run_snapshot"])["attempts"] == 9
+
+
+def test_a_startup_rearm_gets_a_fresh_snapshot(conn):
+    """``fire_startup()`` setzt per direktem SQL auf ``pending`` und erhöht
+    ``fire`` — ein neuer Lauf, der ``report_status()`` nie berührt. Ein Fix, der
+    nur dort nullte, ließe genau diese Job-Klasse ihren allersten Snapshot über
+    jeden Daemon-Neustart hinweg mitschleppen."""
+    jid = _startup_job(conn, "s", attempts=5)
+    _faellig(conn, jid)
+    job_db.reserve_next(conn)
+    job_db.report_status(conn, jid, status="running")
+    job_db.report_status(conn, jid, status="complete", exit_code=0)
+    _startup_job(conn, "s", attempts=9)   # Rescan: die MD hat sich geändert
+    assert job_db.fire_startup(conn) == 1
+    job_db.reserve_next(conn)
+    row = conn.execute("SELECT run_snapshot FROM jobs WHERE id=?", (jid,)).fetchone()
     assert json.loads(row["run_snapshot"])["attempts"] == 9
 
 

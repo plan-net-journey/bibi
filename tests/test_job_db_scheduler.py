@@ -841,17 +841,23 @@ def test_reset_to_pending_clears_previous_run_snapshot(conn):
     # User-Feedback 2026-07-03: "PENDING ist ein eigener Eintrag, dessen
     # Attribute und Output zurückgesetzt sind" — der Snapshot des vorigen
     # (terminalen) Laufs darf nicht bis zum nächsten Dispatch stehen bleiben.
+    # Der Name führte bis zum 2026-08-12 eine Zusicherung, die der Rumpf nicht
+    # prüfte: die gleichnamige Spalte `run_snapshot` (#129) kam nach diesem
+    # Test dazu und blieb ungeprüft — deshalb fiel jahrelang nicht auf, dass
+    # sie als einzige stehen blieb.
     jid = _seed_full(conn, slug="x", schedule="never", status="killed",
                      started_at=1.0, finished_at=2.0, exit_code=1,
-                     output_ref="data/job/x/output.jsonl")
+                     output_ref="data/job/x/output.jsonl",
+                     run_snapshot=json.dumps({"attempts": 5}))
     assert job_db.report_status(conn, jid, status="pending") == "ok"
     row = conn.execute(
-        "SELECT started_at, finished_at, exit_code, output_ref FROM jobs WHERE id=?",
-        (jid,)).fetchone()
+        "SELECT started_at, finished_at, exit_code, output_ref, run_snapshot "
+        "FROM jobs WHERE id=?", (jid,)).fetchone()
     assert row["started_at"] is None
     assert row["finished_at"] is None
     assert row["exit_code"] is None
     assert row["output_ref"] is None
+    assert row["run_snapshot"] is None
 
 
 # ── wipe_job_data() — RESET-Cleanup für ~/.local/share/bibi/ (Bibi4 Batch 6) ─
@@ -890,17 +896,23 @@ def test_wipe_job_data_noop_when_nothing_to_clean(tmp_path, monkeypatch):
 
 
 def test_start_now_archive_clears_previous_run_snapshot(conn):
+    # `error` ist der Zustand aus dem Live-Befund (2026-08-12): genau von hier
+    # aus führt kein Weg zurück nach `complete`, und solange der Snapshot hier
+    # stehen blieb, lief der Job für immer mit der Konfiguration seines ersten
+    # Laufs weiter — auch nach korrigierter MD.
     jid = _seed_full(conn, slug="x", status="error",
                      started_at=1.0, finished_at=2.0, exit_code=1,
-                     output_ref="data/job/x/output.jsonl")
+                     output_ref="data/job/x/output.jsonl",
+                     run_snapshot=json.dumps({"attempts": 5}))
     assert job_db.start_now(conn, jid) == "ok"
     row = conn.execute(
-        "SELECT started_at, finished_at, exit_code, output_ref FROM jobs WHERE id=?",
-        (jid,)).fetchone()
+        "SELECT started_at, finished_at, exit_code, output_ref, run_snapshot "
+        "FROM jobs WHERE id=?", (jid,)).fetchone()
     assert row["started_at"] is None
     assert row["finished_at"] is None
     assert row["exit_code"] is None
     assert row["output_ref"] is None
+    assert row["run_snapshot"] is None
 
 
 def test_start_now_deferred_dispatches_immediately_like_pending(conn):

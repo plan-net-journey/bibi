@@ -1439,7 +1439,10 @@ def add_controller_routes(
 
     @app.get("/-/jobs/{job_uid}", include_in_schema=False)
     def screen_job_detail(request: Request, job_uid: str,  # noqa: ARG001
-                          days: int = _RUN_TAGE, status: str = "", src: str = ""):
+                          days: int = _RUN_TAGE, status: str = "", src: str = "",
+                          # `from` ist ein Python-Schluesselwort -- FastAPI
+                          # bekommt den URL-Namen ueber den Alias (#137).
+                          herkunft: str = Query("", alias="from")):
         """Ein Job: oben die Kacheln, unten **eine** Lauf-Liste (FE §5).
 
         Die URL trägt den ``job_uid``; der Weg zurück zum Slug läuft über
@@ -1464,7 +1467,7 @@ def add_controller_routes(
         liste, reach, weiter = _job_lauf_liste(slug, now=jetzt, days=days,
                                                status=status, src=src)
         return HTMLResponse(render.job_detail_page_v5(
-            slug=slug, spec=spec, now=jetzt, liste=liste,
+            slug=slug, spec=spec, now=jetzt, liste=liste, herkunft=herkunft,
             days=days, reach=reach, weiter=weiter,
             aktiv={"status": _mehrfach(status), "src": _mehrfach(src), "days": days},
             daemon_status=_status(),

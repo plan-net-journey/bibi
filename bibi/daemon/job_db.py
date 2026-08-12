@@ -1305,16 +1305,29 @@ def reserve_next(
         # Moment gibt, in dem ein Lauf begonnen hat und noch keine
         # Konfiguration trägt.
         #
-        # Geschrieben wird nur beim Beginn eines neuen `run_id`. `fire` steigt
-        # ausschließlich aus `complete` heraus (s. o.) — ein Retry
+        # Geschrieben wird nur beim Beginn eines neuen `run_id`. Ein Retry
         # (failed → starting) und ein Resume (deferred → starting) behalten
         # denselben Lauf. Schriebe jede Reservierung neu, trüge ein Lauf über
         # seine Versuche hinweg wechselnde Konfiguration; bei `attempts: 3`
         # plus Backoff sind das Stunden, kein Randfall.
         #
+        # **`pending` gehört zu `complete`, nicht zu den Fortsetzungen.** Die
+        # Frage ist „beginnt hier ein neuer Lauf", und aus `pending` heraus
+        # beginnt immer einer — nur `failed`/`deferred` setzen einen laufenden
+        # fort. Die Bedingung stand bis zum 2026-08-12 allein auf `complete`
+        # und traf damit keinen der Wege, die über `pending` führen: RESET und
+        # START gehen über `report_status(pending)`, `fire_startup()` schreibt
+        # den Status sogar per direktem SQL. Ein `schedule: startup`-Job trug
+        # dadurch den Snapshot seines allerersten Laufs über jeden
+        # Daemon-Neustart hinweg weiter (Live-Befund, s. `report_status()`).
+        #
+        # `report_status()` nullt die Spalte beim Übergang nach `pending`
+        # bereits selbst; diese Bedingung ist die zweite Hälfte davon — sie
+        # deckt die Pfade ab, die `report_status()` nie rufen.
+        #
         # `run_snapshot IS NULL` fängt zwei Fälle mit ab: den allerersten Lauf
         # eines Jobs und jede Zeile aus einer DB von vor dieser Migration.
-        if chosen["status"] == "complete" or row["run_snapshot"] is None:
+        if chosen["status"] in ("complete", "pending") or row["run_snapshot"] is None:
             conn.execute(
                 "UPDATE jobs SET run_snapshot=? WHERE id=?",
                 (json.dumps(job_full_view(row), ensure_ascii=False), chosen["id"]),
@@ -1395,6 +1408,15 @@ def report_status(
         fields["finished_at"] = None
         fields["exit_code"] = None
         fields["output_ref"] = None
+        # Der Satz oben sagt „Lauf-Snapshot" und meinte 2026-07-03 die vier
+        # Felder darüber; die gleichnamige **Spalte** kam später (#129) und
+        # blieb hier stehen. Live-Befund 2026-08-12: ein Job mit `attempts: 3`
+        # in der Zeile lief mit `attempts=0` aus seinem allerersten Snapshot
+        # und fiel beim ersten Fehlschlag sofort auf `error` statt `failed` —
+        # aus `error` führt kein Weg zurück nach `complete`, der einzige
+        # Zustand, der den Snapshot bis dahin erneuerte. Ein terminaler Job
+        # kommt über RESET/START immer hier vorbei, nie über `complete`.
+        fields["run_snapshot"] = None
         # Auch der Worktree-Commit gehört dem abgeschlossenen Zyklus (v21) —
         # er ist zu diesem Zeitpunkt schon archiviert (A2, s. u.).
         fields["commit_sha"] = None

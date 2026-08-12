@@ -1189,6 +1189,20 @@ def create_app(
     session_scoped: bool = False, subscription=None,
 ) -> FastAPI:
     started_at = time.time()
+    # **Den eigenen Namen merken** (#144). Genau hier und nirgends sonst: die
+    # Alias-Liste waechst aus dem eigenen Lauf und nie aus der Datenbank, und
+    # das ist die Zeile, an der die Pin-Zusage haengt. Wer nachschlaegt, fragt
+    # oft unter einem fremden Namen -- ein Nachschlagen, das eintraegt, machte
+    # aus jeder Fremdanfrage einen eigenen Namen.
+    #
+    # Defensiv, weil ein Knoten ohne lesbare `env` trotzdem starten koennen
+    # muss: die Liste ist eine Verbesserung des Nachschlagens, keine
+    # Startbedingung.
+    try:
+        from bibi import config as _config
+        _config.record_hostname()
+    except Exception:  # noqa: BLE001 — defensiv (§2.7)
+        pass
     # FE-Event-Bus (PLAN-36 Stufe 36.1): rollenunabhängig wie pinned_worker —
     # jeder Knoten publiziert seine eigene Sicht (E1), der Collector ist der
     # eine Poller des Knotens (E4). Injektion für Tests (autorun=False).
