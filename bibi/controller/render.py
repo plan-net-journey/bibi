@@ -4743,6 +4743,20 @@ def _next_zelle(row, s: dict, l: dict, now: float, ohne_zukunft: bool) -> str:
     return f'{zeit} <span class="due" title="overdue — the scheduler will pick it up on its next tick">due</span>'
 
 
+def _client_zeitzelle(l: dict, now: float) -> str:
+    """Die ``LAST``-Zelle des Client-Blocks (`#136`).
+
+    Ohne laufenden lokalen Lauf sagt sie, was sie immer gesagt hat: wann der
+    letzte hier **fertig** war. *„Der Scheduler nennt daneben den Start seines
+    Laufs, und das ist kein Versehen: er weiß, wann etwas beginnt, der Client
+    sieht, wann es geendet hat."*
+    """
+    laeuft = _laufender_start(l)
+    if laeuft is not None:
+        return _dauer_span(_human_duration(now - laeuft), "since", laeuft)
+    return _uhrzeit(l.get("finished_at"), now)
+
+
 def _reliability_zelle(quote, ohne_zukunft: bool,
                        scheduler_offline: bool = False) -> str:
     """Zähler und Prozent als zwei Felder, damit die Prozente fluchten (#135).
@@ -4952,7 +4966,27 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
         # eigener waere die dritte Implementierung -- #102 und #126 waren die
         # ersten beiden.
         + f'<td>{_status_chip(l.get("status")) if l.get("status") else "—"}</td>'
-        + f'<td>{_uhrzeit(l.get("finished_at"), now)}</td>'
+        # **Laeuft hier etwas, zeigt LAST die Laufzeit** (#136), mittickend.
+        #
+        # Die Zusage steht seit dem Schreiben des Tickets. Gebaut war nur die
+        # Scheduler-Haelfte, und die Client-Seite hatte deren Aufteilung
+        # mitgenommen, wo sie nicht hingehoert: dort steht die Laufzeit in NEXT,
+        # weil LAST die Startzeit traegt und es eine zweite Spalte gibt. **Der
+        # Client hat kein NEXT** -- er hat kein `next_fire_at` und wird von
+        # nichts terminiert. Die Laufzeit gehoert in die eine Zeitspalte, die
+        # es hier gibt.
+        #
+        # `_laufender_start(l)` und nicht `_laufender_start(s, l)`: der
+        # Client-Block sagt, was HIER ankam. Ein Lauf, der beim Scheduler
+        # laeuft, gehoert nicht in diese Spalte -- sie behauptete sonst einen
+        # lokalen Lauf, den es nicht gibt. Das ist die Umkehrung von #146, wo
+        # der Einspringer fehlte; hier darf er nicht erfunden werden.
+        #
+        # Der Server liefert den Anker, der Browser zaehlt (`_DURATION_JS`).
+        # Was tickt, muss auch refetchen -- die Zeile haengt am Sammel-Target
+        # `jobs`, sonst entstuende die Anzeige aus #131: eine, die sich bewegt
+        # und dabei den falschen Zustand zeigt.
+        + f'<td>{_client_zeitzelle(l, now)}</td>'
         + "</tr>"
     )
 
