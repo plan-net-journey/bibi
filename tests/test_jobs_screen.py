@@ -1889,6 +1889,36 @@ def test_the_tile_offers_a_way_to_the_run():
     assert 'href="#runs"' in wert, f"kein Weg zum Lauf: {wert[:400]}"
 
 
+def test_the_jobs_band_head_carries_the_sum():
+    """FE §4.4: *„Die Bandkopfzeile trägt die Summe."* — bisher nicht gebaut.
+
+    **Die Summe ist der Grund, warum die Kennzahl eine Zahl ist und kein
+    Chart:** sie lässt sich addieren. Ein Bandkopf, der nur zählt, wie viele
+    Jobs darin liegen, sagt weniger als einer, der sagt, wie verlässlich sie
+    zusammen liefen.
+    """
+    from bibi.controller import jobs_view
+
+    zeilen = _zeilen(local=[_md("a"), _md("b")])
+    zeilen[0].quote = jobs_view.Quote(complete=20, expected=24, manual=0)
+    zeilen[1].quote = jobs_view.Quote(complete=4, expected=4, manual=2)
+    kopf = render.jobs_screen(zeilen, now=NOW).split('class="band"', 1)[1] \
+                                              .split("</tr>", 1)[0]
+    assert "24/28+2" in kopf, f"die Summe fehlt im Bandkopf: {kopf}"
+
+
+def test_a_band_without_any_quota_says_nothing_about_it():
+    """Die Gegenprobe: ein Band ohne Kennzahlen trägt keine leere Summe.
+
+    `0/0+0` läse sich als schlechtester Wert; gemeint wäre *„dazu gibt es
+    nichts zu sagen"*. Dieselbe Erwägung wie bei `Quote.prozent`, das für
+    diesen Fall ausdrücklich `None` liefert und nicht `0`.
+    """
+    kopf = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW) \
+                 .split('class="band"', 1)[1].split("</tr>", 1)[0]
+    assert "+0" not in kopf and "0/0" not in kopf, kopf
+
+
 # ── `offline` statt `—`, wo der Wert am Scheduler hängt (#32) ──────────────
 #
 # **Befund m.rau:** *„Offline oder nicht gesetzt?"* — `—` heißt heute beides,

@@ -236,6 +236,32 @@ def test_every_markup_class_has_a_css_rule():
         f"{len(ohne_regel)} Klassen ohne CSS-Regel: {', '.join(ohne_regel)}")
 
 
+# ── Eine Gruppen-Kopfzeile für beide Screens (#31, Vorschlag 1) ───────────
+#
+# **Die Studie verlangt eine Komponente, nicht zwei Nachbauten:** Kapitälchen-
+# Label, Anzahl, Haarlinie bis zum rechten Rand — für die Jobs-Bänder *und* die
+# Feed-Tagesgruppen. Gebaut waren sie getrennt und darum ungleich: der Feed
+# hatte die Haarlinie und keine Anzahl, die Jobs-Bänder die Anzahl und keine
+# Haarlinie.
+#
+# **Die Hüllen bleiben verschieden, und das ist kein Mangel.** Ein Bandkopf ist
+# eine Tabellenzeile, eine Tagesgruppe ein `div` — dasselbe Markup zu erzwingen
+# hieße, eine der beiden Tabellen aufzugeben. Geteilt wird der *Inhalt* und die
+# *Form*, nicht das Element.
+
+
+def test_both_group_headers_share_one_component():
+    """Beide Screens rufen dieselbe Funktion — geprüft an ihrer Signatur.
+
+    Ein Test, der nur zwei HTML-Schnipsel vergleicht, wäre auch grün, wenn
+    jemand die Form ein zweites Mal von Hand nachbaut; genau so sind die beiden
+    auseinandergelaufen.
+    """
+    quelle = Path(render.__file__).read_text()
+    assert quelle.count("_gruppenkopf(") >= 3, (
+        "erwartet: die Definition und je ein Aufruf aus Jobs und Feed")
+
+
 def test_no_wireframe_brackets_in_the_markup():
     """#32: *„Eckige Klammern weg, überall — `[show]`, `[START]`, `[ATTRS]`,
     `[LOAD MORE]`. Das war ein Wireframe-Zeichen für ‚hier ist eine Aktion' und
@@ -365,10 +391,12 @@ def test_uncommitted_stands_above_the_first_day_line():
         [{"unit": "Alt", "last_changed": 900_000.0, "changes": 1,
           "authors": ["bob"], "last_commit_sha": "abc1234"}],
         uncommitted=_uncommitted())
-    # Nicht `index('class="fday"')`: die UNCOMMITTED-Zeile traegt dieselbe
+    # Nicht `index('class="gkopf"')`: die UNCOMMITTED-Zeile traegt dieselbe
     # Klasse und faende sich selbst. Die vierte Lehre aus m.rau/bibi#131 —
     # gemessen wird die Folge der Trennlinien, nicht die Stelle eines Wortes.
-    trennlinien = re.findall(r'<div class="fday">(.*?)</div>', html)
+    #
+    # `.gkopf` seit #31: beide Screens teilen sich eine Gruppen-Kopfzeile.
+    trennlinien = re.findall(r'<span class="gk-label">(.*?)</span>', html)
     assert trennlinien[0] == "UNCOMMITTED"
     assert len(trennlinien) == 2, "die Tagestrennlinie muss darunter stehen bleiben"
 

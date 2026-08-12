@@ -566,10 +566,22 @@ th a:hover { text-decoration: underline; }
              overflow-wrap: anywhere; }
 .frow a.commit { text-decoration: none; }
 .frow a.commit:hover { text-decoration: underline; color: var(--blue); }
-/* Tagestrennlinie, dasselbe Idiom wie in der Lauf-Liste von Job Detail. */
-.fday { display: flex; align-items: center; gap: .6rem; margin: .9rem 0 .2rem;
-        font-family: ui-monospace, monospace; font-size: .72rem; color: var(--faint); }
-.fday::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+/* **Eine Gruppen-Kopfzeile fuer beide Screens** (#31, Vorschlag 1). Sie tritt
+   an die Stelle von `.fday`, das nur der Feed hatte -- es war von beiden das
+   einzige mit der Haarlinie, und die ist der Teil, der eine Gruppe optisch
+   zusammenhaelt. Die Haarlinie steht VOR der Summe, damit die Zahl am rechten
+   Rand steht und untereinander flucht, wenn mehrere Baender uebereinander
+   liegen. */
+.gkopf { display: flex; align-items: center; gap: .6rem; margin: .9rem 0 .2rem;
+         font-size: .72rem; color: var(--faint); letter-spacing: .06em; }
+.gk-label { font-weight: 600; }
+.gk-zahl { color: var(--dim); }
+.gk-zahl::after { content: ""; }
+.gkopf .gk-zahl { order: 2; }
+.gk-summe { order: 4; font-variant-numeric: tabular-nums; }
+.gkopf::after { content: ""; flex: 1; border-top: 1px solid var(--line);
+                order: 3; }
+table.jobs tr.band .gkopf { margin: 0; }
 /* m.rau/bibi#63: in der Karte, an ihrem unteren linken Rand. Der obere
    Abstand trennt vom Inhalt darueber, der untere entfaellt — die Karte
    bringt ihr eigenes Padding mit. */
@@ -2267,8 +2279,8 @@ def _feed_list(entries: list[dict], *, days: int | None = None,
     uncommitted = uncommitted or []
     kopf = ""
     if uncommitted:
-        kopf = ('<div class="fday">UNCOMMITTED</div>'
-                '<div class="feedlist">'
+        kopf = (_gruppenkopf("UNCOMMITTED", len(uncommitted))
+                + '<div class="feedlist">'
                 + "".join(_uncommitted_row(e) for e in uncommitted) + "</div>")
     if not entries:
         # Ein Vault, in dem gearbeitet und noch nichts committet wurde, hat sehr
@@ -2277,7 +2289,7 @@ def _feed_list(entries: list[dict], *, days: int | None = None,
     from bibi.controller import jobs_view
     teile = [kopf]
     for tag, zeilen in jobs_view.by_day(entries, ts_key="last_changed"):
-        teile.append(f'<div class="fday">{_e(tag)}</div>')
+        teile.append(_gruppenkopf(_e(tag), len(zeilen)))
         teile.append('<div class="feedlist">' + "".join(
             _feed_row(e, commit_base_url=commit_base_url) for e in zeilen) + "</div>")
     return "".join(teile)
@@ -4402,6 +4414,53 @@ def _filter_zeile(typ: list[str], status: list[str],
     )
 
 
+def _gruppenkopf(label: str, anzahl: int | None = None, *,
+                 aggregat: str = "") -> str:
+    """Die Kopfzeile einer Gruppe — **eine** Quelle für zwei Screens (#31).
+
+    Vorschlag 1 der Design-Studie verlangt dieselbe Kopfzeile für die
+    Jobs-Bänder und die Feed-Tagesgruppen: Label, Anzahl, Haarlinie bis zum
+    rechten Rand. Gebaut waren beide getrennt — und darum ungleich: der Feed
+    hatte die Haarlinie und keine Anzahl, die Bänder die Anzahl und keine
+    Haarlinie.
+
+    **Die Hüllen bleiben verschieden, und das ist kein Mangel.** Ein Bandkopf
+    ist eine Tabellenzeile, eine Tagesgruppe ein ``div``; dasselbe Element zu
+    erzwingen hieße, eine der beiden Tabellen aufzugeben. Geteilt wird der
+    Inhalt und die Form, nicht das Markup drumherum — und daran waren die
+    beiden auseinandergelaufen, nicht am Element.
+
+    ``aggregat`` trägt die Summe der Gruppe (FE §4.4: *„Die Bandkopfzeile trägt
+    die Summe."*). Leer, wenn es nichts zu summieren gibt: ``0/0+0`` läse sich
+    als schlechtester Wert, gemeint wäre *„dazu gibt es nichts zu sagen"*.
+    """
+    teile = [f'<span class="gk-label">{label}</span>']
+    if anzahl is not None:
+        teile.append(f'<span class="gk-zahl">{anzahl}</span>')
+    if aggregat:
+        teile.append(f'<span class="gk-summe">{aggregat}</span>')
+    return f'<div class="gkopf">{"".join(teile)}</div>'
+
+
+def _band_summe(zeilen: list) -> str:
+    """Die Summe der Kennzahlen eines Bandes, oder ``""``.
+
+    **Addiert wird über die drei Zähler, nicht über die Prozente:** ein
+    Mittelwert von Prozentwerten gewichtete einen Job mit zwei erwarteten
+    Läufen so stark wie einen mit 288, und dann sagt die Summe etwas über die
+    Anzahl der Jobs statt über ihre Verlässlichkeit.
+    """
+    from bibi.controller.jobs_view import Quote
+
+    quoten = [z.quote for z in zeilen if getattr(z, "quote", None)]
+    if not quoten:
+        return ""
+    summe = Quote(complete=sum(q.complete for q in quoten),
+                  expected=sum(q.expected for q in quoten),
+                  manual=sum(q.manual for q in quoten))
+    return "" if summe.prozent is None else str(summe)
+
+
 #: Die leere Seite, bevor überhaupt ein Job existiert. Sie sagt, was fehlt
 #: **und** was man tun kann — das ist die eigentliche Einstiegsdokumentation
 #: dieses Screens (Umbauplan §4).
@@ -4507,8 +4566,10 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
     for seg in (Segment.SCHEDULE, Segment.ADHOC):
         drin = [r for r in rows if r.segment is seg]
         teile.append(
-            f'<tr class="band"><td colspan="{_JOBS_SPALTEN}">{seg.value.upper()} '
-            f'<span class="muted">{len(drin)}</span></td></tr>'
+            f'<tr class="band"><td colspan="{_JOBS_SPALTEN}">'
+            + _gruppenkopf(seg.value.upper(), len(drin),
+                           aggregat=_band_summe(drin))
+            + "</td></tr>"
         )
         if drin:
             teile.extend(_jobs_zeile(r, now, public_host=public_host,
