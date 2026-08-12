@@ -696,13 +696,20 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
     tiles: list[Tile] = []
     runs: list[dict] = []
     counts: dict[str, int] = {}
-    # **Client zuerst** (m.rau/bibi#147): links steht, was dieser Knoten selbst
-    # weiß, rechts, was der Scheduler sagt. FE §2 führte die Regel bisher nur
-    # für den Header; sie gilt ab jetzt überall, und die Kacheln erben ihre
-    # Reihenfolge aus dieser Schleife.
+    # **Scheduler zuerst** (#135, m.rau 2026-08-11): erst die Instanz, die den
+    # Job führt, dann die, die zeigt, was hier ankam. Die Kacheln erben ihre
+    # Reihenfolge aus dieser Schleife und tragen damit dieselbe Ordnung wie die
+    # Spalten der Tabelle darunter — das ist der Gegenstand des Tickets.
+    #
+    # **Das dreht m.rau/bibi#147 vom 2026-08-05 um**, das den Client zuerst
+    # verlangte, weil links stehen sollte, was dieser Knoten selbst weiß. Beide
+    # Ordnungen sind begründbar: die alte sortierte danach, welche Werte bei
+    # einem Host-Ausfall ihre Gültigkeit verlieren, die neue danach, worüber
+    # eine Angabe etwas aussagt. Entschieden ist die jüngere — und wichtiger als
+    # ihre Richtung ist, dass sie in jedem Screen dieselbe ist.
     for quelle, src, zeile, journal, host, gesamt in (
-        ("CLIENT", "C", client_slot, client_runs, client_host, client_total),
         ("SCHEDULER", "S", scheduler_slot, scheduler_runs, scheduler_host, scheduler_total),
+        ("CLIENT", "C", client_slot, client_runs, client_host, client_total),
     ):
         gesperrt: str | None = None
         if oneshot and quelle == "CLIENT":

@@ -124,12 +124,22 @@ def test_body_carries_the_ground_itself():
     assert "var(--text)" in body
 
 
-def test_body_is_monospace():
-    """Die Monospace-Frage ist in der Studie **gemessen** beantwortet: voll
-    Monospace passt bei 14 px in die bestehenden 64 rem (breiteste Zeile der
-    UI: 851 px von 1024). Der Preis ist 14 px Grundgröße statt 15 px."""
+def test_body_is_sans_since_the_chrome_split():
+    """**Bis `v0.8.4` stand hier das Gegenteil, und seine Begründung war
+    gemessen:** voll Monospace passt bei 14 px in die bestehenden 64 rem
+    (breiteste Zeile der UI: 851 px von 1024), zum Preis von 14 px Grundgröße
+    statt 15 px.
+
+    **Die Messung ist nicht falsch geworden — sie beantwortete eine andere
+    Frage.** *Passt Monospace überall hin?* Ja. *Soll es überall stehen?*
+    Beantwortet #36 mit nein: tragen Chrome und Werte dieselbe Schrift, muss
+    die Zeile ihre Struktur allein über Farbe und Abstand zeigen. Die
+    Grundgröße bleibt 14 px, und die Zeile wird schmaler statt breiter — die
+    alte Messung bleibt also die Obergrenze, die sie war.
+    """
     body = _block("body")
-    assert "monospace" in body
+    assert "sans-serif" in body
+    assert "monospace" not in body, "der body traegt wieder Monospace"
     assert "14px" in body
 
 

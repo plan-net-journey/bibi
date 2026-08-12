@@ -455,15 +455,20 @@ def add_controller_routes(
         return HTMLResponse(render.feed_fragment(daten, days=eff_days))
 
     @app.get("/-/ui/feed/status", include_in_schema=False)
-    def feed_status():
+    def feed_status(full: int = 0):
         # Bus-Refetch-Ziel von #feedstatus (Target "feedstatus", PLAN-36
         # Stufe 36.3; zusätzlich bibiMaintChanged-Trigger des MAINT-Toggles)
         # — dieselben Datenquellen wie root(), nur ohne Heatmap/Änderungsliste.
+        #
+        # `full` trägt die Header-Form durch den Refetch (#30). Vorgabe ist die
+        # kompakte Fassung: der Feed setzt den Parameter in seine eigene
+        # Refetch-URL, die anderen Screens nicht — so bekommt jeder zurück, was
+        # er gerendert hatte, ohne dass die Route ihren Aufrufer kennen muss.
         sched, stale = _scheduler_status()
         return HTMLResponse(render.feed_status_fragment(
             _status(), _feed_git_status(), _scheduler_url(), time.time(),
             client_rows=_client_rows_for_status(),
-            scheduler=sched, scheduler_stale_since=stale))
+            scheduler=sched, scheduler_stale_since=stale, voll=bool(full)))
 
     #: 180 Tage — eine Ansichtswahl ist eine UI-Präferenz und kein Sitzungswert.
     _VIEW_COOKIE_MAX_AGE = 60 * 60 * 24 * 180
@@ -1312,10 +1317,15 @@ def add_controller_routes(
         # `jobs_list_fragment`, nicht `jobs_screen`: die Antwort muss ihren
         # Bus-Wrapper mitbringen, weil `_EVENTS_JS` mit `outerHTML` swappt —
         # sonst ist die Region nach genau einem Update abgemeldet.
+        # Der Ausfall gehoert in JEDEN Refetch (#32): der Bus swappt diese
+        # Region bei jedem Job-Wechsel, und ohne den Zustand faellt `offline`
+        # dabei still auf `—` zurueck -- also genau dann, wenn sich etwas tut.
+        _, _stale = _scheduler_status()
         resp = HTMLResponse(render.jobs_list_fragment(
             zeilen, jetzt, typ=v["typ"], status=v["status"],
             journal=v["journal"], sort=v["sort"], direction=v["direction"],
-            group=v["group"], public_host=config.public_host()))
+            group=v["group"], public_host=config.public_host(),
+            scheduler_offline=bool(_stale)))
         # **Auch hier merken** (#83). Bis dahin las diese Route den Cookie und
         # schrieb ihn nie — und ein Filter-Klick geht auf genau sie. Die Wahl
         # ueberlebte damit jeden Bus-Refetch (dafuer traegt die Refetch-URL
@@ -1384,10 +1394,15 @@ def add_controller_routes(
         """Nur die Liste — das Nachlade-Ziel des Bus."""
         from bibi import config
         zeilen, v, jetzt = _jobs_zeilen_und_view(request, sort, dir)
+        # Der Ausfall gehoert in JEDEN Refetch (#32): der Bus swappt diese
+        # Region bei jedem Job-Wechsel, und ohne den Zustand faellt `offline`
+        # dabei still auf `—` zurueck -- also genau dann, wenn sich etwas tut.
+        _, _stale = _scheduler_status()
         resp = HTMLResponse(render.journal_list_fragment(
             zeilen, jetzt, typ=v["typ"], status=v["status"],
             journal=v["journal"], sort=v["sort"], direction=v["direction"],
-            group=v["group"], public_host=config.public_host()))
+            group=v["group"], public_host=config.public_host(),
+            scheduler_offline=bool(_stale)))
         _merke_jobs_view(resp, v)
         return resp
 

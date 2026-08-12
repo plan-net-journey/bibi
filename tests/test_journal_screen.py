@@ -15,6 +15,7 @@ geht. Der Screen war nicht zu voll, er war falsch gewichtet.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -244,20 +245,26 @@ def test_the_journal_page_carries_the_bus_client():
 #: greift, ist deshalb hier keine Nachlässigkeit, sondern die einzige ehrliche
 #: Möglichkeit: eine Klasse zu erfinden, damit der Test hübscher wird, hieße den
 #: Prüfgegenstand für die Prüfung zu ändern.
-_SPALTEN = ("slug", "type", "client", "scheduler", "last", "next", "runtime", "24h")
+#: Seit #135 in der Ordnung Job → Scheduler → Client, und **je Screen
+#: verschieden lang**: das Journal führt kein `NEXT` mehr, weil es dort nichts
+#: zu sagen hätte. Bis dahin stand die Spalte auch dort und trug einen Strich.
+_JOBS_SPALTEN = ("slug", "type", "runtime", "24h",
+                 "scheduler", "last", "next",
+                 "client", "client_last")
+_JOURNAL_SPALTEN = tuple(s for s in _JOBS_SPALTEN if s != "next")
 
 
-def _zelle(html: str, spalte: str) -> str:
+def _zelle(html: str, spalte: str, *, spalten: tuple = _JOBS_SPALTEN) -> str:
     """Der Text der Zelle `spalte` aus der ersten Datenzeile."""
     import re
     zeilen = re.findall(r"<tr[ >](?:(?!</tr>).)*</tr>", html, re.S)
     daten = [z for z in zeilen if 'class="slug"' in z]
     assert daten, f"keine Datenzeile im HTML gefunden (Spalte {spalte})"
     zellen = re.findall(r"<td[^>]*>(.*?)</td>", daten[0], re.S)
-    assert len(zellen) == len(_SPALTEN), (
-        f"{len(zellen)} Zellen, erwartet {len(_SPALTEN)} — die Tabelle hat "
+    assert len(zellen) == len(spalten), (
+        f"{len(zellen)} Zellen, erwartet {len(spalten)} — die Tabelle hat "
         f"ihre Spalten geändert, dieser Helfer muss nach: {zellen}")
-    roh = zellen[_SPALTEN.index(spalte)]
+    roh = zellen[spalten.index(spalte)]
     return re.sub(r"<[^>]+>", "", roh).strip()
 
 
@@ -285,17 +292,25 @@ def _journal_zeilen(slug="laengst-weg"):
     return zeilen
 
 
-def test_the_journal_screen_promises_no_next_run():
-    """`NEXT` ist für einen abgelegten Job ohne Aussage — also `—`.
+def test_the_journal_screen_has_no_next_column_at_all():
+    """`NEXT` ist für einen abgelegten Job ohne Aussage — die Spalte fällt ganz.
 
     Der Screen beantwortet „welche Jobs haben nur noch Historie?". Eine Spalte,
     die daneben behauptet, es stehe noch etwas bevor, unterläuft genau diese
-    Zusage."""
+    Zusage.
+
+    **#130 hat den Inhalt geleert, #135 nimmt die Spalte.** Der Zwischenschritt
+    war richtig und trotzdem unvollständig: eine Spalte, die auf jeder Zeile
+    einen Strich trägt, kostet Breite und stellt eine Frage, deren Antwort schon
+    feststeht. Der Strich sagte *„hier ist nichts"* — die fehlende Spalte sagt
+    *„danach wird hier nicht gefragt"*, und das ist die wahrere Auskunft.
+    """
     html = render.journal_screen(_journal_zeilen(), now=NOW)
-    zelle = _zelle(html, "next")
-    assert zelle == "—", (
-        f"NEXT zeigt {zelle!r} statt `—` — ein Termin in der Vergangenheit für "
-        "einen Job, den es nicht mehr gibt")
+    kopf = html.split("</thead>", 1)[0]
+    assert ">NEXT<" not in kopf, "das Journal führt wieder eine NEXT-Spalte"
+    # Die Gegenprobe zur Zellenzahl: der Helfer prüft sie gegen die kürzere
+    # Journal-Liste, und ein Rückfall auf neun Zellen fiele hier auf.
+    assert _zelle(html, "last", spalten=_JOURNAL_SPALTEN) != ""
 
 
 def test_the_journal_screen_promises_no_reliability():
@@ -308,10 +323,10 @@ def test_the_journal_screen_promises_no_reliability():
     zeilen = _journal_zeilen()
     zeilen[0].quote = jobs_view.Quote(complete=0, expected=288, manual=0)
     html = render.journal_screen(zeilen, now=NOW)
-    zelle = _zelle(html, "24h")
+    zelle = _zelle(html, "24h", spalten=_JOURNAL_SPALTEN)
     assert zelle == "—", (
-        f"24H zeigt {zelle!r} statt `—` — die schlechtestmögliche Quote für "
-        "einen Job, der planmäßig nicht laufen soll")
+        f"RELIABILITY zeigt {zelle!r} statt `—` — die schlechtestmögliche Quote "
+        "für einen Job, der planmäßig nicht laufen soll")
 
 
 def test_the_jobs_screen_keeps_both_columns_filled():
@@ -331,11 +346,24 @@ def test_the_jobs_screen_keeps_both_columns_filled():
 
 
 def test_both_screens_still_share_one_table_head():
-    """Kein zweiter Tabellenkopf. Die Spalten bleiben, ihr Inhalt ändert sich —
-    das ist die Bedingung, unter der `#31` seine Filter an die Köpfe hängen
-    kann, ohne sie zweimal zu bauen."""
+    """Kein zweiter Tabellenkopf — eine Quelle, ein Schalter.
+
+    **Seit #135 mit genau einer Ausnahme, und die ist der Grund für den
+    Schalter:** `NEXT` fällt im Journal weg. Alles andere teilen beide Screens
+    weiter, und das bleibt die Bedingung, unter der `#31` seine Filter an die
+    Köpfe hängen kann, ohne sie zweimal zu bauen.
+
+    Geprüft wird deshalb die **Differenz**, nicht die Gleichheit: dass genau
+    eine Spalte fehlt und keine zweite. Ein Test auf „beide enthalten `24H`"
+    hätte den Tag nicht bemerkt, an dem eine dritte Spalte auseinanderläuft.
+    """
     j = render.journal_screen(_journal_zeilen("weg"), now=NOW)
     b = render.jobs_screen(_zeilen(local=[_md("da")]), now=NOW)
-    for spalte in ("NEXT", "24H"):
-        assert spalte in j, f"{spalte} fehlt im Journal-Kopf"
-        assert spalte in b, f"{spalte} fehlt im Jobs-Kopf"
+
+    def spalten(html: str) -> list[str]:
+        kopf = html.split("</thead>", 1)[0]
+        return re.findall(r"<th[^>]*>([A-Z0-9 ]+)</th>", kopf)
+
+    assert [s for s in spalten(b) if s != "NEXT"] == spalten(j)
+    for spalte in ("RELIABILITY", "P90 RUNTIME"):
+        assert spalte in spalten(j), f"{spalte} fehlt im Journal-Kopf"
