@@ -30,7 +30,8 @@ import urllib.parse
 
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.responses import (
-    HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse,
+    HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse,
+    StreamingResponse,
 )
 
 from bibi.daemon import activity, openapi, roles as roles_mod
@@ -2276,20 +2277,25 @@ def add_controller_routes(
 
     @app.get("/-/live", include_in_schema=False)
     def screen_live():
-        # Noch derselbe Inhalt wie `Log`. Die Trennung — Live ohne Gedächtnis
-        # (SSE, ganze englische Sätze), Log mit Historie (HTTP, Paging, Details
-        # auf DEBUG) — ist in FE-Spezifikation §7 ausgearbeitet und steht als
-        # m.rau/bibi#109 am Board.
-        #
-        # **Hier stand bis zum 2026-08-09 „kommt in Bauschritt 4".** Diesen
-        # Bauschritt gab es nirgends sonst: kein Ticket, kein Eintrag im Vault,
-        # keine Fundstelle außer diesem Kommentar. Eine Absicht, die nur im Code
-        # steht, sieht niemand, der das Board liest — sie hat keinen Termin,
-        # keinen Zuschnitt und keinen Ort, an dem ihr Fehlen auffiele.
-        #
-        # Bis dahin ist der Tab erreichbar statt tot: ein 404 hinter einem
-        # sichtbaren Tab ist die schlechtere Zwischenlösung.
-        return logs_page()
+        """Die Adresse des gefallenen Live-Screens, umgeleitet auf ``/-/log``.
+
+        Der Tab ist mit `#162` aus der App-Bar gefallen: die Route gab wörtlich
+        ``logs_page()`` zurück, denselben Inhalt wie ``/-/log``. Die geplante
+        Trennung — Live ohne Gedächtnis (SSE, ganze englische Sätze), Log mit
+        Historie (HTTP, Paging, Details auf DEBUG) — steht seit dem v5-Umbau in
+        FE-Spezifikation §7 und ist nie gebaut worden. **Die Absicht selbst ist
+        jetzt zurückgenommen** (m.rau, 2026-08-12).
+
+        **Hier stand bis zum 2026-08-09 „kommt in Bauschritt 4".** Diesen
+        Bauschritt gab es nirgends sonst: kein Ticket, kein Eintrag im Vault,
+        keine Fundstelle außer diesem Kommentar. Damals ist der Kommentar
+        ehrlich gemacht worden — jetzt fällt die Absicht dahinter.
+
+        **Umleitung statt ``404``:** die Adresse stand lange hinter einem
+        sichtbaren Tab und liegt in Lesezeichen. ``308`` und nicht ``307``,
+        weil der Umzug endgültig ist.
+        """
+        return RedirectResponse("/-/log", status_code=308)
 
     @app.get("/-/log", include_in_schema=False)
     def screen_log():

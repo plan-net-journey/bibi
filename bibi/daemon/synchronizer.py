@@ -250,9 +250,10 @@ class Synchronizer:
             did["pulled"] = True
             # Ein Pull ohne Ergebnis ist kein Ereignis (m.rau/bibi#109).
             # ``kind=null`` heißt: gepullt, nichts geändert — alle drei Minuten,
-            # rund um die Uhr. Auf ``/-/live`` waren 28 von 30 Zeilen genau das,
-            # und der Live-Log ist die Stelle, an der man nachsieht, *wenn etwas
-            # nicht stimmt*.
+            # rund um die Uhr. Auf ``/-/log`` waren 28 von 30 Zeilen genau das,
+            # und das Live-Log-Panel ist die Stelle, an der man nachsieht, *wenn
+            # etwas nicht stimmt*. (Erhoben auf ``/-/live``, das seit `#162`
+            # dorthin umleitet — es zeigte schon damals denselben Screen.)
             #
             # ``DEBUG`` statt gar nicht — mit einer Einschränkung, die im
             # Betrieb nachgemessen wurde und die erste Fassung dieses

@@ -36,7 +36,7 @@ def test_log_page_unchanged_after_refactor():
 
 def test_screen_nav_no_longer_includes_daemon_tab():
     # PLAN-18 Stufe 18.4: Daemon-Tab entfernt, Inhalt lebt im Feed-Header.
-    html = render._screen_nav("Live-Log")
+    html = render._screen_nav("Log")
     assert 'href="/-/ui/daemon"' not in html and "Daemon" not in html
 
 

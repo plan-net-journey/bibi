@@ -23,17 +23,34 @@ HOST = {"roles": ["scheduler", "controller"]}
 
 
 def test_three_handles_in_this_order():
+    """Die Reihenfolge steht an den IDs, nicht an den Zeichen.
+
+    **Bis `#159` stand hier ein Vergleich über die Glyphen selbst.** Die sind
+    mit dem Icon-Satz gefallen — und das ist der Grund, warum ein Test die
+    *Sache* prüfen sollte und nicht ihre momentane Schreibweise: die Reihenfolge
+    der Handles hat sich nicht geändert, nur ihre Darstellung.
+    """
     html = render._ops_handles(CLIENT)
-    assert html.index("⟳") < html.index("◐") < html.index("●")
+    assert html.index('id="rescan"') < html.index('id="tfmt"') \
+        < html.index('id="conn-dot"')
 
 
-def test_maintenance_uses_the_half_moon():
-    """`◐` statt `⚙`/`⚠`: ein halb gefüllter Kreis ist ein Zustand zwischen an
-    und aus — genau das ist Maintenance. Ein Zahnrad ist eine Einstellung, ein
-    Warndreieck ein Fehler; beides trifft es nicht."""
+def test_maintenance_has_no_icon_of_its_own_any_more():
+    """**Das Zeichen ist ganz gefallen** (`#161`), und mit ihm eine alte Frage.
+
+    Es hat drei Fassungen gehabt: das Textzeichen ``◐`` (U+25D0), dann — einen
+    Commit lang, mit `#159` — lucide ``contrast``, und jetzt keine mehr. Der
+    Verbindungspunkt schaltet den Modus selbst; ein eigener Knopf daneben wäre
+    ein zweites Element für dieselbe Sache.
+
+    Damit erledigt sich auch die in `#33` festgehaltene Doppelvergabe: `◐` war
+    Maintenance-Knopf **und** einer der Zeit-Toggle-Zustände, zwei halbgefüllte
+    Kreise in derselben Leiste.
+    """
     html = render._ops_handles(CLIENT)
-    assert "◐" in html
-    assert "⚙" not in html and "⚠" not in html
+    assert 'id="maint"' not in html
+    assert 'd="M12 18a6 6 0 0 0 0-12v12z"' not in html, "das contrast-Icon lebt noch"
+    assert "◐" not in html and "⚙" not in html and "⚠" not in html
 
 
 # ── Der Verbindungspunkt ────────────────────────────────────────────────────
@@ -176,7 +193,14 @@ CLIENT_MIT_SCHEDULER = {
 
 
 def _maint_knopf(html: str) -> str:
-    return [z for z in html.split("<") if 'id="maint"' in z][0]
+    """Der Maintenance-Schalter — **seit `#161` der Verbindungspunkt**.
+
+    Der eigene `#maint`-Knopf ist gefallen: er stand neben einem Punkt, der
+    denselben Modus schon anzeigte. Was die Tests unten prüfen — erreichbar,
+    gesperrt, spiegelt den Scheduler —, gilt unverändert; sie fragen nur ein
+    anderes Element.
+    """
+    return [z for z in html.split("<") if 'id="conn-dot"' in z][0]
 
 
 def test_maintenance_is_reachable_from_a_client():
@@ -267,16 +291,27 @@ def test_rescan_checks_the_answer_before_claiming_success():
     Fehler so lange unbemerkt.
     """
     js = render._OPS_HANDLES_JS
-    kopf = js[js.index("const rescan"):js.index("const maint")]
+    kopf = js[js.index("const rescan"):js.index("const dot")]
     assert "r.ok" in kopf or "res.ok" in kopf, "die Antwort wird nicht geprueft"
     assert "catch(_){}" not in kopf, "der Fehler wird weiterhin verschluckt"
 
 
 def test_rescan_shows_a_failure():
-    """Sonst ist „ging nicht" von „ging" nicht zu unterscheiden."""
+    """Sonst ist „ging nicht" von „ging" nicht zu unterscheiden.
+
+    **Geprüft wird die Verzweigung, nicht das Zeichen** (`#159`). Hier stand
+    ``"✕" in kopf`` — richtig, solange das JS die Glyphe selbst schrieb. Seit
+    dem Icon-Satz trägt der Knopf alle drei Zeichen im Markup und das JS schaltet
+    nur eine Klasse; dass die Fehlerklasse eine andere ist als die Erfolgsklasse,
+    ist die Aussage, die hier zählt.
+
+    Dass am Ende ein Kreuz **zu sehen** ist, prüft
+    ``tests/browser/test_rescan_button.py`` — dort, wo man es sehen kann.
+    """
     kopf = render._OPS_HANDLES_JS
-    kopf = kopf[kopf.index("const rescan"):kopf.index("const maint")]
-    assert "✕" in kopf or "!" in kopf
+    kopf = kopf[kopf.index("const rescan"):kopf.index("const dot")]
+    assert "'quittung-'" in kopf, kopf
+    assert "ok ? 'ok' : 'bad'" in kopf, kopf
 
 
 # ── Und er landet auch wirklich beim Scheduler (#69) ────────────────────────

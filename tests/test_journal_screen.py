@@ -127,12 +127,15 @@ def test_the_third_axis_is_independent_of_the_bands():
 # ── Der eigene Screen ──────────────────────────────────────────────────────
 
 
-def test_the_app_bar_carries_six_screens():
-    """Sechs statt fünf, und der Test prüft die Reihenfolge mit: die App-Bar
-    steht auf jedem Screen, ein verrutschter Tab fiele sonst nur dem auf, der
-    hinsieht. `Journal` steht neben `Jobs`, weil es dessen Segment war."""
+def test_the_app_bar_carries_five_screens():
+    """Fünf, und der Test prüft die Reihenfolge mit: die App-Bar steht auf jedem
+    Screen, ein verrutschter Tab fiele sonst nur dem auf, der hinsieht.
+    `Journal` steht neben `Jobs`, weil es dessen Segment war.
+
+    **Es waren sechs, bis `Live` mit `#162` fiel** — er gab wörtlich denselben
+    Screen aus wie `Log`."""
     assert [name for name, _ in render.SCREENS] == \
-        ["Feed", "Jobs", "Journal", "Nodes", "Live", "Log"]
+        ["Feed", "Jobs", "Journal", "Nodes", "Log"]
 
 
 def test_the_journal_screen_shows_what_jobs_no_longer_does():

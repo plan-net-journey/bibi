@@ -11,6 +11,7 @@ m.rau/bibi#159 zurückgebaut; hier stand, er bleibe unter
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -64,7 +65,7 @@ def test_header_includes_ops_handles():
     # RESCAN/MAINT sitzen jetzt direkt im Header, nicht mehr als separater Aufruf.
     html = render._header("Schedules", {"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint" class="toggle warn"' in html
+    assert 'id="conn-dot" class="conn-dot warn"' in html
 
 
 # --- RESCAN generisch, keine Sync-Dopplung mehr (PLAN-21 Befund 2, revidiert
@@ -73,13 +74,29 @@ def test_header_includes_ops_handles():
 
 def test_ops_handles_rescan_is_always_generic():
     html = render._ops_handles({})
-    assert 'id="rescan" class="toggle" title="rescan the vault">⟳<' in html
+    # Seit #159 traegt der Knopf ein SVG statt der Glyphe `⟳` — geprueft wird
+    # der Knopf samt seiner generischen Beschriftung, nicht das Zeichen darin.
+    assert 'id="rescan" class="toggle" title="rescan the vault"><svg' in html
 
 
 def test_ops_handles_js_restores_idle_icon():
+    """Nach der Quittung steht wieder das Ruhe-Zeichen da.
+
+    **Bis `#159` stand hier `const idleIcon = rescan.textContent`.** Das war
+    richtig, solange der Knopf eine Glyphe trug — und wurde mit dem Icon-Satz
+    zur Falle: bei einem SVG ist `textContent` leer, der Knopf wäre nach jedem
+    Rescan leer geblieben. Der Knopf trägt jetzt alle drei Zeichen, und das JS
+    nimmt die Quittungsklasse wieder weg.
+
+    Dass danach wirklich wieder eins zu sehen ist, prüft
+    ``tests/browser/test_rescan_button.py``.
+    """
     js = render._OPS_HANDLES_JS
-    assert "const idleIcon = rescan.textContent" in js
-    assert "rescan.textContent = idleIcon" in js
+    assert "rescan.classList.remove('quittung-ok', 'quittung-bad')" in js
+    # Auf die *Zuweisung*, nicht auf das Wort: der Kommentar daneben erzählt,
+    # warum `textContent` hier nicht mehr steht, und enthält es damit selbst.
+    kopf = js[js.index("const rescan"):js.index("const dot")]
+    assert "rescan.textContent =" not in kopf, kopf
 
 
 def test_maint_toggle_dispatches_event_for_mode_card_refresh():
@@ -102,7 +119,9 @@ def test_feed_header_rescan_ignores_git_status():
     feed_data = {"entities": [], "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
     html = render.feed_page(
         feed_data, git_status={"tree": "clean", "sync": "ahead", "branch": "trunk"}, now=100.0)
-    assert 'id="rescan" class="toggle" title="rescan the vault">⟳<' in html
+    # Seit #159 traegt der Knopf ein SVG statt der Glyphe `⟳` — geprueft wird
+    # der Knopf samt seiner generischen Beschriftung, nicht das Zeichen darin.
+    assert 'id="rescan" class="toggle" title="rescan the vault"><svg' in html
     assert "SYNC: ahead" not in html.split('<div class="statuscards">')[0]  # nicht in der Nav
 
 
@@ -113,7 +132,7 @@ def test_ops_handles_has_no_maintenance_banner():
     html = render._ops_handles({"maintenance": True, "roles": ["scheduler"]})
     assert "Wartungsmodus aktiv" not in html
     assert "maintbanner" not in html
-    assert 'id="maint" class="toggle warn"' in html  # Toggle bleibt die einzige Anzeige
+    assert 'id="conn-dot" class="conn-dot warn"' in html  # Toggle bleibt die einzige Anzeige
 
 
 # --- MAINT: disabled statt ausgeblendet, wenn es nichts zu schalten gibt
@@ -141,8 +160,8 @@ def test_ops_handles_enables_maint_on_a_client_with_a_scheduler():
         "roles": ["synchronizer", "controller", "connect"],
         "connect": {"ok": True, "last_at": 1.0},
     })
-    assert 'id="maint"' in html and "disabled" not in html
-    assert 'id="rescan"' in html and html.index('id="rescan"') < html.index('id="maint"')
+    assert 'id="conn-dot"' in html and "disabled" not in html
+    assert 'id="rescan"' in html and html.index('id="rescan"') < html.index('id="conn-dot"')
 
 
 def test_ops_handles_disables_maint_without_any_scheduler():
@@ -150,13 +169,13 @@ def test_ops_handles_disables_maint_without_any_scheduler():
     Funktionen ausgegraut statt ausgeblendet. Ohne Scheduler gibt es hier
     tatsächlich nichts zu schalten."""
     html = render._ops_handles({"roles": ["synchronizer", "controller"]})
-    assert 'id="maint"' in html and "disabled" in html
-    assert 'id="rescan"' in html and html.index('id="rescan"') < html.index('id="maint"')
+    assert 'id="conn-dot"' in html and "disabled" in html
+    assert 'id="rescan"' in html and html.index('id="rescan"') < html.index('id="conn-dot"')
 
 
 def test_ops_handles_shows_maint_with_scheduler_role():
     html = render._ops_handles({"maintenance": False, "roles": ["scheduler"]})
-    assert 'id="maint"' in html
+    assert 'id="conn-dot"' in html
     assert "disabled" not in html
 
 
@@ -164,7 +183,7 @@ def test_ops_handles_disables_maint_when_roles_missing():
     # Kein status/keine roles (ältere Aufrufer, Tests ohne explizite Rolle) —
     # sicherer Default ist "kein Scheduler" (disabled), nicht "zeig's aktiv".
     for html in (render._ops_handles({}), render._ops_handles(None), render._ops_handles()):
-        assert 'id="maint"' in html and "disabled" in html
+        assert 'id="conn-dot"' in html and "disabled" in html
 
 
 # --- Links/Rechts-Gruppen (Bibi4-Iteration: Tabs links, Toggles rechts,
@@ -209,8 +228,10 @@ def test_toggles_styled_as_text_links_not_boxed_buttons():
     # sich von "handle" auf "toggle" — kein "handle" mehr irgendwo im Markup.
     html = render._header("Schedules", {"maintenance": True, "roles": ["scheduler"]})
     assert 'class="handle"' not in html and 'class="handle ' not in html
-    assert 'class="toggle"' in html  # THEME + RESCAN
-    assert 'class="toggle warn"' in html  # MAINT an
+    assert 'class="toggle"' in html  # THEME + RESCAN + TFMT
+    # Seit #161 traegt der Verbindungspunkt den Modus, nicht mehr ein eigener
+    # `.toggle warn`-Knopf daneben.
+    assert 'class="conn-dot warn"' in html
     assert ".toggle {" in render._CSS
 
 
@@ -241,8 +262,8 @@ def test_screen_nav_active_tab_has_active_class():
     # PLAN-25 Befund 2, User-Fund: der aktive Tab war bisher nur reiner Text
     # ohne eigene CSS-Klasse — "Hervorhebung" war die zufällige Abwesenheit
     # von .back-Grau, kein bewusstes visuelles Signal.
-    html = render._screen_nav("Live")
-    assert '<span class="tab-active">Live</span>' in html
+    html = render._screen_nav("Log")
+    assert '<span class="tab-active">Log</span>' in html
     assert ".tab-active {" in render._CSS
 
 
@@ -268,7 +289,7 @@ def test_schedule_detail_page_has_rescan_and_maint():
         {"slug": "a", "kind": "job"}, [], None, slug="a",
         daemon_status={"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint" class="toggle warn"' in html
+    assert 'id="conn-dot" class="conn-dot warn"' in html
     assert render._OPS_HANDLES_JS in html
 
 
@@ -290,7 +311,7 @@ def test_execution_detail_page_has_rescan_and_maint():
     html = render.execution_detail_page(
         entry, [], "job", daemon_status={"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint" class="toggle warn"' in html
+    assert 'id="conn-dot" class="conn-dot warn"' in html
 
 
 def test_log_page_has_rescan_and_maint_without_follow():
@@ -299,7 +320,7 @@ def test_log_page_has_rescan_and_maint_without_follow():
     # Log-Panel rein ueber die Scroll-Position (paused in _LOG_JS).
     html = render.log_page(daemon_status={"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint" class="toggle warn"' in html
+    assert 'id="conn-dot" class="conn-dot warn"' in html
     assert 'id="follow"' not in html and "bibiToggleFollow" not in html
 
 
@@ -315,15 +336,25 @@ def test_log_page_has_rescan_and_maint_without_follow():
 def test_screen_nav_shows_the_same_five_tabs_on_every_node():
     """Fünf Screens, feste Reihenfolge, unabhängig von der Rolle.
 
-    Die Reihenfolge ist nicht beliebig: Feed und Jobs sind die täglichen, Nodes
-    ist Betrieb, Live und Log sind Diagnose. Sie steht so in der
-    FE-Spezifikation §1 und in jedem Wireframe.
+    Die Reihenfolge ist nicht beliebig: Feed und Jobs sind die täglichen,
+    Journal steht neben Jobs, Nodes ist Betrieb, Log ist Diagnose.
 
     `Archive` ist seit m.rau/bibi#130 nicht mehr dabei — die Frage „was lief"
-    beantwortet die `RELIABILITY`-Spalte im Jobs-Screen schneller.
+    beantwortet die `RELIABILITY`-Spalte im Jobs-Screen schneller. `Live` ist
+    seit `#162` nicht mehr dabei; er war ein Zwilling von `Log`.
+
+    **Diese Liste stand bis dahin auf `Feed, Jobs, Nodes, Live, Log` — also auf
+    fünf Einträgen, in denen `Journal` fehlte, während die Leiste sechs Tabs
+    führte.** Der Test hieß „five tabs" und hat trotzdem nie fünf geprüft: er
+    lief über seine eigene Liste, nicht über die der App-Bar, und ein Tab, den
+    er nicht kennt, kann ihm nicht fehlen. Genau deshalb misst
+    ``test_the_app_bar_has_one_tab_per_standalone_screen`` gegen
+    ``render.SCREENS`` statt gegen eine zweite Aufzählung.
     """
     erwartet = [("Feed", "/-/"), ("Jobs", "/-/jobs"),
-                ("Nodes", "/-/nodes"), ("Live", "/-/live"), ("Log", "/-/log")]
+                ("Journal", "/-/jobs/journal"), ("Nodes", "/-/nodes"),
+                ("Log", "/-/log")]
+    assert len(render.SCREENS) == len(erwartet)
     for rollen in ([], ["scheduler"], ["connect"], ["scheduler", "worker"]):
         html = render._screen_nav("Feed", roles=rollen)
         for label, href in erwartet:
@@ -391,13 +422,93 @@ def test_job_subpages_link_their_own_tab_back_to_the_screen(monkeypatch):
 
 
 def test_screen_nav_separates_live_from_log():
-    """`Live Log` war ein Screen für zwei Dinge. Der Unterschied ist das
-    Gedächtnis (FE-Spezifikation §7): Live hat keines und erzählt, was gerade
-    geschieht; Log hat Historie und ist zum Nachschlagen da."""
+    """`Live Log` war ein Screen für zwei Dinge, und der Unterschied sollte das
+    Gedächtnis sein (FE-Spezifikation §7). Gebaut wurde er nie.
+
+    **Die Absicht ist am 2026-08-12 zurückgenommen** (`#162`): `Live` fällt aus
+    der Leiste, `/-/live` leitet auf `/-/log` um. Was hier bleibt, ist die eine
+    Hälfte, die nie strittig war — `Live Log` ist kein Tab mehr.
+    """
     html = render._screen_nav("Feed", roles=["scheduler"])
     assert "Live Log" not in html
-    assert 'href="/-/live">Live' in html
+    assert ">Live<" not in html
     assert 'href="/-/log">Log' in html
+
+
+def test_the_app_bar_has_one_tab_per_standalone_screen(app_with):
+    """Jeder Tab führt auf einen Screen, den es nur einmal gibt (`#162`).
+
+    **Der Rot-Schritt dieses Tickets, und er zählt zwei Mengen gegeneinander:**
+    sechs Tabs, fünf Ziele. `GET /-/live` gab wörtlich `logs_page()` zurück —
+    denselben Inhalt wie `/-/log`, seit dem v5-Umbau. Zwei Tabs auf dieselbe
+    Seite sind kein Screen mehr, sondern ein Zwilling.
+
+    **Gemessen wird am ``<title>``, nicht am ganzen Rumpf.** Zwei Aufrufe
+    derselben Seite unterscheiden sich in jeder Uhrzeit, die darin steht; der
+    Titel ist das, woran ein Screen sich selbst benennt. Ein doppelter Titel
+    heißt: zwei Tabs, ein Screen.
+
+    **Der ``Accept``-Header gehört dazu und ist keine Formalie:** ``/-/``
+    verzweigt danach — JSON für ``curl``, der Feed-Screen für den Browser. Ohne
+    ihn misst der Test den Service-Deskriptor und hält ihn für einen Screen.
+    """
+    app = app_with({"roles": ["scheduler", "connect"]})
+    browser = {"Accept": "text/html,application/xhtml+xml"}
+    with TestClient(app) as c:
+        titel: dict[str, list[str]] = {}
+        for label, href in render.SCREENS:
+            r = c.get(href, headers=browser)
+            assert r.status_code == 200, f"{label} ({href}) → {r.status_code}"
+            m = re.search(r"<title>(.*?)</title>", r.text, re.S)
+            assert m, f"{label} ({href}) hat keinen Titel"
+            titel.setdefault(m.group(1), []).append(label)
+        doppelt = {t: ls for t, ls in titel.items() if len(ls) > 1}
+        assert not doppelt, f"zwei Tabs auf denselben Screen: {doppelt}"
+
+
+def test_the_live_address_still_leads_somewhere(app_with):
+    """Gespeicherte Adressen zeigen nicht ins Leere (`#162`).
+
+    Eine Umleitung ist besser als ein `404`: der Tab ist weg, die Adresse war
+    aber lange sichtbar und steht in Lesezeichen.
+    """
+    app = app_with({"roles": ["scheduler", "connect"]})
+    with TestClient(app) as c:
+        r = c.get("/-/live", follow_redirects=False)
+        assert r.status_code in (307, 308), r.status_code
+        assert r.headers["location"] == "/-/log"
+
+
+def test_the_log_screen_marks_its_own_tab(app_with):
+    """Der Log-Screen hebt den Tab hervor, auf dem man steht (`#162`).
+
+    **Gefunden beim Rückbau, und es ist dieselbe Fehlerform:** ``log_page()``
+    rief ``_header('Live Log')`` auf — einen Screen-Namen, den die Tab-Liste
+    nicht kennt. Kein Tab passte, also war auf diesem Screen **keiner** aktiv,
+    und der Log-Tab blieb ein Link auf die Seite, auf der man schon stand.
+
+    Das ist wörtlich, was das Ticket verlangt: *keine Codestelle nennt einen
+    Live-Screen mehr, den es nicht gibt.* Der Name stand hier am längsten.
+    """
+    app = app_with({"roles": ["scheduler", "connect"]})
+    with TestClient(app) as c:
+        html = c.get("/-/log").text
+    assert '<span class="tab-active">Log</span>' in html
+    assert "Live Log" not in html
+
+
+def test_the_log_screen_stays_whole(app_with):
+    """Die Gegenprobe zu `#162`: ohne sie wäre auch ein Fix grün, der **beide**
+    Routen entfernt.
+
+    `/-/log` bleibt vollständig erreichbar — mit dem Panel, das den Screen
+    ausmacht, nicht nur mit einem `200`.
+    """
+    app = app_with({"roles": ["scheduler", "connect"]})
+    with TestClient(app) as c:
+        r = c.get("/-/log")
+        assert r.status_code == 200
+        assert "logbox" in r.text, r.text[:400]
 
 
 # --- bibi5: die fünf Screens haben eigene Routen -----------------------------

@@ -106,7 +106,10 @@ def test_execution_detail_attrs_show_kind_status_and_range_in_one_table():
     html = render.execution_detail_page(_entry(kind="claude", status="complete"),
                                         events=[], kind="claude")
     assert "<td><b>kind</b></td><td>claude</td>" in html
-    assert '<td><b>status</b></td><td><span class="st complete">complete</span></td>' in html
+    # Seit #33 traegt der Zustand einen Chip aus `_status_chip()` statt einer
+    # blanken `.st`-Zelle -- dieselbe Farbe wie auf jedem anderen Screen.
+    assert '<td><b>status</b></td><td><span class="chip chip-grey st complete">' \
+        'complete</span></td>' in html
     assert "→" in html  # Start -> Ende
 
 

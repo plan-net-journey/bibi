@@ -111,12 +111,16 @@ def test_the_p90_wins_over_the_wall_time():
 
 
 def test_without_any_reference_there_is_no_bar():
-    """Der dritte Ast der Kaskade: nur das Quadrat. Ein Balken ohne Bezug
+    """Der dritte Ast der Kaskade: nur die Quadrate. Ein Balken ohne Bezug
     müsste eine Achse erfinden — und ein erfundener Maßstab ist schlimmer als
-    keiner."""
+    keiner.
+
+    Seit `#33` sind es zwei Quadrate statt einem, und sie blinken statt zu
+    pulsen. Was der Test misst, bleibt dasselbe: die Zeile sagt weiterhin, dass
+    hier gearbeitet wird — nur eben ohne Maßstab, an dem man es abliest."""
     html = _zeile("running")
     assert "pbar" not in html
-    assert "act-run" in html
+    assert "blink-fast" in html
 
 
 # ── Die Farbe ───────────────────────────────────────────────────────────────
