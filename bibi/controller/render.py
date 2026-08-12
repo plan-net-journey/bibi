@@ -1964,6 +1964,22 @@ _DURATION_JS = """
     });
   }
   tick(); setInterval(tick, 1000);
+  // **Ein frisch eingetauschtes Fragment traegt die absoluten Zeiten des
+  // Servers** (#160). Ohne diese Zeile stehen sie da, bis der naechste
+  // Sekundentakt kommt: im Mittel eine halbe, im schlechtesten Fall eine ganze
+  // Sekunde. Der Maintenance-Schalter ist der auffaelligste Ausloeser, weil er
+  // Header und Tabelle in einem Zug tauscht.
+  //
+  // **Der Fund gehoert zum Verfahren und nicht nur zum Code:** dieselbe
+  // Beobachtung steht im `v0.8.7`-Release-Memo als *Erfolgsnachweis* -- „der
+  // Ticker hat sie binnen eines Intervalls wieder relativ geschrieben". Ein
+  // Beobachter sah auf das Ergebnis, der andere auf den Weg dorthin.
+  //
+  // `document.body` defensiv: der Pruefstand in `tests/assets/` faehrt dieses
+  // Skript gegen einen DOM-Stub ohne `body`.
+  if (document.body && document.body.addEventListener) {
+    document.body.addEventListener('htmx:afterSettle', tick);
+  }
 })();
 """
 
@@ -3228,6 +3244,34 @@ _DIFF_JS = """
         || td.querySelector('[data-dur],[data-pbar]') !== null;
   }
 
+  // **Zeitpunkte werden am Wert verglichen, nicht am gerenderten Text** (#160).
+  //
+  // Vorher nahm der Schnappschuss `td.textContent.trim()` fuer jede Zelle. In
+  // relativer Anzeige steht vor dem Swap `39s ago` und danach -- frisch vom
+  // Server -- `17:16:39`: verschieden. Also blitzte JEDE Zeitpunkt-Zelle bei
+  // JEDEM Swap, ohne dass sich ein Wert geaendert hatte. Das Aufflammen sagt
+  // „hier hat sich etwas geaendert" und sagte damit die Unwahrheit.
+  //
+  // **Der Umweg ueber einen Klon ist der Punkt, nicht ein Umstand.** Ein
+  // `return` auf die Attributwerte allein waere kuerzer und falsch: eine Zelle,
+  // die einen Zeitpunkt UND anderen Text traegt, wuerde dann nur noch am
+  // Zeitpunkt gemessen. So bleibt alles andere in der Zelle ein Textvergleich,
+  // und nur der Zeitpunkt selbst wird durch seinen Wert ersetzt.
+  //
+  // Damit ist der Diff gegen **jedes** kuenftige Anzeigeformat immun und nicht
+  // nur gegen dieses -- und die Reihenfolge, in der `_DIFF_JS` und
+  // `_DURATION_JS` ihre `afterSettle`-Haken registrieren, wird gleichgueltig.
+  // Sie ist es heute nicht: die Screens binden die beiden Bloecke in
+  // unterschiedlicher Reihenfolge ein.
+  function zellwert(td){
+    if (td.querySelector('[data-tp]') === null) return td.textContent.trim();
+    const k = td.cloneNode(true);
+    k.querySelectorAll('[data-tp]').forEach(function(el){
+      el.textContent = el.getAttribute('data-tp');
+    });
+    return k.textContent.trim();
+  }
+
   function schnappschuss(wurzel){
     const m = new Map();
     wurzel.querySelectorAll('tr[data-row]').forEach(function(tr){
@@ -3236,7 +3280,7 @@ _DIFF_JS = """
       tr.querySelectorAll('td').forEach(function(td){
         const n = i++;
         if (ausgenommen(td)) return;
-        m.set(key + '\u0000' + n, td.textContent.trim());
+        m.set(key + '\u0000' + n, zellwert(td));
       });
     });
     return m;
