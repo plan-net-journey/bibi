@@ -527,7 +527,30 @@ table.jobs th:nth-child(6), table.jobs th:nth-child(7) { min-width: 6.5rem; }
 .leer { padding: 2.2rem 0; max-width: 42rem; }
 .leer p { margin: 0 0 .5rem; }
 .leer code { background: var(--btnbg); padding: .05rem .3rem; border-radius: 3px; }
-.conn-dot { font-size: 1.05rem; line-height: 1; padding: 0 .1rem; cursor: default; }
+/* **Der Icon-Satz der App-Bar** (#159). Eine Regel fuer alle Zeichen, und das
+   ist ihr ganzer Zweck: bis v0.8.7 waren es vier Glyphen aus vier
+   Unicode-Bloecken, deren Groesse und Strichstaerke aus der jeweiligen
+   Systemschrift kamen -- also aus einer Quelle, an die kein Stylesheet reicht.
+
+   `em` und nicht `rem`: das Zeichen gehoert zu der Zeile, in der es steht, und
+   waechst mit ihr. `vertical-align: -.15em` setzt es auf die optische
+   Mittellinie der Schrift -- die Grundlinie eines Textzeichens liegt unter
+   seiner Mitte, die eines SVG-Kastens nicht.
+
+   `flex: none` ist kein Schmuck: in einer schmalen Leiste staucht ein Flex-Kind
+   sonst, und ein gestauchtes Icon ist genau die Unruhe, gegen die der Satz
+   gebaut ist. */
+.ico { width: 1.05em; height: 1.05em; display: inline-block;
+       vertical-align: -.15em; flex: none; }
+/* **Die Quittung des Rescan-Knopfes** (#159). Drei Zeichen teilen sich einen
+   Platz; sichtbar ist genau eins, und welches, sagt eine Klasse am Knopf.
+   Bis v0.8.7 tauschte das JS dafuer `textContent` -- was mit einem SVG einen
+   leeren Knopf hinterlassen haette. */
+#rescan .ico-ok, #rescan .ico-bad { display: none; }
+#rescan.quittung-ok .ico-idle, #rescan.quittung-bad .ico-idle { display: none; }
+#rescan.quittung-ok .ico-ok { display: inline-block; }
+#rescan.quittung-bad .ico-bad { display: inline-block; }
+.conn-dot { line-height: 1; padding: 0 .1rem; cursor: default; }
 .conn-dot.ok { color: var(--green); }
 .conn-dot.warn { color: var(--amber); }
 .conn-dot.bad { color: var(--red); }
@@ -2652,6 +2675,90 @@ def feed_page(
     )
 
 
+#: Der Icon-Satz der App-Bar — **eine Quelle, ein Koordinatensystem** (`#159`).
+#:
+#: **Der Befund war kein Geschmacksurteil, sondern eine fehlende Sache.** Bis
+#: `v0.8.7` rendert ``_ops_handles()`` seine Zeichen als Textknoten aus der
+#: Systemschrift: ``⟳`` (U+27F3), ``◐`` (U+25D0), ``◷`` (U+25F7), ``●``
+#: (U+25CF). Vier Unicode-Blöcke, vier Zeichnungen von vier Schriftgestaltern.
+#: m.rau: *„die verwendeten Icons sind unterschiedlich gross, und dadurch
+#: unruhig und unschön"* — `P1`, von ihm selbst vergeben.
+#:
+#: **Keine CSS-Regel konnte das einfangen.** Glyphenbreite, Strichstärke und
+#: Höhe kommen aus der Schrift und nicht aus dem Dokument; es gab nichts
+#: Gemeinsames, an dem man sie hätte ausrichten können.
+#:
+#: **Die Pfade stammen aus lucide** (ISC, https://lucide.dev) und sind wörtlich
+#: übernommen: ``refresh-cw``, ``contrast``, ``clock``, ``circle``. Alle vier
+#: teilen ``viewBox="0 0 24 24"`` und ``stroke-width="2"`` — das ist die
+#: gemeinsame Herkunft, die vorher fehlte.
+#:
+#: **Inline und nicht über ein CDN.** Das FE liefert sich seit jeher selbst aus;
+#: ein Netzverweis in der App-Bar hieße, dass ausgerechnet der Knoten, den man
+#: nach einem Netzproblem befragt, seine Zeichen verliert.
+_ICON_PFADE: dict[str, str] = {
+    # lucide `refresh-cw` — Rescan.
+    "rescan": ('<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>'
+               '<path d="M21 3v5h-5"/>'
+               '<path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>'
+               '<path d="M8 16H3v5"/>'),
+    # lucide `contrast` — Maintenance. Ein Kreis, halb gefüllt: ein Zustand
+    # zwischen an und aus, und genau das ist dieser Modus. Ein Zahnrad wäre eine
+    # Einstellung, ein Warndreieck ein Fehler — beides trifft es nicht. Die
+    # Begründung ist die des alten `◐`, jetzt aus einer Quelle gezeichnet.
+    "maint": ('<circle cx="12" cy="12" r="10"/>'
+              '<path d="M12 18a6 6 0 0 0 0-12v12z"/>'),
+    # lucide `clock` — Zeitformat. Ein Zifferblatt ist eine Zeitangabe; genau
+    # diese Unterscheidung war der Befund hinter `◷` gegen `◐`.
+    "tfmt": ('<circle cx="12" cy="12" r="10"/>'
+             '<path d="M12 6v6l4 2"/>'),
+    # lucide `check` / `x` — die Quittung des Rescan-Knopfes. Sie sind Teil
+    # desselben Satzes und nicht `✓`/`✕` aus der Systemschrift: sonst waere
+    # eine Sekunde nach jedem Rescan genau der Befund wieder da, gegen den
+    # dieser Satz gebaut ist, nur eine Sekunde spaeter sichtbar.
+    "ok": '<path d="M20 6 9 17l-5-5"/>',
+    "fehler": '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+}
+
+#: Der Verbindungspunkt, **gefüllt statt gestrichelt** — und das ist die eine
+#: bewusste Abweichung von lucide in diesem Satz.
+#:
+#: Die Geometrie ist die von lucide ``circle`` (r=10 in der 24er-Box), die
+#: Füllung nicht: der Punkt trägt seine Aussage über die Farbe (rot getrennt,
+#: orange Maintenance, grün verbunden), und ein hohler Kreis trägt eine Farbe
+#: schlechter als eine Fläche. Der alte ``●`` war aus demselben Grund gefüllt.
+_ICON_PUNKT = '<circle cx="12" cy="12" r="10" fill="currentColor"/>'
+
+
+def _icon(name: str, *, zusatz: str = "") -> str:
+    """Ein Zeichen des Satzes als inlines SVG (`#159`).
+
+    ``aria-hidden``, weil das Element daneben schon einen ``title`` trägt: ein
+    Screenreader läse sonst zweimal dasselbe. Die Größe steht **nicht** hier,
+    sondern in ``.ico`` im Stylesheet und in ``em`` — ein ``width="24"`` wäre
+    auch überall gleich und stünde bei jeder Schriftgröße daneben.
+
+    ``zusatz`` ist eine zweite Klasse für Zeichen, die sich einen Platz teilen
+    (der Rescan-Knopf trägt drei und zeigt eines davon).
+    """
+    if name == "conn":
+        inhalt, strich = _ICON_PUNKT, ""
+    else:
+        inhalt = _ICON_PFADE[name]
+        strich = (' fill="none" stroke="currentColor" stroke-width="2"'
+                  ' stroke-linecap="round" stroke-linejoin="round"')
+    # `"ico"` steht hier ausdruecklich als Literal und nicht als `f"ico
+    # {zusatz}".strip()`. Der Unterschied ist keiner im Ergebnis, aber einer
+    # fuer `test_every_css_rule_has_markup`: der Waechter sammelt Klassen aus
+    # `class="…"` und aus String-Literalen, und ein f-String mit Platzhalter
+    # ist keins von beidem. Die Regel `.ico` haette sonst als tot gegolten --
+    # und die richtige Antwort darauf ist, sie auffindbar zu machen, nicht den
+    # Waechter um eine Ausnahme zu erleichtern.
+    klassen = f"ico {zusatz}" if zusatz else "ico"
+    return (f'<svg class="{klassen}" viewBox="0 0 24 24"{strich} '
+            f'aria-hidden="true">{inhalt}</svg>')
+
+
 def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -> str:
     """Die drei Ops-Handles der App-Bar: ``⟳`` Rescan, ``◐`` Maintenance,
     ``●`` Verbindung.
@@ -2744,13 +2851,30 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
     if not ohne_gegenueber:
         mcls = "toggle warn" if maint else "toggle"
         mtitle = "maintenance: on" if maint else "maintenance: off"
-        maint_btn = f'<button id="maint" class="{mcls}" title="{mtitle}">◐</button>'
+        maint_btn = (f'<button id="maint" class="{mcls}" title="{mtitle}">'
+                     f'{_icon("maint")}</button>')
     else:
         maint_btn = ('<button id="maint" class="toggle" disabled '
-                    'title="maintenance: no scheduler to switch">◐</button>')
+                     'title="maintenance: no scheduler to switch">'
+                     f'{_icon("maint")}</button>')
     return (
         '<nav class="handles">'
-        '<button id="rescan" class="toggle" title="rescan the vault">⟳</button>'
+        # **Drei Zeichen in einem Knopf, und das JS schaltet nur eine Klasse.**
+        # Der Rescan quittiert mit Haken oder Kreuz und kehrt danach zurueck;
+        # bis v0.8.7 tauschte `_OPS_HANDLES_JS` dafuer `textContent`. Bei einem
+        # SVG ist `textContent` leer -- der Knopf waere nach der Quittung
+        # dauerhaft leer geblieben.
+        #
+        # Der Weg ueber die Klasse haelt zweierlei zusammen: das JS muss kein
+        # Markup kennen (die Pfade stuenden sonst zweimal da), und
+        # `_OPS_HANDLES_JS` bleibt eine reine String-Konstante. Das ist keine
+        # Aeusserlichkeit -- `tests/test_renderer_reachability.py` sammelt nur
+        # solche in seinen Korpus, und die beiden Ops-Routen werden ausschliesslich
+        # dort genannt. Ein f-String haette sie stumm zu toten Routen gemacht.
+        '<button id="rescan" class="toggle" title="rescan the vault">'
+        f'{_icon("rescan", zusatz="ico-idle")}'
+        f'{_icon("ok", zusatz="ico-ok")}'
+        f'{_icon("fehler", zusatz="ico-bad")}</button>'
         f"{maint_btn}"
         # **Der vierte Handle, und es ist der erste** (#139). Bis v0.8.6 gab es
         # ihn nicht — der Docstring von `_header()` zaehlte ihn seit der
@@ -2762,8 +2886,10 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
         # Verwechslung war der Befund — m.rau klickte auf Maintenance und
         # suchte die Zeit dahinter.
         '<button id="tfmt" class="toggle" '
-        'title="timestamps: absolute — click for relative">◷</button>'
-        f'<span id="conn-dot" class="conn-dot {dot_cls}" title="{dot_titel}">●</span>'
+        'title="timestamps: absolute — click for relative">'
+        f'{_icon("tfmt")}</button>'
+        f'<span id="conn-dot" class="conn-dot {dot_cls}" title="{dot_titel}">'
+        f'{_icon("conn")}</span>'
         "</nav>"
     )
 
@@ -2804,7 +2930,16 @@ _OPS_HANDLES_JS = """
   }
   const rescan = document.getElementById('rescan');
   if (rescan) {
-    const idleIcon = rescan.textContent;   // "⟳"
+    // **Die Quittung ist eine Klasse, kein Zeichentausch** (#159). Hier stand
+    // bis v0.8.7 `const idleIcon = rescan.textContent` -- richtig, solange der
+    // Knopf eine Glyphe trug. Seit er ein SVG traegt, ist `textContent` leer:
+    // der Knopf haette nach jedem Rescan leer dagestanden, dauerhaft, bis zum
+    // naechsten Neuladen. Der Knopf traegt jetzt alle drei Zeichen, das CSS
+    // zeigt eins davon, und dieses JS kennt kein Markup mehr.
+    const quittung = (art) => {
+      rescan.classList.remove('quittung-ok', 'quittung-bad');
+      if (art) rescan.classList.add('quittung-' + art);
+    };
     rescan.addEventListener('click', async () => {
       rescan.disabled = true;
       // Ueber den Controller, nicht relativ an diesen Knoten (m.rau/bibi#142):
@@ -2823,10 +2958,10 @@ _OPS_HANDLES_JS = """
              + ' updated, ' + (a.removed ?? 0) + ' removed')
           : ('rescan failed: ' + (d.error || r.status));
       } catch(e) { titel = 'rescan failed: ' + e; }
-      rescan.textContent = ok ? '✓' : '✕';
+      quittung(ok ? 'ok' : 'bad');
       rescan.title = titel;
       setTimeout(() => {
-        rescan.textContent = idleIcon;
+        quittung(null);
         rescan.title = 'rescan the vault';
         rescan.disabled = false;
       }, ok ? 1200 : 4000);   // ein Fehler darf laenger stehen bleiben

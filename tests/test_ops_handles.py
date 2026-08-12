@@ -23,16 +23,31 @@ HOST = {"roles": ["scheduler", "controller"]}
 
 
 def test_three_handles_in_this_order():
+    """Die Reihenfolge steht an den IDs, nicht an den Zeichen.
+
+    **Bis `#159` stand hier ein Vergleich über die Glyphen selbst.** Die sind
+    mit dem Icon-Satz gefallen — und das ist der Grund, warum ein Test die
+    *Sache* prüfen sollte und nicht ihre momentane Schreibweise: die Reihenfolge
+    der Handles hat sich nicht geändert, nur ihre Darstellung.
+    """
     html = render._ops_handles(CLIENT)
-    assert html.index("⟳") < html.index("◐") < html.index("●")
+    assert html.index('id="rescan"') < html.index('id="maint"') \
+        < html.index('id="conn-dot"')
 
 
-def test_maintenance_uses_the_half_moon():
-    """`◐` statt `⚙`/`⚠`: ein halb gefüllter Kreis ist ein Zustand zwischen an
-    und aus — genau das ist Maintenance. Ein Zahnrad ist eine Einstellung, ein
-    Warndreieck ein Fehler; beides trifft es nicht."""
+def test_maintenance_uses_the_half_filled_circle():
+    """Ein halb gefüllter Kreis ist ein Zustand zwischen an und aus — genau das
+    ist Maintenance. Ein Zahnrad wäre eine Einstellung, ein Warndreieck ein
+    Fehler; beides trifft es nicht.
+
+    **Die Begründung überlebt den Icon-Satz, das Zeichen nicht** (`#159`): aus
+    dem Textzeichen ``◐`` (U+25D0) wird lucide ``contrast`` — dieselbe Aussage,
+    aber aus derselben Quelle gezeichnet wie seine Nachbarn.
+    """
     html = render._ops_handles(CLIENT)
-    assert "◐" in html
+    maint = html[html.index('id="maint"'):]
+    maint = maint[:maint.index("</button>")]
+    assert 'd="M12 18a6 6 0 0 0 0-12v12z"' in maint, maint
     assert "⚙" not in html and "⚠" not in html
 
 
@@ -273,10 +288,21 @@ def test_rescan_checks_the_answer_before_claiming_success():
 
 
 def test_rescan_shows_a_failure():
-    """Sonst ist „ging nicht" von „ging" nicht zu unterscheiden."""
+    """Sonst ist „ging nicht" von „ging" nicht zu unterscheiden.
+
+    **Geprüft wird die Verzweigung, nicht das Zeichen** (`#159`). Hier stand
+    ``"✕" in kopf`` — richtig, solange das JS die Glyphe selbst schrieb. Seit
+    dem Icon-Satz trägt der Knopf alle drei Zeichen im Markup und das JS schaltet
+    nur eine Klasse; dass die Fehlerklasse eine andere ist als die Erfolgsklasse,
+    ist die Aussage, die hier zählt.
+
+    Dass am Ende ein Kreuz **zu sehen** ist, prüft
+    ``tests/browser/test_rescan_button.py`` — dort, wo man es sehen kann.
+    """
     kopf = render._OPS_HANDLES_JS
     kopf = kopf[kopf.index("const rescan"):kopf.index("const maint")]
-    assert "✕" in kopf or "!" in kopf
+    assert "'quittung-'" in kopf, kopf
+    assert "ok ? 'ok' : 'bad'" in kopf, kopf
 
 
 # ── Und er landet auch wirklich beim Scheduler (#69) ────────────────────────

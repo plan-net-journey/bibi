@@ -74,13 +74,29 @@ def test_header_includes_ops_handles():
 
 def test_ops_handles_rescan_is_always_generic():
     html = render._ops_handles({})
-    assert 'id="rescan" class="toggle" title="rescan the vault">⟳<' in html
+    # Seit #159 traegt der Knopf ein SVG statt der Glyphe `⟳` — geprueft wird
+    # der Knopf samt seiner generischen Beschriftung, nicht das Zeichen darin.
+    assert 'id="rescan" class="toggle" title="rescan the vault"><svg' in html
 
 
 def test_ops_handles_js_restores_idle_icon():
+    """Nach der Quittung steht wieder das Ruhe-Zeichen da.
+
+    **Bis `#159` stand hier `const idleIcon = rescan.textContent`.** Das war
+    richtig, solange der Knopf eine Glyphe trug — und wurde mit dem Icon-Satz
+    zur Falle: bei einem SVG ist `textContent` leer, der Knopf wäre nach jedem
+    Rescan leer geblieben. Der Knopf trägt jetzt alle drei Zeichen, und das JS
+    nimmt die Quittungsklasse wieder weg.
+
+    Dass danach wirklich wieder eins zu sehen ist, prüft
+    ``tests/browser/test_rescan_button.py``.
+    """
     js = render._OPS_HANDLES_JS
-    assert "const idleIcon = rescan.textContent" in js
-    assert "rescan.textContent = idleIcon" in js
+    assert "rescan.classList.remove('quittung-ok', 'quittung-bad')" in js
+    # Auf die *Zuweisung*, nicht auf das Wort: der Kommentar daneben erzählt,
+    # warum `textContent` hier nicht mehr steht, und enthält es damit selbst.
+    kopf = js[js.index("const rescan"):js.index("const maint")]
+    assert "rescan.textContent =" not in kopf, kopf
 
 
 def test_maint_toggle_dispatches_event_for_mode_card_refresh():
@@ -103,7 +119,9 @@ def test_feed_header_rescan_ignores_git_status():
     feed_data = {"entities": [], "heatmap": [[[0] * 8 for _ in range(7)] for _ in range(5)]}
     html = render.feed_page(
         feed_data, git_status={"tree": "clean", "sync": "ahead", "branch": "trunk"}, now=100.0)
-    assert 'id="rescan" class="toggle" title="rescan the vault">⟳<' in html
+    # Seit #159 traegt der Knopf ein SVG statt der Glyphe `⟳` — geprueft wird
+    # der Knopf samt seiner generischen Beschriftung, nicht das Zeichen darin.
+    assert 'id="rescan" class="toggle" title="rescan the vault"><svg' in html
     assert "SYNC: ahead" not in html.split('<div class="statuscards">')[0]  # nicht in der Nav
 
 
