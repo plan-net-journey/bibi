@@ -288,22 +288,24 @@ def test_the_chrome_carries_a_sans_face():
     assert "ui-monospace" not in body, "der body traegt weiterhin Monospace"
 
 
-def test_the_values_stay_monospace():
-    """**Die Gegenprobe, und sie ist der eigentliche Test.**
+def test_a_monospace_face_still_exists_somewhere():
+    """Die Gegenprobe zum Test darüber: die **ganze** Seite auf Sans wäre die
+    schlimmere Regression — Zeiten, Hashes und Zähler verlören ihre
+    Spaltentreue, und zwar unauffällig, weil eine Sans-Tabelle nicht kaputt
+    aussieht, sondern nur unruhig.
 
-    Ein Test, der nur *„Chrome ist Sans"* prüft, bliebe grün, wenn versehentlich
-    die **ganze** Seite auf Sans umgestellt würde — und das wäre die schlimmere
-    Regression: Zeiten, Hashes und Zähler verlören ihre Spaltentreue, und zwar
-    unauffällig, weil eine Sans-Tabelle nicht kaputt aussieht, sondern nur
-    unruhig.
+    **Hier stand bis `v0.8.6` `test_the_values_stay_monospace`, und der Test war
+    der Fehler.** Er prüfte, dass `table.jobs td` als Ganzes Monospace trägt —
+    also genau die Regel *„Chrome gegen Wert"*, die `v0.8.4` gebaut hat,
+    während die Zusage der Klammer *„committet gegen flüchtig"* lautete. Er war
+    grün, weil er dieselbe falsche Achse benutzte wie der Code, den er bewachte
+    (`#149`).
 
-    Geprüft werden die Zellen der Jobs-Tabelle: sie sind der dichteste Ort mit
-    Werten und der einzige, an dem eine falsche Zuordnung sofort mehrere
-    Spalten träfe.
+    **Ein Test, der nur *irgendeinen* Unterschied verlangt, wiederholt diesen
+    Fehler.** Deshalb bleibt hier nur die grobe Gegenprobe, und die feldweise
+    Zuordnung steht namentlich in `tests/test_schrift_nach_herkunft.py`.
     """
-    regel = re.search(r"table\.jobs td\s*\{[^}]*\}", _css())
-    assert regel and "ui-monospace" in regel.group(0), (
-        f"die Wertzellen tragen keine Monospace: {regel and regel.group(0)}")
+    assert "ui-monospace" in _css(), "keine Monospace mehr im ganzen Renderer"
 
 
 def test_number_columns_hold_their_width():

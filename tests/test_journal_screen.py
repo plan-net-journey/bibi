@@ -258,7 +258,9 @@ def _zelle(html: str, spalte: str, *, spalten: tuple = _JOBS_SPALTEN) -> str:
     """Der Text der Zelle `spalte` aus der ersten Datenzeile."""
     import re
     zeilen = re.findall(r"<tr[ >](?:(?!</tr>).)*</tr>", html, re.S)
-    daten = [z for z in zeilen if 'class="slug"' in z]
+    # `class="slug` ohne schliessendes Anfuehrungszeichen: die Zelle traegt
+    # seit #149 zusaetzlich `mono`, weil ein Slug der Dateiname der MD ist.
+    daten = [z for z in zeilen if 'class="slug' in z]
     assert daten, f"keine Datenzeile im HTML gefunden (Spalte {spalte})"
     zellen = re.findall(r"<td[^>]*>(.*?)</td>", daten[0], re.S)
     assert len(zellen) == len(spalten), (

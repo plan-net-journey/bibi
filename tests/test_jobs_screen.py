@@ -910,12 +910,12 @@ def test_a_oneshot_says_so_in_its_type_column():
     „Gruppierung ausblenden"."""
     html = render.jobs_screen(_zeilen(local=[_oneshot("20260805.at-150738-81ec")]),
                               now=NOW)
-    assert "<td>@claude</td>" in _zeile_von(html, "20260805.at-150738-81ec")
+    assert '<td class="mono">@claude</td>' in _zeile_von(html, "20260805.at-150738-81ec")
 
 
 def test_a_recurring_job_carries_no_at():
     """Die Gegenprobe. Ein `@` an jeder Zeile unterschiede nichts mehr."""
-    assert "<td>job</td>" in _zeile_von(
+    assert '<td class="mono">job</td>' in _zeile_von(
         render.jobs_screen(_zeilen(local=[_md("EngineCI")]), now=NOW), "EngineCI")
 
 
@@ -1785,7 +1785,9 @@ def _zelle(html: str, spalte: str) -> str:
     """Der Text der Zelle `spalte` aus der ersten Datenzeile."""
     import re
     zeilen = re.findall(r"<tr[ >](?:(?!</tr>).)*</tr>", html, re.S)
-    daten = [z for z in zeilen if 'class="slug"' in z]
+    # `class="slug` ohne schliessendes Anfuehrungszeichen: die Zelle traegt
+    # seit #149 zusaetzlich `mono`, weil ein Slug der Dateiname der MD ist.
+    daten = [z for z in zeilen if 'class="slug' in z]
     assert daten, f"keine Datenzeile im HTML gefunden (Spalte {spalte})"
     zellen = re.findall(r"<td[^>]*>(.*?)</td>", daten[0], re.S)
     assert len(zellen) == len(_SPALTEN), (

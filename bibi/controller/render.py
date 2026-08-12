@@ -404,15 +404,34 @@ td.cellflash { animation: bibi-cellflash 3.15s ease-out 1; }
 table.jobs { width: 100%; border-collapse: collapse; font-size: .92rem; }
 table.jobs th { text-align: left; font-weight: 500; color: var(--hdr-key);
                 padding: .3rem .6rem .3rem 0; }
-/* **Die Wertzellen sind der dichteste Ort mit Daten** (#36) -- Slugs, Zeiten,
-   Zustaende, Zaehler. Sie tragen deshalb Monospace, waehrend die Koepfe
-   darueber die Sans vom `body` erben. `tabular-nums` dazu: eine Zeitspalte,
-   die zwischen 09:59 und 10:00 ihre Breite aendert, laesst die ganze Tabelle
-   zucken -- die Design-Studie hat 39 % Unterschied zwischen den Ziffern der
-   System-Sans gemessen, und mit dieser Umstellung kommt genau sie ins Spiel. */
+/* **Die Schrift sagt, woher ein Wert kommt** (#149, Befund m.rau 2026-08-12).
+   Committet -- Slug, Typ, Hash, Branch, Engine-Version -- traegt Monospace;
+   fluechtig -- Runtime, Reliability, Status, Last, Next -- traegt die Sans vom
+   `body`.
+
+   **Hier stand bis v0.8.6 `font-family: ui-monospace` an *jeder* Zelle**, aus
+   #36: *„Chrome traegt Sans, Werte tragen Monospace."* Die Zusage im
+   Pruefumfang der Klammer lautete aber *„committet gegen fluechtig haelt
+   feldweise"*, und das Plan-Memo zu v0.8.4 hat die beiden Saetze gleichgesetzt.
+   **Sie sortieren nach verschiedenen Dingen** -- die eine nach der Herkunft
+   eines Wertes, die andere nach seiner Rolle im Layout. Fuer Slugs und Hashes
+   faellt beides zusammen, fuer alles, was tickt, nicht.
+
+   Die Zuordnung haengt an einer Klasse am Element und **nicht an einer
+   Spaltenposition**: eine Regel, die an einer Position haengt, ueberlebt keinen
+   Spaltenumbau, und #135 hat genau das schon einmal vorgefuehrt.
+
+   `tabular-nums` bleibt an der Zelle und wird dadurch **wichtiger**: eine
+   sekuendlich fortgeschriebene Zelle in Sans zappelt ohne sie sichtbar -- die
+   Design-Studie hat 39 % Breitenunterschied zwischen den Ziffern der
+   System-Sans gemessen, und ohne die Monospace darueber ist das jetzt der
+   einzige Halt. */
 table.jobs td { padding: .22rem .6rem .22rem 0; white-space: nowrap;
-                font-family: ui-monospace, "SF Mono", Menlo, monospace;
                 font-variant-numeric: tabular-nums; }
+/* Der eine Ort, an dem „committet" Schrift wird. Ganze Klassenliste im Markup
+   (`class="slug mono"`), nie interpoliert -- der Waechter aus #94 liest den
+   Quelltext, und was er nicht sehen kann, bewacht er nicht. */
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 table.jobs tbody tr:hover { background: var(--hover); }
 /* Die Gruppenzeile ueber den zwei Zustandsbloecken. Gepunktet, weil sie eine
    Zusammenfassung ist und keine Spalte. */
@@ -499,7 +518,31 @@ table.jobs th:nth-child(6), table.jobs th:nth-child(7) { min-width: 6.5rem; }
    `min-width` dort baut das Raster der Zeile und wuerde hier mitten im Text
    eine Luecke reissen. */
 .hdr-inline { color: var(--hdr-key); }
-.hdr-row .hdr-value { color: var(--fg); }
+/* **Der Header kann Alarm zeigen** (#148). Bis v0.8.5 konnte er es nicht: der
+   Code setzte `class="bad"` an fuenf Stellen, und im ganzen Stylesheet gab es
+   keine Regel fuer ein blankes `.bad` -- definiert waren nur `.conn-dot.bad`,
+   `.toggle.bad` und `.chip.bad`, alle drei mit einem Element-Praefix, das der
+   Header nicht setzt. Der Name fiel ins Leere, der Punkt blieb schwarz, und
+   der Docstring von `status_header()` behauptete daneben, der Hostname trage
+   *„den Ausfall in Rot"*.
+
+   **Warum es fuenf Releases ueberlebt hat:** `ok` war ebenso wirkungslos wie
+   `bad`, und gruen war der Punkt im Header nie. Es gab keinen Zustand, dessen
+   Fehlen aufgefallen waere.
+
+   **Hier stand bis v0.8.6 `.hdr-row .hdr-value { color: var(--fg); }`.** Die
+   Zeile ist ersatzlos gefallen, und zwar aus zwei Gruenden: `--fg` ist in
+   keinem der beiden Themes definiert -- die Palette fuehrt `--text` --, die
+   Deklaration war also seit ihrem Bau ungueltig und wirkungslos. Und sie war
+   zugleich eine Spezifitaetsfalle: mit zwei Klassen haette sie jedes blanke
+   `.bad` geschlagen, sobald jemand `--fg` definiert. Ein Fix, der nur eine
+   `.bad`-Zeile ergaenzt haette, waere an genau dieser Stelle stumm geblieben.
+
+   Beide Regeln haengen deshalb am `.hdr`-Geltungsbereich statt frei zu stehen:
+   `bad`/`ok` sind im Renderer generische Woerter, und eine freie Regel faerbte
+   spaeter etwas mit, das nur zufaellig so heisst. */
+.hdr .bad { color: var(--red); }
+.hdr .ok { color: var(--green); }
 /* Ausfall: der Block behaelt seine Werte und wird gedimmt. Ein alter Wert mit
    Datum sagt mehr als acht Platzhalter. */
 .hdr-block.dimmed .hdr-value,
@@ -1231,9 +1274,12 @@ def _clients_table(workers: list[dict], now: float,
             f"<td>{_node_link_cell(w.get('worker'), w.get('host'), w.get('port'), w.get('role'))}"
             f"{_node_session_chip(w.get('session'))}</td>"
             f"{_role_matrix_cells(w.get('role'))}"
-            f"<td>{_node_engine_cell(w.get('engine'), expected, w.get('engine_tree'), w.get('engine_installed'))}</td>"
-            f"<td>{_e(w.get('git_user') or '—')}</td>"
-            f"<td>{_node_git_status_chips(w.get('git_status'))}"
+            # Drei committete Spalten in Folge (#149): die Engine-Version steht
+            # in `pyproject.toml`, der git user in der Repo-Konfiguration, Branch
+            # und Hash in git selbst.
+            f"<td class=\"mono\">{_node_engine_cell(w.get('engine'), expected, w.get('engine_tree'), w.get('engine_installed'))}</td>"
+            f"<td class=\"mono\">{_e(w.get('git_user') or '—')}</td>"
+            f"<td class=\"mono\">{_node_git_status_chips(w.get('git_status'))}"
             + (f' <code>{_e(w["git_commit"])}</code>' if w.get("git_commit") else "")
             # m.rau/bibi#74: neben „wie sieht der Baum aus" jetzt auch „bewegt
             # er sich noch". Dieselbe Spalte, weil es dieselbe Frage ist.
@@ -1522,18 +1568,23 @@ def _uhrzeit(ts: float | None, now: float) -> str:
     return t.strftime("%H:%M:%S")
 
 
-def _hdr_row(label: str, wert: str, *, klasse: str = "") -> str:
-    """Eine Beschriftungs-/Wert-Zeile eines Header-Blocks."""
-    c = f' class="{klasse}"' if klasse else ""
+def _hdr_row(label: str, wert: str, *, klasse: str = "",
+             mono: bool = False) -> str:
+    """Eine Beschriftungs-/Wert-Zeile eines Header-Blocks.
+
+    ``mono`` sagt, dass dieser Wert **committet** ist und deshalb Monospace
+    traegt (#149) — der Branch, der Hash, die installierte Version. Alles
+    andere im Header entsteht im Betrieb und bleibt Sans.
+    """
+    klassen = " ".join(x for x in ("hdr-value", "mono" if mono else "", klasse) if x)
     return (f'<div class="hdr-row"><span class="hdr-label">{label}</span>'
-            f'<span class="hdr-value"{c}>{wert}</span></div>')
+            f'<span class="{klassen}">{wert}</span></div>')
 
 
 def status_header(
     status: dict | None, git_status: dict | None, *,
     scheduler: dict | None = None, now: float,
     scheduler_host: str | None = None, scheduler_stale_since: float | None = None,
-    voll: bool = False,
 ) -> str:
     """Der Header: links dieser Knoten, rechts der Scheduler.
 
@@ -1609,20 +1660,18 @@ def status_header(
         f'<span class="{eigen_klasse}">●</span> CLIENT'
         f'<span class="hdr-host">{eigener}</span></div>'
         + _hdr_row("heartbeat", heartbeat, klasse=hb_klasse)
-        + _hdr_row("project", projekt, klasse=projekt_klasse)
-        # **Nur im Feed** (#30): *„Vier Zeilen über einer Liste, die man
-        # scrollt, sind zu viel."* Die installierte Version ändert sich
-        # zwischen zwei Blicken nicht — sie gehört dorthin, wo man hinsieht,
-        # nicht dorthin, wo man vorbeiscrollt.
+        + _hdr_row("project", projekt, klasse=projekt_klasse, mono=True)
+        # **Auf jedem Screen** (#151, Entscheidung m.rau 2026-08-12: *„es gibt
+        # nicht 2 Header Ansichten"*). Hier stand bis v0.8.6 die Kürzung aus
+        # #30 — die Zeile nur im Feed, *„vier Zeilen über einer Liste, die man
+        # scrollt, sind zu viel"* — mit einer Ausnahme für `requires upgrade`,
+        # weil eine Warnung auf einem von sechs Screens keine ist.
         #
-        # **Es sei denn, sie verlangt etwas.** Trägt die Zeile `requires
-        # upgrade`, bleibt sie auf jedem Screen stehen: eine Warnung, die man
-        # nur auf einem von sechs Screens sieht, ist keine. Der Rot-Schritt zu
-        # #30 hat genau das gefangen — die Kürzung hätte die Aussage von `#100`
-        # still auf den Feed eingeschränkt, und niemand hätte es bemerkt, weil
-        # der Normalfall (kein Update nötig) unverändert aussieht.
-        + (_hdr_row("bibi", version)
-           if voll or engine.get("needs_update") else "")
+        # **Die Ausnahme ist mit der Kürzung gegenstandslos geworden, die
+        # Warnung nicht:** ein Test hält fest, dass sie weiterhin überall
+        # steht. Der Rot-Schritt zu #30 hatte genau diesen Fall gefangen, und
+        # sein Ertrag darf beim Rückbau nicht mit verschwinden.
+        + _hdr_row("bibi", version, mono=True)
         + "</div>"
     )
 
@@ -1631,6 +1680,11 @@ def status_header(
     host = scheduler_host or sched.get("hostname") or "—"
     punkt = "○" if stale else "●"
     host_klasse = "bad" if stale else "ok"
+    # **Der Punkt traegt den Zustand, der Hostname nur den Ausfall** (#148).
+    # Beide `ok` zu geben faerbte den Namen im Normalbetrieb dauerhaft gruen —
+    # eine Farbe, die immer anliegt, sagt nichts mehr. Rot dagegen ist eine
+    # Nachricht: dieser Anker haelt gerade nichts.
+    host_alarm = " bad" if stale else ""
     # **Diese Dauer tickt, und das ist der Unterschied zur Runtime** (m.rau in
     # #67): beide zaehlen hoch, aber ein wachsender Kontaktverlust ist
     # unerwartet und verdient Aufmerksamkeit, eine wachsende Laufzeit ist
@@ -1673,10 +1727,10 @@ def status_header(
     scheduler_block = (
         f'<div class="hdr-block{dim}"><div class="hdr-title">'
         f'<span class="{host_klasse}">{punkt}</span> SCHEDULER'
-        f'<span class="hdr-host {host_klasse}">{host}</span>{titel_zusatz}</div>'
+        f'<span class="hdr-host{host_alarm}">{host}</span>{titel_zusatz}</div>'
         + _hdr_row("clients", clients_zeile)
         + _hdr_row("next job", next_job)
-        + (_hdr_row("uptime", uptime) if voll else "")
+        + _hdr_row("uptime", uptime)
         + "</div>"
     )
     # **Scheduler links, Client rechts** (#30, #135). Die Blöcke heißen seit
@@ -2083,7 +2137,6 @@ def feed_status_fragment(
     status: dict, git_status: dict | None, host_url: str | None, now: float,
     *, client_rows: list[dict] | None = None,
     scheduler: dict | None = None, scheduler_stale_since: float | None = None,
-    voll: bool = False,
 ) -> str:
     """Die Feed-Header-Kacheln (PLAN-19 Befund 4: Host-Connection, Mode,
     Git — löst die bisherigen 6 Kacheln von PLAN-18 Stufe 18.3 ab, u. a. fällt
@@ -2130,20 +2183,25 @@ def feed_status_fragment(
         host = urlparse(host_url).hostname or host_url
     body = status_header(status, git_status, scheduler=scheduler, now=now,
                          scheduler_host=host,
-                         scheduler_stale_since=scheduler_stale_since, voll=voll)
+                         scheduler_stale_since=scheduler_stale_since)
     # "bibiMaintChanged from:body" (User-Fund: "ein Klick auf Maintenance muss
     # ein Update nach sich ziehen") — der MAINT-Toggle lebt im gemeinsamen
     # Header, unabhängig davon, ob dieses Fragment auf der Seite existiert;
     # ohne Treffer im DOM ist das Event ein No-op.
-    # **Die Form gehört in die Refetch-URL** (#30): das Fragment kennt seinen
-    # Screen nicht, und der Bus holt es unter einer festen Adresse nach. Ohne
-    # den Parameter fiele der Feed-Header beim ersten Job-Wechsel still auf die
-    # kompakte Fassung zurück — ein Fehler, den niemand dem Bus zuschreibt, weil
-    # er wie ein Rendering-Zufall aussieht und nur nach einem Ereignis auftritt.
-    q = "?full=1" if voll else ""
+    # **Die Refetch-URL trägt keine Form mehr** (#151). Hier stand bis v0.8.6
+    # ein `?full=1`, weil das Fragment seinen Screen nicht kennt und der Bus es
+    # unter einer festen Adresse nachholt: ohne den Parameter fiel der
+    # Feed-Header beim ersten Job-Wechsel still auf die kompakte Fassung
+    # zurück — ein Fehler, den niemand dem Bus zuschreibt, weil er wie ein
+    # Rendering-Zufall aussieht und nur nach einem Ereignis auftritt.
+    #
+    # **Mit einer einzigen Header-Ansicht entfällt der Parameter mitsamt seiner
+    # Fehlerklasse**, und das ist der Teil des Umbaus, den man an der
+    # Oberfläche nicht sieht: ein Zustand, der über eine URL durchgereicht
+    # werden muss, ist einer, den man vergessen kann.
     attrs = ('id="feedstatus" data-bus="feedstatus" '
-             f'data-bus-refetch="/-/ui/feed/status{q}" '
-             f'hx-get="/-/ui/feed/status{q}" '
+             'data-bus-refetch="/-/ui/feed/status" '
+             'hx-get="/-/ui/feed/status" '
              'hx-trigger="bibiMaintChanged from:body" hx-swap="outerHTML"')
     return f'<div {attrs}>{body}</div>'
 
@@ -2470,9 +2528,7 @@ def feed_page(
         f"<style>{_CSS}</style></head><body>"
         f"{_header('Feed', status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"
-        # `voll=True`: der Feed ist der einzige Screen mit der vollen
-        # Header-Form (#30) — hier sieht man hin, statt vorbeizuscrollen.
-        f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since, voll=True)}"
+        f"{feed_status_fragment(status, git_status, host_url, now, client_rows=client_rows, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{feed_fragment(feed_data, days=days, now=now)}"
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_DIFF_JS}</script>"
@@ -4240,7 +4296,8 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
         # Der Aktivitäts-Marker steht **vor** dem Slug, nicht hinter ihm: das
         # Auge fährt die linke Kante der Tabelle ab, und dort gehört die Frage
         # „arbeitet hier gerade etwas" hin (#67).
-        f'<td class="slug">{_aktivitaets_marker(s, l)}'
+        # `slug mono`: der Slug ist der Dateiname der Schedule-MD (#149).
+        f'<td class="slug mono">{_aktivitaets_marker(s, l)}'
         f'<a href="/-/jobs/{job_uid(row.slug)}" title="{row.slug}">'
         f"{_slug_kurz(row.slug)}</a>{beziehung}</td>"
         # Das `@` traegt die Gruppenzugehoerigkeit an der Zeile (m.rau/bibi#134):
@@ -4255,7 +4312,8 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
         # und dadurch sichtbar geworden. Der Typ war der unstrittige Teil und
         # bleibt; die Adresse braucht den ausfuehrenden Knoten und lebt in den
         # Slot-Kacheln, die ihn ueber `Tile.host` kennen.
-        f'<td>{"@" if row.oneshot else ""}'
+        # `mono`: Typ und Port stehen im Frontmatter der MD (#149).
+        f'<td class="mono">{"@" if row.oneshot else ""}'
         f'{_jobs_type_cell(row.spec, public_host, link=False)}</td>'
         # ── Der Job-Block: was diesen Job beschreibt, unabhängig davon, wer
         # gerade über ihn spricht (#135). Beide Zahlen entstehen aus

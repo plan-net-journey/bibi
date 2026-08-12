@@ -69,8 +69,8 @@ def test_scheduler_hostname_comes_from_the_client():
 
 
 def test_client_block_has_its_four_rows():
-    # `voll=True`: die `bibi`-Zeile steht seit #30 nur im Feed.
-    html = _header(voll=True)
+    # Seit #151 steht die `bibi`-Zeile auf jedem Screen.
+    html = _header()
     for label in ("heartbeat", "project", "bibi"):
         assert label in html, label
     # Ohne Doppelpunkt seit #30 — die Beschriftungsfarbe trennt jetzt.
@@ -80,8 +80,8 @@ def test_client_block_has_its_four_rows():
 
 
 def test_scheduler_block_has_its_four_rows():
-    # `voll=True`: `uptime` steht seit #30 nur im Feed.
-    html = _header(voll=True)
+    # Seit #151 steht `uptime` auf jedem Screen.
+    html = _header()
     for label in ("clients", "next job", "uptime"):
         assert label in html, label
     # Seit der Kuerzung: "2, connected <Uhrzeit>" statt "2 connected".
@@ -213,7 +213,7 @@ def test_times_older_than_a_day_carry_their_date():
     alt = dict(SCHEDULER_STATUS)
     alt["started_at"] = NOW - 3 * 86400
     # Der alte Zeitstempel steckt in `uptime` — nur in der vollen Form.
-    html = _header(scheduler=alt, voll=True)
+    html = _header(scheduler=alt)
     assert re.search(r"\d{2}/\d{2} \d{2}:\d{2}", html), "kein Datum bei altem Zeitstempel"
 
 
@@ -299,22 +299,52 @@ def _labels(html: str) -> list[str]:
     return re.findall(r'<span class="hdr-label">([^<]+)</span>', html)
 
 
-def test_the_header_is_compact_outside_the_feed():
-    """#30: *„Kompakt ab Screen 2: zweizeilig (`heartbeat`/`project` links,
-    `clients`/`next job` rechts), voll nur im Feed. Vier Zeilen über einer
-    Liste, die man scrollt, sind zu viel."*
+def test_one_header_on_every_screen():
+    """Entscheidung m.rau (2026-08-12, `#151`): *„es gibt nicht 2 Header
+    Ansichten. Überall wird immer der vollständige Header gezeigt."*
 
-    **Kompakt ist der Normalfall, nicht die Ausnahme** — der Feed ist ein
-    Screen von sechs. Ein Vorgabewert, der auf fünf Screens falsch ist, wird
-    genau dort vergessen, wo er zählt.
+    **Hier stand bis `v0.8.6` das Gegenteil**, aus `#30`: kompakt ab Screen 2,
+    voll nur im Feed, begründet mit *„vier Zeilen über einer Liste, die man
+    scrollt, sind zu viel"*.
+
+    **Die zweite Fassung hat eine eigene Fehlerklasse erzeugt**, und das ist
+    der Grund, warum sie ersatzlos fällt statt umgedreht zu werden: weil das
+    Feed-Fragment seinen Screen nicht kennt, musste die Form als `?full=1` in
+    seine Refetch-URL. Fehlte sie, fiel der Header beim ersten Job-Wechsel
+    still auf die kompakte Fassung zurück — ein Fehler, der wie ein
+    Rendering-Zufall aussieht und nur nach einem Ereignis auftritt.
     """
-    kompakt = _labels(_header())
-    voll = _labels(_header(voll=True))
-    assert kompakt == ["clients", "next job", "heartbeat", "project"], (
-        "die kompakte Form trägt zwei Zeilen je Block, Scheduler zuerst")
-    for zusatz in ("uptime", "bibi"):
-        assert zusatz in voll, f"{zusatz} fehlt in der vollen Form"
-        assert zusatz not in kompakt, f"{zusatz} steht in der kompakten Form"
+    import inspect
+
+    assert _labels(_header()) == ["clients", "next job", "uptime",
+                                  "heartbeat", "project", "bibi"]
+    assert "voll" not in inspect.signature(render.status_header).parameters, \
+        "die zweite Fassung lebt noch in der Signatur"
+    assert "voll" not in inspect.signature(render.feed_status_fragment).parameters
+
+
+def test_the_refetch_url_carries_no_form():
+    """Der Query-Parameter fällt mit der zweiten Fassung — er war ihr einziger
+    Zweck."""
+    html = render.feed_status_fragment(CLIENT_STATUS, GIT, None, NOW)
+    assert "full=1" not in html, "die Refetch-URL trägt weiterhin eine Form"
+
+
+def test_the_upgrade_warning_survives_the_merge():
+    """**Die Gegenprobe, und sie ist der Grund, warum die Kürzung überhaupt
+    eine Ausnahme brauchte.**
+
+    Die Versionszeile blieb in der kompakten Form stehen, *wenn* sie `requires
+    upgrade` trug — eine Warnung, die man nur auf einem von sechs Screens
+    sieht, ist keine. Die Ausnahme wird jetzt gegenstandslos; **die Warnung
+    darf mit ihr nicht verschwinden.**
+    """
+    aus = dict(CLIENT_STATUS)
+    aus["engine"] = {"running": "v0.6.0", "expected": "v0.7.0",
+                     "needs_update": True}
+    html = render.status_header(aus, GIT, scheduler=SCHEDULER_STATUS, now=NOW,
+                                scheduler_host="sarasate")
+    assert "requires upgrade" in html
 
 
 def test_inline_labels_carry_the_label_colour():
@@ -334,7 +364,7 @@ def test_inline_labels_carry_the_label_colour():
 def test_uptime_and_clients_are_terse():
     """„bei uptime schreib kürzer: up 01/08 23:32" und „bei clients: 2,
     connected 14:19:23". Beide Zeilen brachen vorher um."""
-    html = _header(voll=True)
+    html = _header()
     # Unter 24 h nur die Uhrzeit, darueber mit Datum — hier liegt der Start
     # 13,4 h zurueck.
     assert re.search(r"up \d{2}:\d{2}:\d{2}", html)
@@ -377,3 +407,113 @@ def test_the_clock_js_applies_the_offset():
     """Ohne den Versatz zeigte die Uhr die lokale Zeit unter fremdem Namen."""
     # Im Skript heisst das Attribut `dataset.offset`, im HTML `data-offset`.
     assert "dataset.offset" in render._CLOCK_JS
+
+
+# ── #148: der Header kann Alarm zeigen ──────────────────────────────────────
+#
+# **Die beiden Tests darüber prüfen den Klassennamen, nicht seine Wirkung** —
+# `test_offline_marks_the_scheduler_hostname_red` und
+# `test_the_client_bullet_reports_the_heartbeat` suchen `bad` im Markup. Genau
+# das war fünf Releases lang grün, während es im ganzen Stylesheet keine Regel
+# für ein blankes `.bad` gab: definiert waren nur `.conn-dot.bad`,
+# `.toggle.bad` und `.chip.bad`, alle mit einem Element-Präfix, das der Header
+# nicht setzt. Der Name fiel ins Leere, der Punkt blieb schwarz.
+#
+# **Warum es niemandem auffiel:** `ok` war ebenso wirkungslos wie `bad`, und
+# grün war der Punkt im Header nie. Es gab also keinen Zustand, dessen Fehlen
+# aufgefallen wäre — eine Regel, die nur im seltenen Fall greift, wird nur im
+# seltenen Fall geprüft.
+#
+# Die Tests hier rechnen deshalb die echte Kaskade über `render._CSS` (siehe
+# `tests/_css.py`) statt eine Zeichenkette zu suchen.
+
+
+def _alarm_ketten(html: str):
+    """Jedes Element des Fragments, das `bad` oder `ok` trägt."""
+    from tests import _css
+    return [(kette, merkmale)
+            for kette, merkmale in _css.ketten(html, _css.BODY)
+            if {"bad", "ok"} & set((merkmale.get("class") or "").split())]
+
+
+def _alarm_html() -> str:
+    """Ein Header, in dem **jeder** der fünf Alarme zugleich ansteht.
+
+    Einer nach dem anderen zu prüfen hieße, die Liste im Test zu führen — und
+    dann fehlt der sechste, sobald er dazukommt. Hier wird der Zustand
+    hergestellt und das Ergebnis abgezählt.
+    """
+    aus = dict(CLIENT_STATUS)
+    aus["connect"] = {"ok": False, "last_at": NOW - 300}     # Punkt + heartbeat-Zeile
+    aus["engine"] = {"running": "v0.6.0", "expected": "v0.7.0",
+                     "needs_update": True}                    # requires upgrade
+    git = dict(GIT, sync="conflict", conflict=True)           # project-Zeile
+    return render.status_header(aus, git, scheduler=SCHEDULER_STATUS, now=NOW,
+                                scheduler_host="sarasate.tail9f9173.ts.net",
+                                scheduler_stale_since=NOW - 240)  # Punkt + Host
+
+
+def test_every_alarm_in_the_header_resolves_to_the_alarm_colour():
+    """**Der Befund aus #148, und er zählt statt aufzuzählen.**
+
+    Jedes Element, das `bad` trägt, muss die Warnfarbe **bekommen** — nicht
+    bloß irgendeine Regel treffen.
+
+    **Der Unterschied ist hier kein Feinschliff, er ist der halbe Fehler.** Ein
+    erster Entwurf fragte nur, ob überhaupt eine Regel greift, und fand fünf
+    von sechs Stellen. Die sechste — `heartbeat` und `project` — trifft
+    `.hdr-row .hdr-value` und bekommt von dort eine Farbe zugewiesen. **Sie
+    fällt also nicht durch, sie bekäme die falsche**, und mit Spezifität 20
+    schlüge diese Regel jedes blanke `.bad`. Ein Fix, der nur eine
+    `.bad`-Zeile ergänzt, wäre gegen den lockeren Test grün und ließe zwei der
+    sechs Alarme stumm.
+    """
+    from tests import _css
+
+    falsch = [(kette[-1], _css.aufgeloest(kette, "color"))
+              for kette, _ in _alarm_ketten(_alarm_html())
+              if "bad" in kette[-1][1]
+              and _css.aufgeloest(kette, "color") != "var(--red)"]
+    assert not falsch, f"{len(falsch)} Alarm(e) ohne Warnfarbe: {falsch}"
+
+
+def test_the_header_carries_five_alarms_at_once():
+    """Die Gegenprobe zur Zählung: der hergestellte Zustand muss alle fünf
+    Stellen treffen, sonst prüft der Test darüber weniger, als er behauptet.
+
+    Scheduler-Punkt, Scheduler-Hostname, Client-Punkt, `requires upgrade`,
+    `project`-Zeile und `heartbeat`-Zeile — sechs Elemente, weil der
+    Scheduler-Ausfall zwei davon trägt.
+    """
+    treffer = [k for k, _ in _alarm_ketten(_alarm_html()) if "bad" in k[-1][1]]
+    assert len(treffer) >= 6, f"nur {len(treffer)} Alarme im Testzustand"
+
+
+def test_the_calm_state_resolves_too():
+    """**Die Gegenprobe, und sie ist der eigentliche Test.**
+
+    Ein Fix, der nur `bad` bedient, ließe `ok` weiter stumm — und das fiele
+    niemandem auf, weil ein grüner Punkt, den es nie gab, nicht vermisst wird.
+    Genau so ist der Fehler entstanden.
+    """
+    from tests import _css
+
+    gruen = [k for k, _ in _alarm_ketten(_header()) if "ok" in k[-1][1]]
+    assert gruen, "der ruhige Header trägt keinen `ok`-Zustand"
+    falsch = [(k[-1], _css.aufgeloest(k, "color")) for k in gruen
+              if _css.aufgeloest(k, "color") != "var(--green)"]
+    assert not falsch, f"`ok` ohne Ruhefarbe: {falsch}"
+
+
+def test_the_hostname_carries_failure_only():
+    """Der Punkt trägt den Zustand, der Hostname nur den **Ausfall**.
+
+    Beide `ok` zu geben hieße, den Hostnamen im Normalbetrieb grün zu färben —
+    eine Farbe, die dann dauerhaft anliegt und damit nichts mehr sagt. Rot
+    dagegen ist eine Nachricht: *dieser Anker hält gerade nichts mehr.*
+    """
+    ruhig = _header()
+    titel = ruhig.split('<div class="hdr-title">', 1)[1]
+    assert 'class="hdr-host"' in titel, "der ruhige Hostname trägt keine Zustandsklasse"
+    assert "hdr-host ok" not in ruhig, "der Hostname ist im Normalbetrieb neutral"
+    assert "hdr-host bad" in _alarm_html(), "der Hostname trägt den Ausfall nicht"
