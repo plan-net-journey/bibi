@@ -39,6 +39,10 @@ from bibi.controller import render
 #: dann tragen; geprüft wird das in `test_every_handle_keeps_its_icon_when_disabled`.
 _MIT_SCHEDULER = {"maintenance": False, "roles": ["scheduler"]}
 
+#: Die Bedienelemente der App-Bar. Seit `#161` sind es **drei**: der
+#: Maintenance-Knopf ist gefallen, weil der Verbindungspunkt ihn übernommen hat.
+_HANDLES = ("rescan", "tfmt", "conn-dot")
+
 
 def _svgs(html: str) -> list[str]:
     return re.findall(r"<svg\b.*?</svg>", html, re.S)
@@ -48,8 +52,8 @@ def test_every_handle_in_the_app_bar_carries_an_svg():
     """**Der Rot-Schritt**: für jedes Bedienelement ein ``svg`` mit gemeinsamer
     Klasse — heute findet der Test Textknoten."""
     html = render._ops_handles(_MIT_SCHEDULER)
-    for eid in ("rescan", "maint", "tfmt", "conn-dot"):
-        m = re.search(rf'id="{eid}".*?</(?:button|span)>', html, re.S)
+    for eid in _HANDLES:
+        m = re.search(rf'id="{eid}".*?</button>', html, re.S)
         assert m, f"{eid} fehlt in der App-Bar"
         assert "<svg" in m.group(0), f"{eid} traegt kein svg: {m.group(0)!r}"
         # `class="ico ..."`: der Rescan-Knopf traegt drei Zeichen, die sich
@@ -66,6 +70,8 @@ def test_no_handle_is_a_glyph_from_the_system_font():
     Glyphe setzt — und dann stünde beides da.
     """
     html = render._ops_handles(_MIT_SCHEDULER)
+    # `◐` steht mit dabei, obwohl sein Knopf seit `#161` ganz gefallen ist:
+    # der Test hält damit fest, dass es auch nicht zurückkommt.
     for zeichen, name in (("⟳", "U+27F3 ⟳"), ("◐", "U+25D0 ◐"),
                           ("◷", "U+25F7 ◷"), ("●", "U+25CF ●")):
         assert zeichen not in html, f"{name} steht noch als Textzeichen in der App-Bar"

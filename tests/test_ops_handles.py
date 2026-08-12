@@ -31,24 +31,26 @@ def test_three_handles_in_this_order():
     der Handles hat sich nicht geändert, nur ihre Darstellung.
     """
     html = render._ops_handles(CLIENT)
-    assert html.index('id="rescan"') < html.index('id="maint"') \
+    assert html.index('id="rescan"') < html.index('id="tfmt"') \
         < html.index('id="conn-dot"')
 
 
-def test_maintenance_uses_the_half_filled_circle():
-    """Ein halb gefüllter Kreis ist ein Zustand zwischen an und aus — genau das
-    ist Maintenance. Ein Zahnrad wäre eine Einstellung, ein Warndreieck ein
-    Fehler; beides trifft es nicht.
+def test_maintenance_has_no_icon_of_its_own_any_more():
+    """**Das Zeichen ist ganz gefallen** (`#161`), und mit ihm eine alte Frage.
 
-    **Die Begründung überlebt den Icon-Satz, das Zeichen nicht** (`#159`): aus
-    dem Textzeichen ``◐`` (U+25D0) wird lucide ``contrast`` — dieselbe Aussage,
-    aber aus derselben Quelle gezeichnet wie seine Nachbarn.
+    Es hat drei Fassungen gehabt: das Textzeichen ``◐`` (U+25D0), dann — einen
+    Commit lang, mit `#159` — lucide ``contrast``, und jetzt keine mehr. Der
+    Verbindungspunkt schaltet den Modus selbst; ein eigener Knopf daneben wäre
+    ein zweites Element für dieselbe Sache.
+
+    Damit erledigt sich auch die in `#33` festgehaltene Doppelvergabe: `◐` war
+    Maintenance-Knopf **und** einer der Zeit-Toggle-Zustände, zwei halbgefüllte
+    Kreise in derselben Leiste.
     """
     html = render._ops_handles(CLIENT)
-    maint = html[html.index('id="maint"'):]
-    maint = maint[:maint.index("</button>")]
-    assert 'd="M12 18a6 6 0 0 0 0-12v12z"' in maint, maint
-    assert "⚙" not in html and "⚠" not in html
+    assert 'id="maint"' not in html
+    assert 'd="M12 18a6 6 0 0 0 0-12v12z"' not in html, "das contrast-Icon lebt noch"
+    assert "◐" not in html and "⚙" not in html and "⚠" not in html
 
 
 # ── Der Verbindungspunkt ────────────────────────────────────────────────────
@@ -191,7 +193,14 @@ CLIENT_MIT_SCHEDULER = {
 
 
 def _maint_knopf(html: str) -> str:
-    return [z for z in html.split("<") if 'id="maint"' in z][0]
+    """Der Maintenance-Schalter — **seit `#161` der Verbindungspunkt**.
+
+    Der eigene `#maint`-Knopf ist gefallen: er stand neben einem Punkt, der
+    denselben Modus schon anzeigte. Was die Tests unten prüfen — erreichbar,
+    gesperrt, spiegelt den Scheduler —, gilt unverändert; sie fragen nur ein
+    anderes Element.
+    """
+    return [z for z in html.split("<") if 'id="conn-dot"' in z][0]
 
 
 def test_maintenance_is_reachable_from_a_client():
@@ -282,7 +291,7 @@ def test_rescan_checks_the_answer_before_claiming_success():
     Fehler so lange unbemerkt.
     """
     js = render._OPS_HANDLES_JS
-    kopf = js[js.index("const rescan"):js.index("const maint")]
+    kopf = js[js.index("const rescan"):js.index("const dot")]
     assert "r.ok" in kopf or "res.ok" in kopf, "die Antwort wird nicht geprueft"
     assert "catch(_){}" not in kopf, "der Fehler wird weiterhin verschluckt"
 
@@ -300,7 +309,7 @@ def test_rescan_shows_a_failure():
     ``tests/browser/test_rescan_button.py`` — dort, wo man es sehen kann.
     """
     kopf = render._OPS_HANDLES_JS
-    kopf = kopf[kopf.index("const rescan"):kopf.index("const maint")]
+    kopf = kopf[kopf.index("const rescan"):kopf.index("const dot")]
     assert "'quittung-'" in kopf, kopf
     assert "ok ? 'ok' : 'bad'" in kopf, kopf
 

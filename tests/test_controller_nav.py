@@ -65,7 +65,7 @@ def test_header_includes_ops_handles():
     # RESCAN/MAINT sitzen jetzt direkt im Header, nicht mehr als separater Aufruf.
     html = render._header("Schedules", {"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint" class="toggle warn"' in html
+    assert 'id="conn-dot" class="conn-dot warn"' in html
 
 
 # --- RESCAN generisch, keine Sync-Dopplung mehr (PLAN-21 Befund 2, revidiert
@@ -95,7 +95,7 @@ def test_ops_handles_js_restores_idle_icon():
     assert "rescan.classList.remove('quittung-ok', 'quittung-bad')" in js
     # Auf die *Zuweisung*, nicht auf das Wort: der Kommentar daneben erzählt,
     # warum `textContent` hier nicht mehr steht, und enthält es damit selbst.
-    kopf = js[js.index("const rescan"):js.index("const maint")]
+    kopf = js[js.index("const rescan"):js.index("const dot")]
     assert "rescan.textContent =" not in kopf, kopf
 
 
@@ -132,7 +132,7 @@ def test_ops_handles_has_no_maintenance_banner():
     html = render._ops_handles({"maintenance": True, "roles": ["scheduler"]})
     assert "Wartungsmodus aktiv" not in html
     assert "maintbanner" not in html
-    assert 'id="maint" class="toggle warn"' in html  # Toggle bleibt die einzige Anzeige
+    assert 'id="conn-dot" class="conn-dot warn"' in html  # Toggle bleibt die einzige Anzeige
 
 
 # --- MAINT: disabled statt ausgeblendet, wenn es nichts zu schalten gibt
@@ -160,8 +160,8 @@ def test_ops_handles_enables_maint_on_a_client_with_a_scheduler():
         "roles": ["synchronizer", "controller", "connect"],
         "connect": {"ok": True, "last_at": 1.0},
     })
-    assert 'id="maint"' in html and "disabled" not in html
-    assert 'id="rescan"' in html and html.index('id="rescan"') < html.index('id="maint"')
+    assert 'id="conn-dot"' in html and "disabled" not in html
+    assert 'id="rescan"' in html and html.index('id="rescan"') < html.index('id="conn-dot"')
 
 
 def test_ops_handles_disables_maint_without_any_scheduler():
@@ -169,13 +169,13 @@ def test_ops_handles_disables_maint_without_any_scheduler():
     Funktionen ausgegraut statt ausgeblendet. Ohne Scheduler gibt es hier
     tatsächlich nichts zu schalten."""
     html = render._ops_handles({"roles": ["synchronizer", "controller"]})
-    assert 'id="maint"' in html and "disabled" in html
-    assert 'id="rescan"' in html and html.index('id="rescan"') < html.index('id="maint"')
+    assert 'id="conn-dot"' in html and "disabled" in html
+    assert 'id="rescan"' in html and html.index('id="rescan"') < html.index('id="conn-dot"')
 
 
 def test_ops_handles_shows_maint_with_scheduler_role():
     html = render._ops_handles({"maintenance": False, "roles": ["scheduler"]})
-    assert 'id="maint"' in html
+    assert 'id="conn-dot"' in html
     assert "disabled" not in html
 
 
@@ -183,7 +183,7 @@ def test_ops_handles_disables_maint_when_roles_missing():
     # Kein status/keine roles (ältere Aufrufer, Tests ohne explizite Rolle) —
     # sicherer Default ist "kein Scheduler" (disabled), nicht "zeig's aktiv".
     for html in (render._ops_handles({}), render._ops_handles(None), render._ops_handles()):
-        assert 'id="maint"' in html and "disabled" in html
+        assert 'id="conn-dot"' in html and "disabled" in html
 
 
 # --- Links/Rechts-Gruppen (Bibi4-Iteration: Tabs links, Toggles rechts,
@@ -228,8 +228,10 @@ def test_toggles_styled_as_text_links_not_boxed_buttons():
     # sich von "handle" auf "toggle" — kein "handle" mehr irgendwo im Markup.
     html = render._header("Schedules", {"maintenance": True, "roles": ["scheduler"]})
     assert 'class="handle"' not in html and 'class="handle ' not in html
-    assert 'class="toggle"' in html  # THEME + RESCAN
-    assert 'class="toggle warn"' in html  # MAINT an
+    assert 'class="toggle"' in html  # THEME + RESCAN + TFMT
+    # Seit #161 traegt der Verbindungspunkt den Modus, nicht mehr ein eigener
+    # `.toggle warn`-Knopf daneben.
+    assert 'class="conn-dot warn"' in html
     assert ".toggle {" in render._CSS
 
 
@@ -287,7 +289,7 @@ def test_schedule_detail_page_has_rescan_and_maint():
         {"slug": "a", "kind": "job"}, [], None, slug="a",
         daemon_status={"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint" class="toggle warn"' in html
+    assert 'id="conn-dot" class="conn-dot warn"' in html
     assert render._OPS_HANDLES_JS in html
 
 
@@ -309,7 +311,7 @@ def test_execution_detail_page_has_rescan_and_maint():
     html = render.execution_detail_page(
         entry, [], "job", daemon_status={"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint" class="toggle warn"' in html
+    assert 'id="conn-dot" class="conn-dot warn"' in html
 
 
 def test_log_page_has_rescan_and_maint_without_follow():
@@ -318,7 +320,7 @@ def test_log_page_has_rescan_and_maint_without_follow():
     # Log-Panel rein ueber die Scroll-Position (paused in _LOG_JS).
     html = render.log_page(daemon_status={"maintenance": True, "roles": ["scheduler"]})
     assert 'id="rescan"' in html
-    assert 'id="maint" class="toggle warn"' in html
+    assert 'id="conn-dot" class="conn-dot warn"' in html
     assert 'id="follow"' not in html and "bibiToggleFollow" not in html
 
 

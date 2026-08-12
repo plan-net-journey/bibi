@@ -1878,6 +1878,23 @@ def status_header(
     # ohnehin zu lesen, und "connected" ist zur clients-Zeile gewandert — dort
     # gehoert es hin, weil es diese Verbindung meint (m.rau, 2026-08-03).
     uptime = f'up {_uhrzeit(hoch, now)}'
+    # **Der Modus als Wort, und nur solange er anliegt** (#161, #33).
+    #
+    # m.rau: „Der Maintenance Mode muss auch in der Card textuell angezeigt
+    # werden. Vorschlag: `up 41 min ago, maintenance mode`". Das ist woertlich
+    # der Bau aus #156 -- zwei Felder in einer Zeile, jedes mit eigener Regel,
+    # wie `18:11:33, auto-sync off` eine Karte weiter.
+    #
+    # **Der Chip stammt aus demselben Vokabular wie die Status-Chips** und
+    # entsteht mit ihnen in einem Zug (#33): zwei Chip-Bauarten nebeneinander
+    # waeren genau die Stelle, an der spaeter etwas auseinanderlaeuft.
+    #
+    # Orange und nicht rot, obwohl der Vorschlag „in rot" lautete: mit #33 ist
+    # Rot fuer „jetzt handeln" reserviert. Maintenance ist eine bewusst
+    # eingeschaltete Betriebsart und kein Fehler -- dieselbe Unterscheidung,
+    # die eine Zeile hoeher `auto-sync off` niemals rot faerbt.
+    if (sched or {}).get("maintenance"):
+        uptime += (', <span class="chip chip-orange">maintenance mode</span>')
 
     dim = " dimmed" if stale else ""
     scheduler_block = (
@@ -2763,9 +2780,13 @@ def feed_page(
 #: Gemeinsames, an dem man sie hätte ausrichten können.
 #:
 #: **Die Pfade stammen aus lucide** (ISC, https://lucide.dev) und sind wörtlich
-#: übernommen: ``refresh-cw``, ``contrast``, ``clock``, ``circle``. Alle vier
+#: übernommen: ``refresh-cw``, ``clock``, ``circle``, ``check``, ``x``. Alle
 #: teilen ``viewBox="0 0 24 24"`` und ``stroke-width="2"`` — das ist die
 #: gemeinsame Herkunft, die vorher fehlte.
+#:
+#: **``contrast`` stand hier einen Commit lang** und war das Maintenance-Zeichen.
+#: Mit `#161` ist der Knopf ganz gefallen — der Verbindungspunkt schaltet den
+#: Modus jetzt selbst —, und ein Icon ohne Aufrufer ist toter Code.
 #:
 #: **Inline und nicht über ein CDN.** Das FE liefert sich seit jeher selbst aus;
 #: ein Netzverweis in der App-Bar hieße, dass ausgerechnet der Knoten, den man
@@ -2776,12 +2797,6 @@ _ICON_PFADE: dict[str, str] = {
                '<path d="M21 3v5h-5"/>'
                '<path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>'
                '<path d="M8 16H3v5"/>'),
-    # lucide `contrast` — Maintenance. Ein Kreis, halb gefüllt: ein Zustand
-    # zwischen an und aus, und genau das ist dieser Modus. Ein Zahnrad wäre eine
-    # Einstellung, ein Warndreieck ein Fehler — beides trifft es nicht. Die
-    # Begründung ist die des alten `◐`, jetzt aus einer Quelle gezeichnet.
-    "maint": ('<circle cx="12" cy="12" r="10"/>'
-              '<path d="M12 18a6 6 0 0 0 0-12v12z"/>'),
     # lucide `clock` — Zeitformat. Ein Zifferblatt ist eine Zeitangabe; genau
     # diese Unterscheidung war der Befund hinter `◷` gegen `◐`.
     "tfmt": ('<circle cx="12" cy="12" r="10"/>'
@@ -2922,15 +2937,24 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
     # Der Bootstrap-Fall bleibt damit heil: ``init --profile scheduler
     # --with-ui`` haengt einem Scheduler doch einen ``controller`` an, und
     # ``ist_host`` traegt ihn ueber den lokalen Zweig von ``_ops_ziel()``.
-    if not ohne_gegenueber:
-        mcls = "toggle warn" if maint else "toggle"
-        mtitle = "maintenance: on" if maint else "maintenance: off"
-        maint_btn = (f'<button id="maint" class="{mcls}" title="{mtitle}">'
-                     f'{_icon("maint")}</button>')
+    # **Anzeige und Bedienung an einem Ort** (#161). Bis v0.8.7 stand hier ein
+    # eigener `◐`-Knopf neben dem Punkt, der denselben Modus schon anzeigte.
+    #
+    # m.rau: „Maintenance Mode soll durch Klick auf ● ein-/ausgeschaltet
+    # werden" -- praezisiert auf „ich meine nur das Icon, das schon rot, gruen,
+    # orange ist". Damit faellt `◐` ersatzlos, und die in #33 festgehaltene
+    # Doppelvergabe des Zeichens erledigt sich von selbst.
+    #
+    # **Die Erreichbarkeitsregel bleibt die von #69:** schaltbar, wenn dieser
+    # Knoten einen Scheduler hat -- konfiguriert, oder als der er selbst laeuft.
+    # Ohne Gegenueber bleibt der Punkt rot und ist kein Schalter, weil es
+    # nichts zu schalten gibt: ein Klick darf keine Anfrage ausloesen, die
+    # niemand beantworten kann.
+    if ohne_gegenueber:
+        dot_extra = " disabled"
     else:
-        maint_btn = ('<button id="maint" class="toggle" disabled '
-                     'title="maintenance: no scheduler to switch">'
-                     f'{_icon("maint")}</button>')
+        dot_extra = ""
+        dot_titel += " — click to toggle maintenance"
     return (
         '<nav class="handles">'
         # **Drei Zeichen in einem Knopf, und das JS schaltet nur eine Klasse.**
@@ -2949,7 +2973,6 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
         f'{_icon("rescan", zusatz="ico-idle")}'
         f'{_icon("ok", zusatz="ico-ok")}'
         f'{_icon("fehler", zusatz="ico-bad")}</button>'
-        f"{maint_btn}"
         # **Der vierte Handle, und es ist der erste** (#139). Bis v0.8.6 gab es
         # ihn nicht — der Docstring von `_header()` zaehlte ihn seit der
         # bibi4-Zeit auf, die Funktion hat ihn nie gerendert, und zweimal ist
@@ -2962,8 +2985,8 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
         '<button id="tfmt" class="toggle" '
         'title="timestamps: absolute — click for relative">'
         f'{_icon("tfmt")}</button>'
-        f'<span id="conn-dot" class="conn-dot {dot_cls}" title="{dot_titel}">'
-        f'{_icon("conn")}</span>'
+        f'<button id="conn-dot" class="conn-dot {dot_cls}"{dot_extra} '
+        f'title="{dot_titel}">{_icon("conn")}</button>'
         "</nav>"
     )
 
@@ -3041,32 +3064,35 @@ _OPS_HANDLES_JS = """
       }, ok ? 1200 : 4000);   // ein Fehler darf laenger stehen bleiben
     });
   }
-  const maint = document.getElementById('maint');
+  // **Der Verbindungspunkt ist der Maintenance-Schalter** (#161).
+  //
+  // Bis v0.8.7 war das ein eigener Knopf (`#maint`) neben einem Punkt, der
+  // denselben Modus schon anzeigte -- zwei Elemente fuer eine Sache, und eines
+  // davon trug ein Zeichen, das der Zeit-Umschalter ebenfalls benutzte (#33).
+  // Jetzt faellt Anzeige und Bedienung zusammen: der Punkt zeigt den Modus und
+  // schaltet ihn.
+  const dot = document.getElementById('conn-dot');
   function setMaint(on){
-    maint.classList.toggle('warn', on);
-    maint.title = on ? 'maintenance: on' : 'maintenance: off';
-    // Der Verbindungspunkt traegt den Modus mit — er ist die Stelle, auf die
-    // man ohnehin schaut. Rot (getrennt) bleibt unangetastet: es schlaegt
-    // Maintenance, weil ein getrennter Knoten ueber den Modus nichts weiss.
-    const dot = document.getElementById('conn-dot');
-    if (dot && !dot.classList.contains('bad')) {
-      dot.classList.toggle('warn', on);
-      dot.classList.toggle('ok', !on);
-      dot.title = on ? 'maintenance active — nothing is dispatched' : 'connected';
-    }
+    // **Rot bleibt unangetastet.** Getrennt schlaegt Maintenance: wer nicht
+    // verbunden ist, weiss ueber den Modus des Hosts nichts Aktuelles.
+    if (!dot || dot.classList.contains('bad')) return;
+    dot.classList.toggle('warn', on);
+    dot.classList.toggle('ok', !on);
+    dot.title = (on ? 'maintenance active — nothing is dispatched' : 'connected')
+              + ' — click to toggle maintenance';
     // Bibi4-Iteration, User-Fund: "ein Klick auf Maintenance muss ein Update
-    // der Mode Card nach sich ziehen" — die Mode-Kachel hängt sonst im
-    // separat gepollten #feedstatus-Bundle (bis zu 30s Verzögerung).
+    // der Mode Card nach sich ziehen" — die Kopf-Karte haengt sonst im separat
+    // gepollten #feedstatus-Bundle (bis zu 30s Verzoegerung). Seit #161 traegt
+    // sie das Wort `maintenance mode`, also haengt jetzt mehr daran als vorher.
     document.body.dispatchEvent(new Event('bibiMaintChanged'));
   }
-  if (maint) maint.addEventListener('click', async () => {
-    const on = maint.classList.contains('warn');
+  if (dot && !dot.disabled) dot.addEventListener('click', async () => {
+    const on = dot.classList.contains('warn');
     let next = on;
     try {
-      // Ebenfalls ueber den Controller (m.rau/bibi#142). Dieser Handle ist der
-      // wirksamere der beiden Faelle: relativ schaltete er den *lokalen*
-      // Maintenance-Modus eines Clients, der gar keine Jobs verteilt — er tat
-      // also etwas, nur am falschen Knoten.
+      // Ueber den Controller (m.rau/bibi#142): relativ schaltete der Aufruf den
+      // *lokalen* Maintenance-Modus eines Clients, der gar keine Jobs verteilt
+      // -- er tat also etwas, nur am falschen Knoten.
       const r = await fetch('/-/ui/ops/maintenance', {method: on ? 'DELETE' : 'POST'});
       const d = await r.json(); next = !!d.maintenance;   // echte Server-Antwort
     } catch(_) { next = on; }                              // Fehler → Zustand unverändert

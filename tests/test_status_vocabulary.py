@@ -180,7 +180,14 @@ def test_no_screen_paints_a_state_by_hand():
     # Die Definition selbst und die Farbtabelle sind erlaubt; jede weitere
     # Fundstelle waere eine zweite Implementierung.
     treffer = re.findall(r'chip-(?:grey|green|yellow|orange)', text)
-    assert len(treffer) <= 8, (
+    # Erlaubt sind: die vier CSS-Regeln, die vier Einträge in `_CHIP_KLASSE`
+    # und **eine** Fundstelle außerhalb — der `maintenance mode`-Chip der
+    # Kopf-Karte (`#161`). Der trägt keinen *Job*-Zustand, sondern eine
+    # Betriebsart des Schedulers, und liest deshalb nicht aus der Tabelle;
+    # dass er dieselbe Chip-Bauart benutzt, ist gerade der Punkt (`#33`:
+    # *„zwei Chip-Bauarten nebeneinander wären genau die Stelle, an der später
+    # etwas auseinanderläuft"*).
+    assert len(treffer) <= 9, (
         f"{len(treffer)} Fundstellen fuer eine Chip-Farbe — sie gehoeren in "
         "_ZUSTAND_VOKABULAR und _status_chip(), nicht in die Screens.")
 
