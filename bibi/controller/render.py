@@ -295,8 +295,37 @@ button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnlin
 }
 td.cellflash { animation: bibi-cellflash 3.15s ease-out 1; }
 
+/* Der Aktivitaets-Marker (#67 Schritt 2): ein Quadrat, das zum Kreis wird.
+
+   **Die Flaeche kommt aus `currentColor`**, und die Farbe aus der
+   `.st.<status>`-Regel, die der Marker mittraegt — dieselbe Quelle wie die
+   Statuszelle. Eine eigene Farbtabelle waere die Stelle, an der die beiden
+   Orte spaeter auseinanderlaufen.
+
+   Der Morph laeuft ueber `border-radius` **und** `transform`: allein am Radius
+   ist der Unterschied bei 0,55em zu klein, um ihn im Augenwinkel zu bemerken —
+   und genau dort soll er bemerkt werden. */
+.act { display: inline-block; width: .55em; height: .55em; margin-right: .45em;
+       background: currentColor; border-radius: 0; }
+.act-run  { animation: bibi-act 1.1s ease-in-out infinite; }
+.act-rest { animation: bibi-act 2.9s ease-in-out infinite; }
+/* `awaiting` ist sichtbar und trotzdem unbewegt. Bewegung heisst „es passiert
+   etwas ohne dich" — hier passiert nichts, bis jemand handelt. */
+.act-still { opacity: .85; }
+@keyframes bibi-act {
+  0%, 100% { border-radius: 0;   transform: scale(1); }
+  50%      { border-radius: 50%; transform: scale(.68); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .htmx-request .btn-spinner { animation: none; opacity: 1; transform: none; }
+  /* **Die Unterscheidung ueberlebt, nur die Bewegung nicht** — Puls wird zum
+     gefuellten Quadrat, Ruhepuls zum hohlen. Beide auf `animation: none` zu
+     setzen und sonst nichts machte sie ununterscheidbar, und dann waere der
+     Marker fuer diese Nutzer bloss noch ein Punkt. */
+  .act-run  { animation: none; background: currentColor; }
+  .act-rest { animation: none; background: transparent;
+              box-shadow: inset 0 0 0 1px currentColor; }
   /* **Erhalten, nicht abschalten.** Der Blitz sagt „hier hat sich etwas
      geaendert"; ohne ihn waere die Aenderung unsichtbar. Statt der Animation
      bleibt die Markierung deshalb stehen — dieselbe Aussage ohne Bewegung.
@@ -3728,6 +3757,39 @@ _LEER = {
 _IN_ARBEIT = frozenset({"starting", "running", "awaiting"})
 
 
+#: Wie sich der Aktivitäts-Marker je Zustand verhält (#67 Schritt 2).
+#: Was hier fehlt, bekommt **gar keinen** Marker — terminale Zustände und
+#: `pending` haben keine Aktivität, über die er etwas sagen könnte, und ein
+#: Zeichen, das immer da ist, trägt keine Information mehr.
+_AKTIVITAET = {
+    "starting": "act-run", "running": "act-run",
+    "failed": "act-rest", "deferred": "act-rest",
+    "awaiting": "act-still",
+}
+
+
+def _aktivitaets_marker(s: dict, l: dict) -> str:
+    """Das pulsende Quadrat am Zeilenanfang — oder nichts.
+
+    **Der Scheduler führt, der Client springt ein.** Ein Job, der beim
+    Scheduler arbeitet, ist die Regel; einer, der nur lokal per ``/run`` läuft,
+    soll aber genauso pulsen — sonst stünde die Zeile still, während er läuft.
+
+    **Die Farbe kommt aus derselben Regel wie die Statuszelle**
+    (``.st.<status>``), die Fläche aus ``currentColor``. Eine zweite Farbtabelle
+    wäre genau die Stelle, an der die beiden Orte später auseinanderlaufen — und
+    `running` ist blau, nicht grün, weil Grün `complete` gehört und keine Farbe
+    ihre Bedeutung wechselt.
+    """
+    for quelle in (s, l):
+        zustand = quelle.get("row_status") or quelle.get("status")
+        art = _AKTIVITAET.get(zustand or "")
+        if art:
+            return (f'<span class="act {art} st {zustand}" aria-hidden="true">'
+                    "</span>")
+    return ""
+
+
 def _laufender_start(s: dict) -> float | None:
     """Der Startzeitpunkt des Laufs, der gerade im Slot steht (#136).
 
@@ -3841,7 +3903,11 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost") -> str:
         # anderen und blitzte die halbe Tabelle. Der Job-uid ist über beide
         # Screens und beide Knoten derselbe.
         f'<tr data-row="{job_uid(row.slug)}">'
-        f'<td class="slug"><a href="/-/jobs/{job_uid(row.slug)}" title="{row.slug}">'
+        # Der Aktivitäts-Marker steht **vor** dem Slug, nicht hinter ihm: das
+        # Auge fährt die linke Kante der Tabelle ab, und dort gehört die Frage
+        # „arbeitet hier gerade etwas" hin (#67).
+        f'<td class="slug">{_aktivitaets_marker(s, l)}'
+        f'<a href="/-/jobs/{job_uid(row.slug)}" title="{row.slug}">'
         f"{_slug_kurz(row.slug)}</a>{beziehung}</td>"
         # Das `@` traegt die Gruppenzugehoerigkeit an der Zeile (m.rau/bibi#134):
         # `@` = Oneshot, ein `next` daneben = Rhythmus, keins von beidem =
