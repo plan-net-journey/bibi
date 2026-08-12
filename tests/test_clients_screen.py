@@ -103,7 +103,7 @@ def test_clients_table_handles_missing_role_gracefully():
     workers = [{"worker": "old", "host": "h", "stale": False,
                "connected_at": 0, "last_heartbeat": 0}]
     html = render._clients_table(workers, now=0)
-    assert "<td>—</td>" in html
+    assert '<td class="mono">—</td>' in html
     assert html.count('role-box on"') == 0
     assert html.count('role-box off"') == 4
 

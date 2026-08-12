@@ -258,7 +258,9 @@ def _zelle(html: str, spalte: str, *, spalten: tuple = _JOBS_SPALTEN) -> str:
     """Der Text der Zelle `spalte` aus der ersten Datenzeile."""
     import re
     zeilen = re.findall(r"<tr[ >](?:(?!</tr>).)*</tr>", html, re.S)
-    daten = [z for z in zeilen if 'class="slug"' in z]
+    # `class="slug` ohne schliessendes Anfuehrungszeichen: die Zelle traegt
+    # seit #149 zusaetzlich `mono`, weil ein Slug der Dateiname der MD ist.
+    daten = [z for z in zeilen if 'class="slug' in z]
     assert daten, f"keine Datenzeile im HTML gefunden (Spalte {spalte})"
     zellen = re.findall(r"<td[^>]*>(.*?)</td>", daten[0], re.S)
     assert len(zellen) == len(spalten), (
@@ -362,8 +364,11 @@ def test_both_screens_still_share_one_table_head():
 
     def spalten(html: str) -> list[str]:
         kopf = html.split("</thead>", 1)[0]
-        return re.findall(r"<th[^>]*>([A-Z0-9 ]+)</th>", kopf)
+        # `.` und `/` gehoeren ins Muster, seit #153 `REL.` und `LAST/RUN`
+        # beschriftet — ohne sie faende der Test die halben Spalten nicht und
+        # meldete eine Differenz, die es nicht gibt.
+        return re.findall(r"<th[^>]*>([A-Z0-9 ./]+)</th>", kopf)
 
-    assert [s for s in spalten(b) if s != "NEXT"] == spalten(j)
-    for spalte in ("RELIABILITY", "P90 RUNTIME"):
+    assert [s for s in spalten(b) if s != "NEXT/RUN"] == spalten(j)
+    for spalte in ("REL.", "RUNTIME"):
         assert spalte in spalten(j), f"{spalte} fehlt im Journal-Kopf"

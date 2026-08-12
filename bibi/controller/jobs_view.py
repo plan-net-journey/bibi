@@ -141,6 +141,7 @@ def _segment_fuer(lokal: dict | None, sched: dict | None, hat_historie: bool) ->
 def build_rows(
     *, local: list[dict], scheduler: list[dict], journal: list[dict], now: float,
     local_runs: dict[str, dict] | None = None,
+    scheduler_offline: bool = False,
 ) -> list[JobRow]:
     """Aus drei Quellen eine Zeile je Slug.
 
@@ -148,6 +149,18 @@ def build_rows(
     Scheduler-DB, ``journal`` die archivierten Läufe (nur zur Frage, ob es
     Historie gibt). ``local_runs`` bringt den Zustand der lokalen Job-DB je
     Slug mit.
+
+    ``scheduler_offline`` sagt, dass der Host **geschwiegen** hat (#147). Ohne
+    diese Angabe ist die Klassifikation unten nicht zu treffen: ein Host, der
+    einen Job nicht mehr führt, und einer, der gerade nicht antwortet, liefern
+    beide dieselbe leere Liste — ``_host_schedules()`` fängt die Ausnahme
+    defensiv ab.
+
+    **Der Unterschied ist nicht akademisch.** Befund m.rau, 2026-08-12: bei
+    ausgefallenem Scheduler trug jede der 19 Zeilen einen `dropped`- oder
+    `new`-Chip. `dropped` ist eine Behauptung über den Vault, und sie stand auf
+    allen Zeilen zugleich — das Ergebnis war nicht leer, sondern plausibel
+    falsch, und genau deshalb fällt es niemandem als Fehler auf.
     """
     local_runs = local_runs or {}
 
@@ -171,6 +184,25 @@ def build_rows(
 
         if len(mds) > 1:
             relation = "duplicate"
+        elif scheduler_offline:
+            # **Schweigt der Host, entscheidet der Vault allein** (#147).
+            #
+            # Entscheidung m.rau: *„einheitlich, `offline`, dann."* Mein
+            # Vorschlag war, die Spalte leer zu lassen — das ist eine Aussage
+            # zu wenig. **Leer heißt *unauffällig***, und das ist derselbe
+            # Fehler wie `dropped`, nur in die andere Richtung. `offline` ist
+            # zudem das Wort, das `_sched()` im Scheduler-Block seit `#32`
+            # schon führt: die Zeile sagt damit an jeder Stelle, die vom Host
+            # abhängt, dasselbe, statt an einer `offline` zu sagen und an der
+            # anderen zu schweigen.
+            #
+            # `modified` überlebt, weil es **allein aus git** stammt und vom
+            # Host nichts wissen muss. `duplicate` steht schon eine Zeile
+            # höher, aus demselben Grund und mit mehr Gewicht: es ist der
+            # einzige Chip, der Handeln verlangt.
+            relation = ("modified"
+                        if (lokal or {}).get("git_status") in ("modified", "new")
+                        else "offline")
         elif lokal is not None and sched is None:
             # Ohne Scheduler-Eintrag, aber mit Historie: der Host hat ihn
             # archiviert, die MD liegt noch da.

@@ -858,8 +858,10 @@ def _kopfzeilen(html: str) -> tuple[list[str], list[str]]:
 
 #: Die Spaltenfolge des Jobs-Screens nach #135. `NEXT` ist die einzige Spalte,
 #: die dem Journal fehlt — dort gibt es keine Zukunft mehr (#130).
-_JOBS_SPALTEN = ["SLUG", "TYPE", "P90 RUNTIME", "RELIABILITY",
-                 "STATUS", "LAST", "NEXT", "STATUS", "LAST"]
+# Die Beschriftungen seit #153. `LAST/RUN` und `NEXT/RUN` sagen, was #136 in
+# diese Zellen gelegt hat: solange ein Lauf laeuft, steht dort seine Zeit.
+_JOBS_SPALTEN = ["SLUG", "TYPE", "RUNTIME", "REL.",
+                 "STATUS", "LAST/RUN", "NEXT/RUN", "STATUS", "LAST/RUN"]
 
 
 def test_the_columns_read_job_then_scheduler_then_client():
@@ -883,7 +885,7 @@ def test_the_journal_carries_the_same_order_minus_next():
     gruppen, spalten = _kopfzeilen(
         render.journal_screen(_zeilen(journal=[_historie("alt")]), now=NOW))
     assert gruppen == ["SCHEDULER", "CLIENT"]
-    assert spalten == [s for s in _JOBS_SPALTEN if s != "NEXT"]
+    assert spalten == [s for s in _JOBS_SPALTEN if s != "NEXT/RUN"]
 
 
 # ── Die Baenderung ist abschaltbar, das `@` macht die Zeile selbsttragend ──
@@ -910,12 +912,12 @@ def test_a_oneshot_says_so_in_its_type_column():
     „Gruppierung ausblenden"."""
     html = render.jobs_screen(_zeilen(local=[_oneshot("20260805.at-150738-81ec")]),
                               now=NOW)
-    assert "<td>@claude</td>" in _zeile_von(html, "20260805.at-150738-81ec")
+    assert '<td class="mono">@claude</td>' in _zeile_von(html, "20260805.at-150738-81ec")
 
 
 def test_a_recurring_job_carries_no_at():
     """Die Gegenprobe. Ein `@` an jeder Zeile unterschiede nichts mehr."""
-    assert "<td>job</td>" in _zeile_von(
+    assert '<td class="mono">job</td>' in _zeile_von(
         render.jobs_screen(_zeilen(local=[_md("EngineCI")]), now=NOW), "EngineCI")
 
 
@@ -1106,8 +1108,8 @@ def test_next_stays_with_the_scheduler_who_alone_knows_it():
     seinen Läufen, sagt aber etwas über den Job aus, nicht über ihn.
     """
     _, spalten = _kopfzeilen(render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW))
-    assert spalten[4:7] == ["STATUS", "LAST", "NEXT"], "der Scheduler-Block"
-    assert spalten[7:] == ["STATUS", "LAST"], "der Client-Block"
+    assert spalten[4:7] == ["STATUS", "LAST/RUN", "NEXT/RUN"], "der Scheduler-Block"
+    assert spalten[7:] == ["STATUS", "LAST/RUN"], "der Client-Block"
 
 
 # ── Der Faltzustand überlebt einen Bus-Refetch (#44) ───────────────────────
@@ -1785,7 +1787,9 @@ def _zelle(html: str, spalte: str) -> str:
     """Der Text der Zelle `spalte` aus der ersten Datenzeile."""
     import re
     zeilen = re.findall(r"<tr[ >](?:(?!</tr>).)*</tr>", html, re.S)
-    daten = [z for z in zeilen if 'class="slug"' in z]
+    # `class="slug` ohne schliessendes Anfuehrungszeichen: die Zelle traegt
+    # seit #149 zusaetzlich `mono`, weil ein Slug der Dateiname der MD ist.
+    daten = [z for z in zeilen if 'class="slug' in z]
     assert daten, f"keine Datenzeile im HTML gefunden (Spalte {spalte})"
     zellen = re.findall(r"<td[^>]*>(.*?)</td>", daten[0], re.S)
     assert len(zellen) == len(_SPALTEN), (
@@ -1889,34 +1893,6 @@ def test_the_tile_offers_a_way_to_the_run():
     assert 'href="#runs"' in wert, f"kein Weg zum Lauf: {wert[:400]}"
 
 
-def test_the_jobs_band_head_carries_the_sum():
-    """FE §4.4: *„Die Bandkopfzeile trägt die Summe."* — bisher nicht gebaut.
-
-    **Die Summe ist der Grund, warum die Kennzahl eine Zahl ist und kein
-    Chart:** sie lässt sich addieren. Ein Bandkopf, der nur zählt, wie viele
-    Jobs darin liegen, sagt weniger als einer, der sagt, wie verlässlich sie
-    zusammen liefen.
-    """
-    from bibi.controller import jobs_view
-
-    zeilen = _zeilen(local=[_md("a"), _md("b")])
-    zeilen[0].quote = jobs_view.Quote(complete=20, expected=24, manual=0)
-    zeilen[1].quote = jobs_view.Quote(complete=4, expected=4, manual=2)
-    kopf = render.jobs_screen(zeilen, now=NOW).split('class="band"', 1)[1] \
-                                              .split("</tr>", 1)[0]
-    assert "24/28+2" in kopf, f"die Summe fehlt im Bandkopf: {kopf}"
-
-
-def test_a_band_without_any_quota_says_nothing_about_it():
-    """Die Gegenprobe: ein Band ohne Kennzahlen trägt keine leere Summe.
-
-    `0/0+0` läse sich als schlechtester Wert; gemeint wäre *„dazu gibt es
-    nichts zu sagen"*. Dieselbe Erwägung wie bei `Quote.prozent`, das für
-    diesen Fall ausdrücklich `None` liefert und nicht `0`.
-    """
-    kopf = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW) \
-                 .split('class="band"', 1)[1].split("</tr>", 1)[0]
-    assert "+0" not in kopf and "0/0" not in kopf, kopf
 
 
 # ── `offline` statt `—`, wo der Wert am Scheduler hängt (#32) ──────────────
@@ -1948,3 +1924,203 @@ def test_an_online_scheduler_still_shows_a_dash():
     diesen Test wäre ein Fix grün, der überall `offline` schreibt."""
     html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
     assert _zelle(html, "scheduler") == "—"
+
+
+# ── #153/#154: die Köpfe sagen kürzer, was die Zelle zeigt ─────────────────
+
+
+def test_the_column_headers_name_the_value():
+    """Vorgabe m.rau (2026-08-12): `P90 RUNTIME` → `RUNTIME`, `RELIABILITY` →
+    `REL.`, `NEXT` → `NEXT/RUN`, `LAST` → `LAST/RUN`.
+
+    **Die letzten beiden sind mehr als eine Abkürzung.** Sie benennen, was
+    `#136` in diese Zellen gelegt hat: solange ein Lauf läuft, steht dort seine
+    Zeit und nicht der nächste Termin. Der Kopf hat diese zweite Bedeutung
+    bisher nicht getragen — die Zelle konnte zweierlei zeigen, die Überschrift
+    nannte nur eins.
+    """
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    kopf = html.split("<tbody", 1)[0]
+    for neu in ("RUNTIME", "REL.", "NEXT/RUN", "LAST/RUN"):
+        assert neu in kopf, neu
+    assert "P90 RUNTIME" not in kopf
+    assert "RELIABILITY" not in kopf
+
+
+def test_the_sort_keys_survive_the_rename():
+    """**Die Gegenprobe, und sie gehört in denselben Test.**
+
+    Die Schlüssel stehen in URLs, die jemand geteilt haben kann. Wer nur die
+    Beschriftung prüft, merkt nicht, dass der Schlüssel mitgewandert ist —
+    dieselbe Trennung, die `#135` beim Umbenennen von `24H` auf `RELIABILITY`
+    schon getroffen hat.
+    """
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    kopf = html.split("<tbody", 1)[0]
+    for schluessel in ("24h", "next", "last"):
+        assert f'data-sort="{schluessel}"' in kopf, schluessel
+
+
+def test_the_band_head_carries_no_sum():
+    """Vorgabe m.rau: *„Diese Zusammenfassung weglassen."*
+
+    Die Summe kam aus FE §4.4 (*„Die Bandkopfzeile trägt die Summe"*). Die
+    Spezifikation wird hier überstimmt und **nachgezogen**, nicht
+    stehengelassen: eine, die etwas verlangt, das bewusst entfernt wurde,
+    erzeugt beim nächsten Leser den Umbau zurück.
+    """
+    # **Die Quoten von Hand setzen.** `build_rows()` rechnet sie nicht — das
+    # tut `_quoten()` im Controller. Ohne sie waere dieser Test gruen, bevor
+    # irgendetwas entfernt ist, und zwar aus dem falschen Grund.
+    from bibi.controller.jobs_view import Quote
+    zeilen = _zeilen(local=[_md("a"), _md("b")],
+                     scheduler=[{"slug": "a", "status": "complete",
+                                 "schedule": "0 * * * *"}])
+    for z in zeilen:
+        z.quote = Quote(complete=10, expected=12, manual=1)
+    html = render.jobs_screen(zeilen, now=NOW)
+    assert "gk-summe" not in html
+    # **Die Bandkoepfe, nicht die Seite** — die RELIABILITY-Zelle traegt
+    # dasselbe Zahlenmuster, und ein Test darauf waere rot geblieben, obwohl
+    # die Summe laengst weg ist.
+    for kopf in re.findall(r'class="band".*?</tr>', html, re.S):
+        assert not re.search(r"\d+/\d+\+\d+", kopf), f"Summe im Bandkopf: {kopf}"
+    assert not hasattr(render, "_band_summe"), (
+        "die Funktion lebt ohne Verbraucher weiter — das ist toter Code, "
+        "anders als eine benannte Vorarbeit")
+
+
+def test_the_band_head_keeps_label_and_count():
+    """**Die Gegenprobe:** der Bandkopf ist seit `#31` dieselbe Quelle wie die
+    Feed-Tagesgruppe. Ein Rückbau, der zu viel aus `_gruppenkopf()` nimmt,
+    trifft beide Screens."""
+    html = render.jobs_screen(
+        _zeilen(local=[_md("a"), _md("b")]), now=NOW)
+    assert "gk-label" in html and "gk-zahl" in html
+    assert re.search(r"SCHEDULE\D*2", html)
+
+
+# ── #152: die Filterleiste misst ihre Spalte nicht mehr aus ────────────────
+#
+# Befund m.rau: *„so strukturiert und formatiert erzeugt nur der Filter eine
+# unnötig große Spaltenbreite."* `TYPE` musste `job claude app` fassen, `STATUS`
+# musste `waiting running stopped` fassen — und `RUNTIME` brach daneben um,
+# obwohl es der kürzere Text ist.
+#
+# **Die Zuordnung Filter-unter-Spalte bleibt** (#31, Vorgabe m.rau). Was fällt,
+# ist ihr Beitrag zur Breitenrechnung.
+
+
+def _filterzeile(html: str) -> str:
+    return html.split('<tr class="fltr-kopf">', 1)[1].split("</tr>", 1)[0]
+
+
+def test_the_filter_bar_does_not_measure_its_column():
+    """Der Inhalt der Filterzelle steht **außerhalb des Tabellenflusses** —
+    eine Tabellenzelle bestimmt sonst die Breite ihrer Spalte mit.
+
+    Geprüft wird die aufgelöste `position`, nicht das Vorhandensein einer
+    Klasse: eine Klasse ohne Regel ist genau der Fehler aus `#148`.
+    """
+    from tests import _css
+
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    wurzel = _css.BODY + [("table", frozenset({"jobs"})), ("thead", frozenset()),
+                          ("tr", frozenset({"fltr-kopf"}))]
+    traeger = [k for k, m in _css.ketten(_filterzeile(html), wurzel)
+               if "fltr" in (m.get("class") or "").split()]
+    assert traeger, "keine Filterknöpfe in der Kopfzeile gefunden"
+    for kette in traeger:
+        # Der Knopf selbst darf im Fluss stehen — seine Hülle nicht.
+        huelle = kette[:-1]
+        assert _css.aufgeloest(huelle, "position") == "absolute", (
+            f"die Filterhülle steht im Fluss: {huelle[-1]}")
+
+
+def test_the_filter_row_keeps_its_height():
+    """**Die erste Gegenprobe.** Steht der ganze Inhalt außerhalb des Flusses,
+    hat die Zeile keine Höhe mehr und die Leiste überlagert die Datenzeilen.
+    Die Höhe muss deshalb ausdrücklich dastehen."""
+    from tests import _css
+
+    css = _css.stylesheet()
+    assert re.search(r"tr\.fltr-kopf th[^{]*\{[^}]*height:", css), (
+        "die Filterzeile hat keine eigene Höhe")
+
+
+def test_the_filters_stay_under_their_column():
+    """**Die zweite Gegenprobe, und die wichtigere.** Der billige Weg wäre, die
+    Leiste wieder als eigenen Block über die Tabelle zu legen — genau das hat
+    `#31` abgeschafft, weil `TYPE` und `STATUS` dann zweimal dastehen, einmal
+    als Kopf und einmal als Gruppenlabel.
+
+    Die Zellen bleiben deshalb Zellen, und ihre Anzahl bleibt die der Tabelle.
+    """
+    html = render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW)
+    zeile = _filterzeile(html)
+    assert zeile.count("<th") == len(_JOBS_SPALTEN), (
+        "die Filterzeile passt nicht mehr zur Tabelle")
+    typ_zelle = zeile.split("<th", 2)[2]
+    assert 'data-filter="job"' in typ_zelle, "der TYPE-Filter hat seine Spalte verlassen"
+
+
+# ── #147: ein schweigender Scheduler ist kein leerer Scheduler ─────────────
+#
+# Befund m.rau: *„Wenn der Scheduler unerreichbar ist (disconnected), dann
+# erscheinen alle Jobs als dropped oder new. Das ist falsch."* — 19 Zeilen
+# zugleich, acht unter SCHEDULE und elf unter ADHOC.
+#
+# **Der Code hatte für „führt den Job nicht mehr" und „sagt gerade nichts"
+# denselben Ausdruck:** eine leere Liste. `_host_schedules()` fängt die
+# Ausnahme defensiv ab und liefert genau die.
+#
+# Entscheidung m.rau: **einheitlich `offline`, nicht leer.** Ein leeres Feld
+# hieße *unauffällig* — derselbe Fehler wie `dropped`, nur in die andere
+# Richtung. `offline` ist zudem das Wort, das `_sched()` im Scheduler-Block
+# seit `#32` schon führt.
+
+
+def test_a_silent_scheduler_says_offline_instead_of_dropped():
+    zeilen = _zeilen(local=[_md("a"), _md("b", schedule="adhoc")],
+                     scheduler=[], journal=[{"slug": "a"}],
+                     scheduler_offline=True)
+    assert {z.relation for z in zeilen} == {"offline"}
+
+
+def test_a_speaking_scheduler_still_drops_what_it_forgot():
+    """**Die Gegenprobe, und sie ist der eigentliche Test.**
+
+    Ein Fix, der den Chip pauschal ersetzt, wäre grün und hätte die Aussage
+    verloren: `dropped` heißt *„der Host hat ihn archiviert, die MD liegt noch
+    da"*, und das bleibt eine Auskunft, die jemand braucht.
+    """
+    zeilen = _zeilen(local=[_md("a")], scheduler=[], journal=[{"slug": "a"}],
+                     scheduler_offline=False)
+    assert [z.relation for z in zeilen] == ["dropped"]
+
+
+def test_what_the_vault_alone_knows_survives_the_outage():
+    """`duplicate` und `modified` entstehen **allein aus dem Vault** und wissen
+    vom Host nichts. Sie bei Ausfall zu verschweigen hieße, eine Auskunft
+    wegzuwerfen, die weiterhin gilt — und `duplicate` ist die einzige, die
+    Handeln verlangt."""
+    doppelt = _zeilen(local=[_md("a"), _md("a")], scheduler=[],
+                      scheduler_offline=True)
+    assert [z.relation for z in doppelt] == ["duplicate"]
+    # **Realistisch: der Host schweigt, also ist seine Liste leer.** Ein Test
+    # mit gefuellter Scheduler-Liste *und* Ausfall pruefte einen Zustand, den
+    # es nicht gibt — und haette den Verlust von `modified` nicht gefangen.
+    geaendert = _zeilen(local=[_md("a", git_status="modified")],
+                        scheduler=[], scheduler_offline=True)
+    assert [z.relation for z in geaendert] == ["modified"]
+
+
+def test_the_gone_filter_stays_out_of_it_while_the_host_is_silent():
+    """Der `gone`-Filter greift auf `dropped`/`deleted`. Bliebe die
+    Fehlklassifikation stehen, träfe er bei Ausfall **jede** Zeile — ein
+    Filter, der alles zeigt, ist kein Filter."""
+    from bibi.controller import jobs_view
+
+    zeilen = _zeilen(local=[_md("a")], scheduler=[], journal=[{"slug": "a"}],
+                     scheduler_offline=True)
+    assert not any(jobs_view.trifft_filter(z, typ=[], status=[], journal=["gone"]) for z in zeilen)

@@ -455,20 +455,20 @@ def add_controller_routes(
         return HTMLResponse(render.feed_fragment(daten, days=eff_days))
 
     @app.get("/-/ui/feed/status", include_in_schema=False)
-    def feed_status(full: int = 0):
+    def feed_status():
         # Bus-Refetch-Ziel von #feedstatus (Target "feedstatus", PLAN-36
         # Stufe 36.3; zusätzlich bibiMaintChanged-Trigger des MAINT-Toggles)
         # — dieselben Datenquellen wie root(), nur ohne Heatmap/Änderungsliste.
         #
-        # `full` trägt die Header-Form durch den Refetch (#30). Vorgabe ist die
-        # kompakte Fassung: der Feed setzt den Parameter in seine eigene
-        # Refetch-URL, die anderen Screens nicht — so bekommt jeder zurück, was
-        # er gerendert hatte, ohne dass die Route ihren Aufrufer kennen muss.
+        # **Ohne `full`-Parameter seit #151.** Er trug die Header-Form durch den
+        # Refetch, solange es zwei gab, und war die Stelle, an der die zweite
+        # Fassung still einsprang, wenn ihn jemand vergaß. Jeder Screen bekommt
+        # jetzt dasselbe zurück.
         sched, stale = _scheduler_status()
         return HTMLResponse(render.feed_status_fragment(
             _status(), _feed_git_status(), _scheduler_url(), time.time(),
             client_rows=_client_rows_for_status(),
-            scheduler=sched, scheduler_stale_since=stale, voll=bool(full)))
+            scheduler=sched, scheduler_stale_since=stale))
 
     #: 180 Tage — eine Ansichtswahl ist eine UI-Präferenz und kein Sitzungswert.
     _VIEW_COOKIE_MAX_AGE = 60 * 60 * 24 * 180
@@ -1095,9 +1095,15 @@ def add_controller_routes(
         from bibi.controller import jobs_view
         jetzt = _t.time()
         historie = _journal_for_rows()
+        # **Der Ausfall reist bis in die Klassifikation** (#147). Ohne ihn
+        # kann `build_rows()` nicht unterscheiden, ob der Host einen Job nicht
+        # mehr führt oder gerade nicht antwortet — beides ist eine leere Liste,
+        # weil `_host_schedules()` die Ausnahme defensiv abfängt. Derselbe
+        # Zustand steuert eine Zeile tiefer schon die `offline`-Zellen.
         zeilen = jobs_view.build_rows(
             local=_local_job_mds(), scheduler=_host_schedules(), journal=historie,
-            now=jetzt, local_runs=_local_run_status())
+            now=jetzt, local_runs=_local_run_status(),
+            scheduler_offline=not _scheduler_status()[0])
         _quoten(zeilen, historie, jetzt)
         return zeilen, _jobs_view(request, sort, dir), jetzt
 

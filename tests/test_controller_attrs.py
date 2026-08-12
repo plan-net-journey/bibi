@@ -24,8 +24,14 @@ def test_schedule_attrs_page_trims_runtime_section():
         "app_url": "http://127.0.0.1:8080/", "pid": 999,
     }
     html = render.schedule_attrs_page("boom", data)
-    assert "Scheduling" in html
-    assert "Runtime" not in html
+    assert "<h2>Scheduling</h2>" in html
+    # **Die Ueberschrift, nicht die Seite.** `"Runtime" not in html` war grün,
+    # solange das Wort nirgends sonst vorkam — die Seite bettet aber ihr
+    # eigenes Stylesheet ein, und dessen Kommentare erklaeren seit #149, warum
+    # RUNTIME eine fluechtige Spalte ist. Ein Test, der die ganze Seite
+    # durchsucht, prueft die Seite und nicht das Element (vierte Lehre aus
+    # m.rau/bibi#131).
+    assert "<h2>Runtime</h2>" not in html
     for key in ("id", "next_fire_at", "fire"):
         assert f"<b>{key}</b>" in html
     for key in _DROPPED_RUNTIME_KEYS:
