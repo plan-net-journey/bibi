@@ -86,3 +86,44 @@ def test_the_flash_borrows_no_semantic_hue():
     block = css[start:start + 400]
     for verboten in ("--red", "--green", "--amber", "--blue", "--brand"):
         assert verboten not in block, f"{verboten} im Diff-Blitz"
+
+
+# ── #145: ein fremder Swap darf den Schnappschuss nicht nullen ─────────────
+#
+# **Der Fehler ist protokolliert, nicht vermutet** (Trace, 40 ms, vier Läufe):
+# `#feedstatus` trägt keine `tr[data-row]` und setzte den Vorher-Schnappschuss
+# deshalb auf `null` — mitten zwischen `afterSwap` und `afterSettle` der
+# Jobs-Tabelle, weil beide Bereiche unabhängig pollen.
+#
+# **Beim Lauf-Ende trifft das zuverlässig**, weil dasselbe Ereignis beide
+# Bereiche ändert. Genau der Moment, für den der Zell-Diff gebaut wurde: dass
+# ein Lauf angefangen hat, sieht man schon am Marker — dass er fertig ist, war
+# die Nachricht.
+
+
+def test_the_snapshot_belongs_to_its_target():
+    """Der Schnappschuss hängt am Ziel, nicht an einer Variablen des Moduls.
+
+    **Was dieser Test kann und was nicht:** er prüft die *Struktur*, nicht das
+    Verhalten. Ob zwei verschränkte Swaps im Browser tatsächlich beide zum Zug
+    kommen, sieht keine Testebene dieser Datei — das ist Handgriff 7 des
+    Verfahrens und gehört in den Akzeptanz-Durchgang.
+
+    **Er ist trotzdem der richtige Rot-Schritt**, weil die Struktur die Ursache
+    *ist*: eine Zustandsvariable, die pro Ereignisquelle verschieden sein muss,
+    kann im Modul nicht richtig sein. Der billige Fix — fremde Ziele ignorieren
+    statt nullen — repariert den bekannten Fall und lässt den nächsten offen:
+    sobald ein zweiter Bereich Zeilen trägt, stünden wieder zwei Diffs auf einer
+    Variablen. Das Journal trägt sie bereits, auf seinem eigenen Screen.
+    """
+    # **Kommentare zählen nicht.** Der erste Anlauf schlug am Kommentar an, der
+    # die alte Zeile zitiert — ein Quelltext-Wächter, der das *Erwähnen*
+    # bestraft, zwingt dazu, die Herkunft einer Änderung ungeschrieben zu
+    # lassen. Genau die soll aber dastehen.
+    code = "\n".join(z for z in render._DIFF_JS.splitlines()
+                     if not z.lstrip().startswith("//"))
+    assert "let vorher" not in code, (
+        "der Schnappschuss liegt weiterhin in einer Modulvariablen — jedes "
+        "fremde htmx-Ziel nullt ihn")
+    assert "WeakMap" in code, (
+        "erwartet: ein Schnappschuss je Ziel, gehalten an einer WeakMap")
