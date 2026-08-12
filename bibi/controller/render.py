@@ -4823,8 +4823,14 @@ def _reliability_zelle(quote, ohne_zukunft: bool,
             f'<span class="relia-p">{quote.prozent}%</span></td>')
 
 
+def _von(herkunft: str | None) -> str:
+    """Der Herkunfts-Parameter für einen Detail-Link, oder nichts (`#137`)."""
+    return f"?from={herkunft}" if herkunft in _HERKUNFT and herkunft != "Jobs" else ""
+
+
 def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
-                mit_next: bool = True, scheduler_offline: bool = False) -> str:
+                mit_next: bool = True, scheduler_offline: bool = False,
+                herkunft: str | None = None) -> str:
     """Eine Zeile: ein Slug, zwei Zustandsblöcke.
 
     ``mit_next=False`` lässt die `NEXT`-Zelle ganz weg — für den Journal-Screen,
@@ -4915,7 +4921,14 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
         # „arbeitet hier gerade etwas" hin (#67).
         # `slug mono`: der Slug ist der Dateiname der Schedule-MD (#149).
         f'<td class="slug mono">{_aktivitaets_marker(s, l)}'
-        f'<a href="/-/jobs/{job_uid(row.slug)}" title="{row.slug}">'
+        # **Der Link traegt seine Herkunft mit** (#137). Der hervorgehobene Tab
+        # im Detail ist laut #148 der Rueckweg; ohne diese Angabe zeigte er
+        # `Jobs`, auch wenn man aus dem Journal kam -- ein Versprechen ueber
+        # die Navigation, das der Screen bricht.
+        #
+        # Nur wo es noetig ist: `Jobs` ist der Rueckfall, und ein Parameter an
+        # jeder URL des haeufigeren Weges waere Ballast.
+        f'<a href="/-/jobs/{job_uid(row.slug)}{_von(herkunft)}" title="{row.slug}">'
         f"{_slug_kurz(row.slug)}</a>{beziehung}</td>"
         # Das `@` traegt die Gruppenzugehoerigkeit an der Zeile (m.rau/bibi#134):
         # `@` = Oneshot, ein `next` daneben = Rhythmus, keins von beidem =
@@ -5419,6 +5432,7 @@ def journal_screen(rows: list, now: float, *, typ: list[str] | None = None,
         return f'{leiste}<div class="leer"><p class="muted">— {_LEER[Segment.JOURNAL]}</p></div>'
 
     zeilen = "".join(_jobs_zeile(r, now, public_host=public_host, mit_next=False,
+                                 herkunft="Journal",
                                  scheduler_offline=scheduler_offline)
                      for r in rows)
     kopf = _jobs_kopf(sort, direction, typ=typ, status=status,
@@ -6292,6 +6306,24 @@ def _run_zeile(r: dict, *, basis: str = "") -> str:
         f'<td colspan="8"><pre class="out-body"></pre></td></tr>')
 
 
+#: Von welchen Screens aus ein Job-Detail erreichbar ist (`#137`).
+#:
+#: **Der hervorgehobene Tab ist der Rückweg** (`#148`), und damit hängt an ihm
+#: eine Aussage über die *Herkunft* — nicht über das Aussehen. Bis `v0.8.8`
+#: übergab der Detail-Screen fest `Jobs`: wer aus dem Journal kam, bekam einen
+#: Rückweg an einen Ort, an dem er nicht war.
+#:
+#: Die Menge ist eng gehalten und nicht aus `SCREENS` abgeleitet: der Wert
+#: kommt aus der URL und ist frei wählbar. Was hier nicht steht, fällt auf
+#: `Jobs` zurück — ein unbekannter Wert darf keinen Screen ohne aktiven Tab
+#: erzeugen, das wäre genau der Zustand, den `#137` behebt.
+_HERKUNFT = ("Jobs", "Journal")
+
+
+def _rueckweg(herkunft: str | None) -> str:
+    return herkunft if herkunft in _HERKUNFT else "Jobs"
+
+
 def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
                        daemon_status: dict | None = None,
                        git_status: dict | None = None, host_url: str | None = None,
@@ -6300,7 +6332,8 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
                        beziehung: str | None = None,
                        days: int | None = None, reach: dict | None = None,
                        aktiv: dict | None = None, weiter: int | None = None,
-                       public_host: str = "localhost") -> str:
+                       public_host: str = "localhost",
+                       herkunft: str | None = None) -> str:
     """Job Detail (FE-Spezifikation §5) — Hülle, Kopfzeile, Kacheln, Liste.
 
     **Oben die Kacheln: was ich tun kann. Unten die Liste: was geschehen ist**
@@ -6355,7 +6388,7 @@ def job_detail_page_v5(*, slug: str, spec: dict, now: float, liste=None,
         f"<style>{_CSS}</style>"
         f'<script src="/-/static/htmx-1.9.12.min.js"></script>'
         "</head><body>"
-        f"{_header('Jobs', daemon_status, scheduler=scheduler, sub=True, scheduler_now=(scheduler or {}).get('now'), now=now)}"
+        f"{_header(_rueckweg(herkunft), daemon_status, scheduler=scheduler, sub=True, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
         f"{kopf}"
         # **Zwei angemeldete Regionen, beide mit ihrem Wrapper aus einer

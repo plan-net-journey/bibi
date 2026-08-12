@@ -527,3 +527,66 @@ def test_every_screen_in_the_app_bar_is_reachable(app_with):
         for label, href in render.SCREENS:
             r = c.get(href)
             assert r.status_code == 200, f"{label} ({href}) → {r.status_code}"
+
+
+# ── Der Rueckweg zeigt dorthin, wo man herkam (#137) ────────────────────────
+
+
+def test_the_detail_screen_knows_where_it_came_from():
+    """Ein Job-Detail ist von **zwei** Screens aus erreichbar (`#137`).
+
+    | Weg dorthin | Tab zeigt | richtig wäre |
+    |---|---|---|
+    | Jobs → Detail | `Jobs` | `Jobs` |
+    | **Journal → Detail** | `Jobs` | **`Journal`** |
+
+    **Der hervorgehobene Tab ist laut `#148` ausdrücklich der Rückweg.** Zeigt
+    er `Jobs`, während man aus dem Journal kam, führt der einzige sichtbare Weg
+    zurück an einen anderen Ort als den, von dem man kam — der Screen macht ein
+    Versprechen über die Navigation, das er bricht.
+
+    **Beide Wege gehören in denselben Test**, und das Ticket sagt warum: ein
+    Test nur auf den Journal-Weg wäre nach einer Umstellung auf fest `Journal`
+    ebenfalls grün und zerstörte den Jobs-Weg.
+    """
+    spec = {"slug": "a", "kind": "job"}
+    aus_jobs = render.job_detail_page_v5(slug="a", spec=spec, now=0.0)
+    aus_journal = render.job_detail_page_v5(slug="a", spec=spec, now=0.0,
+                                            herkunft="Journal")
+    assert '<a class="tab-active" href="/-/jobs">Jobs</a>' in aus_jobs
+    assert '<a class="tab-active" href="/-/jobs/journal">Journal</a>' in aus_journal
+    assert '<a class="tab-active" href="/-/jobs">Jobs</a>' not in aus_journal
+
+
+def test_an_unknown_origin_falls_back_to_jobs():
+    """**Die Gegenprobe**: eine Herkunft, die kein Screen ist, hebt `Jobs` hervor.
+
+    Der Parameter kommt aus der URL und ist damit frei wählbar. Ohne diesen
+    Rückfall hätte eine erfundene Herkunft **keinen** aktiven Tab — und damit
+    keinen Rückweg, also genau den Zustand, den `#137` behebt.
+    """
+    spec = {"slug": "a", "kind": "job"}
+    html = render.job_detail_page_v5(slug="a", spec=spec, now=0.0,
+                                     herkunft="Erfunden")
+    assert '<a class="tab-active" href="/-/jobs">Jobs</a>' in html
+
+
+def test_the_journal_marks_where_its_links_lead_from():
+    """**Ohne diese Hälfte ist der Fix wirkungslos** (`#137`).
+
+    Der Renderer kann die Herkunft tadellos verarbeiten und nie eine bekommen.
+    Dieselbe Form wie bei `#144`, wo `record_hostname()` gebaut war und nicht
+    gerufen wurde: eine Zusicherung, die geprüft wird, wo sie *hergestellt*
+    wird, und nicht dort, wo sie **gebraucht** wird.
+
+    Der Journal-Screen hängt seinen Links deshalb die Herkunft an; der
+    Jobs-Screen tut es nicht — dort ist `Jobs` der Rückfall und ein Parameter
+    wäre Ballast in jeder URL.
+    """
+    from bibi.controller.jobs_view import JobRow, Segment
+    row = JobRow(slug="a", segment=Segment.SCHEDULE,
+                 scheduler={"row_status": "complete"}, spec={"payload": "echo hi"})
+    aus_journal = render._jobs_zeile(row, 0.0, mit_next=False, herkunft="Journal")
+    aus_jobs = render._jobs_zeile(row, 0.0)
+    assert "from=Journal" in aus_journal, aus_journal
+    assert "from=" not in aus_jobs, aus_jobs

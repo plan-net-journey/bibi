@@ -179,7 +179,10 @@ def test_every_job_in_the_journal_stays_reachable(app_with, team_repo: Path):
     Screen, ihre Läufe wären unerreichbar geworden. Der Umzug macht dieselbe
     Zusage erneut, also wird sie erneut belegt."""
     html = render.journal_screen(_zeilen(journal=[_historie("ohne-md")]), now=NOW)
-    assert f'href="/-/jobs/{job_uid("ohne-md")}"' in html
+    # Seit #137 traegt der Link zusaetzlich seine Herkunft (`?from=Journal`),
+    # damit der Tab im Detail dorthin zurueckfuehrt, wo man herkam. Geprueft
+    # wird deshalb der Anfang der Adresse, nicht die ganze.
+    assert f'href="/-/jobs/{job_uid("ohne-md")}?from=Journal"' in html
 
 
 def test_the_journal_route_answers(app_with):
