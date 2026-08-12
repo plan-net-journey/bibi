@@ -20,7 +20,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- uid seines *Basis*-Slugs, nicht den seines Suffix-Slugs.
     job_uid         TEXT,
     schedule_ref    TEXT NOT NULL,             -- MD-Pfad relativ zum Vault
-    slug_explicit   INTEGER NOT NULL DEFAULT 0,
     kind            TEXT NOT NULL,             -- job | claude | app (§5.3)
     payload         TEXT NOT NULL,             -- Shell-Cmd | Prompt | Entrypoint
 

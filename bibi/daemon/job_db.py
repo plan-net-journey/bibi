@@ -28,7 +28,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle, slot
 from bibi.schedule.models import Kind, Status, display_kind, job_uid
 from bibi.schedule.parser import SPECIAL_SCHEDULES, ParseResult
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 #: Terminalzustände, die den Slot **blockieren** statt ihn freizugeben — alle
 #: außer ``complete`` (Archivierungsregel A2, Zustandsmodell §3). Sie bleiben in
@@ -280,6 +280,15 @@ def _mig_conflict_refs(conn: sqlite3.Connection) -> None:  # v23 → v24
         conn.execute("ALTER TABLE jobs ADD COLUMN conflict_refs TEXT")
 
 
+def _mig_drop_slug_explicit(conn: sqlite3.Connection) -> None:  # v24 → v25
+    # Karteileiche seit #143: der Slug kommt ausschließlich aus dem Dateistamm,
+    # `slug_explicit` war danach dauerhaft 0. Eine Spalte, die nur noch eine
+    # Antwort kennt, ist keine Angabe — sie geht im selben Durchgang raus, in
+    # dem ihr Sinn entfallen ist.
+    if _has_table(conn, "jobs") and _has_column(conn, "jobs", "slug_explicit"):
+        conn.execute("ALTER TABLE jobs DROP COLUMN slug_explicit")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -307,6 +316,7 @@ _MIGRATIONS: dict[int, list] = {
     21: [_mig_bootstrap_tokens],
     22: [_mig_run_snapshot],
     23: [_mig_conflict_refs],
+    24: [_mig_drop_slug_explicit],
 }
 
 
@@ -462,7 +472,6 @@ def _spec_columns(pr: ParseResult, now: float) -> dict:
         "slug": s.slug,
         "job_uid": job_uid(s.slug),
         "schedule_ref": pr.schedule_ref,
-        "slug_explicit": 1 if pr.slug_explicit else 0,
         "kind": s.kind.value,
         "payload": s.payload,
         "schedule": s.schedule,

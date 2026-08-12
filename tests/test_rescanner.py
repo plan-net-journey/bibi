@@ -44,7 +44,7 @@ def gitrepo(tmp_path: Path, monkeypatch):
 
 def test_rescanner_tick_picks_up_new_schedule(gitrepo: Path):
     # Frisch abgelegte MD wird vom Tick erfasst (genau die „witz"-Lücke).
-    md = gitrepo / "vault" / "case" / "joke" / "README.md"
+    md = gitrepo / "vault" / "case" / "joke" / "joke.md"
     md.parent.mkdir(parents=True)
     md.write_text('---\nschedule: "*/3 * * * *"\njob: "claude: erzähl einen Witz"\n---\n',
                   encoding="utf-8")

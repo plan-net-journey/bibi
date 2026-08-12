@@ -150,7 +150,7 @@ def test_pinned_job_merges_immediately_without_sweep(gitrepo: Path, monkeypatch)
         # Commit (Output landet unter gitignored data/) — branch bliebe None, der
         # neue Trigger würde nie feuern, unabhängig davon, ob er funktioniert
         # (Review-Runde 2, Fund 1). Eine getrackte Datei schreiben stattdessen.
-        _seed(gitrepo, "witz/README.md", '---\nschedule: now\njob: "echo hi > result.md"\n---\n')
+        _seed(gitrepo, "witz/witz.md", '---\nschedule: now\njob: "echo hi > result.md"\n---\n')
         before = _git(gitrepo, "rev-parse", "trunk")
 
         result = run_pinned(slug="witz", repo_root=gitrepo,
@@ -178,7 +178,7 @@ def test_scheduler_dispatched_job_merges_immediately_without_sweep(gitrepo: Path
     app = create_app(roles_mod.resolve({"scheduler"}), sync_lock=sync_lock)
     with _LiveServer(app, port):
         # s. Kommentar im gepinnten Test oben — "echo x" erzeugt nie einen Commit.
-        _seed(gitrepo, "run1/README.md", '---\nschedule: now\njob: "echo hi > result.md"\n---\n')
+        _seed(gitrepo, "run1/run1.md", '---\nschedule: now\njob: "echo hi > result.md"\n---\n')
         conn = job_db.connect()
         try:
             job_db.rescan(conn)

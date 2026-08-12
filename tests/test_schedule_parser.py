@@ -113,21 +113,16 @@ def test_error_bad_backoff():
     assert r.is_error and "backoff" in r.error
 
 
-def test_slug_from_folder_for_readme():
-    r = _parse('---\nschedule: now\njob: "x"\n---\n', path=Path("vault/case/hello/README.md"))
-    assert r.spec.slug == "hello"
-    assert r.slug_explicit is False
+# Die Slug-Ableitung steht seit #143 vollständig in `test_slug_from_filename.py`.
+# Hier standen bis `v0.8.2` drei Tests für drei Stufen — Override gewinnt,
+# README nimmt den Ordnernamen, sonst der Stamm. Es gibt nur noch eine Regel,
+# und sie gehört an einen Ort: zwei Testdateien für dieselbe Aussage wären
+# genau die Doppelung, die eine Regel wieder verhandelbar macht.
 
 
 def test_slug_from_stem_for_named_file():
     r = _parse('---\nschedule: now\njob: "x"\n---\n', path=Path("vault/case/daily.md"))
     assert r.spec.slug == "daily"
-
-
-def test_explicit_slug_wins():
-    r = _parse('---\nslug: custom\nschedule: now\njob: "x"\n---\n')
-    assert r.spec.slug == "custom"
-    assert r.slug_explicit is True
 
 
 def test_lifecycle_knobs_parsed():

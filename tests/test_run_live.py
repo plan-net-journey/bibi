@@ -609,13 +609,13 @@ def _seed_schedule(root: Path, rel: str, body: str) -> None:
 
 
 def test_local_schedule_exec_mode_reads_container_override(team_repo: Path):
-    _seed_schedule(team_repo, "myjob/README.md",
+    _seed_schedule(team_repo, "myjob/myjob.md",
                   '---\nschedule: never\njob: "echo hi"\nexec_mode: container\n---\n')
     assert worker.local_schedule_exec_mode("myjob") == "container"
 
 
 def test_local_schedule_exec_mode_none_for_host_default(team_repo: Path):
-    _seed_schedule(team_repo, "myjob/README.md", '---\nschedule: never\njob: "echo hi"\n---\n')
+    _seed_schedule(team_repo, "myjob/myjob.md", '---\nschedule: never\njob: "echo hi"\n---\n')
     assert worker.local_schedule_exec_mode("myjob") is None
 
 
@@ -629,13 +629,13 @@ def test_run_live_rebuild_route_404_for_unknown_slug(client_only):
 
 
 def test_run_live_rebuild_route_409_for_host_mode_job(client_only, team_repo: Path):
-    _seed_schedule(team_repo, "myjob/README.md", '---\nschedule: never\njob: "echo hi"\n---\n')
+    _seed_schedule(team_repo, "myjob/myjob.md", '---\nschedule: never\njob: "echo hi"\n---\n')
     assert client_only.post("/-/run/live/myjob/rebuild").status_code == 409
 
 
 def test_run_live_rebuild_route_ok_for_container_mode_job(client_only, team_repo: Path,
                                                           monkeypatch):
-    _seed_schedule(team_repo, "myjob/README.md",
+    _seed_schedule(team_repo, "myjob/myjob.md",
                   '---\nschedule: never\njob: "echo hi"\nexec_mode: container\n---\n')
     calls: list[str] = []
     monkeypatch.setattr(
@@ -649,7 +649,7 @@ def test_run_live_rebuild_route_ok_for_container_mode_job(client_only, team_repo
 
 
 def test_run_live_rebuild_route_502_on_docker_failure(client_only, team_repo: Path, monkeypatch):
-    _seed_schedule(team_repo, "myjob/README.md",
+    _seed_schedule(team_repo, "myjob/myjob.md",
                   '---\nschedule: never\njob: "echo hi"\nexec_mode: container\n---\n')
     monkeypatch.setattr(
         "bibi.daemon.worker.Worker.rebuild_job_image",
