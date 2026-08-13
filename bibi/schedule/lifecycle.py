@@ -30,7 +30,21 @@ class Event(StrEnum):
     SILENCE = "silence"          # running → zombie     (nur job/claude)
     RETRY = "retry"              # failed  → starting
     EXHAUST = "exhaust"          # failed  → error
-    RESUME = "resume"            # deferred → starting
+    # ``RESUME`` startet den Job **von vorn** — der Name verspricht mehr, als
+    # bibi hält (#177, Einwand m.rau 2026-08-13: *„Resume gefällt mir nicht,
+    # weil es versprachlicht, dass an der Stelle fortgesetzt wird, wo aufgehört
+    # wurde. Das stimmt aber nicht. Der Job startet von vorne."*).
+    #
+    # **Die Nicht-Zusage, ausgeschrieben, weil sie bisher nirgends stand:**
+    # *„Checkpoint/Restart-Fähigkeit oder Idempotenz muss vom Job
+    # operationalisiert werden."* Wer sich auf das Wort verlässt, baut einen
+    # Job, der doppelt tut, was er einmal tun sollte.
+    #
+    # Der Name bleibt trotzdem (*„Never change a running system"*, m.rau
+    # 2026-08-13) — der vorgeschlagene Umbau auf ``REDISPATCH`` entfällt. Der
+    # Unterschied zu ``RETRY`` gehört daneben und ist der einzige zwischen
+    # beiden: **``RETRY`` verbraucht einen Versuch, ``RESUME`` nicht.**
+    RESUME = "resume"            # deferred → starting (Neustart, kein Fortsetzen)
     EXPIRE = "expire"            # deferred → inactive
     INPUT = "input"              # awaiting → running   (nur app)
     TIMEOUT = "timeout"          # awaiting → zombie    (nur app)

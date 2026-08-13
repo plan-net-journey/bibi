@@ -1490,11 +1490,24 @@ def _expected_version_form(deploy_result: dict | None) -> str:
 
 
 def clients_fragment(workers: list[dict], now: float | None = None, *,
-                     deploy_result: dict | None = None) -> str:
+                     deploy_result: dict | None = None,
+                     aktion_fehler: str | None = None) -> str:
+    """Das Nodes-Board.
+
+    ``aktion_fehler`` (#174) ist die **wichtigere Hälfte** des Block-Fixes: die
+    Route verschluckte jeden Fehler in einem nackten ``except: pass``, gab 200
+    zurück und rendert das Board unverändert — *„Funktioniert nicht. Ein Klick
+    bleibt ohne Wirkung."* (m.rau, 2026-08-13). **Ein Klick, der an einem 403
+    scheitert, sieht dann genauso aus wie einer, der nichts zu tun hatte**, und
+    ohne diese Anzeige ist die Ursache nicht einmal nachweisbar.
+    """
     now = time.time() if now is None else now
+    fehler = (f'<p class="handles"><span class="chip conflict">{_e(aktion_fehler)}</span></p>'
+              if aktion_fehler else "")
     return (
         '<div id="clientsboard" data-bus="nodes" data-bus-refetch="/-/ui/clients/board">'
         '<div class="panel-card"><h2>Nodes</h2>'
+        f"{fehler}"
         f"{_expected_version_form(deploy_result)}"
         # Hier standen „Restart all" und „Deploy all" (m.rau/bibi#39). Sie sind
         # mit #103 gefallen, zusammen mit „Set + deploy" und der Restart-Spalte

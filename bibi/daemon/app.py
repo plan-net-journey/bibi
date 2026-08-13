@@ -1546,9 +1546,25 @@ def create_app(
         if not req.slug and not req.cmd:
             return JSONResponse(status_code=400, content={"error": "slug oder cmd nötig"})
         slug = req.slug or "adhoc"
-        if worker_mod.local_run_live(slug) is not None:
+        # **Was arbeitet, blockiert — was wartet, nicht** (#171).
+        #
+        # Hier stand ``local_run_live()``, also die *Anzeige*-Liste, und die
+        # führt `failed`/`deferred` mit Absicht. Als Belegt-Prüfung war sie
+        # falsch: ein `failed`-Slot blockiert nichts, er wartet auf genau den
+        # Start, den sie verweigerte — mit der Meldung „already running", die
+        # m.rau am 2026-08-13 im Screenshot hatte.
+        if worker_mod.local_run_blocked(slug) is not None:
             return JSONResponse(status_code=409,
                                 content={"error": "already running", "slug": slug})
+        # **Ein terminaler Slot wird archiviert, nicht überschrieben** (#172).
+        #
+        # ``run_pinned()`` legt für jeden Start eine frische Zeile an; ohne
+        # diesen Schritt bliebe die alte daneben liegen und wanderte nie ins
+        # Journal — der Lauf hätte stattgefunden und stünde nirgends. Nur mit
+        # ``slug``: ein ``cmd``-Ad-hoc-Lauf hat keinen Bucket, in dem etwas
+        # stehen könnte.
+        if req.slug:
+            worker_mod.archive_pinned_terminal(slug)
 
         try:
             # register=pinned_worker._register (PLAN-28 Refactor B): derselbe

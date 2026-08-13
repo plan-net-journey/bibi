@@ -779,6 +779,33 @@ def execute_reservation(
             # nicht als Setup-Fehler markieren — bis zu zwei Retries statt
             # sofort in den except-Block unten zu fallen.
             job_db.call_with_lock_retry(lambda: _report_pid_once(_sched_db_path, jid, proc_pid))
+        else:
+            # ── SPAWNED gehört an den Wrapper-Start (#173) ──────────────────
+            #
+            # **Der Zustandswechsel hing an einer Nebenwirkung des
+            # PID-Notierens, und fiel mit ihm aus.** `running` entstand
+            # ausschließlich in `report_pid()`; blieb der Report aus, gab es
+            # keinen zweiten Weg, und der Slot stand bis zum Terminalzustand auf
+            # `starting`, während sein Output wuchs. m.rau am 2026-08-13:
+            # *„Manchmal, nicht immer, wechselt der Job Status nicht, obwohl der
+            # Job definitiv läuft."*
+            #
+            # **Zwei Bedingungen konnten fehlschlagen, und keine meldete sich:**
+            # keine PID vom Wrapper-Start, oder kein `_sched_db_path` — Letzteres
+            # der Normalfall für einen Worker, der gegen einen *entfernten*
+            # Scheduler arbeitet. Das erklärt „manchmal, nicht immer" ohne Race
+            # und ohne Container: es hängt daran, **wo** der Job läuft.
+            #
+            # Der Wrapper läuft an dieser Stelle bereits — mehr behauptet
+            # `running` nicht. Ohne PID bleibt die Waisen-Erkennung stumpf, aber
+            # das ist der kleinere Schaden: ein Job, der als `starting` läuft,
+            # ist für jede Anzeige und jeden Zustandsübergang unsichtbar.
+            try:
+                client.report(jid, status="running")
+            except Exception as exc:  # noqa: BLE001 — defensiv (§2.7)
+                activity.emit(log, logging.WARNING, "worker.spawned_report_failed",
+                              "SPAWNED-Meldung fehlgeschlagen", role="worker",
+                              slug=reservation.get("slug"), run_id=jid, error=str(exc))
     except Exception as exc:
         # Setup-Fehler vor Wrapper-Start: Job nicht in `running` hängen lassen.
         activity.emit(log, logging.ERROR, "worker.setup_error",
@@ -994,6 +1021,82 @@ def _pinned_row(slug: str, *, db_path: Path | None = None, host: str | None = No
 def _pinned_live_row(slug: str, *, db_path: Path | None = None,
                      host: str | None = None) -> sqlite3.Row | None:
     return _pinned_row(slug, db_path=db_path, host=host, statuses=_PINNED_LIVE_STATUSES)
+
+
+#: **Was einen Neustart wirklich blockiert** (#171) — und das ist etwas anderes
+#: als „was ist noch nicht abgeschlossen" (``_PINNED_LIVE_STATUSES`` oben).
+#:
+#: Beide Listen sind richtig, jede für ihre Frage. ``/-/run`` benutzte die obere
+#: als Belegt-Prüfung und verweigerte damit genau den Start, den das Modell
+#: vorsieht: ``slot.py`` führt für ``FAILED`` die Verben ``{START, KILL}``, und
+#: ``_client_verb()`` sagt *„`failed`/`deferred` verdienen auch hier einen
+#: Retry — aber ausgelöst von einem Menschen per START."* **Das Modell erlaubt
+#: es, die Oberfläche bietet es an, und eine Prüfung eine Ebene tiefer
+#: verhinderte es** (m.rau, 2026-08-13: *„Einen lokalen Job im Status failed
+#: kann ich nicht starten!"*).
+#:
+#: **Angeglichen wird deshalb nicht.** Die Anzeige-Liste behält `failed` und
+#: `deferred` — ohne sie zeigte die Kachel während jeder Wartephase „noch keine
+#: Läufe", obwohl ein Retry längst terminiert war. Der Fehler war nie die Liste,
+#: sondern dass **eine** Liste **zwei** Fragen beantwortet.
+#:
+#: ``starting`` steht hier und fehlt oben: ein Slot im Setup hat noch keinen
+#: Prozess, aber gleich einen — ein zweiter Start daneben wäre ein Rennen.
+_PINNED_BLOCKING_STATUSES = ("running", "awaiting", "starting")
+
+#: Zustände, aus denen kein Lauf mehr kommt (#172) — deckungsgleich mit
+#: ``lifecycle.TERMINAL``.
+_PINNED_TERMINAL_STATUSES = ("complete", "error", "inactive", "zombie", "killed")
+
+
+def local_run_blocked(slug: str, *, db_path: Path | None = None,
+                      host: str | None = None) -> sqlite3.Row | None:
+    """Die Zeile, die einen Neustart von ``slug`` blockiert — oder ``None`` (#171).
+
+    Gegenstück zu :func:`local_run_live`, mit der **engeren** Liste: was
+    arbeitet, blockiert; was wartet, nicht. Zwei Funktionen für zwei Fragen,
+    statt einer Liste für beide.
+    """
+    return _pinned_row(slug, db_path=db_path, host=host,
+                       statuses=_PINNED_BLOCKING_STATUSES)
+
+
+def archive_pinned_terminal(slug: str, *, db_path: Path | None = None,
+                            host: str | None = None) -> bool:
+    """Einen terminalen gepinnten Slot vor dem Start archivieren (#172).
+
+    **Zusage m.rau, 2026-08-13:** *„Ein terminaler Status killed darf jedoch
+    nicht überschrieben werden. Ein terminaler Status wird vor START
+    archiviert, der Slot wird initialisiert. Das ist heute nicht so
+    realisiert."*
+
+    ``slot.py`` sagt dasselbe für ``ERROR``/``INACTIVE``/``ZOMBIE``/``KILLED``:
+    *„beide archivieren erst (A2)"*. Auf dem Scheduler-Pfad passiert das; auf
+    dem Client-Pfad legte ``run_pinned()`` eine **neue** Zeile an, und der alte
+    Lauf verschwand ersatzlos — er stand danach in keiner Journal-Zeile, obwohl
+    er stattgefunden hatte.
+
+    Rückgabe: ``True``, wenn etwas archiviert wurde.
+
+    **Ein laufender Slot bleibt unangetastet.** Ihn wegzuräumen hieße, einen
+    lebenden Prozess aus der Anzeige zu verlieren; ob ein zweiter Start
+    überhaupt erlaubt ist, entscheidet :func:`local_run_blocked` davor.
+    """
+    row = _pinned_row(slug, db_path=db_path, host=host,
+                      statuses=_PINNED_TERMINAL_STATUSES)
+    if row is None:
+        return False
+    conn = job_db.connect(job_db.db_path(db_path))
+    try:
+        # ``report_status(pending)`` **ist** der Archivierungsweg der Engine
+        # (A2, §5.6): er schreibt die Journal-Zeile und initialisiert den Slot
+        # in einem Schritt. Hier wird er benutzt statt nachgebaut — ein zweiter
+        # Weg ins Journal wäre genau die Doppelung, an der `#131` und `#140`
+        # hingen.
+        job_db.report_status(conn, row["id"], status="pending")
+        return True
+    finally:
+        conn.close()
 
 
 def _pinned_last_row(slug: str, *, db_path: Path | None = None,

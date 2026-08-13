@@ -679,12 +679,30 @@ def add_controller_routes(
             _t.sleep(1.0)
             workers = _worker_rows()
             return HTMLResponse(render.clients_fragment(workers))
+        # **Den Fehler anzeigen statt schlucken** (#174) — und diese Hälfte ist
+        # die wichtigere.
+        #
+        # Hier stand ein nacktes ``except Exception: pass``. Die Antwort war
+        # dann 200, das Board unverändert, und der Klick sah folgenlos aus —
+        # **egal ob er an einem 403, einem Netzfehler oder einer Datenlage
+        # scheiterte**. m.rau am 2026-08-13: *„Node blockieren. Funktioniert
+        # nicht. Ein Klick bleibt ohne Wirkung."*
+        #
+        # Der bekannte Kandidat für den 403 ist der Guard
+        # ``_require_approved_or_local``: er verlangt, dass der **klickende**
+        # Knoten selbst approved ist. Welcher Fall vorliegt, sagt jetzt die
+        # Oberfläche, statt dass man es raten muss. **Ohne diesen Schritt wäre
+        # die Ursache nicht einmal nachweisbar** — deshalb steht er vor ihr.
+        fehler: str | None = None
         try:
             client.node_action(node_id, verb)
-        except Exception:  # noqa: BLE001 — defensiv (§2.7)
-            pass
+        except Exception as exc:  # noqa: BLE001 — Route darf nie crashen (§2.7)
+            fehler = f"{verb} failed: {exc}"
+            activity.emit(log, logging.WARNING, "clients.node_action_failed",
+                          "Knoten-Aktion fehlgeschlagen", role="controller",
+                          error=str(exc))
         workers = _worker_rows()
-        return HTMLResponse(render.clients_fragment(workers))
+        return HTMLResponse(render.clients_fragment(workers, aktion_fehler=fehler))
 
     @app.post("/-/ui/clients/expected-version", include_in_schema=False)
     async def clients_set_expected_version(request: Request, deploy: bool = False):
