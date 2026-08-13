@@ -33,11 +33,23 @@ def delay(strategy: str, attempt: int, *, base: float = DEFAULT_BASE) -> float:
 
 
 def exhausted(attempt: int, attempts: int) -> bool:
-    """Sind die gewährten Wiederholungen aufgebraucht? (m.rau/bibi#128)
+    """Sind die gewährten Versuche aufgebraucht? (m.rau/bibi#128, #168)
 
-    ``attempts`` meint **N Retries zusätzlich zum ersten Lauf** (``parser.py``,
-    Default 0 = ein Versuch, kein Retry). ``attempt`` ist der Zähler der
-    bisherigen Versuche.
+    ``attempts`` meint **Gesamtversuche** (``parser.py``, Default 1 = ein
+    Versuch). ``attempt`` ist der Zähler der *vor* diesem Lauf beendeten
+    Versuche; mit ihm sind es ``attempt + 1``.
+
+    **Bis `v0.8.10` hieß das Feld etwas anderes als sein Name** — *N Retries
+    zusätzlich zum ersten Lauf* —, und der Kommentar in ``schedule/models.py``
+    musste diese Bedeutung gegen den Namen verteidigen. Ein Job mit
+    ``attempts: 3`` lief viermal; m.rau hat das am 2026-08-13 an
+    ``zustand-failed`` beobachtet und die neue Bedeutung freigegeben. **Ein
+    Feld, dessen Bedeutung ein Kommentar gegen seinen Namen verteidigen muss,
+    ist falsch benannt und nicht bloß missverstanden.**
+
+    ``attempts: 0`` heißt seither „kein Versuch". Abgefangen wird das eine
+    Ebene höher, in ``reserve_next()``: ein Job, der nicht laufen soll, wird gar
+    nicht erst reserviert.
 
     **Es gibt diese Funktion, weil dieselbe Entscheidung an vier Stellen stand
     und an einer davon fehlte.** ``wrapper._finish()`` traf sie für den
@@ -55,4 +67,4 @@ def exhausted(attempt: int, attempts: int) -> bool:
     **Kein viertes Sicherheitsnetz, sondern die eine Regel, auf die sich die
     drei berufen.** Wer künftig ``failed`` schreibt, fragt hier.
     """
-    return attempt >= attempts
+    return attempt + 1 >= attempts

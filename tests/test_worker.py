@@ -261,12 +261,13 @@ def test_retry_then_error(gitrepo: Path, monkeypatch):
     # Bugfix (User-Fund: "ein Failed wechselt sofort nach Ende auf ERROR, falls
     # keine Versuche mehr uebrig sind" - beobachtet aber ein Failed, das nie
     # wieder dispatcht und stattdessen nur durch einen externen Sweep zu error
-    # gezwungen wurde): attempts=2 gewaehrt zwei Retries (Versuch 1+2), attempt
-    # erreicht nach Versuch 2 den Wert 2 (== attempts) - das ist der zuletzt
-    # GEWAEHRTE, noch nicht VERBRAUCHTE Versuch, kein Erschoepfen. Erst der
-    # DRITTE Versuch (attempt_cur=2 >= attempts_max=2) loest in _finish() die
-    # synchrone Erschoepfung aus (failed->error im selben Wrapper-Aufruf,
-    # kein Sweep mehr noetig).
+    # gezwungen wurde): der Fehlschlag wird synchron im selben Wrapper-Aufruf
+    # erschoepft, kein Sweep noetig.
+    #
+    # **Seit #168 zaehlt attempts Gesamtversuche**: attempts=2 heisst ZWEI
+    # Laeufe, nicht drei. Hier stand bis v0.8.10 ein dritter Dispatch, und der
+    # Kommentar musste erklaeren, warum "attempt == attempts" noch kein
+    # Erschoepfen ist - genau die Erklaerung, die den Feldnamen widerlegte.
     monkeypatch.setenv("BIBI_RETRY_BASE", "0")  # kein Warten zwischen Versuchen
     jid = _seed(gitrepo, "boom/boom.md",
                 '---\nschedule: now\njob: "exit 1"\nattempts: 2\n---\n')
@@ -283,17 +284,7 @@ def test_retry_then_error(gitrepo: Path, monkeypatch):
     conn.commit()
     conn.close()
 
-    assert w.tick_once() is True        # Versuch 2 (failed→running) → failed (attempt 2, letzter gewaehrter Versuch)
-    row = _wait_status(gitrepo, jid, "failed")   # nicht terminal, s. #91
-    assert row["attempt"] == 2
-
-    # failed (attempt==attempts) → weiterhin reservierbar, kein Sweep noetig
-    conn = job_db.connect(dbp)
-    conn.execute("UPDATE jobs SET next_fire_at=? WHERE id=?", (time.time(), jid))
-    conn.commit()
-    conn.close()
-
-    assert w.tick_once() is True        # Versuch 3 (failed→running) → erschoepft, SYNCHRON error
+    assert w.tick_once() is True        # Versuch 2 = der letzte → erschoepft, SYNCHRON error
     row = _wait_terminal(gitrepo, jid)
     assert row["status"] == "error"
     conn = job_db.connect(dbp)
@@ -307,17 +298,22 @@ def test_retry_then_error(gitrepo: Path, monkeypatch):
 
 @pytest.mark.slow
 def test_attempts_zero_reaches_error_without_hanging(gitrepo: Path, monkeypatch):
-    """User-Fund 2026-07-14 (gmail-transfer via /run): execute_reservation()
-    las reservation.get("attempts") or 1 — bei absichtlich auf 0 gesetzten
-    attempts (run_pinned()s Default für /run: "kein Retry") macht Pythons
-    or aus der 0 fälschlich eine 1. Der Wrapper nahm dann bei Fehlschlag den
-    Retry-Zweig (failed + next_fire_at) statt sofort zu erschöpfen
-    (failed→error) — ohne laufenden Scheduler-Loop (CLI/`/-/run`) wird dieser
-    Retry nie bedient: der Job blieb für immer "failed" hängen (nicht
-    TERMINAL), landete nie im Journal."""
+    """Ein einzelner gewährter Versuch erreicht `error`, ohne zu hängen.
+
+    User-Fund 2026-07-14 (gmail-transfer via /run): `execute_reservation()` las
+    `reservation.get("attempts") or 1` — aus einer absichtlichen 0 machte Pythons
+    `or` eine 1. Der Wrapper nahm dann bei Fehlschlag den Retry-Zweig (failed +
+    next_fire_at) statt sofort zu erschöpfen; ohne laufenden Scheduler-Loop
+    (CLI/`/-/run`) wird dieser Retry nie bedient, und der Job blieb für immer
+    `failed` hängen — nicht terminal, nie im Journal.
+
+    **Der Wert heißt seit #168 `1` statt `0`, die Zusage ist dieselbe.**
+    `attempts` zählt Gesamtversuche; „ein Lauf, kein Retry" schreibt sich damit
+    als 1. Was 0 jetzt bedeutet, prüft der Test darunter.
+    """
     monkeypatch.setenv("BIBI_RETRY_BASE", "0")
     jid = _seed(gitrepo, "boom0/boom0.md",
-                '---\nschedule: now\njob: "exit 1"\nattempts: 0\n---\n')
+                '---\nschedule: now\njob: "exit 1"\nattempts: 1\n---\n')
     assert _worker(gitrepo).tick_once() is True
     row = _wait_terminal(gitrepo, jid)
     assert row["status"] == "error"
@@ -336,24 +332,24 @@ def test_attempts_zero_reaches_error_without_hanging(gitrepo: Path, monkeypatch)
 def test_retry_exponential_3x_to_error(gitrepo: Path, monkeypatch):
     """PLAN-10 §10.1: 3 Fehlversuche mit exponentialem Backoff → ERROR; Slot nach FAILED frei.
 
-    Bugfix (User-Fund, s. test_retry_then_error oben): attempts=3 gewaehrt drei
-    Retries -> vier Dispatches insgesamt (Versuch 1-3 -> failed mit attempt
-    1/2/3, erst der VIERTE Versuch erschoepft synchron zu error, kein Sweep
-    mehr noetig)."""
+    **Seit #168 zaehlt attempts Gesamtversuche**: attempts=3 heisst DREI
+    Dispatches (Versuch 1-2 -> failed mit attempt 1/2, der dritte erschoepft
+    synchron zu error, kein Sweep noetig). Bis v0.8.10 waren es vier, und genau
+    das hat m.rau am 2026-08-13 an zustand-failed beobachtet."""
     monkeypatch.setenv("BIBI_RETRY_BASE", "0")  # sofort retribar
     jid = _seed(gitrepo, "boom3/boom3.md",
                 '---\nschedule: now\njob: "exit 2"\nattempts: 3\nbackoff: exponential\n---\n')
     w = _worker(gitrepo)
     dbp = gitrepo / "data" / "jobs.sqlite"
 
-    for attempt_n in (1, 2, 3, 4):
+    for attempt_n in (1, 2, 3):
         assert w.tick_once() is True
-        # Versuch 1–3 enden in `failed` — einem Zwischenzustand, den
-        # `_wait_terminal()` nie sieht (m.rau/bibi#91). Erst der vierte
+        # Versuch 1–2 enden in `failed` — einem Zwischenzustand, den
+        # `_wait_terminal()` nie sieht (m.rau/bibi#91). Erst der dritte
         # erschöpft synchron zu `error` und ist damit terminal.
-        row = (_wait_status(gitrepo, jid, "failed") if attempt_n < 4
+        row = (_wait_status(gitrepo, jid, "failed") if attempt_n < 3
                else _wait_terminal(gitrepo, jid))
-        if attempt_n < 4:
+        if attempt_n < 3:
             assert row["attempt"] == attempt_n
             # Slot nach FAILED sofort frei (Wrapper exitiert, _procs wird geleert)
             import time as _time
@@ -1515,3 +1511,26 @@ def test_run_wrapper_passes_the_ping_db_to_the_wrapper(gitrepo: Path, monkeypatc
     )
     assert captured_env["BIBI_PING_DB_PATH"] == "/tmp/jobs.sqlite"
     assert captured_env["BIBI_JOB_ID"] == "j1"
+
+
+@pytest.mark.slow
+def test_attempts_null_wird_nicht_dispatcht(gitrepo: Path, monkeypatch):
+    """`attempts: 0` heißt seit #168 „kein Versuch" — der Job startet nicht.
+
+    Das ist die einzige Stelle, an der die neue Bedeutung einen Job **anhält**
+    statt ihn früher zu beenden, und sie sitzt bewusst in `reserve_next()`: ein
+    Job, der nicht laufen soll, wird gar nicht erst reserviert. Vorher war
+    `attempts: 0` der Ausdruck für „ein Lauf, kein Retry" — dafür steht jetzt
+    die 1, geprüft im Test darüber.
+    """
+    monkeypatch.setenv("BIBI_RETRY_BASE", "0")
+    jid = _seed(gitrepo, "nie/nie.md",
+                '---\nschedule: now\njob: "exit 1"\nattempts: 0\n---\n')
+    assert _worker(gitrepo).tick_once() is False, "ein Job ohne Versuch darf nicht dispatchen"
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    try:
+        row = conn.execute("SELECT status, started_at FROM jobs WHERE id=?", (jid,)).fetchone()
+        assert row["status"] == "pending"
+        assert row["started_at"] is None
+    finally:
+        conn.close()

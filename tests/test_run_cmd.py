@@ -110,7 +110,11 @@ def test_run_cmd_returns_1_on_nonzero_exit(gitrepo, monkeypatch, capsys):
         row = conn.execute("SELECT attempts FROM jobs").fetchone()
     finally:
         conn.close()
-    assert row["attempts"] == 0
+    # 1 statt 0 seit #168: `attempts` zaehlt Gesamtversuche, und der
+    # CLI-Default heisst unveraendert "ein Lauf, kein Retry" — nur mit
+    # der Zahl, die das auch bedeutet. Das Verhalten darueber (Exit 1,
+    # "[error]", kein zweiter Lauf) ist unveraendert und steht oben.
+    assert row["attempts"] == 1
 
 
 # ── PLAN-32 Stufe 32.3 — pinned-Job-Verwaltung (list/kill/reset) ────────────

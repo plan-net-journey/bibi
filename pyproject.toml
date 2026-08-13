@@ -1,6 +1,6 @@
 [project]
 name = "bibi"
-version = "0.8.9"
+version = "0.8.10"
 description = "bibi — deploybare Engine (bibi-ctrl + Skills/Agents) für Markdown-geführte Team-Repos"
 requires-python = ">=3.11"
 # PEP 639: SPDX-Ausdruck statt `License ::`-Classifier (die sind damit deprecated).

@@ -55,10 +55,15 @@ from tests.test_worker import gitrepo  # noqa: F401 — Fixture per Import
 
 
 @pytest.mark.parametrize("attempt,attempts,erschoepft", [
-    # ``attempts`` meint N Retries ZUSÄTZLICH zum ersten Lauf (parser.py:249).
-    (0, 0, True),    # Default: ein Versuch, kein Retry — nach dem ersten ist Schluss
-    (0, 2, False),   # zwei Retries gewährt, keiner verbraucht
-    (1, 2, False),
+    # ``attempts`` meint **Gesamtversuche** (#168, Freigabe m.rau 2026-08-13).
+    # ``attempt`` ist der Zähler der vor diesem Lauf beendeten Versuche; mit ihm
+    # sind es ``attempt + 1``. Diese Tabelle stand bis `v0.8.10` auf der alten
+    # Bedeutung — N Retries *zusätzlich* zum ersten Lauf —, und genau eine Zeile
+    # unterscheidet die beiden: bei ``attempts: 2`` ist nach dem **zweiten** Lauf
+    # Schluss, nicht nach dem dritten.
+    (0, 0, True),    # „kein Versuch" — reserve_next() dispatcht solche Zeilen gar nicht
+    (0, 2, False),   # erster von zwei Versuchen läuft gerade
+    (1, 2, True),    # zweiter und letzter — danach `error`
     (2, 2, True),    # beide verbraucht
     (3, 2, True),    # mehr als gewährt (Anomalie) — erst recht erschöpft
 ])
