@@ -382,18 +382,23 @@ def status_gruppe(status: str | None, *, next_fire_at: float | None) -> str | No
     return None
 
 
-def trifft_filter(row: JobRow, *, typ: list[str], status: list[str],
-                  journal: list[str]) -> bool:
+def trifft_filter(row: JobRow, *, typ: list[str], status: list[str]) -> bool:
     """Ob eine Zeile die aktuelle Filterauswahl übersteht.
 
     Alle Toggles sind on/off und mehrfach wählbar — man kann `job` und `app`
     zugleich sehen. **Keine Auswahl heißt keine Einschränkung**, nicht „nichts
     anzeigen".
 
-    Die Staffelung ist der Grund für Bänder statt einer flachen Liste: `TYPE`
-    wirkt überall, `STATUS` nur auf die ersten beiden Bänder (im Journal steht
-    Historie, die keinen laufenden Zustand hat), die drei Journal-Filter nur
-    auf das dritte.
+    `TYPE` wirkt überall, `STATUS` nur auf die ersten beiden Bänder — im
+    Journal steht Historie, die keinen laufenden Zustand hat.
+
+    **Die dritte Achse (`local`/`1shot`/`gone`) ist mit `v0.8.12` ersatzlos
+    gefallen** (#180, Entscheidung m.rau 2026-08-13: *„weg mit der Achse, auch
+    auf dem Job Screen."*). Sie hatte zwei brauchbare Werte und einen toten;
+    die Einbuße — `local` war der einzige Zugang zu *„welcher Job hat hier
+    schon lokal gelaufen"* — ist benannt und abgenickt: *„Verstehe, aber diese
+    Frage ist nachrangig."* Kommt sie zurück, dann als Spalte oder Chip an der
+    Zeile, nicht als Achse.
     """
     from bibi.schedule.models import display_kind
 
@@ -406,33 +411,6 @@ def trifft_filter(row: JobRow, *, typ: list[str], status: list[str],
         g = status_gruppe(row.scheduler.get("row_status") or row.scheduler.get("status"),
                           next_fire_at=row.scheduler.get("next_fire_at"))
         if g not in status:
-            return False
-
-    # **Die dritte Achse wirkt über alle Bänder (#31), nicht nur im Journal.**
-    #
-    # Sie hing bis dahin an `row.segment is Segment.JOURNAL` und filterte nur
-    # dort. Zwei ihrer drei Werte beschreiben aber Eigenschaften, die ein Job in
-    # **jedem** Band haben kann: `local` trifft jeden Job mit lokalen Läufen —
-    # `EngineCI` steht im SCHEDULE-Band und hat neun —, `1shot` jeden `at`-Job.
-    #
-    # **Ein Filter, der nur auf einem Drittel der Zeilen wirkt, aber über allen
-    # steht, ist keine Achse, sondern eine Falle:** er sieht aus, als hätte er
-    # die anderen Bänder geprüft und für passend befunden, während er sie
-    # überhaupt nicht angesehen hat.
-    #
-    # `gone` bleibt journal-eigen — es beschreibt ein Verhältnis zum Vault, das
-    # ein Job, den es noch gibt, per Definition nicht hat. Es ist damit der
-    # einzige Wert, der ohne Treffer dasteht, wenn kein Journal-Band sichtbar
-    # ist; der Screen graut ihn dann aus, statt ihn zu verstecken.
-    if journal:
-        passt = False
-        if "gone" in journal and row.relation in ("dropped", "deleted"):
-            passt = True
-        if "1shot" in journal and row.spec.get("at"):
-            passt = True
-        if "local" in journal and row.local:
-            passt = True
-        if not passt:
             return False
 
     return True
@@ -457,30 +435,73 @@ def _sortwert(row: JobRow, nach: str):
         # Nach dem Prozentwert, nicht nach dem Text: als Zeichenkette wäre
         # "100%" kleiner als "74%".
         return row.quote.prozent if row.quote else None
+    # ── Die drei, die Werte trugen und keine Ordnung hatten (#179) ──────────
+    #
+    # *„aber die Daten existieren, oder? Können wir sie dazu holen?"* (m.rau,
+    # 2026-08-13) — **es muss nichts geholt werden.** `JobRow.local` ist die
+    # jüngste lokale Journal-Zeile dieses Buckets und trägt denselben Satz wie
+    # die Scheduler-Seite; die Client-Zellen der Tabelle rendern längst daraus.
+    # Sie zeigten also Werte, nach denen sich nicht sortieren ließ, **obwohl der
+    # Sortierer dieselbe Zeile in der Hand hielt.**
+    #
+    # `runtime` sortiert nach `runtime_p90` — dem Perzentil, das die Spalte
+    # zeigt (#132), nicht nach einer Ersatzgröße. Im Ticket stand zunächst das
+    # Gegenteil, begründet damit, die Zelle ticke im Browser und eine
+    # serverseitige Ordnung laufe ihr davon. **Sie tickt nicht**; der Irrtum
+    # ist mit #190 aufgeflogen, bevor danach gebaut wurde.
+    if nach == "runtime":
+        return row.scheduler.get("runtime_p90")
+    if nach == "client_status":
+        return row.local.get("row_status") or row.local.get("status") or None
+    if nach == "client_last":
+        # Dieselbe Frage wie `last` auf der Scheduler-Seite, nur die andere
+        # Quelle: wann lief hier zuletzt etwas?
+        return row.local.get("finished_at") or row.local.get("started_at")
     return None
 
 
-def sortiere(rows: list[JobRow], *, nach: str, richtung: str = "asc") -> list[JobRow]:
-    """Sortiert **innerhalb jedes Bandes**, nicht über die Bänder hinweg.
+def sortiere(rows: list[JobRow], *, nach: str, richtung: str = "asc",
+             group: bool = True) -> list[JobRow]:
+    """Sortiert innerhalb jedes Bandes — oder über die ganze Liste (#178).
 
-    Die Bänder sind eine Klassifikation, keine Sortierordnung; eine Sortierung
-    über sie hinweg zerstörte genau die Aussage, für die es sie gibt.
+    **Mit ``group``** sind die Bänder eine Klassifikation *und* eine
+    Reihenfolge; eine Sortierung über sie hinweg zerstörte genau die Aussage,
+    für die es sie gibt.
 
-    Zeilen ohne Wert stehen immer am Ende, unabhängig von der Richtung.
+    **Ohne ``group`` existieren sie nicht mehr** — weder sichtbar noch als
+    Reihenfolge. Festlegung m.rau, 2026-08-13: *„ohne Gruppierung bleiben die
+    Gruppen nicht erkennbar, und das ist gewollt so. Kombiniert mit Sortierung
+    sind keine zwei Gruppen gebraucht!"*
+
+    **Der Parameter erreichte diese Funktion bis `v0.8.12` gar nicht**, während
+    der Docstring von ``jobs_screen()`` fünf Zeilen über dem Aufruf das
+    Gegenteil zusagte: *„Die Sortierung wirkt dann über die ganze Liste — genau
+    das ist der Zweck des Schalters."* Was man sah, war deshalb nicht
+    „unsortiert", sondern **zweimal sortiert**: erst alle SCHEDULE-Zeilen nach
+    der Spalte, dann alle ADHOC-Zeilen nach derselben. Ohne sichtbare Bandköpfe
+    ist das von einer kaputten Sortierung nicht zu unterscheiden — und genau so
+    hat m.rau es gemeldet.
+
+    Zeilen ohne Wert stehen immer am Ende, unabhängig von der Richtung und
+    davon, ob gruppiert wird.
     """
     umgekehrt = richtung == "desc"
-    reihenfolge = {Segment.SCHEDULE: 0, Segment.ADHOC: 1, Segment.JOURNAL: 2}
 
-    aus: list[JobRow] = []
-    for seg in (Segment.SCHEDULE, Segment.ADHOC, Segment.JOURNAL):
-        drin = [r for r in rows if r.segment is seg]
+    def _band(drin: list[JobRow]) -> list[JobRow]:
         # Getrennt statt ueber einen zusammengesetzten Schluessel: der muesste
         # Zahlen und Zeichenketten in derselben Position vergleichen, und das
         # geht in Python nicht.
         mit = [r for r in drin if _sortwert(r, nach) is not None]
         ohne = [r for r in drin if _sortwert(r, nach) is None]
         mit.sort(key=lambda r: _sortwert(r, nach), reverse=umgekehrt)
-        aus.extend(mit + ohne)
+        return mit + ohne
+
+    if not group:
+        return _band(list(rows))
+
+    aus: list[JobRow] = []
+    for seg in (Segment.SCHEDULE, Segment.ADHOC, Segment.JOURNAL):
+        aus.extend(_band([r for r in rows if r.segment is seg]))
     return aus
 
 

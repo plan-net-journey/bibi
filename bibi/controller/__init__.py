@@ -498,11 +498,14 @@ def add_controller_routes(
     #: 180 Tage — eine Ansichtswahl ist eine UI-Präferenz und kein Sitzungswert.
     _VIEW_COOKIE_MAX_AGE = 60 * 60 * 24 * 180
 
-    #: Die sechs Achsen des Jobs-Screens, je mit ihrem Cookie-Namen. Die ersten
-    #: drei sind Mehrfachauswahl (kommagetrennt abgelegt), die letzten drei
-    #: Einzelwerte.
-    _VIEW_LISTEN = (("typ", "bibi_jobs_typ"), ("status", "bibi_jobs_status"),
-                    ("journal", "bibi_jobs_journal"))
+    #: Die Achsen des Jobs-Screens, je mit ihrem Cookie-Namen — Mehrfachauswahl,
+    #: kommagetrennt abgelegt.
+    #:
+    #: **`journal` ist mit #180 gefallen**, samt seinem Cookie. Ein bestehender
+    #: `bibi_jobs_journal` wird ab jetzt nicht mehr gelesen und läuft nach 180
+    #: Tagen von selbst ab; ihn aktiv zu löschen hieße, jeder Antwort ein
+    #: `Set-Cookie` für etwas mitzugeben, das es nicht mehr gibt.
+    _VIEW_LISTEN = (("typ", "bibi_jobs_typ"), ("status", "bibi_jobs_status"))
 
     def _jobs_view(request: Request, sort: str | None, direction: str | None):
         """Die effektive Ansicht: Query gewinnt, sonst die gemerkte Wahl (#156).
@@ -1112,7 +1115,7 @@ def add_controller_routes(
         resp = HTMLResponse(render.jobs_page_v5(
             zeilen, now=jetzt, daemon_status=_status(), git_status=_feed_git_status(),
             host_url=_scheduler_url(), scheduler=_sched[0], scheduler_stale_since=_sched[1],
-            typ=v["typ"], status=v["status"], journal=v["journal"],
+            typ=v["typ"], status=v["status"],
             sort=v["sort"], direction=v["direction"], group=v["group"],
             public_host=config.public_host()))
         _merke_jobs_view(resp, v)
@@ -1372,7 +1375,7 @@ def add_controller_routes(
         _, _stale = _scheduler_status()
         resp = HTMLResponse(render.jobs_list_fragment(
             zeilen, jetzt, typ=v["typ"], status=v["status"],
-            journal=v["journal"], sort=v["sort"], direction=v["direction"],
+            sort=v["sort"], direction=v["direction"],
             group=v["group"], public_host=config.public_host(),
             scheduler_offline=bool(_stale)))
         # **Auch hier merken** (#83). Bis dahin las diese Route den Cookie und
@@ -1431,7 +1434,7 @@ def add_controller_routes(
             zeilen, now=jetzt, daemon_status=_status(),
             git_status=_feed_git_status(), host_url=_scheduler_url(),
             scheduler=_sched[0], scheduler_stale_since=_sched[1],
-            typ=v["typ"], status=v["status"], journal=v["journal"],
+            typ=v["typ"], status=v["status"],
             sort=v["sort"], direction=v["direction"], group=v["group"],
             public_host=config.public_host()))
         _merke_jobs_view(resp, v)
@@ -1449,7 +1452,7 @@ def add_controller_routes(
         _, _stale = _scheduler_status()
         resp = HTMLResponse(render.journal_list_fragment(
             zeilen, jetzt, typ=v["typ"], status=v["status"],
-            journal=v["journal"], sort=v["sort"], direction=v["direction"],
+            sort=v["sort"], direction=v["direction"],
             group=v["group"], public_host=config.public_host(),
             scheduler_offline=bool(_stale)))
         _merke_jobs_view(resp, v)

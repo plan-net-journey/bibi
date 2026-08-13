@@ -82,7 +82,7 @@ def test_the_groups_cover_all_eleven_states_without_overlap():
 
 def test_no_filter_means_no_restriction():
     zeilen = [_row("a"), _row("b")]
-    assert all(trifft_filter(z, typ=[], status=[], journal=[]) for z in zeilen)
+    assert all(trifft_filter(z, typ=[], status=[]) for z in zeilen)
 
 
 def test_type_filters_accept_several_values_at_once():
@@ -92,59 +92,22 @@ def test_type_filters_accept_several_values_at_once():
     app = _row("a", spec={"payload": "echo hi", "app_port": 9100})
     claude = _row("c", spec={"payload": "claude: hallo"})
     treffer = [z.slug for z in (job, app, claude)
-               if trifft_filter(z, typ=["job", "app"], status=[], journal=[])]
+               if trifft_filter(z, typ=["job", "app"], status=[])]
     assert treffer == ["j", "a"]
 
 
 def test_status_filter_uses_the_groups():
     laeuft = _row("l", sched={"row_status": "running"})
     haengt = _row("h", sched={"row_status": "error"})
-    assert trifft_filter(laeuft, typ=[], status=["running"], journal=[])
-    assert not trifft_filter(haengt, typ=[], status=["running"], journal=[])
+    assert trifft_filter(laeuft, typ=[], status=["running"])
+    assert not trifft_filter(haengt, typ=[], status=["running"])
 
 
 def test_status_filter_does_not_touch_the_journal_band():
     """`STATUS` wirkt auf Band 1 und 2 — im Journal steht Historie, und die
     hat keinen laufenden Zustand, den man filtern könnte."""
     alt = _row("alt", segment=Segment.JOURNAL, sched={"row_status": "complete"})
-    assert trifft_filter(alt, typ=[], status=["running"], journal=[])
-
-
-def test_the_third_axis_bites_in_every_band_now():
-    """**Hier stand bis `#31` das Gegenteil** — `test_journal_filters_only_bite_
-    in_the_third_band`, mit der Zusage, ein Job aus dem SCHEDULE-Band komme
-    durch jeden Journal-Filter hindurch.
-
-    Die Zusage ist aufgehoben, nicht gebrochen: `local` und `1shot`
-    beschreiben Eigenschaften, die ein Job in **jedem** Band haben kann
-    (`EngineCI` steht im SCHEDULE-Band und hat neun lokale Läufe). Ein Filter,
-    der nur auf einem Drittel der Zeilen wirkt, aber über allen steht, sieht
-    aus, als hätte er die anderen geprüft und für passend befunden."""
-    geplant = _row("g", segment=Segment.SCHEDULE)
-    assert not trifft_filter(geplant, typ=[], status=[], journal=["gone"]), \
-        "ein aktiver Job kommt weiterhin durch `gone` — die Achse wirkt nicht"
-
-
-def test_gone_selects_rows_without_a_file():
-    """Vormals `dropped`. Umbenannt mit `#31`: die Werte stehen jetzt neben
-    kurzen Spaltennamen, und `dropped` klang nach einem Fehler beim Ablegen
-    statt nach dem Zustand, den es beschreibt."""
-    weg = _row("weg", segment=Segment.JOURNAL, relation="dropped")
-    da = _row("da", segment=Segment.JOURNAL, relation=None)
-    assert trifft_filter(weg, typ=[], status=[], journal=["gone"])
-    assert not trifft_filter(da, typ=[], status=[], journal=["gone"])
-
-
-def test_oneshot_selects_at_jobs_in_any_band():
-    """Vormals `oneshot`, und vormals nur im Journal-Band. Beides mit `#31`:
-    ein `at`-Job, dessen Termin noch bevorsteht, steht im SCHEDULE-Band — und
-    ist genauso einmalig wie einer, der schon gelaufen ist."""
-    einmal = _row("at1", segment=Segment.JOURNAL, spec={"at": "2026-07-28T15:07:00"})
-    geplant = _row("at2", segment=Segment.SCHEDULE, spec={"at": "2026-09-01T10:00:00"})
-    zyklisch = _row("cron", segment=Segment.JOURNAL, spec={"schedule": "0 * * * *"})
-    assert trifft_filter(einmal, typ=[], status=[], journal=["1shot"])
-    assert trifft_filter(geplant, typ=[], status=[], journal=["1shot"])
-    assert not trifft_filter(zyklisch, typ=[], status=[], journal=["1shot"])
+    assert trifft_filter(alt, typ=[], status=["running"])
 
 
 # ── Sortierung ──────────────────────────────────────────────────────────────
