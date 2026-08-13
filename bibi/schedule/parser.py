@@ -255,18 +255,20 @@ def parse_text(
     # ── Ganzzahl-Felder (§5.5) ───────────────────────────────────────────────
     errors: list[str] = []
     priority, e = _coerce_int(fm, "priority", 0); errors += [e] if e else []
-    # Default 0 (nicht 1!) — User-Fund 2026-07-21 (Bibi4 Batch 6, Witz.md lief
-    # 2× vor "error"): der Wrapper prüft "attempt_cur < attempts_max"
-    # (_finish()), attempts=1 gewährt also EINEN Retry (2 Gesamtversuche),
-    # nicht "1 Versuch, kein Retry" wie der Feldname nahelegt — "attempts:"
-    # meint N Retries zusätzlich zum ersten Lauf (0c2b822-Commit-Text: "attempts:
-    # 2 = 2 Retries, 3 Gesamtversuche"). Default 0 = ein Versuch, kein
-    # automatischer Retry, ohne jede Frontmatter-Angabe — deckt sich mit
-    # run_pinned()s längst bewusst gewähltem CLI-Default (worker.py, dortiger
-    # Docstring). Kein Betriebsrisiko: alle produktiven Collectors
-    # (news-aggregator, gmail-*, calendar-transfer, daily-digest) setzen
-    # attempts: bereits explizit.
-    attempts, e = _coerce_int(fm, "attempts", 0); errors += [e] if e else []
+    # **Default 1 seit `v0.8.10` (#168) — und der Feldname stimmt jetzt.**
+    #
+    # Hier stand bis dahin Default 0, mit einer langen Begründung dafür, warum
+    # `attempts: 1` zwei Läufe ergibt: *„nicht ‚1 Versuch, kein Retry', wie der
+    # Feldname nahelegt"*. Der Kommentar musste die Bedeutung des Feldes gegen
+    # seinen eigenen Namen verteidigen und räumte im selben Satz ein, dass der
+    # Name das Gegenteil nahelegt. **Freigabe m.rau, 2026-08-13: `attempts`
+    # sind Gesamtversuche.** Der Default heißt damit unverändert „ein Versuch,
+    # kein Retry" — nur sagt das Feld es jetzt auch.
+    #
+    # Bestehende Job-MDs werden ausdrücklich **nicht** angepasst: aus
+    # `attempts: 3` werden 3 Läufe statt bisher 4. Der Bruch ist angesagt und
+    # steht als Zusage im Prüfumfang der neunten Klammer.
+    attempts, e = _coerce_int(fm, "attempts", 1); errors += [e] if e else []
     # User-Feedback 2026-07-04: silence_timeout/hitl_timeout zusammengelegt —
     # claude:-Payloads (Batch, run_job, kein HITL) bekommen den kurzen Default,
     # echte Apps (long-lived, HITL-fähig über run_app) den langen. PLAN-31

@@ -6008,19 +6008,33 @@ def _slot_kachel(kachel, *, now: float) -> str:
                 # `#44` an der Region eigens rettet.
                 teile.append('<a href="#runs" class="tile-weg" '
                              'title="jump to the runs of this job">runs ↓</a>')
-        elif kachel.status == "pending" and kachel.slot.get("next_fire_at"):
+        elif (kachel.status in ("pending", "failed", "deferred")
+                and kachel.slot.get("next_fire_at")):
             # `pending · next 12:00` — ein reservierter Platz mit Termin. Ohne
             # `next` bleibt es beim blossen `pending`: das ist `adhoc`, ein
             # freier Platz ohne Verabredung.
+            #
+            # **`failed` und `deferred` stehen seit #169 mit hier.** Die
+            # Bedingung fragte nur nach `pending` und war damit zu eng, nicht
+            # die Datenlage: ein wartender Slot trägt seinen Retry- bzw.
+            # Resume-Termin längst in `next_fire_at` — `backoff` hat ihn
+            # berechnet, die Zeile hat ihn, gezeigt wurde er nicht. Die
+            # Job-Detail-Zeile (`_job_bits()`) führt dieselben drei Zustände
+            # schon seit jeher; die Kachel blieb dahinter zurück.
             teile.append(f'next {_abs_time(kachel.slot["next_fire_at"])}')
         if begonnen is not None and kachel.status not in jobs_view_ohne_lauf():
             # Eine Dauer, kein Zeitpunkt — FE §2 verlangt absolute *Zeitpunkte*
-            # und lässt Dauern ausdrücklich zu (`no contact for 4m`). Gemessen
-            # gegen das Ende, wo es eines gibt: ein blockierter Lauf steht unter
-            # A2 tagelang, und seine Laufzeit darf dabei nicht mitwachsen.
+            # und lässt Dauern ausdrücklich zu (`no contact for 4m`).
+            #
+            # **Gemessen gegen das Ende, wo der Lauf zu Ende ist — und das ist
+            # er erst im Terminalzustand** (#170). Dieselbe Korrektur wie in
+            # `jobs_view.slot_run()`, und aus demselben Grund: die alte Frage
+            # lautete „gibt es ein `finished_at`", und die beantwortet ein
+            # wartender `failed`-Slot seit #166 mit Ja, ohne fertig zu sein.
+            terminal = kachel.status in _TERMINAL_STATUSES
             teile.append(_human_duration(
-                (beendet if beendet is not None else now) - begonnen,
-                seit=begonnen if beendet is None else None))
+                (beendet if terminal and beendet is not None else now) - begonnen,
+                seit=None if terminal else begonnen))
         zustand = " &middot; ".join(teile)
     return (
         f'<div class="tile"><div class="tile-head">{titel}{app}</div>'

@@ -539,6 +539,7 @@ def slot_run(slot: dict, *, src: str, now: float) -> dict | None:
     ``pending``-Slot ist ein reservierter Platz und steht in der Kachel.
     """
     from bibi.daemon import job_db
+    from bibi.schedule import lifecycle
 
     # `row_status` zuerst — in der Scheduler-Antwort heißt das Feld so, und
     # `status` ist dort `None` (Befund bei der Abnahme, 2026-08-03).
@@ -572,12 +573,23 @@ def slot_run(slot: dict, *, src: str, now: float) -> dict | None:
         # nicht durch eine Sonderregel.
         "sort_at": finished if finished is not None else started,
         "exit_code": slot.get("exit_code"),
-        # Gegen das Ende gemessen, wo es eines gibt, sonst gegen jetzt. Ein
-        # blockierter Lauf steht unter A2 tagelang im Slot, und seine Laufzeit
-        # darf dabei nicht mitwachsen — genau der Fehler, den `exec_runtime`
-        # beim Scheduler macht (`6d 1h` für einen Drei-Sekunden-Lauf,
-        # m.rau/bibi#123).
-        "exec_runtime": (finished if finished is not None else now) - started,
+        # **Gegen das Ende gemessen, wo der Lauf zu Ende ist — und das ist er
+        # erst im Terminalzustand** (#170).
+        #
+        # Hier stand bis `v0.8.10` „wo es ein Ende gibt", also die Frage nach
+        # `finished_at`. Die Begründung daneben lautete: *„ein blockierter Lauf
+        # steht unter A2 tagelang im Slot, und seine Laufzeit darf dabei nicht
+        # mitwachsen"* — richtig für einen **terminalen** Slot, falsch für
+        # `failed` und `deferred`, die beide keine sind. Dort wartet der Job auf
+        # seinen nächsten Versuch, sein Aufenthalt im Scheduler läuft weiter,
+        # und die Anzeige fror ihn trotzdem ein.
+        #
+        # Seit #166 trägt `started_at` den **initialen** Start; diese Zahl ist
+        # damit die Brutto-Zeit, die Aufenthaltsdauer. Die kumulierte Netto-Zeit
+        # steht als eigenes Feld in der Zeile — zwei Größen, zwei Namen, weil
+        # sie nur im Einfachfall zusammenfallen.
+        "exec_runtime": ((finished if finished is not None else now) - started
+                         if status in lifecycle.TERMINAL else now - started),
         "commit_sha": slot.get("commit_sha"),
         "host": slot.get("host"),
         "worker": slot.get("worker"),

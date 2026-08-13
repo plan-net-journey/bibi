@@ -715,12 +715,15 @@ def execute_reservation(
     jid = reservation["id"]
     run_id = job_db.run_id_for(reservation["slug"], jid, reservation.get("fire", 0))
     host = host or socket.gethostname()
-    # ``or 0``/``or 1`` wären hier falsch: ``attempts=0`` ist ein gültiger,
-    # bewusst gesetzter Wert (run_pinned()s "kein Retry", s. dessen
-    # Docstring) — ``0 or 1`` liefert in Python fälschlich ``1`` und hebelt
-    # ihn aus. User-Fund 2026-07-14 (gmail-transfer via /run): der Wrapper sah
-    # dadurch attempts_max=1 statt 0, nahm bei Fehlschlag den Retry-Zweig
-    # (failed + next_fire_at) statt sofort zu erschöpfen (failed→error) — ohne
+    # ``or 1`` wäre hier falsch, und der Grund hat sich mit #168 nur verschoben:
+    # ``attempts`` ist ein bewusst gesetzter Wert, und ein Rückfall über ``or``
+    # verwechselt „nicht angegeben" mit „auf 0 gesetzt". Seit #168 heißt 0 „kein
+    # Versuch" statt „ein Versuch ohne Retry" — abgefangen wird das in
+    # ``reserve_next()``, hier zählt nur, dass der gesetzte Wert durchkommt.
+    #
+    # User-Fund 2026-07-14 (gmail-transfer via /run), noch unter der alten
+    # Bedeutung: der Wrapper sah attempts_max=1 statt 0, nahm bei Fehlschlag den
+    # Retry-Zweig (failed + next_fire_at) statt sofort zu erschöpfen — ohne
     # laufenden Scheduler-Loop (CLI/`/-/run`) wird der Retry nie bedient: der
     # Job blieb für immer "failed" hängen (lifecycle.TERMINAL schließt failed
     # bewusst aus), landete nie im Journal, ``bibi-ctrl run`` hing in
@@ -1110,7 +1113,7 @@ def run_pinned(
     model: str | None = None, repo_root: Path | None = None,
     work_dir: Path | None = None, db_path: Path | None = None,
     worker_name: str | None = None, host: str | None = None,
-    attempts: int = 0, register=None, in_place: bool = False,
+    attempts: int = 1, register=None, in_place: bool = False,
     use_schedule_retry: bool = False,
 ) -> dict:
     """**Lokale** On-Demand-Ausführung mit voller Scheduler-Lifecycle (PLAN-28).
@@ -1132,20 +1135,20 @@ def run_pinned(
 
     Entweder ``slug`` (erfasste MD) **oder** ``cmd`` (ad-hoc, rein lokal).
 
-    ``attempts`` (Default **0** — bewusst *nicht* der Scheduler-Default 1):
-    der Wrapper selbst prüft ``attempt_cur < attempts_max`` (``bibi/wrapper/
-    __init__.py::_finish()``) — bei einem frischen Job ist ``attempt_cur=0``,
-    ``attempts=1`` würde also **einen Retry auslösen**, kein "kein Retry" wie
-    ein früherer Docstring hier fälschlich behauptete. ``attempts=0`` (``0 <
-    0`` ist falsch) meldet bei Fehlschlag sofort "error", ohne Backoff-Wartezeit
-    — deckungsgleich mit dem historischen ``/run``-Verhalten (ein Versuch,
-    sofortiger Fehlschlag), das insbesondere die CLI (``bibi-ctrl run``,
-    **ohne** laufenden Daemon/gepinnten Worker) braucht: ein echter Retry
-    bräuchte den gepinnten ``Worker``-Loop aus ``create_app()``, um den
-    fälligen Backoff-Redispatch zu bedienen — ohne laufenden Daemon bliebe
-    ein wartender Retry für immer unbedient hängen. Aufrufer mit laufendem
-    Daemon (die HTTP-Route ``/-/run``) können bei Bedarf explizit
-    ``attempts>0`` übergeben, um echtes Retry-mit-Backoff zu aktivieren.
+    ``attempts`` (Default **1** seit `v0.8.10`, #168): ein Versuch, kein Retry.
+
+    **Der Wert stand hier auf 0 und musste mitziehen, sonst startete ``/run``
+    gar nichts mehr.** Seit ``attempts`` **Gesamt**versuche zählt, heißt 0 „kein
+    Versuch" — ``reserve_next()`` überspringt solche Zeilen. Die *Absicht* des
+    alten Defaults ist unverändert und war schon immer „ein Lauf, kein
+    automatischer Retry"; sie wird jetzt mit der Zahl geschrieben, die das auch
+    bedeutet.
+
+    Der Grund für die Absicht bleibt derselbe: ein echter Retry braucht den
+    gepinnten ``Worker``-Loop aus ``create_app()``, um den fälligen
+    Backoff-Redispatch zu bedienen — ohne laufenden Daemon bliebe ein wartender
+    Retry für immer unbedient hängen. Aufrufer mit laufendem Daemon (die
+    HTTP-Route ``/-/run``) können bei Bedarf explizit ``attempts>1`` übergeben.
 
     ``use_schedule_retry`` (Default **False**, Bugfix — User-Fund: ein über
     den START-Button gepinnter Lauf von ``Runner 5`` mit ``attempts: 2`` in

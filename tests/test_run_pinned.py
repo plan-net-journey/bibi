@@ -70,7 +70,11 @@ def test_run_pinned_with_cmd_creates_pinned_row_and_dispatches(gitrepo, monkeypa
     # Retry auslösen, s. run_pinned()s Docstring. 0 matcht das historische
     # /run-Verhalten (ein Versuch, sofortiger Fehlschlag) und ist nötig, weil
     # die CLI (kein laufender Daemon) einen fälligen Retry nie bedienen könnte.
-    assert row["attempts"] == 0
+    # 1 statt 0 seit #168: `attempts` zaehlt Gesamtversuche, und der
+    # CLI-Default heisst unveraendert "ein Lauf, kein Retry" — nur mit
+    # der Zahl, die das auch bedeutet. Das Verhalten darueber (Exit 1,
+    # "[error]", kein zweiter Lauf) ist unveraendert und steht oben.
+    assert row["attempts"] == 1
 
 
 def test_run_pinned_with_slug_resolves_existing_schedule(gitrepo, monkeypatch):
@@ -211,7 +215,11 @@ def test_run_pinned_without_use_schedule_retry_ignores_schedule_lifecycle(gitrep
     row = conn.execute("SELECT attempts, backoff, defer_time, error_time FROM jobs WHERE id=?",
                        (res["id"],)).fetchone()
     conn.close()
-    assert row["attempts"] == 0
+    # 1 statt 0 seit #168: `attempts` zaehlt Gesamtversuche, und der
+    # CLI-Default heisst unveraendert "ein Lauf, kein Retry" — nur mit
+    # der Zahl, die das auch bedeutet. Das Verhalten darueber (Exit 1,
+    # "[error]", kein zweiter Lauf) ist unveraendert und steht oben.
+    assert row["attempts"] == 1
     assert row["backoff"] == "fixed"
     assert row["defer_time"] is None
     assert row["error_time"] is None
@@ -249,7 +257,11 @@ def test_run_pinned_use_schedule_retry_by_cmd_stays_no_retry(gitrepo, monkeypatc
     row = conn.execute("SELECT attempts, backoff, defer_time, error_time FROM jobs WHERE id=?",
                        (res["id"],)).fetchone()
     conn.close()
-    assert row["attempts"] == 0
+    # 1 statt 0 seit #168: `attempts` zaehlt Gesamtversuche, und der
+    # CLI-Default heisst unveraendert "ein Lauf, kein Retry" — nur mit
+    # der Zahl, die das auch bedeutet. Das Verhalten darueber (Exit 1,
+    # "[error]", kein zweiter Lauf) ist unveraendert und steht oben.
+    assert row["attempts"] == 1
     assert row["backoff"] == "fixed"
     assert row["defer_time"] is None
     assert row["error_time"] is None

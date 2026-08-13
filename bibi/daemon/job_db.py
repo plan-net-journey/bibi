@@ -28,7 +28,7 @@ from bibi.schedule import discovery, dispatcher, lifecycle, slot
 from bibi.schedule.models import Kind, Status, display_kind, job_uid
 from bibi.schedule.parser import SPECIAL_SCHEDULES, ParseResult
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 #: Terminalzustände, die den Slot **blockieren** statt ihn freizugeben — alle
 #: außer ``complete`` (Archivierungsregel A2, Zustandsmodell §3). Sie bleiben in
@@ -289,6 +289,21 @@ def _mig_drop_slug_explicit(conn: sqlite3.Connection) -> None:  # v24 → v25
         conn.execute("ALTER TABLE jobs DROP COLUMN slug_explicit")
 
 
+def _mig_jobs_exec_runtime(conn: sqlite3.Connection) -> None:  # v25 → v26
+    # Die kumulierte Netto-Zeit bekommt einen Platz in der Zeile (#167). Bis
+    # hierher gab es sie nur im Journal, berechnet beim Archivieren als
+    # `finished_at − started_at` — eine Rechnung, die nach #166 die *Brutto*-Zeit
+    # ergibt. Eine Summe über mehrere Trials braucht dagegen einen Ort, der die
+    # Trials überlebt, und den hat nur die `jobs`-Zeile.
+    #
+    # Der Rückweg bleibt ein Pin, nachgerechnet wie bei `_mig_run_snapshot`:
+    # eine ältere Engine trifft auf `user_version` 26, `_ensure_schema()` kehrt
+    # bei ">= SCHEMA_VERSION" ohne Schreibzugriff zurück, und die Spalte ist
+    # nullable — kein alter INSERT nennt sie, keiner bricht.
+    if _has_table(conn, "jobs") and not _has_column(conn, "jobs", "exec_runtime"):
+        conn.execute("ALTER TABLE jobs ADD COLUMN exec_runtime REAL")
+
+
 #: Additive Migrationen für *bestehende* DBs: ``from_version -> [callable, …]``.
 #: ``schema.sql`` ist das volle aktuelle Schema (frische DB); diese Schritte heben
 #: ältere DBs Stück für Stück an, **idempotent** (PLAN-3 §3.1).
@@ -317,6 +332,7 @@ _MIGRATIONS: dict[int, list] = {
     22: [_mig_run_snapshot],
     23: [_mig_conflict_refs],
     24: [_mig_drop_slug_explicit],
+    25: [_mig_jobs_exec_runtime],
 }
 
 
@@ -1254,7 +1270,14 @@ def reserve_next(
             # der Scan-Reihenfolge. **Einen der beiden Zufallssieger
             # auszuführen wäre schlimmer, als gar nichts zu tun.** Die Sperre
             # sitzt hier und nicht an `active`, damit die Zeile sichtbar bleibt.
+            # `attempts > 0` (#168): seit `attempts` **Gesamt**versuche zählt,
+            # heißt `0` nicht mehr „ein Lauf, kein Retry", sondern „kein Lauf".
+            # Das ist die einzige Stelle, an der die neue Bedeutung einen Job
+            # *anhält* statt ihn früher zu beenden — und sie gehört hierher und
+            # nicht in den Wrapper, weil ein Job, der nicht laufen soll, gar
+            # nicht erst reserviert werden darf.
             f"WHERE active=1 AND conflict_refs IS NULL AND locked_at IS NULL "
+            f"AND attempts > 0 "
             f"AND {pin_clause} AND ("
             "  (status='pending' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             "  OR (status='failed' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
@@ -1279,9 +1302,30 @@ def reserve_next(
         # (complete → starting via Lazy Rearm, failed → starting via Retry)
         # nicht die PID des VORIGEN Laufs erbt und der Check sie für den neuen
         # hält.
+        # `started_at` steht seit #166 in dieser Aufzählung und nicht mehr oben.
+        #
+        # **Es fehlte dort, und das war der ganze Fehler.** Die CASEs trennen
+        # seit jeher zwei Fälle: ein neuer Aufenthalt (aus `complete`, und
+        # ebenso aus `pending`, wo die Felder ohnehin leer sind) gegen die
+        # Fortsetzung eines laufenden (aus `failed`/`deferred`). `started_at`
+        # wurde unbedingt geschrieben und meinte damit den Beginn des
+        # *Versuchs*, während sein Name und jeder Leser den des *Jobs* meinen.
+        # `finished_at − started_at` ergab so die Netto-Zeit des letzten
+        # Versuchs statt der Aufenthaltsdauer im Scheduler.
+        #
+        # `COALESCE` im ELSE-Zweig: ein Job kann über den Setup-Fehler-Pfad in
+        # `worker.py` auf `failed` stehen, ohne je ein `started_at` bekommen zu
+        # haben — ohne den Rückfall bliebe er für immer ohne Start.
+        #
+        # `exec_runtime` folgt derselben Trennung (#167): ein neuer Aufenthalt
+        # beginnt bei 0, eine Fortsetzung behält die Summe der Vorversuche.
         cur = conn.execute(
-            "UPDATE jobs SET status='starting', locked_at=:now, started_at=:now, "
+            "UPDATE jobs SET status='starting', locked_at=:now, "
             "worker=:w, host=:h, pid=NULL, pid_started_at=NULL, "
+            "started_at   = CASE WHEN status IN ('pending','complete') THEN :now "
+            "                    ELSE COALESCE(started_at, :now) END, "
+            "exec_runtime = CASE WHEN status IN ('pending','complete') THEN 0.0 "
+            "                    ELSE COALESCE(exec_runtime, 0.0) END, "
             "fire        = CASE WHEN status='complete' THEN fire+1 ELSE fire END, "
             "attempt     = CASE WHEN status='complete' THEN 0 ELSE attempt END, "
             "finished_at = CASE WHEN status='complete' THEN NULL ELSE finished_at END, "
@@ -1355,7 +1399,8 @@ def report_status(
     now = time.time() if now is None else now
     # `at_iso` mit: es entscheidet, ob `complete` den Slot verbraucht (s. u.).
     row = conn.execute(
-        "SELECT status, kind, schedule, slug, at_iso FROM jobs WHERE id=?", (job_id,)).fetchone()
+        "SELECT status, kind, schedule, slug, at_iso, locked_at, exec_runtime "
+        "FROM jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return "not_found"
     if row["status"] == slot.DONE:
@@ -1382,8 +1427,36 @@ def report_status(
         return "invalid"
 
     fields: dict = {"status": target.value, "reason": reason, "updated_at": now}
-    if target in lifecycle.TERMINAL:
+    # `finished_at` bei **jedem** Ausgang aus einem laufenden Versuch, nicht nur
+    # bei den terminalen (#166, Zustandsmodell m.rau 2026-08-13: *„Jeder Status
+    # Übergang aus RUNNING heraus aktualisiert demgegenüber das Attribut
+    # ``finished_at``"*). Bis hierher galt das nur für ``lifecycle.TERMINAL`` —
+    # ein `failed` oder `deferred` ließ das Feld leer, und damit gab es keinen
+    # Zeitpunkt für das Ende des letzten Versuchs.
+    #
+    # **Dass die Laufzeit dadurch nicht einfriert, ist keine Nebenwirkung,
+    # sondern eine eigene Entscheidung:** die Anzeige fragt nach dem *Zustand*
+    # und nicht nach der Anwesenheit dieses Feldes (#170). Beides zusammen
+    # erfüllt die zwei Sätze des Modells, die sich sonst widersprächen — „läuft
+    # weiter bis zum Terminalzustand" und „jeder Ausgang schreibt `finished_at`".
+    if target in lifecycle.TERMINAL or (
+            current in (Status.RUNNING, Status.STARTING, Status.AWAITING)):
         fields["finished_at"] = now
+    # ── Die Netto-Zeit dieses Versuchs aufsummieren (#167) ──────────────────
+    #
+    # **Der Versuch endet hier, und nur hier ist seine Dauer noch ablesbar.**
+    # `locked_at` trägt seinen Beginn; wenige Zeilen weiter wird es für die
+    # wieder dispatchbaren Zustände geräumt. Die Summe muss also *vor* dem
+    # Räumen gebildet werden — was sie tut, weil beide in demselben `fields`-
+    # Dict landen und das `SELECT` oben den alten Wert schon geholt hat.
+    #
+    # `running` und `awaiting` sind ausgenommen: dort läuft der Prozess weiter,
+    # der Versuch ist nicht zu Ende. `pending` ebenfalls — ein RESET verwirft
+    # den Lauf, und die Zeile beginnt gleich darunter ohnehin bei 0.
+    if (target not in (Status.RUNNING, Status.AWAITING, Status.PENDING)
+            and row["locked_at"] is not None):
+        fields["exec_runtime"] = (row["exec_runtime"] or 0.0) + max(
+            0.0, now - row["locked_at"])
     # failed/deferred/pending sind wieder dispatchbar ⇒ Lock lösen (reserve braucht NULL).
     # complete ebenso: reserve_next() darf einen fällig gewordenen complete-Job selbst
     # dispatchen (lazy Rearm, §5.2 — siehe COMPLETE-Zweig unten), das Lock vom letzten
@@ -1406,6 +1479,12 @@ def report_status(
         # Werte eines bereits abgeschlossenen Laufs zeigen.
         fields["started_at"] = None
         fields["finished_at"] = None
+        # Die kumulierte Netto-Zeit gehört zum Aufenthalt, nicht zum Job (#167):
+        # ein RESET beendet den Aufenthalt, also fällt sie mit den vier Feldern
+        # darüber. `reserve_next()` setzt sie beim nächsten Dispatch ohnehin auf
+        # 0 — hier steht sie, damit die Zeile bis dahin nicht die Summe eines
+        # abgeschlossenen Laufs zeigt. Derselbe Grund wie im Satz oben.
+        fields["exec_runtime"] = None
         fields["exit_code"] = None
         fields["output_ref"] = None
         # Der Satz oben sagt „Lauf-Snapshot" und meinte 2026-07-03 die vier

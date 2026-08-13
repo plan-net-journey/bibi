@@ -76,9 +76,24 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- duplizierter: jedes neue Attribut kostet sonst zwei Migrationen.
     run_snapshot    TEXT,
     deferred_at     REAL,                      -- erster Defer-Zeitpunkt (§5.5 defer_max)
+    -- Beginn des *aktuellen* Versuchs. Gesetzt bei jeder Reservierung, geräumt
+    -- beim Zustandswechsel — und genau deshalb der Ort, aus dem `exec_runtime`
+    -- die Netto-Zeit dieses Versuchs bezieht (#167). Ein eigenes Feld dafür
+    -- brauchte es nicht: dieses trägt den Wert bereits so lange, wie er
+    -- gebraucht wird.
     locked_at       REAL,
+    -- Der **initiale** Start des Jobs, nicht der des Versuchs (#166). Ein Retry
+    -- und ein Resume lassen ihn stehen; neu gesetzt wird er nur, wo ein neuer
+    -- Aufenthalt beginnt (aus `pending` und `complete`). `finished_at −
+    -- started_at` ist damit die Brutto-Zeit, die Aufenthaltsdauer im Scheduler.
     started_at      REAL,
     finished_at     REAL,
+    -- Kumulierte **Netto**-Zeit über alle Versuche (#167, v26): bei einem neuen
+    -- Aufenthalt auf 0, danach summiert jeder beendete Versuch seine eigene
+    -- Dauer auf. Sie fällt mit der Brutto-Zeit nur im Einfachfall zusammen —
+    -- einem Job ohne Retry und ohne Deferral —, und genau dort fällt ein Fehler
+    -- nicht auf.
+    exec_runtime    REAL,
     exit_code       INTEGER,
     host            TEXT,
     worker          TEXT,
