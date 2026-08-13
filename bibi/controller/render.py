@@ -5059,12 +5059,6 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
 #: schlimmer als ein fehlender.
 _FILTER_OBEN = (("TYPE", ("job", "claude", "app")),
                 ("STATUS", ("waiting", "running", "stopped")))
-#: Die dritte Achse (#31). Umbenannt gegenüber `dropped`/`oneshot`: die
-#: Werte stehen seit dem Umzug in den Kopf neben kurzen Spaltennamen, und
-#: `1shot` sagt dasselbe auf halber Breite. `gone` ist zudem das Wort, das
-#: der Vorgang beschreibt — `dropped` klang nach einem Fehler beim Ablegen.
-_FILTER_JOURNAL = ("local", "1shot", "gone")
-
 #: Klickbare Spalten. Der Schlüssel ist zugleich der Query-Parameter.
 #:
 #: `24h` behält seinen Schlüssel, obwohl die Spalte seit #135 `RELIABILITY`
@@ -5170,7 +5164,12 @@ def _jobs_kopf(sort: str | None, direction: str, *,
         # aber einen Zeilenumbruch im Kopf, sobald die Filterleiste daneben die
         # Spaltenbreite bestimmte (#152), und *was* für eine Runtime dort steht,
         # sagt der Kommentar an der Zelle und die Doku — nicht die Überschrift.
-        + "<th>RUNTIME</th>"
+        # **Sortierbar seit #179.** Hier stand *„FE §4.6 fuehrt sechs klickbare
+        # Spalten, RUNTIME ist keine davon"* — eine Begruendung aus der Vorgabe
+        # und nicht aus der Sache. m.rau hat sie am 2026-08-13 aufgehoben, und
+        # der Wert taugt dafuer: `runtime_p90` ist serverseitig gerechnet und
+        # stabil, im Gegensatz zu einer tickenden Zelle.
+        + _sort_kopf("runtime", "RUNTIME", sort, direction)
         # **`REL.` statt `RELIABILITY`** (#153). Die Bewegung von #135 bleibt —
         # der Name nennt die Aussage und nicht mehr ihr Zeitfenster (`24H`) —,
         # nur kürzer. **Der Sortierschlüssel bleibt `24h`**: er steht in URLs,
@@ -5188,10 +5187,14 @@ def _jobs_kopf(sort: str | None, direction: str, *,
         # dort steht ausschliesslich, was keine Zukunft mehr hat. #130 hat die
         # Behauptung bereits aus der Zelle genommen; hier fällt die Spalte.
         + (_sort_kopf("next", "NEXT/RUN", sort, direction) if mit_next else "")
-        # Die Client-Spalten sind nicht sortierbar — `status` und `last`
-        # sortieren nach dem Scheduler-Zustand und taten das immer schon.
-        + "<th>STATUS</th>"
-        + "<th>LAST/RUN</th>"
+        # **Sortierbar seit #179.** Hier stand *„`status` und `last` sortieren
+        # nach dem Scheduler-Zustand und taten das immer schon"* — das ist eine
+        # Beschreibung des Ist-Standes und war nie eine Begruendung. Die Werte
+        # liegen in derselben Zeile (`JobRow.local`) und wurden hier bereits
+        # gerendert: **Zellen, nach denen sich nicht sortieren liess, obwohl der
+        # Sortierer die Zeile in der Hand hielt.**
+        + _sort_kopf("client_status", "STATUS", sort, direction)
+        + _sort_kopf("client_last", "LAST/RUN", sort, direction)
         + "</tr>"
         # **Die Filterwerte hängen unter der Spalte, die sie einschränken (#31).**
         #
@@ -5302,19 +5305,23 @@ _KEINE_JOBS = (
 
 
 def _sichtbar(rows: list, *, typ: list[str], status: list[str],
-              journal: list[str], sort: str | None, direction: str) -> list:
-    """Filtern und sortieren — der gemeinsame Vorlauf beider Screens."""
+              sort: str | None, direction: str, group: bool = True) -> list:
+    """Filtern und sortieren — der gemeinsame Vorlauf beider Screens.
+
+    ``group`` wird seit #178 **durchgereicht** und nicht mehr nur angezeigt:
+    ohne Gruppierung gibt es eine Liste und eine Ordnung, und die Bänder
+    existieren dann auch als Reihenfolge nicht mehr.
+    """
     from bibi.controller import jobs_view
 
-    rows = [r for r in rows
-            if jobs_view.trifft_filter(r, typ=typ, status=status, journal=journal)]
+    rows = [r for r in rows if jobs_view.trifft_filter(r, typ=typ, status=status)]
     if sort:
-        rows = jobs_view.sortiere(rows, nach=sort, richtung=direction)
+        rows = jobs_view.sortiere(rows, nach=sort, richtung=direction, group=group)
     return rows
 
 
 def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
-                status: list[str] | None = None, journal: list[str] | None = None,
+                status: list[str] | None = None,
                 sort: str | None = None, direction: str = "asc",
                 group: bool = True, public_host: str = "localhost",
                 scheduler_offline: bool = False) -> str:
@@ -5341,17 +5348,16 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
     Darstellungsform. Die Sortierung wirkt dann über die ganze Liste — genau
     das ist der Zweck des Schalters.
 
-    ``journal`` bleibt in der Signatur und wird durchgereicht: die Auswahl
-    lebt in der URL, und ein Wechsel zwischen den beiden Screens soll sie
-    nicht unterwegs verlieren. Gefiltert wird damit hier nichts mehr — die
-    Zeilen, auf die sie wirkt, stehen drüben.
+    **Die dritte Achse ist mit #180 gefallen** — hier stand, sie bleibe in der
+    Signatur, damit ein Wechsel zwischen den Screens die Auswahl nicht verliert.
+    Es gibt keine Auswahl mehr zu verlieren.
     """
     if not rows:
         return _KEINE_JOBS
 
-    typ, status, journal = typ or [], status or [], journal or []
-    rows = [r for r in _sichtbar(rows, typ=typ, status=status, journal=journal,
-                                 sort=sort, direction=direction)
+    typ, status = typ or [], status or []
+    rows = [r for r in _sichtbar(rows, typ=typ, status=status,
+                                 sort=sort, direction=direction, group=group)
             if r.segment is not Segment.JOURNAL]
 
     # **Die Toolbar-Zeile trägt nur noch, was keiner Spalte gehört** (#31,
@@ -5363,15 +5369,15 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
     # also die Gliederung der ganzen Tabelle, und hat deshalb keine Spalte,
     # unter die er ziehen könnte.
     # Die dritte Achse steht in der Toolbar, nicht im Kopf: ihre Werte
-    # beschreiben die **Herkunft** einer Zeile (lokal gelaufen, einmalig,
-    # abgelegt) und gehören zu keiner Spalte. `gone` trifft ohne sichtbares
-    # Journal-Band nichts — es wird ausgegraut statt versteckt, damit die Achse
-    # ihre Form behält und niemand einen Knopf sucht, der nur gerade leer ist.
-    hat_gone = any(r.relation in ("dropped", "deleted") for r in rows)
-    achse = "".join(
-        _filter_knopf(w, journal, tot=(w == "gone" and not hat_gone))
-        for w in _FILTER_JOURNAL)
-    leiste = (f'<div class="fltr-bar">{achse}'
+    # **Die dritte Achse ist mit #180 ersatzlos gefallen** (Entscheidung m.rau,
+    # 2026-08-13: *„weg mit der Achse, auch auf dem Job Screen."*). Sie stand
+    # hier, weil sie die **Herkunft** einer Zeile beschrieb und zu keiner Spalte
+    # gehörte; von ihren drei Werten traf `gone` auf diesem Screen ohnehin
+    # nichts und wurde ausgegraut — genau der tote Knopf, den `_filter_zeile()`
+    # an anderer Stelle vermeidet. Die Einbuße ist benannt: `local` war der
+    # einzige Zugang zu *„welcher Job hat hier schon lokal gelaufen"*, und die
+    # Frage ist nachrangig.
+    leiste = (f'<div class="fltr-bar">'
               f'<button class="fltr{" on" if group else ""}" data-group='
               f'"{"off" if group else "on"}">group</button>'
               f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
@@ -5407,7 +5413,6 @@ def jobs_screen(rows: list, now: float, *, typ: list[str] | None = None,
 
 def journal_screen(rows: list, now: float, *, typ: list[str] | None = None,
                    status: list[str] | None = None,
-                   journal: list[str] | None = None,
                    sort: str | None = None, direction: str = "asc",
                    public_host: str = "localhost",
                    scheduler_offline: bool = False) -> str:
@@ -5428,17 +5433,17 @@ def journal_screen(rows: list, now: float, *, typ: list[str] | None = None,
     bleibt trotzdem in der Signatur und wird durchgereicht, damit ein Wechsel
     zurück zu Jobs die dortige Wahl wiederfindet.
     """
-    typ, status, journal = typ or [], status or [], journal or []
-    rows = [r for r in _sichtbar(rows, typ=typ, status=status, journal=journal,
+    typ, status = typ or [], status or []
+    # Der Journal-Screen führt genau ein Band — dort ist `group` ohne Wirkung,
+    # und die Sortierung lief hier schon immer über die ganze (einzige) Liste.
+    rows = [r for r in _sichtbar(rows, typ=typ, status=status,
                                  sort=sort, direction=direction)
             if r.segment is Segment.JOURNAL]
 
-    # Wie beim Jobs-Screen (#31): `TYPE` zieht in den Kopf, die Toolbar behält,
-    # was keiner Spalte gehört. Die Journal-Achse ist genau so ein Fall — sie
-    # beschreibt die **Herkunft** einer Zeile (abgelegt, einmalig, lokal
-    # gelaufen) und nicht den Inhalt einer Spalte.
+    # **Ohne die dritte Achse** (#180): hier war sie am ehesten am Platz — im
+    # Journal ist per Definition alles Historie —, aber genau dort trennte sie
+    # am wenigsten. `gone` traf fast jede Zeile.
     leiste = (f'<div class="fltr-bar">'
-              + "".join(_filter_knopf(w, journal) for w in _FILTER_JOURNAL)
               + f'<span class="fltr-zahl">{len(rows)} jobs</span></div>')
 
     if not rows:
@@ -5537,8 +5542,7 @@ _JOBS_JS = """
 VIEW_MARKER = "f"
 
 
-def _jobs_view_query(*, typ: list[str] | None, status: list[str] | None,
-                     journal: list[str] | None, sort: str | None,
+def _jobs_view_query(*, typ: list[str] | None, status: list[str] | None, sort: str | None,
                      direction: str, group: bool) -> str:
     """Die aktuelle Ansicht als Query-String — für die Refetch-URL.
 
@@ -5551,7 +5555,7 @@ def _jobs_view_query(*, typ: list[str] | None, status: list[str] | None,
     """
     from urllib.parse import urlencode
     paare: list[tuple[str, str]] = [(VIEW_MARKER, "1")]
-    for name, werte in (("typ", typ), ("status", status), ("journal", journal)):
+    for name, werte in (("typ", typ), ("status", status)):
         paare += [(name, w) for w in (werte or [])]
     if sort:
         paare += [("sort", sort), ("dir", direction or "asc")]
@@ -5562,7 +5566,6 @@ def _jobs_view_query(*, typ: list[str] | None, status: list[str] | None,
 
 def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
                        status: list[str] | None = None,
-                       journal: list[str] | None = None,
                        sort: str | None = None, direction: str = "asc",
                        group: bool = True, public_host: str = "localhost",
                        scheduler_offline: bool = False) -> str:
@@ -5589,10 +5592,10 @@ def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
         # zurück und macht jede Filterwahl beim ersten Ereignis zunichte
         # (m.rau/bibi#156).
         f'<div id="jobs" data-bus="jobs" data-bus-refetch="/-/jobs/list?'
-        + _jobs_view_query(typ=typ, status=status, journal=journal, sort=sort,
+        + _jobs_view_query(typ=typ, status=status, sort=sort,
                            direction=direction, group=group)
         + '">'
-        + jobs_screen(rows, now, typ=typ, status=status, journal=journal,
+        + jobs_screen(rows, now, typ=typ, status=status,
                       sort=sort, direction=direction, group=group,
                       public_host=public_host,
                       scheduler_offline=scheduler_offline)
@@ -5602,7 +5605,6 @@ def jobs_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
 
 def journal_list_fragment(rows: list, now: float, *, typ: list[str] | None = None,
                           status: list[str] | None = None,
-                          journal: list[str] | None = None,
                           sort: str | None = None, direction: str = "asc",
                           group: bool = True,
                           public_host: str = "localhost",
@@ -5616,10 +5618,10 @@ def journal_list_fragment(rows: list, now: float, *, typ: list[str] | None = Non
     """
     return (
         f'<div id="journal-jobs" data-bus="jobs" data-bus-refetch="/-/jobs/journal/list?'
-        + _jobs_view_query(typ=typ, status=status, journal=journal, sort=sort,
+        + _jobs_view_query(typ=typ, status=status, sort=sort,
                            direction=direction, group=group)
         + '">'
-        + journal_screen(rows, now, typ=typ, status=status, journal=journal,
+        + journal_screen(rows, now, typ=typ, status=status,
                          sort=sort, direction=direction, public_host=public_host,
                          scheduler_offline=scheduler_offline)
         + "</div>"
@@ -5631,7 +5633,6 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
                  scheduler: dict | None = None,
                  scheduler_stale_since: float | None = None,
                  typ: list[str] | None = None, status: list[str] | None = None,
-                 journal: list[str] | None = None,
                  sort: str | None = None, direction: str = "asc",
                  group: bool = True, public_host: str = "localhost") -> str:
     """Die Jobs-Seite: Hülle plus die drei Bänder.
@@ -5655,7 +5656,7 @@ def jobs_page_v5(rows: list, *, now: float, daemon_status: dict | None = None,
         # `hx-trigger="bibiJobsChanged"` ist entfallen: das Ereignis hat nie
         # jemand gefeuert (einzige Fundstelle im Repo war der Trigger selbst),
         # und mit `hx-swap="innerHTML"` widersprach es dem `outerHTML` des Bus.
-        f'{jobs_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group, public_host=public_host, scheduler_offline=bool(scheduler_stale_since))}'
+        f'{jobs_list_fragment(rows, now, typ=typ, status=status, sort=sort, direction=direction, group=group, public_host=public_host, scheduler_offline=bool(scheduler_stale_since))}'
         # Der Empfaenger zur Anmeldung darueber (m.rau/bibi#153): `data-bus`
         # allein bewirkt nichts, den Strom baut ausschliesslich `_EVENTS_JS`
         # auf. Beim Neubau der v5-Seiten blieb es aus — als einzige Screens.
@@ -5674,7 +5675,6 @@ def journal_page_v5(rows: list, *, now: float, daemon_status: dict | None = None
                     scheduler: dict | None = None,
                     scheduler_stale_since: float | None = None,
                     typ: list[str] | None = None, status: list[str] | None = None,
-                    journal: list[str] | None = None,
                     sort: str | None = None, direction: str = "asc",
                     group: bool = True, public_host: str = "localhost") -> str:
     """Die Journal-Seite: dieselbe Hülle wie Jobs, andere Liste.
@@ -5693,7 +5693,7 @@ def journal_page_v5(rows: list, *, now: float, daemon_status: dict | None = None
         "</head><body>"
         f"{_header('Journal', daemon_status, scheduler=scheduler, scheduler_now=(scheduler or {}).get('now'), now=now)}"
         f"{feed_status_fragment(daemon_status, git_status, host_url, now, scheduler=scheduler, scheduler_stale_since=scheduler_stale_since)}"
-        f'{journal_list_fragment(rows, now, typ=typ, status=status, journal=journal, sort=sort, direction=direction, group=group, public_host=public_host, scheduler_offline=bool(scheduler_stale_since))}'
+        f'{journal_list_fragment(rows, now, typ=typ, status=status, sort=sort, direction=direction, group=group, public_host=public_host, scheduler_offline=bool(scheduler_stale_since))}'
         f"<script>{_EVENTS_JS}</script>"
         f"<script>{_DIFF_JS}</script>"
         f"<script>{_CLOCK_JS}</script><script>{_DURATION_JS}</script>"

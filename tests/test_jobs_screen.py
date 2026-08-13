@@ -1637,42 +1637,6 @@ def _mit_lauf(slug):
     return {slug: {"status": "complete", "started_at": NOW - 600}}
 
 
-def test_local_selects_within_the_schedule_band():
-    """`local` ist eine Eigenschaft des Jobs, nicht des Bandes.
-
-    **Geprüft wird, was verschwindet, nicht was bleibt.** Ein Filter, der auf
-    ein Band gar nicht wirkt, lässt dort ebenfalls jede Zeile stehen — ein Test
-    auf „der Treffer ist noch da" wäre also auch dann grün, wenn nichts
-    filtert. Erst der Nicht-Treffer daneben macht die Aussage prüfbar."""
-    zeilen = _zeilen(local=[_md("mit-lauf"), _md("ohne-lauf")],
-                     local_runs=_mit_lauf("mit-lauf"))
-    assert all(z.segment is Segment.SCHEDULE for z in zeilen), \
-        "Testdatum im falschen Band"
-    html = render.jobs_screen(zeilen, now=NOW, journal=["local"])
-    assert "mit-lauf" in html, "`local` lässt den Job mit lokalen Läufen fallen"
-    assert "ohne-lauf" not in html, (
-        "`local` behält einen Job ohne lokale Läufe — der Filter wirkt im "
-        "SCHEDULE-Band nicht, er lässt dort nur alles durch")
-
-
-def test_oneshot_selects_within_the_schedule_band():
-    """Dieselbe Bauart für `1shot`: der at-Job bleibt, der Cron-Job geht."""
-    zeilen = _zeilen(local=[_md("einmalig", schedule=None, at="2026-09-01 10:00"),
-                            _md("stuendlich")])
-    html = render.jobs_screen(zeilen, now=NOW, journal=["1shot"])
-    assert "einmalig" in html, "`1shot` trifft den at-Job nicht"
-    assert "stuendlich" not in html, "`1shot` behält einen Cron-Job"
-
-
-def test_gone_stays_a_journal_matter():
-    """Die Gegenprobe: `gone` beschreibt ein Verhältnis zum Vault, das ein
-    aktiver Job per Definition nicht hat. Es darf nicht plötzlich alles
-    treffen, nur weil die Achse jetzt überall wirkt."""
-    zeilen = _zeilen(local=[_md("da")])
-    html = render.jobs_screen(zeilen, now=NOW, journal=["gone"])
-    assert "da</a>" not in html, "`gone` trifft einen Job, den es noch gibt"
-
-
 # ── #31/Vorschlag 1: Beziehungslabels als Chips ────────────────────────────
 #
 # **Befund m.rau:** *„Aktuell ist die Visualisierung in `(...)`. Das folgt dem
@@ -2130,17 +2094,6 @@ def test_what_the_vault_alone_knows_survives_the_outage():
     geaendert = _zeilen(local=[_md("a", git_status="modified")],
                         scheduler=[], scheduler_offline=True)
     assert [z.relation for z in geaendert] == ["modified"]
-
-
-def test_the_gone_filter_stays_out_of_it_while_the_host_is_silent():
-    """Der `gone`-Filter greift auf `dropped`/`deleted`. Bliebe die
-    Fehlklassifikation stehen, träfe er bei Ausfall **jede** Zeile — ein
-    Filter, der alles zeigt, ist kein Filter."""
-    from bibi.controller import jobs_view
-
-    zeilen = _zeilen(local=[_md("a")], scheduler=[], journal=[{"slug": "a"}],
-                     scheduler_offline=True)
-    assert not any(jobs_view.trifft_filter(z, typ=[], status=[], journal=["gone"]) for z in zeilen)
 
 
 # ── #157: zwei Vokabeln im Ausfall, nicht drei ────────────────────────────
