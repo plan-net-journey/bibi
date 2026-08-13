@@ -1231,6 +1231,29 @@ def reserve_next(
     pin_liste = ", ".join(f":{k}" for k in pin_params)
     pin_clause = (f"pinned_host IN ({pin_liste})" if pinned_only
                   else f"(pinned_host IS NULL OR pinned_host IN ({pin_liste}))")
+    # ── Retry-nach-Frist ist Scheduler-Verhalten (#175) ─────────────────────
+    #
+    # **Ein Client hat keinen Scheduler, also gibt es dort keine Frist, die ein
+    # Loop bedienen dürfte.** `failed` und `deferred` warten auf einen Termin;
+    # wer sie aufnimmt, verhält sich wie ein Dispatcher. Für den gepinnten
+    # Loop (``pinned_only=True``) fallen sie deshalb heraus.
+    #
+    # **Das ist die Einlösung einer Zusage und keine Vorsichtsmaßnahme**
+    # (m.rau, 2026-08-13): *„Egal ob Daemon oder Session, ein Client muss 100%
+    # das gleiche Verhalten zeigen. Der einzige Unterschied ist die Entscheidung
+    # des Users zur Installation."* Live gemessen am selben Tag: derselbe Job
+    # lief mit Daemon zweimal von selbst durch und blieb ohne Daemon nach dem
+    # ersten Fehlschlag liegen.
+    #
+    # **START bleibt davon unberührt**, und das ist der Grund, warum die Sperre
+    # hier tragbar ist: ``run_pinned()`` legt für jeden Start eine frische
+    # ``pending``-Zeile an und reserviert *sie* — es greift nie auf den
+    # wartenden Slot zu. Auf dem Team-Pfad (``pinned_only=False``) bleibt alles,
+    # wie es war; dort gibt es einen Scheduler, der die Frist bedient.
+    wartend_clause = "" if pinned_only else (
+        "  OR (status='failed' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
+        "  OR (status='deferred' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
+    )
     conn.execute("BEGIN IMMEDIATE")
     try:
         offset = _get_offset(conn)
@@ -1280,8 +1303,7 @@ def reserve_next(
             f"AND attempts > 0 "
             f"AND {pin_clause} AND ("
             "  (status='pending' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
-            "  OR (status='failed' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
-            "  OR (status='deferred' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
+            f"  {wartend_clause}"
             "  OR (status='complete' AND next_fire_at IS NOT NULL AND next_fire_at <= :now)"
             ")",
             {"now": now, "host": host, **pin_params},

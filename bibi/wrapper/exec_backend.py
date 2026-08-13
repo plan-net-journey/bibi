@@ -40,8 +40,48 @@ _DOCKER_CANDIDATES = (
 _CONTAINER_ENV = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_API_KEY",
+    # **`BIBI_JOB_ID` ist öffentliche Job-API und kein historischer Rest** —
+    # der Kommentar dazu fehlte bis `v0.8.11` und wurde deshalb einmal für
+    # einen gehalten (#176). `bibi/job.py` liest sie, und `CONVENTIONS.md`
+    # schreibt den darauf gebauten Helfer als *den* sanktionierten Weg vor:
+    # *„The `job_id` comes from `BIBI_JOB_ID` … The sanctioned helper is
+    # `bibi.job.data_dir(subsystem)`."* Fiele sie, schriebe jeder Job, der der
+    # Konvention folgt, seine Daten nach `…/adhoc/` statt `…/<job_id>/` — ein
+    # stiller Datenpfad-Wechsel, der erst auffällt, wenn ein Zähler nicht mehr
+    # hochzählt. Im Vault betrifft das u. a. `zustand_ueberzieht.py`,
+    # `defer-retry-test.py` und `reset-test.py`.
     "BIBI_JOB_ID",
 )
+
+#: Die Engine-Interna, die **kein** Job sieht — in keinem ``exec_mode`` (#176).
+#:
+#: Der Unterschied zwischen den Modi war nie eine Filterregel, sondern eine
+#: **Grenze**: ein Host-Lauf ist ein Kindprozess und *erbt* die ganze Umgebung
+#: des Daemons, ein Container erbt nichts. Der Host-Lauf hatte also nicht mehr
+#: Variablen, weil jemand mehr durchreichte, sondern weil dort nichts
+#: abgeschnitten wurde.
+#:
+#: **Regel (m.rau, 2026-08-13, als Frage gestellt und hier eingelöst):** *„alles
+#: `BIBI_` ohne `BIBI_JOB_ENV`"* fällt — Letzteres ist ohnehin nur der
+#: Transportweg und schon vorher entfaltet (`worker._exec_config()` macht aus
+#: `BIBI_JOB_ENV_GITEA_TOKEN` ein `GITEA_TOKEN`, das nicht mehr mit `BIBI_`
+#: beginnt). Übrig bleibt genau die eine Ausnahme oben.
+#:
+#: Damit sieht der Job in beiden Modi dasselbe: Credentials, `PATH`/`HOME` und
+#: was sonst nicht `BIBI_`-präfigiert ist. **Das ist die zweite Ausprägung der
+#: Zusage aus #175** — gleiches Verhalten unabhängig davon, wie der Anwender
+#: installiert hat; dort Daemon gegen Session, hier `host` gegen `container`.
+_JOB_SICHTBAR = frozenset(_CONTAINER_ENV)
+
+
+def _ohne_engine_interna(env: dict[str, str]) -> dict[str, str]:
+    """Engine-Interna aus einer Job-Umgebung entfernen (#176).
+
+    Derselbe Schnitt, den der Container-Zweig seit jeher anwendet — hier als
+    Funktion, damit der Host-Zweig ihn nicht ein zweites Mal formuliert.
+    """
+    return {k: v for k, v in env.items()
+            if not k.startswith("BIBI_") or k in _JOB_SICHTBAR}
 
 DEFAULT_IMAGE = "bibi-base:dev"
 WORKSPACE = "/workspace"
@@ -224,8 +264,11 @@ def build_exec(child_argv: list[str], env: dict[str, str]) -> ExecSpec:
       ``vault/CONVENTIONS.md``-Warnung."""
     mode = (env.get("BIBI_EXEC_MODE") or "host").strip().lower()
     if mode != "container":
+        # `cwd` wird **vor** dem Filter gelesen: `BIBI_JOB_CWD` ist eine
+        # Anweisung an den Wrapper, keine Auskunft an den Job (#176).
         cwd = env.get("BIBI_JOB_CWD") or env.get("BIBI_WORKTREE") or None
-        return ExecSpec(argv=list(child_argv), cwd=cwd, env=dict(env))
+        return ExecSpec(argv=list(child_argv), cwd=cwd,
+                        env=_ohne_engine_interna(env))
 
     worktree = env["BIBI_WORKTREE"]
     job_cwd = env.get("BIBI_JOB_CWD") or worktree
