@@ -93,7 +93,11 @@ def test_terminal_states_get_two_markers_too():
     Zeile rutschte um einen Em nach links, weil das Element davor fehlte."""
     for zustand in ("complete", "error", "killed", "zombie", "inactive"):
         html = _zeile(zustand)
-        assert html.count('<i class="mk') == 2, f"{zustand}: {html!r}"
+        # **Im Scheduler-Marker gezählt, nicht in der Zeile** (#188): seit dem
+        # 2026-08-14 trägt die Zeile ein zweites Paar für den lokalen Lauf. Die
+        # Zählung über das ganze Markup ergäbe vier und prüfte damit etwas
+        # anderes, als der Name dieses Tests sagt.
+        assert _marker_block(html, "akt").count('<i class="mk') == 2, f"{zustand}: {html!r}"
         assert "blink" not in html, f"{zustand} soll still sein"
 
 
@@ -102,9 +106,10 @@ def test_pending_gets_two_markers_but_no_motion():
     ausdrücklich nicht zu den laufenden. Es bekommt trotzdem seine zwei Plätze,
     und **links Gelb**: eine Uhr läuft, ein Prozess nicht."""
     html = _zeile("pending")
-    assert html.count('<i class="mk') == 2
+    akt = _marker_block(html, "akt")   # nur der Scheduler-Marker, s. o. (#188)
+    assert akt.count('<i class="mk') == 2
     assert "blink" not in html
-    assert "mk-yellow" in html and "mk-grey" in html
+    assert "mk-yellow" in akt and "mk-grey" in akt
 
 
 def test_the_marker_reads_from_the_one_table():
@@ -193,3 +198,97 @@ def test_a_job_running_nowhere_still_gets_no_bar():
     zeile = render._jobs_zeile(row, NOW)
     assert "data-pbar" not in zeile
     assert "blink" not in zeile
+
+
+# ── #188: die Quadrate gehören dem Scheduler, der lokale Lauf bekommt seine
+#         eigene Spalte ────────────────────────────────────────────────────
+#
+# **Festlegung m.rau, 2026-08-13:** *„die beiden Icons links (die Quadrate)
+# beziehen sich immer auf den Scheduler Job Status und nie auf den Client Job
+# Status."* Und am 2026-08-14, auf den Einwand, dass ein `/run`-Lauf damit am
+# Zeilenanfang unsichtbar würde: *„dann bekommt der lokale Lauf zwei eigene
+# Symbole in seiner eigenen Spalte. Die Idee mit dem Rückfall ist zwar gut,
+# wird aber damit obsolet."*
+#
+# **Das nimmt #146 zurück, und zwar ausdrücklich.** Der Einspringer wurde
+# gebaut, damit die Zeile nicht stillsteht, während ein lokaler Lauf läuft — er
+# löste das an der falschen Stelle: indem er die Scheduler-Anzeige umdeutete,
+# statt dem Client eine eigene zu geben.
+#
+# **Was #146 richtig gesehen hat, bleibt gültig:** ein laufender lokaler Lauf
+# muss sichtbar sein. Die drei Tests darüber prüfen weiterhin genau das — Zeit
+# und Balken bleiben beim Einspringer, umgestellt ist nur der Marker.
+
+
+def _zeile_zwei_quellen(scheduler_status: str, local_status: str | None) -> str:
+    """Eine Zeile, in der Scheduler und Client verschiedene Zustände tragen.
+
+    ``runtime_p90`` steht beim Scheduler, weil der Balken einen Lauf gegen die
+    Historie des **Jobs** misst — s. ``_zeile_lokal()`` oben. Daran ändert #188
+    nichts: umgestellt wird der Marker, nicht der Maßstab.
+    """
+    row = JobRow(slug="x", segment=Segment.SCHEDULE,
+                 scheduler={"row_status": scheduler_status, "next_fire_at": NOW + 3600,
+                            "runtime_p90": 16.0, "started_at": NOW - 5},
+                 local=({"status": local_status, "started_at": NOW - 5}
+                        if local_status else {}),
+                 spec={"payload": "echo hi"})
+    return render._jobs_zeile(row, NOW)
+
+
+def _marker_block(zeile: str, klasse: str) -> str:
+    """Der eine ``span`` mit dieser Klasse, ohne den Rest der Zeile."""
+    anfang = zeile.index(f'class="{klasse}"')
+    return zeile[anfang:zeile.index("</span>", anfang)]
+
+
+def test_die_quadrate_zeigen_den_scheduler_auch_wenn_nur_der_client_arbeitet():
+    """**Der Kern der Festlegung.** Vorher gewann der arbeitende Client.
+
+    Der Scheduler steht auf `complete`, der Client läuft. Bis zum 2026-08-14
+    pulsten die Quadrate am Zeilenanfang deshalb im `running`-Takt — sie sagten
+    etwas über den Client, obwohl sie an der Scheduler-Kante der Zeile stehen.
+    """
+    quadrate = _marker_block(_zeile_zwei_quellen("complete", "running"), "akt")
+    assert "blink" not in quadrate, (
+        "die Quadrate pulsen, obwohl der Scheduler-Lauf abgeschlossen ist — "
+        "sie zeigen damit den Client")
+
+
+def test_der_lokale_lauf_bekommt_zwei_eigene_symbole():
+    """Die zweite Hälfte der Entscheidung, und ohne sie wäre die erste ein
+    Rückschritt: ein `/run`-Lauf wäre sonst nirgends mehr sichtbar."""
+    lokal = _marker_block(_zeile_zwei_quellen("complete", "running"), "akt akt-lokal")
+    assert lokal.count("<i") == 2, f"erwartet zwei Symbole, gefunden: {lokal}"
+    assert "blink-fast" in lokal, "der lokale Lauf pulst nicht"
+
+
+def test_der_lokale_marker_steht_in_einer_eigenen_spalte():
+    """*„in seiner eigenen Spalte"* — wörtlich, nicht als Beigabe zur
+    Status-Zelle. Der Scheduler-Marker sitzt in der Slug-Zelle; hätte der
+    lokale es ihm gleichgetan, wäre die Zusage nur halb eingelöst."""
+    zellen = _zeile_zwei_quellen("complete", "running").split("<td")
+    treffer = [z for z in zellen if "akt-lokal" in z]
+    assert len(treffer) == 1, "der lokale Marker steht nicht in genau einer Zelle"
+    assert "chip" not in treffer[0], (
+        "die Zelle trägt noch einen Status-Chip — dann ist es keine eigene Spalte")
+
+
+def test_ohne_lokalen_lauf_bleibt_die_spalte_ruhig_aber_da():
+    """Dieselbe Erwägung wie bei den Quadraten: ein Platz, der nur manchmal
+    existiert, verschiebt die Spalten daneben. Ruhig ja, weg nein."""
+    zeile = _zeile_zwei_quellen("running", None)
+    assert "akt-lokal" in zeile, "die lokale Spalte fehlt ganz"
+    assert "blink" not in _marker_block(zeile, "akt akt-lokal"), (
+        "der lokale Marker pulst, obwohl hier nichts lokal läuft")
+    # Gegenprobe in derselben Zeile: die Quadrate zeigen den laufenden
+    # Scheduler. Ohne sie wäre der Test auch dann grün, wenn gar nichts pulste.
+    assert "blink-fast" in _marker_block(zeile, "akt")
+
+
+def test_die_tabelle_traegt_die_neue_spalte_im_client_block():
+    """Eine Spalte, die in der Zeile steht und nicht im Kopf, lässt jedes
+    ``colspan`` einen Platz zu kurz enden — der Bandkopf hörte dann eine Spalte
+    vor dem Rand auf. Genau dieser Fehler ist der Grund, warum
+    ``_JOBS_SPALTEN`` überhaupt eine Konstante ist."""
+    assert render._JOBS_SPALTEN == 10

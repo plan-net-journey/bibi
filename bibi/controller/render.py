@@ -379,6 +379,16 @@ td.cellflash { animation: bibi-cellflash 3.15s ease-out 1; }
    Zustand woanders anfangen, ist beim Ueberfliegen so viel wert wie keine. */
 .akt { display: inline-flex; gap: .18em; margin-right: .45em;
        vertical-align: -.02em; }
+/* Die eigene Spalte des lokal gestarteten Laufs (#188). Sie traegt nur die
+   zwei Quadrate und soll deshalb genau so breit sein wie diese -- eine Spalte,
+   die sich den Rest der Zeile teilt, schoebe STATUS und LAST/RUN nach rechts,
+   ohne dafuer etwas zu zeigen.
+
+   `margin-right` faellt hier weg: der Abstand von `.akt` gilt dem Slug, der
+   dahinter in derselben Zelle steht. Hier steht nichts dahinter, und der
+   Abstand waere dann Rand statt Trennung. */
+.aktzelle { width: 1.4em; padding-right: 0; }
+.aktzelle .akt { margin-right: 0; }
 .mk { display: inline-block; width: .5em; height: .5em; background: currentColor;
       border-radius: 1px; }
 .mk-grey   { color: var(--faint); }
@@ -4754,15 +4764,22 @@ def _pbar_geometrie(t: float, ref: float) -> tuple[float, float]:
 def _arbeitende_quelle(s: dict, l: dict) -> dict | None:
     """Die Quelle, deren Lauf gerade arbeitet — Scheduler zuerst (#146).
 
-    **Dieselbe Regel wie in ``_aktivitaets_marker()``**, und das ist der ganze
-    Punkt dieser Funktion: der Marker kannte den Einspringer schon (*„einer, der
-    nur lokal per ``/run`` läuft, soll genauso pulsen"*), seine beiden Nachbarn
-    nicht. Die Zeile sagte deshalb zweierlei über denselben Lauf — der Marker
-    pulste, die Zelle daneben zeigte einen Strich.
+    **Für Zeit und Fortschrittsbalken, nicht mehr für den Marker.** Bis zum
+    2026-08-14 galt die Regel an drei Stellen; ``_aktivitaets_marker()`` ist mit
+    `#188` ausgeschert und zeigt seither immer den Scheduler, während der lokale
+    Lauf eine eigene Spalte bekommen hat.
 
-    **Sichtbar wurde das nur im Vergleich zweier Startwege.** Wer immer über den
-    Scheduler startet, sieht es nie; genau deshalb steht die Regel jetzt an
-    einer Stelle statt an dreien.
+    **Was `#146` gefunden hat, gilt hier weiter:** ein lokal per ``/run``
+    gestarteter Lauf soll seine laufende Zeit und seinen Balken bekommen. Die
+    Zelle sagte sonst „nichts läuft" über einen Lauf, der läuft — und sichtbar
+    wurde das nur im Vergleich zweier Startwege. Wer immer über den Scheduler
+    startet, sieht es nie.
+
+    **Der Marker ist ausgeschert, weil er etwas anderes beantwortet.** Zeit und
+    Balken sagen *wie weit ist dieser Lauf*; die Quadrate stehen an der
+    Scheduler-Kante der Zeile und sagen *wie steht dieser Job beim Scheduler*.
+    Für die erste Frage ist der Startweg gleichgültig, für die zweite ist er der
+    Gegenstand.
     """
     for quelle in (s, l):
         if (quelle.get("row_status") or quelle.get("status")) in _IN_ARBEIT:
@@ -4943,12 +4960,34 @@ def _status_chip(zustand: str | None) -> str:
     return f'<span class="chip {_CHIP_KLASSE[farbe]} st {_e(z)}">{_e(z)}</span>'
 
 
-def _aktivitaets_marker(s: dict, l: dict) -> str:
-    """Die beiden Quadrate am Zeilenanfang — **immer zwei, in jedem Zustand**.
+def _marker_paar(zustand: str | None, klasse: str) -> str:
+    """Zwei Quadrate für **einen** Zustand — die gemeinsame Form beider Marker.
 
-    **Der Scheduler führt, der Client springt ein.** Ein Job, der beim
-    Scheduler arbeitet, ist die Regel; einer, der nur lokal per ``/run`` läuft,
-    soll aber genauso pulsen — sonst stünde die Zeile still, während er läuft.
+    Die Aufteilung der Bedeutung steht in ``_ZUSTAND_VOKABULAR``: linkes Quadrat
+    = läuft eine Uhr, rechtes = läuft ein Prozess. Unbekannt oder leer ⇒
+    ``_RUHIG``; **ein Element entsteht in jedem Fall**, weil ein Platz, den es
+    nur manchmal gibt, die Spalten daneben verschiebt.
+    """
+    links, rechts, _chip = _ZUSTAND_VOKABULAR.get(zustand or "", _RUHIG)
+    return (f'<span class="{klasse}" aria-hidden="true">'
+            f"{_marker(*links)}{_marker(*rechts)}</span>")
+
+
+def _aktivitaets_marker(s: dict) -> str:
+    """Die beiden Quadrate am Zeilenanfang — **immer der Scheduler** (#188).
+
+    **Festlegung m.rau, 2026-08-13:** *„die beiden Icons links (die Quadrate)
+    beziehen sich immer auf den Scheduler Job Status und nie auf den Client Job
+    Status."*
+
+    **Damit fällt der Einspringer aus `#146`.** Er kam aus einer richtigen
+    Beobachtung — ein lokal per ``/run`` gestarteter Lauf soll die Zeile nicht
+    stillstehen lassen — und löste sie an der falschen Stelle: indem er die
+    Scheduler-Anzeige umdeutete, statt dem Client eine eigene zu geben. Die
+    Zeile stand dann zwar nicht mehr still, sagte aber etwas anderes, als ihre
+    Position versprach. Was `#146` richtig gesehen hat, trägt jetzt
+    ``_lokaler_marker()``; m.rau nennt den Rückfall am 2026-08-14 ausdrücklich
+    *„obsolet"*.
 
     **Bis v0.8.7 gab diese Funktion für die meisten Zustände gar nichts
     zurück.** ``_AKTIVITAET`` kannte fünf; wer nicht darin stand — jeder
@@ -4958,28 +4997,24 @@ def _aktivitaets_marker(s: dict, l: dict) -> str:
     Zeichen. Bei zweien trägt die Farbe die Information, und der feste Platz ist
     die Voraussetzung dafür, dass die Spalten daneben übereinander stehen.
     """
-    # **Wer arbeitet, führt — und erst danach der Scheduler** (`#146`).
-    #
-    # Die Reihenfolge ist neu, und der Grund ist eine Nebenwirkung dieses
-    # Umbaus. Bis `v0.8.7` kannte ``_AKTIVITAET`` nur fünf Zustände; ein
-    # Scheduler auf `complete` fiel schlicht **durch**, und der lokal laufende
-    # Einspringer kam zum Zug. Seit die Tabelle **alle elf** Zustände führt,
-    # fällt niemand mehr durch: `complete` gewänne gegen einen laufenden lokalen
-    # Lauf, und die Zeile stünde still, während er läuft.
-    #
-    # Genau diese Regel steht schon in ``_arbeitende_quelle()`` und war die
-    # Antwort auf `#146`. Sie gilt hier ab jetzt ausdrücklich, statt als
-    # Nebenwirkung einer unvollständigen Tabelle mitzulaufen.
-    arbeitet = _arbeitende_quelle(s, l)
-    for quelle in ((arbeitet, s, l) if arbeitet is not None else (s, l)):
-        zustand = quelle.get("row_status") or quelle.get("status")
-        if zustand in _ZUSTAND_VOKABULAR:
-            links, rechts, _chip = _ZUSTAND_VOKABULAR[zustand]
-            break
-    else:
-        links, rechts, _chip = _RUHIG
-    return (f'<span class="akt" aria-hidden="true">'
-            f"{_marker(*links)}{_marker(*rechts)}</span>")
+    return _marker_paar(s.get("row_status") or s.get("status"), "akt")
+
+
+def _lokaler_marker(l: dict) -> str:
+    """Dieselben zwei Quadrate für den **lokal** gestarteten Lauf (#188).
+
+    *„dann bekommt der lokale Lauf zwei eigene Symbole in seiner eigenen
+    Spalte"* (m.rau, 2026-08-14). Die eigene Spalte ist der Punkt: ohne sie wäre
+    die Festlegung oben ein Rückschritt — ein ``/run``-Lauf hätte nirgends mehr
+    eine Anzeige, und genau das war der Anlass von `#146`.
+
+    **Dieselbe Tabelle wie Scheduler-Marker und Chip.** Zwei Implementierungen
+    derselben Regel sind in diesem Code schon zweimal auseinandergelaufen
+    (`#102`, `#126`); ein drittes Vokabular für „was heißt running" entstünde
+    hier besonders leicht, weil die Spalte neu ist und niemand sie mit der
+    linken vergleicht.
+    """
+    return _marker_paar(l.get("status") or l.get("row_status"), "akt akt-lokal")
 
 
 def _laufender_start(s: dict, l: dict | None = None) -> float | None:
@@ -5192,7 +5227,7 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
         # Auge fährt die linke Kante der Tabelle ab, und dort gehört die Frage
         # „arbeitet hier gerade etwas" hin (#67).
         # `slug mono`: der Slug ist der Dateiname der Schedule-MD (#149).
-        f'<td class="slug mono">{_aktivitaets_marker(s, l)}'
+        f'<td class="slug mono">{_aktivitaets_marker(s)}'
         # **Der Link traegt seine Herkunft mit** (#137). Der hervorgehobene Tab
         # im Detail ist laut #148 der Rueckweg; ohne diese Angabe zeigte er
         # `Jobs`, auch wenn man aus dem Journal kam -- ein Versprechen ueber
@@ -5280,6 +5315,16 @@ def _jobs_zeile(row, now: float, *, public_host: str = "localhost",
         # lokale Lauf **fertig** war. Der Scheduler nennt daneben den Start
         # seines Laufs, und das ist kein Versehen: er weiss, wann etwas beginnt,
         # der Client sieht, wann es geendet hat.
+        # **Die eigene Spalte des lokalen Laufs** (#188, m.rau 2026-08-14):
+        # *„dann bekommt der lokale Lauf zwei eigene Symbole in seiner eigenen
+        # Spalte."* Sie ist die zweite Haelfte der Festlegung, dass die Quadrate
+        # am Zeilenanfang **immer** den Scheduler zeigen — ohne sie waere ein
+        # `/run`-Lauf nirgends mehr sichtbar, und das war der Anlass von #146.
+        #
+        # Am Anfang ihres Blocks, symmetrisch zum Scheduler-Marker vor dem Slug:
+        # das Auge faehrt die Kante eines Blocks ab, und dort gehoert die Frage
+        # „arbeitet hier gerade etwas" hin.
+        + f'<td class="aktzelle">{_lokaler_marker(l)}</td>'
         # Der Client-Zustand traegt denselben Chip aus derselben Tabelle. Ein
         # eigener waere die dritte Implementierung -- #102 und #126 waren die
         # ersten beiden.
@@ -5344,7 +5389,11 @@ _SORTIERBAR = (("slug", "SLUG"), ("type", "TYPE"), ("status", "STATUS"),
 #: Stellen ihn getrennt als Literal führten. Eine davon wäre stehengeblieben,
 #: und ein zu kurzes `colspan` verschiebt keine Zeile sichtbar — es lässt die
 #: Bandkopfzeile nur eine Spalte vor dem Rand enden.
-_JOBS_SPALTEN = 9
+#:
+#: **Zehn seit #188**: der lokale Lauf hat eine eigene Spalte im CLIENT-Block
+#: bekommen. Der Vorgang ist der Beleg für den Absatz darüber — geändert werden
+#: musste genau diese Zeile, nicht drei.
+_JOBS_SPALTEN = 10
 
 
 def sortierbare_schluessel() -> frozenset[str]:
@@ -5420,7 +5469,10 @@ def _jobs_kopf(sort: str | None, direction: str, *,
         # #147 gilt weiter, nur seine Reihenfolge nicht.
         '<tr class="gruppen"><th></th><th></th><th></th><th></th>'
         f'<th colspan="{3 if mit_next else 2}" class="grp">SCHEDULER</th>'
-        '<th colspan="2" class="grp">CLIENT</th></tr>'
+        # **Drei seit #188** — die eigene Spalte des lokalen Laufs zaehlt zum
+        # CLIENT-Block. Ein `colspan`, das die neue Spalte nicht mitzaehlt,
+        # laesst die Gruppen-Kopfzeile eine Spalte vor dem Rand enden.
+        '<th colspan="3" class="grp">CLIENT</th></tr>'
         "<tr>"
         + _sort_kopf("slug", "SLUG", sort, direction)
         + _sort_kopf("type", "TYPE", sort, direction)
@@ -5463,6 +5515,11 @@ def _jobs_kopf(sort: str | None, direction: str, *,
         # liegen in derselben Zeile (`JobRow.local`) und wurden hier bereits
         # gerendert: **Zellen, nach denen sich nicht sortieren liess, obwohl der
         # Sortierer die Zeile in der Hand hielt.**
+        # Die Aktivitaets-Spalte des lokalen Laufs (#188) — **ohne Beschriftung
+        # und nicht sortierbar**, genau wie ihr Gegenstueck am Zeilenanfang.
+        # Zwei Quadrate tragen keinen Spaltennamen; und was hier zu sortieren
+        # waere, sortiert die STATUS-Spalte daneben bereits.
+        + '<th class="aktzelle"></th>'
         + _sort_kopf("client_status", "STATUS", sort, direction)
         + _sort_kopf("client_last", "LAST/RUN", sort, direction)
         + "</tr>"
@@ -5493,10 +5550,17 @@ def _filter_zeile(typ: list[str], status: list[str],
                   status_filter: bool = True, mit_next: bool = True) -> str:
     """Die dritte Kopfzeile: Filterwerte unter ihren Spalten (#31).
 
-    Acht Zellen, damit die Zeile zur Tabelle passt — gefüllt sind zwei. Die
-    leeren stehen ausdrücklich da, statt die Zeile per ``colspan`` zu
-    verkürzen: eine Spalte ohne Filter ist eine Aussage (*hier gibt es nichts
-    zu filtern*), und sie geht verloren, sobald die Zellen verrutschen dürfen.
+    So viele Zellen, wie die Tabelle Spalten hat (``_JOBS_SPALTEN``, zehn seit
+    `#188`) — gefüllt sind zwei. Die leeren stehen ausdrücklich da, statt die
+    Zeile per ``colspan`` zu verkürzen: eine Spalte ohne Filter ist eine Aussage
+    (*hier gibt es nichts zu filtern*), und sie geht verloren, sobald die Zellen
+    verrutschen dürfen.
+
+    **Hier stand bis zum 2026-08-14 „Acht Zellen", und es waren neun.** Die Zahl
+    war seit `#135` überholt; sie stand im Text und nirgends im Code, also hat
+    sie niemand mitgezogen. Deshalb nennt dieser Absatz jetzt die Konstante und
+    keine Ziffer — eine Zahl in einem Docstring ist eine Kopie, und Kopien
+    laufen auseinander.
 
     ``status_filter=False`` lässt die STATUS-Zelle leer — für den
     Journal-Screen. Dort steht Historie, die keinen laufenden Zustand hat;
@@ -5525,7 +5589,10 @@ def _filter_zeile(typ: list[str], status: list[str],
         + (zellen(_FILTER_OBEN[1][1], status) if status_filter else "<th></th>")
         + "<th></th>"                          # SCHEDULER LAST
         + ("<th></th>" if mit_next else "")    # SCHEDULER NEXT
-        + "<th></th><th></th>"                 # CLIENT STATUS, CLIENT LAST
+        # Drei seit #188 — die Aktivitaets-Spalte des lokalen Laufs kommt dazu.
+        # Sie hat keinen Filter und braucht ihre Zelle trotzdem: sonst rutschen
+        # die beiden dahinter unter fremde Spalten.
+        + "<th></th><th></th><th></th>"        # CLIENT AKT, STATUS, LAST
         + "</tr>"
     )
 
