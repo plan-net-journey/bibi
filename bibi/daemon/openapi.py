@@ -58,6 +58,16 @@ class JobView(BaseModel):
     next_fire_at: float | None = None  # nächster geplanter Trigger (überfällig-Anzeige)
     last_run_at: float | None = None   # letzter abgeschlossener Lauf (aus Journal)
     app_url: str | None = None          # HITL-Eingabe-Endpunkt der App (v10, §10.4)
+    # Die bei START eingefrorene Job-Konfiguration dieses Laufs (#129). Sie
+    # reist seit #182 mit, weil die Attributseite eines **laufenden** Laufs
+    # sonst nur auf dem Knoten zu haben wäre, auf dem er läuft: das Journal
+    # bekommt seinen Snapshot erst beim Archivieren (A2), und ein Client, der
+    # auf einen Scheduler-Lauf sieht, hätte bis dahin nichts zu zeigen.
+    #
+    # **Als roher JSON-String und nicht als aufgelöstes Objekt**: die Spalte
+    # trägt genau das, und ein Modell dafür wäre eine zweite Meinung darüber,
+    # welche Felder ein Snapshot hat — die Antwort darauf gehört dem Renderer.
+    run_snapshot: str | None = None
 
 
 class ScheduleView(BaseModel):

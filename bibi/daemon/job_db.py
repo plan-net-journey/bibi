@@ -880,7 +880,28 @@ def job_view(row: sqlite3.Row, *, last_run_at: float | None = None) -> dict:
         # nur intern genutzt (Ausgabefilter, PLAN-12 Stufe 12.4/12.5) — response_model=JobView
         # deklariert dieses Feld nicht, FastAPI/Pydantic filtert es beim Serialisieren heraus.
         "payload": row["payload"],
+        # **Anders als `payload`: dieses Feld geht hinaus** (#182). `JobView`
+        # deklariert es, weil die Attributseite eines laufenden Laufs sonst nur
+        # auf dem Knoten zu haben wäre, auf dem er läuft — das Journal bekommt
+        # seinen Snapshot erst beim Archivieren (A2).
+        "run_snapshot": _lauf_attribute_roh(row),
     }
+
+
+def _lauf_attribute_roh(row: sqlite3.Row) -> str | None:
+    """Der Snapshot **als abgelegter Text**, ohne ihn zu deuten.
+
+    Gegenstück zu ``_lauf_attribute()``, das ihn auflöst. Hier bleibt er roh,
+    weil er in dieser Form durch die API reist: ein aufgelöstes Objekt wäre
+    eine zweite Meinung darüber, welche Felder ein Snapshot hat, und die gehört
+    dem Renderer.
+
+    Eine Teil-Auswahl ohne die Spalte liefert ``None`` — derselbe Fall wie eine
+    Zeile ohne laufenden Lauf, und mit derselben Antwort.
+    """
+    if "run_snapshot" not in row.keys():
+        return None
+    return row["run_snapshot"]
 
 
 def job_full_view(row: sqlite3.Row) -> dict:

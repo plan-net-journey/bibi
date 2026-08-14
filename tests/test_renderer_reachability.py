@@ -40,9 +40,25 @@ from bibi.controller import render
 
 #: Renderer, die statisch nicht erreichbar sind und es trotzdem sein dürfen.
 #:
-#: **Was hier steht, ist Schuld, keine Erlaubnis** — und die Liste ist leer,
+#: **Was hier steht, ist Schuld, keine Erlaubnis** — und die Liste war leer,
 #: seit `#100` abgeschlossen ist. Wer etwas einträgt, begründet es im Commit.
-_ERLAUBT_UNERREICHBAR: frozenset[str] = frozenset()
+#:
+#: `_ago_text` ist mit `#184` unerreichbar geworden, und die Schuld ist genau
+#: benennbar: **die Regel „vor X Zeit" existiert zweimal**, einmal hier und
+#: einmal in `_DURATION_JS`. Seit `_ago()` den Zeitpunkt-Anker trägt, rendert
+#: sie nur noch der Browser — der Server liefert die absolute Form, und der
+#: Ticker rechnet um, wer auf relativ gestellt hat.
+#:
+#: **Gelöscht wird sie trotzdem nicht, und das ist der Punkt:** sie ist die
+#: einzige Server-Seite, gegen die
+#: `test_the_browser_formats_durations_exactly_like_the_renderer` die JS-Regel
+#: hält. Ohne sie prüfte der Vergleich die einzige verbliebene
+#: Implementierung gegen sich selbst.
+#:
+#: **Sie fällt, wenn die Doppelung fällt** — wenn die drei Dauer-Regeln aus
+#: einer Quelle in beide Sprachen kommen. Bis dahin steht sie hier und nicht
+#: unbemerkt im Code.
+_ERLAUBT_UNERREICHBAR: frozenset[str] = frozenset({"_ago_text"})
 
 #: Dasselbe für Routen — mit **einem** Eintrag, und er ist Schuld.
 #:
@@ -69,8 +85,59 @@ def _quelle(name: str) -> tuple[str, ast.Module]:
 
 
 def _funktionen(baum: ast.Module) -> dict[str, ast.AST]:
+    """Alle Funktionen eines Moduls, **auch die verschachtelten**.
+
+    Hier stand einen Anlauf lang ``baum.body`` statt ``ast.walk``, mit der
+    Begründung, eine innere Funktion sei per Konstruktion nur über ihre äußere
+    erreichbar. Das stimmt — **und macht den Wächter trotzdem blind**: in
+    ``controller/__init__.py`` sind sämtliche Route-Handler innere Funktionen
+    von ``create_app()``. Der Umbau meldete daraufhin 31 tote Routen, also
+    fast alle.
+
+    Die Lehre gehört zum Fund: eine Aussage über *Erreichbarkeit im Code* ist
+    nicht dieselbe wie eine über *Erreichbarkeit im Betrieb*, und dieser
+    Wächter misst die zweite.
+    """
     return {n.name: n for n in ast.walk(baum)
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def _tabellen(baum: ast.Module) -> dict[str, set[str]]:
+    """Modulweite Dicts/Tupel → die Namen, die als Werte darin stehen (#181).
+
+    **Eine Dispatch-Tabelle ist ein Aufruf, den der AST nicht als solchen
+    sieht.** ``KACHEL_VORRAT`` bildet Feldnamen auf Bauteil-Funktionen ab, und
+    wer die Tabelle benutzt, ruft jede von ihnen — nur eben über einen
+    Nachschlagevorgang statt über ihren Namen. Ohne diese Kante meldet der
+    Wächter jedes Bauteil als unerreichbar und behauptet damit das Gegenteil
+    dessen, was der Fall ist.
+
+    Der Fund wäre also ein **falscher** gewesen, und das ist der teurere
+    Fehler: ein Wächter, der bei richtigem Code anschlägt, wird abgeschaltet
+    oder mit Ausnahmen zugedeckt, und dann fängt er auch die echten Fälle
+    nicht mehr.
+    """
+    out: dict[str, set[str]] = {}
+    for n in baum.body:
+        # `ast.AnnAssign` mit: `KACHEL_VORRAT: dict = {...}` ist annotiert und
+        # damit ein anderer Knoten als eine nackte Zuweisung. Der erste Entwurf
+        # kannte nur `Assign` und fand die Tabelle deshalb nicht — sichtbar
+        # daran, dass genau die Bauteile weiter als unerreichbar galten.
+        if isinstance(n, ast.AnnAssign):
+            ziele, wert = ([n.target], n.value)
+        elif isinstance(n, ast.Assign):
+            ziele, wert = (n.targets, n.value)
+        else:
+            continue
+        if wert is None:
+            continue
+        namen = {k.id for k in ast.walk(wert) if isinstance(k, ast.Name)}
+        if not namen:
+            continue
+        for ziel in ziele:
+            if isinstance(ziel, ast.Name):
+                out.setdefault(ziel.id, set()).update(namen)
+    return out
 
 
 def _string_konstanten(baum: ast.Module) -> dict[str, str]:
@@ -179,6 +246,7 @@ def _erreichbar() -> tuple[set[str], set[str], dict[str, str], dict[str, ast.AST
     rend_text, rend_baum = _quelle("render.py")
     ctrl_f, rend_f = _funktionen(ctrl_baum), _funktionen(rend_baum)
     konst = _string_konstanten(rend_baum)
+    tabellen = _tabellen(rend_baum)
     routen = _routen(ctrl_baum)
     alle = {**ctrl_f, **rend_f}
 
@@ -196,10 +264,18 @@ def _erreichbar() -> tuple[set[str], set[str], dict[str, str], dict[str, ast.AST
         while grenze:
             grenze = False
             for n in list(namen):
+                # Eine erreichte Dispatch-Tabelle macht ihre Einträge
+                # erreichbar (#181) — wer sie benutzt, ruft jeden von ihnen.
+                if n in tabellen:
+                    neu = {x for x in tabellen[n]
+                           if x in alle or x in konst or x in tabellen} - namen
+                    if neu:
+                        namen |= neu
+                        grenze = True
                 if n not in alle:
                     continue
                 neu = {x for x in _bezeichner(alle[n])
-                       if x in alle or x in konst} - namen
+                       if x in alle or x in konst or x in tabellen} - namen
                 if neu:
                     namen |= neu
                     grenze = True
@@ -278,8 +354,21 @@ def test_the_allowance_lists_stay_empty_unless_someone_argues():
     **Sie fällt mit dem Auslöser**, und dieser Test ist die Erinnerung daran:
     er wird rot, sobald jemand die Route entfernt, ohne den Eintrag
     mitzunehmen — und er bleibt rot, wenn jemand einen zweiten einträgt.
+
+    **Ein Renderer steht drin, seit #184.** `_ago_text` ist die Server-Seite
+    der Regel *„vor X Zeit"*, und seit `_ago()` den Zeitpunkt-Anker trägt,
+    rendert diese Regel nur noch der Browser: der Server liefert die absolute
+    Form, der Ticker rechnet um, wer auf relativ gestellt hat.
+
+    **Die Schuld ist die Doppelung, nicht die Unerreichbarkeit.** Die Regel
+    existiert in Python und in JavaScript, und
+    `test_the_browser_formats_durations_exactly_like_the_renderer` hält beide
+    gegeneinander. Löschte man die Python-Seite, prüfte der Vergleich die
+    verbliebene Implementierung gegen sich selbst — **ein Test, der nur noch
+    bestätigen kann.** Der Eintrag fällt, wenn die drei Dauer-Regeln aus einer
+    Quelle in beide Sprachen kommen.
     """
-    assert not _ERLAUBT_UNERREICHBAR, (
+    assert _ERLAUBT_UNERREICHBAR == frozenset({"_ago_text"}), (
         "Ausnahmen sind zugelassen, aber nie stillschweigend: dieser Test "
         "gehört mit der Begründung angepasst, nicht die Liste allein.")
     assert _ERLAUBT_TOTE_ROUTEN == frozenset({"/-/ui/clients/restart-all"}), (

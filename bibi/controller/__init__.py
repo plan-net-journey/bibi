@@ -2094,6 +2094,51 @@ def add_controller_routes(
             host_url=_scheduler_url(), scheduler=_sched[0],
             scheduler_stale_since=_sched[1]))
 
+    @app.get("/-/jobs/{job_uid}/slot/{ziel}/{job_id}/attrs",
+             include_in_schema=False)
+    def screen_job_slot_attrs(request: Request, job_uid: str,  # noqa: ARG001
+                              ziel: str, job_id: str):
+        """Die Attribute des Laufs, der **noch im Slot steht** (#182).
+
+        **Kein neuer Screen, eine zweite Quelle für dieselbe Seite.** Die
+        Ansicht las bisher ausschließlich ``journal.snapshot``, und der
+        entsteht unter A2 erst beim Archivieren — ausgerechnet der laufende
+        Lauf hatte deshalb keine Attributseite, obwohl seine Werte vollständig
+        in ``jobs.run_snapshot`` stehen (seit #129, seit #164 verlässlich
+        genullt).
+
+        ``ziel`` sagt, **wo** der Slot liegt, genau wie beim Output eine Route
+        weiter oben: dieselbe Job-ID meint auf beiden Seiten einen anderen Job,
+        weil beide ihre eigene DB führen (Zustandsmodell §1).
+
+        **Die Herkunftsspalte sagt hier etwas anderes als beim archivierten
+        Lauf, und das ist kein Mangel.** Dort heißt ein Unterschied zwischen
+        Snapshot und Job-Konfiguration *„dieser Lauf hatte einen anderen
+        Wert"*, weil zwischen Einfrieren und Ansehen beliebig viel Zeit liegen
+        kann. Hier ist der Snapshot der von **diesem** Start, und der Abstand
+        ist die Laufzeit — die Aussage wird dadurch schärfer, nicht unschärfer.
+        """
+        import time as _t
+
+        treffer = _job_by_uid(job_uid)
+        if treffer is None:
+            return JSONResponse(status_code=404,
+                                content={"error": "job not found",
+                                         "job_uid": job_uid})
+        slug, _ = treffer
+        zeile = _slot_lauf(ziel, job_id)
+        if not zeile:
+            return JSONResponse(status_code=404,
+                                content={"error": "run not found", "id": job_id})
+        _sched = _scheduler_status()
+        spec = _local_schedules().get(slug) or {}
+        return HTMLResponse(render.run_attrs_page_v5(
+            slug=slug, lauf=zeile, job_spec=spec,
+            defaults=_vorgabewerte(spec),
+            now=_t.time(), daemon_status=_status(), git_status=_feed_git_status(),
+            host_url=_scheduler_url(), scheduler=_sched[0],
+            scheduler_stale_since=_sched[1]))
+
     @app.get("/-/jobs/{job_uid}/runs/{jid}/output", include_in_schema=False)
     def screen_job_run_output(request: Request, job_uid: str, jid: int):  # noqa: ARG001
         """Die Ausgabe eines archivierten Laufs (FE-Spezifikation §5.4).
@@ -2215,6 +2260,43 @@ def add_controller_routes(
             if e.get("slug") == slug:
                 return slug, e
         return slug, {}
+
+    def _slot_lauf(ziel: str, job_id: str) -> dict:
+        """Der Lauf, der **im Slot steht**, in der Form einer Journal-Zeile (#182).
+
+        **Die Umformung ist der ganze Posten.** ``run_attrs_page_v5()`` erwartet
+        eine Journal-Zeile mit ``snapshot``; die Job-Zeile trägt dieselbe
+        Auskunft unter ``run_snapshot``. Wer statt dessen den Renderer um eine
+        zweite Quelle erweiterte, hätte zwei Wege durch dieselbe Seite — und
+        damit die Bauart, aus der `#182` überhaupt entstanden ist.
+
+        ``ziel`` sagt, **wo** der Slot liegt: dieselbe Job-ID meint auf beiden
+        Seiten einen anderen Job (Zustandsmodell §1). Ein unbekanntes Ziel
+        liefert ``{}`` und damit ein 404 — nicht die lokale Zeile, die zufällig
+        dieselbe ID trägt.
+
+        ``exec_runtime`` fehlt hier bewusst: sie steht erst fest, wenn der Lauf
+        fertig ist. Ein Feld, das während des Laufens einen Wert behauptet, den
+        es noch nicht gibt, wäre schlechter als eines, das fehlt.
+        """
+        if ziel == "scheduler":
+            try:
+                zeile = _host_client().job_entry(job_id) or {}
+            except Exception:  # noqa: BLE001 — defensiv (§2.7)
+                return {}
+        elif ziel == "local":
+            from bibi.daemon import job_db
+            conn = job_db.connect()
+            try:
+                treffer = job_db.get_job(conn, job_id)
+            finally:
+                conn.close()
+            zeile = dict(treffer) if treffer else {}
+        else:
+            return {}
+        if not zeile:
+            return {}
+        return {**zeile, "snapshot": zeile.get("run_snapshot")}
 
     def _vorgabewerte(spec: dict) -> dict:
         """Die Defaults, gegen die *„gesetzt oder geerbt"* entschieden wird.
