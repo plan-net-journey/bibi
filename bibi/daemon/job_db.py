@@ -1879,7 +1879,7 @@ def sweep(conn: sqlite3.Connection, now: float | None = None) -> dict:
                          reason="deferred_expired", now=now) == "ok":
             inactivated += 1
     # **Ein Slot, den der Dispatcher per Konstruktion nie holt** (#210). Die
-    # Stilllegung aus #199 sitzt in `_wartenden_slot_fortsetzen()` und haengt
+    # Stilllegung aus #199 sitzt in `resume_pinned_waiting()` und haengt
     # damit am **Start**: sie greift nur, wenn jemand den Job startet, und wegen
     # `LIMIT 1` je Start genau einmal. Ein Job, den niemand mehr startet, behaelt
     # seine toten Zeilen fuer immer — am 2026-08-15 acht Stueck auf dem Mac, die

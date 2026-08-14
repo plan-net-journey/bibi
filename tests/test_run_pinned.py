@@ -561,7 +561,7 @@ def test_der_unreservierbare_alt_slot_bleibt_nicht_ewig_liegen(gitrepo, monkeypa
 # ── #210: dieselbe Zeile, aber ohne dass jemand startet ─────────────────────
 #
 # **Die Stilllegung aus `#199` haengt am Start.** Sie sitzt in
-# `_wartenden_slot_fortsetzen()`, wird also nur durchlaufen, wenn jemand den Job
+# `resume_pinned_waiting()`, wird also nur durchlaufen, wenn jemand den Job
 # startet — und wegen `LIMIT 1` in `_pinned_row()` je Start genau einmal. Ein
 # Job, den niemand mehr startet, behaelt seine toten Slots fuer immer.
 #
