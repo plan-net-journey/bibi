@@ -697,9 +697,20 @@ def add_controller_routes(
         # Knoten selbst approved ist. Welcher Fall vorliegt, sagt jetzt die
         # Oberfläche, statt dass man es raten muss. **Ohne diesen Schritt wäre
         # die Ursache nicht einmal nachweisbar** — deshalb steht er vor ihr.
+        #
+        # **Und die zweite Hälfte, #206: gefragt wird der Scheduler.** `client`
+        # zeigt auf den eigenen Daemon; die Route `/-/worker/{id}/approve|block`
+        # hängt an der `scheduler`-Rolle und existiert dort auf einem reinen
+        # Client nicht. Der Knopf bekam einen 404 — und zeigte ihn seit #174 an,
+        # was den Befund überhaupt erst nachweisbar gemacht hat.
+        #
+        # `_host_client()` ist genau dafür da und stand zwölf Zeilen tiefer
+        # ungenutzt. Trägt dieser Knoten die scheduler-Rolle selbst, gibt sie den
+        # eigenen Client zurück — ein HTTP-Aufruf über sich selbst wäre ein
+        # Umweg.
         fehler: str | None = None
         try:
-            client.node_action(node_id, verb)
+            _host_client().node_action(node_id, verb)
         except Exception as exc:  # noqa: BLE001 — Route darf nie crashen (§2.7)
             fehler = f"{verb} failed: {exc}"
             activity.emit(log, logging.WARNING, "clients.node_action_failed",
