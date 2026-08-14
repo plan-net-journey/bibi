@@ -28,6 +28,37 @@ RUHT = {None, "", "~", "-", "never"}
 #: hier akzeptiert, weil dieser Screen auch ungeparste Discovery-Daten sieht.
 GERUFEN = {"adhoc", "ad-hoc", "on_demand"}
 
+#: **Die Herkunft einer Zeile in ihren drei Schreibweisen** (#193).
+#:
+#: Sie hatte bis `v0.8.14` drei Orte und an jedem einen anderen Namen für
+#: dieselbe Seite: das Kürzel in ``src`` (``C``), der Name im JavaScript des
+#: Output-Wegs (``client``) und der Name, den die Attribut-Route annahm
+#: (``local``). Der `attrs`-Link ist daran gestorben — er war der einzige, der
+#: das rohe Kürzel in eine Adresse schrieb.
+#:
+#: **Die Tabelle steht hier und nicht im Renderer, weil sie die Zeilen selbst
+#: erzeugt**: ``job_kacheln()`` iteriert über sie. Ein Kürzel, das es hier
+#: nicht gibt, kann damit gar nicht erst in eine Zeile geraten — und das ist
+#: der Unterschied zwischen einer Übersetzung und einer zweiten Meinung.
+SLOT_QUELLEN: tuple[tuple[str, str, str], ...] = (
+    ("SCHEDULER", "S", "scheduler"),
+    ("CLIENT", "C", "client"),
+)
+
+#: Kürzel → Ziel, **die** Übersetzung. Sie liegt auf dem Server, weil beide
+#: Wege sie brauchen: der Output-Link entsteht im Browser, der `attrs`-Link im
+#: Renderer. Zwei Kopien wären genau der Zustand, aus dem `#193` entstand.
+SRC_ZU_ZIEL: dict[str, str] = {kurz: ziel for _, kurz, ziel in SLOT_QUELLEN}
+
+#: Was eine Slot-Route als ``ziel`` annimmt — alles andere ist ein 404.
+#:
+#: **Auch auf dem Output-Weg**, und das ist die eigentliche Korrektur. Er las
+#: bis `v0.8.14` jedes Ziel außer ``scheduler`` als „lokal" und war gegen den
+#: Namensfehler damit immun — zugleich aber blind für ihn. Die Attribut-Route
+#: prüfte beide Namen und fiel deshalb als erste um. Eine tolerante Route ist
+#: kein Schutz, sondern eine Verzögerung.
+SLOT_ZIELE: frozenset[str] = frozenset(ziel for *_, ziel in SLOT_QUELLEN)
+
 
 class Segment(Enum):
     """Die drei Bänder des Screens.
@@ -772,9 +803,17 @@ def build_run_list(*, scheduler_slot: dict | None, client_slot: dict | None,
     # einem Host-Ausfall ihre Gültigkeit verlieren, die neue danach, worüber
     # eine Angabe etwas aussagt. Entschieden ist die jüngere — und wichtiger als
     # ihre Richtung ist, dass sie in jedem Screen dieselbe ist.
-    for quelle, src, zeile, journal, host, gesamt in (
-        ("SCHEDULER", "S", scheduler_slot, scheduler_runs, scheduler_host, scheduler_total),
-        ("CLIENT", "C", client_slot, client_runs, client_host, client_total),
+    #
+    # **Die Namen kommen aus `SLOT_QUELLEN` und stehen nicht mehr hier** (#193).
+    # Sie standen bis `v0.8.14` als Literale in dieser Schleife, und das war der
+    # Grund, warum eine dritte Schreibweise entstehen konnte, ohne dass jemand
+    # sie neben die anderen halten musste. `strict=True`, damit ein Eintrag in
+    # der Tabelle ohne Daten daneben ein Fehler ist und keine stille Auslassung.
+    for (quelle, src, _ziel), (zeile, journal, host, gesamt) in zip(
+        SLOT_QUELLEN,
+        ((scheduler_slot, scheduler_runs, scheduler_host, scheduler_total),
+         (client_slot, client_runs, client_host, client_total)),
+        strict=True,
     ):
         gesperrt: str | None = None
         if oneshot and quelle == "CLIENT":

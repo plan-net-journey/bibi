@@ -161,9 +161,14 @@ def test_a_run_still_in_the_slot_offers_its_own_way():
     anderen Job meint.
     """
     zeile = render._run_zeile({"job_id": "abc", "run_id": "EngineCI:4",
-                               "src": "local", "in_slot": True, "status": "running"},
+                               # **`C`, nicht `local`** (#193, `v0.8.14`): den
+                               # Wert `local` trägt keine Zeile dieses Systems,
+                               # und der gerenderte Link war deshalb im Betrieb
+                               # ein 404 — an genau dem Weg, den dieser Test
+                               # bestätigt hat.
+                               "src": "C", "in_slot": True, "status": "running"},
                               basis=f"/-/jobs/{job_uid('EngineCI')}")
-    assert "/slot/local/abc/attrs" in zeile, zeile
+    assert "/slot/client/abc/attrs" in zeile, zeile
     assert "/runs/" not in zeile, (
         "der Slot-Lauf wird über eine Journal-ID adressiert, die er nicht hat")
 

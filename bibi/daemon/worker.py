@@ -1099,6 +1099,75 @@ def archive_pinned_terminal(slug: str, *, db_path: Path | None = None,
         conn.close()
 
 
+#: Was **wartet** statt zu arbeiten oder fertig zu sein (#191).
+#:
+#: Genau die drei, die ``start_now()`` auf dem Scheduler-Pfad fortschreibt
+#: (``PENDING``/``DEFERRED``/``FAILED``). Sie sind nicht terminal, fallen also
+#: nicht unter :func:`archive_pinned_terminal` — und sie arbeiten nicht, sind
+#: also kein Fall für :func:`local_run_blocked`. Vor `v0.8.14` lagen sie
+#: zwischen beiden Griffen und wurden von keinem angefasst.
+_PINNED_WARTEND_STATUSES = ("pending", "deferred", "failed")
+
+
+def resume_pinned_waiting(slug: str, *, db_path: Path | None = None,
+                          host: str | None = None,
+                          now: float | None = None) -> sqlite3.Row | None:
+    """Einen **wartenden** gepinnten Slot fortsetzen statt danebenzulegen (#191).
+
+    Das Gegenstück zu :func:`archive_pinned_terminal`, und zusammen decken die
+    beiden ab, was ein START auf einem belegten Slot vorfinden kann: terminal
+    → archivieren, wartend → fortsetzen, arbeitend → blockieren.
+
+    **Der Scheduler tut das seit jeher**, und sein Docstring sagt auch warum:
+    *„failed bewusst ohne Attempts-Reset, nur der Timer wird übersprungen."*
+    Der Client-Pfad legte statt dessen eine neue Zeile mit ``attempt=0`` an —
+    mit zwei Folgen, von denen die zweite die schwerere ist:
+
+    * zwei Zeilen desselben Buckets, beide ``failed``, und die ältere fasst nie
+      wieder jemand an;
+    * **ein lokaler Job erreicht ``error`` nie**, solange ein Mensch ihn per
+      START wiederholt. Bei ``attempts: 2`` erschöpft derselbe Job auf dem
+      Scheduler nach zwei Versuchen; auf dem Client zählte jeder START wieder
+      bei null. Der terminale Zustand, den ``attempts`` zusichert, war auf
+      diesem Weg unerreichbar.
+
+    Das ist die dritte Ausprägung derselben Zusage (m.rau, 2026-08-13): *„Egal
+    ob Daemon oder Session, ein Client muss 100% das gleiche Verhalten
+    zeigen."* ``#175`` hat den Auslöser angeglichen, ``#176`` die Umgebung,
+    hier geht es um die **Zählung**.
+
+    **``pending`` statt nur ``next_fire_at``, und das ist kein Widerspruch zu
+    ``#175``.** Der Scheduler setzt dort nur den Timer, weil sein Dispatcher
+    ``failed`` ohnehin aufnimmt; der gepinnte Loop tut das seit ``#175``
+    bewusst **nicht** — kein Retry ohne Menschen. Ein START *ist* der Mensch,
+    also wird die Zeile hier dispatchbar gemacht. Die Zusage bleibt, dass
+    nichts **von selbst** wieder anläuft.
+
+    ``attempt`` bleibt unangetastet: das ist der ganze Punkt.
+
+    Rückgabe: die fortgesetzte Zeile, oder ``None``.
+    """
+    row = _pinned_row(slug, db_path=db_path, host=host,
+                      statuses=_PINNED_WARTEND_STATUSES)
+    if row is None:
+        return None
+    jetzt = time.time() if now is None else now
+    conn = job_db.connect(job_db.db_path(db_path))
+    try:
+        # Direkt und nicht über `report_status(pending)`: der Weg archiviert
+        # (A2) und initialisiert den Slot — genau das, was hier **nicht**
+        # geschehen darf. Ein wartender Lauf ist nicht zu Ende, und sein
+        # Zähler soll ihn überleben.
+        conn.execute(
+            "UPDATE jobs SET status='pending', next_fire_at=?, updated_at=? "
+            "WHERE id=?", (jetzt, jetzt, row["id"]))
+        conn.commit()
+        return conn.execute("SELECT * FROM jobs WHERE id=?",
+                            (row["id"],)).fetchone()
+    finally:
+        conn.close()
+
+
 def _pinned_last_row(slug: str, *, db_path: Path | None = None,
                      host: str | None = None) -> sqlite3.Row | None:
     """Die jüngste ``jobs``-Zeile für ``slug``, **unabhängig vom Status** —
@@ -1361,34 +1430,56 @@ def run_pinned(
     # immer. Fix: ``-`` statt ``:`` (git-ref-sicher, auch für die
     # LIKE-Präfix-Matches/rsplit() in _pinned_live_row()/local_runs_live()
     # unten mitgeändert).
-    unique_slug = f"{eff_slug}-{secrets.token_hex(4)}"
+    #
+    # **Ein wartender Slot wird fortgesetzt, nicht verdoppelt** (#191). Der
+    # Absatz darueber begruendet `unique_slug` mit der Kollision gegen die
+    # *noch nicht aufgeraeumte* Zeile eines laufenden Starts — und das gilt
+    # weiter. Ein `failed`/`deferred`/`pending`-Slot ist aber nicht belegt,
+    # sondern wartet: dort war die neue Zeile keine Kollisionsvermeidung,
+    # sondern ein zweiter Job mit eigenem Zaehler ab null.
+    #
+    # **Nur mit `slug`**: ein `cmd=`-Ad-hoc-Lauf hat keinen Bucket, den man
+    # fortsetzen koennte — `test_run_pinned_generates_unique_slug_per_call`
+    # beschreibt genau diesen Fall und bleibt gueltig.
     now = time.time()
+    fortgesetzt = None
+    if cmd is None:
+        fortgesetzt = resume_pinned_waiting(eff_slug, db_path=db_path,
+                                            host=host, now=now)
+    #
+    # **Nur die Zeilenanlage unterscheidet sich, der Rest ist gemeinsam.** Ein
+    # zweiter Dispatch-Block waere hier genau die Doppelung, die diese Runde an
+    # drei anderen Stellen abbaut.
+    unique_slug = fortgesetzt["slug"] if fortgesetzt is not None \
+        else f"{eff_slug}-{secrets.token_hex(4)}"
     jid = secrets.token_hex(4)
     conn = job_db.connect(db_path)
     try:
-        conn.execute(
-            "INSERT INTO jobs (id, slug, job_uid, schedule_ref, kind, payload, model, soul, "
-            "session, app_port, app_prefix, exec_mode, image, silence_timeout, wall_time, "
-            "schedule, next_fire_at, attempts, backoff, defer_time, error_time, "
-            "pinned_host, status, enqueued_at) VALUES "
-            "(:id, :slug, :job_uid, :schedule_ref, :kind, :payload, :model, :soul, :session, "
-            ":app_port, :app_prefix, :exec_mode, :image, :silence_timeout, :wall_time, "
-            "'now', :now, :attempts, :backoff, :defer_time, :error_time, "
-            ":pinned_host, 'pending', :now)",
-            # `job_uid` kommt aus ``eff_slug``, nicht aus ``unique_slug``: der
-            # Zufallssuffix macht die *Zeile* eindeutig, nicht den *Job*. Ein
-            # lokaler Lauf von `EngineCI` gehört zu `EngineCI` — hier ist der
-            # Basis-Slug bekannt, deshalb wird er hier gesetzt und nirgends
-            # später aus dem Suffix zurückgerechnet (models.job_uid()).
-            {"id": jid, "slug": unique_slug, "job_uid": job_uid(eff_slug),
-             "schedule_ref": eff_schedule_ref or unique_slug,
-             "kind": eff_kind, "payload": payload, "model": eff_model, "soul": eff_soul,
-             "session": eff_session, "app_port": eff_app_port, "app_prefix": eff_app_prefix,
-             "exec_mode": eff_exec_mode, "image": eff_image,
-             "silence_timeout": eff_silence_timeout, "wall_time": eff_wall_time, "now": now,
-             "attempts": attempts, "backoff": eff_backoff, "defer_time": eff_defer_time,
-             "error_time": eff_error_time, "pinned_host": pin_host},
-        )
+        if fortgesetzt is None:
+            conn.execute(
+                "INSERT INTO jobs (id, slug, job_uid, schedule_ref, kind, payload, model, "
+                "soul, session, app_port, app_prefix, exec_mode, image, silence_timeout, "
+                "wall_time, schedule, next_fire_at, attempts, backoff, defer_time, "
+                "error_time, pinned_host, status, enqueued_at) VALUES "
+                "(:id, :slug, :job_uid, :schedule_ref, :kind, :payload, :model, :soul, "
+                ":session, :app_port, :app_prefix, :exec_mode, :image, :silence_timeout, "
+                ":wall_time, 'now', :now, :attempts, :backoff, :defer_time, :error_time, "
+                ":pinned_host, 'pending', :now)",
+                # `job_uid` kommt aus ``eff_slug``, nicht aus ``unique_slug``: der
+                # Zufallssuffix macht die *Zeile* eindeutig, nicht den *Job*. Ein
+                # lokaler Lauf von `EngineCI` gehört zu `EngineCI` — hier ist der
+                # Basis-Slug bekannt, deshalb wird er hier gesetzt und nirgends
+                # später aus dem Suffix zurückgerechnet (models.job_uid()).
+                {"id": jid, "slug": unique_slug, "job_uid": job_uid(eff_slug),
+                 "schedule_ref": eff_schedule_ref or unique_slug,
+                 "kind": eff_kind, "payload": payload, "model": eff_model,
+                 "soul": eff_soul, "session": eff_session, "app_port": eff_app_port,
+                 "app_prefix": eff_app_prefix, "exec_mode": eff_exec_mode,
+                 "image": eff_image, "silence_timeout": eff_silence_timeout,
+                 "wall_time": eff_wall_time, "now": now, "attempts": attempts,
+                 "backoff": eff_backoff, "defer_time": eff_defer_time,
+                 "error_time": eff_error_time, "pinned_host": pin_host},
+            )
         reservation = job_db.reserve_next(conn, host=host, pinned_only=True, now=now)
     finally:
         conn.close()

@@ -11,7 +11,12 @@ import re
 import time
 from functools import partial as _partial
 
-from bibi.controller.jobs_view import Segment, erreichbarer_host, status_gruppe
+from bibi.controller.jobs_view import (
+    SRC_ZU_ZIEL,
+    Segment,
+    erreichbarer_host,
+    status_gruppe,
+)
 from bibi.schedule import models
 
 # PLAN-36 Stufe 36.0: htmx lokal statt unpkg.com-CDN (Tailnet-only-Setup —
@@ -279,9 +284,21 @@ a.tab-active:hover { text-decoration: none; }
    wechselnden Seitenhintergrund, im Light-Mode nur mittelgrau statt dunkel;
    Text ohne eigene Farbe erbte zudem die Body-Textfarbe (im Light-Mode dunkel
    auf jetzt dunklem Grund). Fester Hintergrund + feste helle Standardfarbe. */
+/* **Programmausgabe scrollt, sie bricht nicht um** (#186, m.rau: *„Entferne
+   ueberall den Umbruch und fuehre die Scrollbar."*). `overflow-x: auto` stand
+   hier seit jeher — eine Scrollbar, die wegen `pre-wrap` nie erscheinen
+   konnte. Der Umbau ist an dieser Stelle eine Korrektur und kein Zusatz.
+
+   Die Achse ist der **Job-Typ** und nicht das `s`-Feld: ein claude-Lauf
+   schreibt seinen Fliesstext ebenfalls als `s: "out"` und ist daran von einer
+   Tabelle nicht zu unterscheiden. Wer umbricht, traegt `.term-wrap`. */
 .term { background: var(--term-bg); color: var(--term-text); border: 1px solid var(--line); border-radius: .4rem;
         padding: .6rem .8rem; overflow-x: auto; font-family: ui-monospace, monospace;
-        font-size: .82rem; line-height: 1.45; white-space: pre-wrap; }
+        font-size: .82rem; line-height: 1.45; white-space: pre; }
+/* Ein claude-Lauf: dort traegt die Zeilengrenze keine Bedeutung, und eine
+   horizontale Scrollbar unter einem Absatz Fliesstext waere die schlechtere
+   von zwei Zumutungen (Zustimmung m.rau: *„Einverstanden."*). */
+.term-wrap { white-space: pre-wrap; overflow-wrap: break-word; }
 .term .err { color: var(--red); }
 .term .thinking { color: var(--dim); font-style: italic; }
 /* Der Denkabschnitt eines claude-Laufs, einklappbar (m.rau/bibi#99). Die
@@ -293,7 +310,12 @@ a.tab-active:hover { text-decoration: none; }
 .term .think > summary::-webkit-details-marker { display: none; }
 .term .think > summary::before { content: "▾ "; }
 .term .think:not([open]) > summary::before { content: "▸ "; }
-.term .phase { color: var(--blue); font-style: italic; }
+/* **Eine `phase`-Zeile ist ein Satz und kein Datensatz** (#186) — *„worktree:
+   wird vorbereitet …"*. Sie bricht deshalb um, auch in einem Shell-Job, wo
+   alles andere scrollt. Das ist der Teil der Regel, der nicht am Job-Typ
+   haengt, sondern am Ereignistyp. */
+.term .phase { color: var(--blue); font-style: italic;
+               white-space: pre-wrap; }
 .out-empty { color: var(--dim); font-size: .85rem; font-style: italic; }
 button { font: inherit; background: var(--btnbg); border: 1px solid var(--btnline);
          border-radius: .35rem; padding: .15rem .5rem; cursor: pointer; color: inherit; }
@@ -461,10 +483,12 @@ td.cellflash { animation: bibi-cellflash 3.15s ease-out 1; }
 .logbar select, .logbar input { font: inherit; padding: .2rem .45rem; color: inherit;
           background: var(--btnbg); border: 1px solid var(--btnline); border-radius: .3rem; }
 .logbar input { flex: 1; min-width: 8rem; }
-.logbox { height: 72vh; overflow-y: auto; background: var(--term-bg); color: var(--term-text);
+/* Scrollt in beide Richtungen (#186): der Log-Screen war der Anlass des
+   Tickets (*„In der Log Ausgabe sollen Zeilen nicht umgebrochen werden."*). */
+.logbox { height: 72vh; overflow: auto; background: var(--term-bg); color: var(--term-text);
           border: 1px solid var(--line); border-radius: .4rem; padding: .6rem .8rem;
           font-family: ui-monospace, monospace;
-          font-size: .82rem; line-height: 1.5; white-space: pre-wrap; }
+          font-size: .82rem; line-height: 1.5; white-space: pre; }
 .logbox .ln.warning { color: var(--amber); }
 .logbox .ln.error   { color: var(--red); }
 .logbox .ln.debug   { color: var(--dim); }
@@ -954,11 +978,16 @@ table.jobs tr.band .gkopf { margin: 0; }
 
 /* Ausgeklappter Output: feste Hoehe, eigener Scrollbereich. */
 .out { padding: 0 !important; }
+/* **`overflow-wrap: anywhere` ist mit `#186` gefallen**, und es war die
+   schaerfste der drei Stellen: es brach sogar *mitten im Wort*: ein Pfad oder
+   ein Commit-Hash wurde an beliebiger Stelle zerschnitten. Der Bereich traegt
+   in aller Regel ein `<pre class="term">` in sich; dessen Regel entscheidet
+   dann, dieser hier gilt fuer rohen Text. */
 .out-body { max-height: 20lh; overflow: auto; margin: .3rem 0 .5rem;
             padding: .5rem .7rem; border: 1px solid var(--line-hard);
             border-radius: .35rem; background: var(--hover);
             font-family: ui-monospace, monospace; font-size: .78rem;
-            line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+            line-height: 1.45; white-space: pre; }
 
 /* Attribute: Beschriftung links, Wert rechts, Defaults gedimmt und geklammert. */
 .attrs { margin: .6rem 0 1rem; }
@@ -3424,12 +3453,29 @@ def _event_line(e: dict) -> str:
 def output_block(events: list[dict], kind: str) -> str:
     """Output eines abgeschlossenen Laufs rendern — dieselbe Zeilen-Formatierung
     wie :func:`live_output_box` (Uhrzeit-Präfix, err/thinking-Styling), nur
-    eingefroren (kein SSE/JS-Hook). ``kind`` ist nur noch für die Signatur
-    relevant (Aufrufer reichen ihn weiterhin durch); die Darstellung selbst
-    unterscheidet nicht mehr nach Job-Typ."""
+    eingefroren (kein SSE/JS-Hook).
+
+    **``kind`` entscheidet wieder etwas** (#186). Hier stand *„nur noch für die
+    Signatur relevant … die Darstellung selbst unterscheidet nicht mehr nach
+    Job-Typ"* — und genau dieser Typ ist die Achse, an der sich Umbruch und
+    Scrollbar trennen lassen. Am ``s``-Feld geht es nicht: ein claude-Lauf
+    schreibt seinen Fließtext ebenfalls als ``s: "out"``.
+    """
     if not events:
         return '<div class="out-empty">— no output —</div>'
-    return f'<pre class="term">{_falte_thinking(_merge_deltas(events))}</pre>'
+    return (f'<pre class="{_term_klasse(kind)}">'
+            f'{_falte_thinking(_merge_deltas(events))}</pre>')
+
+
+def _term_klasse(kind: str, *extra: str) -> str:
+    """Die Klassen einer Ausgabefläche — ``term`` plus ``term-wrap``, wo
+    umgebrochen wird (#186).
+
+    **Eine Funktion für beide Renderstellen**, weil sonst zwei Meinungen
+    darüber entstünden, welcher Typ umbricht — dieselbe Bauform, gegen die
+    `#193` in derselben Runde antritt.
+    """
+    return " ".join(["term", *extra, *(["term-wrap"] if kind == "claude" else [])])
 
 
 def _falte_thinking(events: list[dict]) -> str:
@@ -3519,8 +3565,8 @@ def live_output_box(job_id: str, events: list[dict] | None = None,
     # EventSource auf den Durchreicher. Rein additiv: ohne das Attribut bleibt
     # alles beim globalen Strom.
     strom = f' data-stream="{_e(stream_url)}"' if stream_url else ""
-    return (f'<pre class="term liveterm" id="livebox-{jid}" data-job="{jid}"'
-            f'{strom} data-from="{len(evs)}">{seed}</pre>')
+    return (f'<pre class="{_term_klasse(kind, "liveterm")}" id="livebox-{jid}" '
+            f'data-job="{jid}"{strom} data-from="{len(evs)}">{seed}</pre>')
 
 
 #: PLAN-36 Stufe 36.2: EIN globaler Event-Strom pro Seite statt per-Box-
@@ -5945,7 +5991,6 @@ def journal_page_v5(rows: list, *, now: float, daemon_status: dict | None = None
 #: Rendern und legt es in die Zeile — der Browser raet nicht.
 _JOB_DETAIL_JS = """
 (() => {
-  const SEITE = {S: 'scheduler', C: 'client'};
   // Der Ladevorgang als eigene Funktion, weil ihn zwei Stellen brauchen: der
   // Klick und der Retter nach einem Swap (m.rau/bibi#105).
   const ladeOutput = async (zeile, show) => {
@@ -5954,8 +5999,11 @@ _JOB_DETAIL_JS = """
     feld.textContent = 'loading …';
     // Der Pfad ohne Query: `?days=90` gehoert zur Liste, nicht zum Lauf.
     const basis = location.pathname;
+    // `data-ziel` traegt den fertigen Namen (#193) — hier stand eine eigene
+    // Uebersetzungstabelle, und der Fallback `|| 'client'` hat sie zusaetzlich
+    // verdeckt: ein unbekanntes Kuerzel wurde stillschweigend zur Client-Seite.
     const ziel = show.dataset.slot
-      ? `${basis}/slot/${SEITE[show.dataset.src] || 'client'}/${show.dataset.slot}/output`
+      ? `${basis}/slot/${show.dataset.ziel}/${show.dataset.slot}/output`
       : `${basis}/runs/${show.dataset.jid}/output`;
     try {
       const r = await fetch(ziel);
@@ -6257,6 +6305,28 @@ def _kv_next(slot: dict, now: float) -> str | None:  # noqa: ARG001
     return None if ts is None else _kt_paar("next", _abs_time(ts))
 
 
+def _kv_run_id(slot: dict, now: float) -> str | None:  # noqa: ARG001
+    """Die Lauf-ID — **berechnet, nicht gelesen** (#194).
+
+    Sie steht in keiner Spalte und in keiner Sicht: `run_id_for()` bildet sie
+    aus ``slug``, ``id`` und ``fire``, und genau so tut es der Worker, wenn er
+    den Output-Pfad legt. Das stand schon in `#181` (*„er ist nur
+    berechenbar"*) — gelesen wurde er trotzdem wie ein vorhandenes Feld, und
+    das Zuordnungs-Set zeigte darum drei von vier Angaben.
+
+    **Nicht nachbauen, rufen:** `run_id_for()` ist ausdrücklich die Stelle, die
+    ``slug:fire`` samt Job-ID-Suffix bildet, und ihr Docstring verlangt, dass
+    sie überall dieselbe ist. Eine zweite Formel hier wäre wieder das, wogegen
+    diese Runde antritt.
+    """
+    from bibi.daemon import job_db
+
+    slug, jid, fire = slot.get("slug"), slot.get("id"), slot.get("fire")
+    if not slug or not jid or fire is None:
+        return None
+    return _kt_fein(_e(job_db.run_id_for(str(slug), str(jid), int(fire))))
+
+
 #: **Der Vorrat**: jedes Feld, das die Card zeigen *kann*, mit der Form, in der
 #: es das tut. Dreizehn — die vierzehnte, die Netto-Laufzeit, steht bewusst
 #: nicht hier (s. Kopfkommentar).
@@ -6272,7 +6342,7 @@ KACHEL_VORRAT: dict = {
     "reason": _partial(_kv_schlicht, "reason"),
     "exit_code": _partial(_kv_schlicht, "exit_code", label="exit"),
     "next": _kv_next,
-    "run_id": _partial(_kv_schlicht, "run_id", form=_kt_fein),
+    "run_id": _kv_run_id,
     "worker": _partial(_kv_schlicht, "worker", label="worker"),
     "kind": _partial(_kv_schlicht, "kind"),
     "schedule": _partial(_kv_schlicht, "schedule"),
@@ -6733,17 +6803,29 @@ def _run_zeile(r: dict, *, basis: str = "") -> str:
     # archivierter Lauf hat eine Journal-ID, ein im Slot stehender hat keine —
     # ihn trägt nur die Job-Zeile, und die liegt je nach Herkunft hier oder
     # beim Scheduler.
+    #
+    # **Das Ziel steht fertig im Markup, es wird nicht mehr uebersetzt** (#193).
+    # Hier stand das rohe `src` (`S`/`C`), und das Skript uebersetzte es sich
+    # selbst — eine zweite Tabelle, die der serverseitig gebaute `attrs`-Link
+    # nicht erreichte. Der Kommentar ueber `_JOB_DETAIL_JS` sagte schon das
+    # Richtige: *„Welcher Weg gilt, entscheidet der Server beim Rendern und
+    # legt es in die Zeile — der Browser raet nicht."* Jetzt stimmt es auch.
+    ziel = SRC_ZU_ZIEL.get(r.get("src") or "")
     if im_slot:
         holen = (f'data-slot="{_e(r.get("job_id"))}" '
-                 f'data-src="{_e(r.get("src"))}"')
+                 f'data-ziel="{_e(ziel or "")}"')
     else:
         holen = f'data-jid="{_e(r.get("id"))}"'
     # Der Weg zu den Attributen folgt derselben Gabelung wie der zum Output
     # (#182): eine Journal-ID gibt es nur fuer archivierte Laeufe, ein Lauf im
     # Slot wird ueber seine Job-ID **und ihre Quelle** adressiert.
+    #
+    # **Kein Link ohne bekanntes Ziel** (#193): ein Kuerzel, das die Tabelle
+    # nicht kennt, hat keine Seite — und ein Knopf, der sicher 404 liefert, ist
+    # schlechter als keiner. Genau dieser Fall war der Befund.
     attrs = ""
-    if basis and im_slot and r.get("job_id") is not None:
-        attrs = (f' <a class="cta" href="{basis}/slot/{_e(r.get("src"))}'
+    if basis and im_slot and r.get("job_id") is not None and ziel:
+        attrs = (f' <a class="cta" href="{basis}/slot/{_e(ziel)}'
                  f'/{_e(r.get("job_id"))}/attrs">attrs</a>')
     elif basis and not im_slot and r.get("id") is not None:
         attrs = (f' <a class="cta" href="{basis}/runs/{_e(r.get("id"))}/attrs">'
