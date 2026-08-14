@@ -704,3 +704,65 @@ def test_the_endpoints_stay_reachable(team_repo: Path):
     pfade = {r.path for r in app.routes if hasattr(r, "path")}
     assert "/-/ui/clients/restart-all" in pfade
     assert "/-/ui/clients/{node_id}/{verb}" in pfade
+
+
+# ── #206: APPROVE/BLOCK fragen den eigenen Daemon statt den Scheduler ────────
+#
+# **Befund m.rau, 2026-08-14:** *„Im Nodes Screen funktioniert BLOCK immer noch
+# nicht."* Das „immer noch" zeigt auf `#174` — dort ist der Fehler **sichtbar
+# gemacht** worden, nicht behoben, und genau deshalb ist er jetzt nachweisbar:
+# die Oberflaeche zeigt `failed: HTTP Error 404: Not Found`.
+#
+# `clients_node_action()` ruft `client.node_action(...)`, und `client` zeigt auf
+# den **eigenen** Daemon. Die Route `/-/worker/{id}/approve|block` haengt an der
+# `scheduler`-Rolle — auf einem reinen Client gibt es sie dort nicht. Die
+# Loesung steht zwoelf Zeilen tiefer in derselben Datei (`_host_client()`) und
+# wird nicht benutzt.
+
+
+def test_approve_geht_an_den_scheduler_und_nicht_an_den_eigenen_daemon(
+        team_repo: Path, monkeypatch):
+    """**Der Rot-Schritt zu #206.**
+
+    Der Knoten traegt hier nur `controller` — also den Fall aus dem Befund: den
+    Mac, auf dem gearbeitet wird. Heute landet der Aufruf am eigenen Daemon, wo
+    die Route nicht existiert, und der Knopf antwortet mit 404.
+    """
+    import bibi.controller as controller_mod
+
+    eigener = _FakeClient()
+    scheduler = _FakeClient()
+    monkeypatch.setenv("BIBI_SCHEDULER_URL", "http://scheduler.example:8780")
+    monkeypatch.setattr(controller_mod, "ControllerClient",
+                        lambda url, timeout=None: scheduler)
+
+    app = create_app(roles.resolve({"controller"}), controller_client=eigener)
+    with TestClient(app) as c:
+        r = c.post("/-/ui/clients/node-1/approve")
+
+    assert r.status_code == 200
+    assert scheduler.node_actions == [("node-1", "approve")], (
+        "die Aktion hat den Scheduler nicht erreicht")
+    assert eigener.node_actions == [], (
+        "der Knopf hat den eigenen Daemon gefragt — dort gibt es die Route nicht")
+
+
+def test_ohne_eigenen_scheduler_bleibt_block_am_eigenen_client(team_repo: Path,
+                                                               monkeypatch):
+    """**Die Gegenprobe: ein Scheduler fragt sich nicht selbst ueber HTTP.**
+
+    Ohne `BIBI_SCHEDULER_URL` ist dieser Knoten der Scheduler, und
+    `_host_client()` gibt dann ausdruecklich den eigenen Client zurueck —
+    *„ein HTTP-Aufruf ueber sich selbst waere ein Umweg."* Ohne diese Pruefung
+    waere ein Fix gruen, der immer ueber das Netz geht.
+    """
+    monkeypatch.delenv("BIBI_SCHEDULER_URL", raising=False)
+    eigener = _FakeClient()
+
+    app = create_app(roles.resolve({"scheduler", "controller"}),
+                     controller_client=eigener)
+    with TestClient(app) as c:
+        r = c.post("/-/ui/clients/node-2/block")
+
+    assert r.status_code == 200
+    assert eigener.node_actions == [("node-2", "block")]

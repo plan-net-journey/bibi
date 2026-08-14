@@ -201,3 +201,98 @@ def test_the_old_lookup_is_what_made_them_disagree(conn, monkeypatch):
     assert detail_dann == "error", detail_dann
     assert liste_dann == "zombie", liste_dann
     assert detail_dann != liste_dann, "der Widerspruch laesst sich nicht mehr herstellen"
+
+
+# ---------------------------------------------------------------------------
+# `#209` — `finished_at IS NULL` ist kein Beweis dafür, dass ein Lauf läuft
+# ---------------------------------------------------------------------------
+
+
+def _nie_ausgefuehrt(conn, *, slug: str, host: str, eingereiht: float) -> None:
+    """Ein Slot, den der Dispatcher nie geholt hat: `pending`, **kein**
+    `finished_at`, `attempts=0`.
+
+    **Probe gegen die echte Quelle** (`Iterationen.md`, Regel aus `v0.8.13`):
+    diese Struktur ist am 2026-08-15 in `data/jobs.sqlite` auf dem Mac
+    nachgesehen worden, nicht erfunden — acht solche Zeilen, die älteste vom
+    31. Juli, alle mit `active=1` und `attempts=0`.
+    """
+    import secrets
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, schedule, "
+        "status, enqueued_at, finished_at, attempts, active, pinned_host) "
+        "VALUES (?, ?, ?, 'job', 'echo hi', 'now', 'pending', ?, NULL, 0, 1, ?)",
+        (secrets.token_hex(4), slug, slug, eingereiht, host))
+    conn.commit()
+
+
+def _fortgesetzt_und_laufend(conn, *, slug: str, host: str, ende_vorversuch: float,
+                             eingereiht: float) -> None:
+    """Ein Lauf, der aus `failed`/`deferred` fortgesetzt wurde: `running`,
+    **mit** dem `finished_at` seines Vorversuchs.
+
+    `reserve_next()` nullt `finished_at` nur beim Übergang aus `complete`
+    (``CASE WHEN status='complete' THEN NULL ELSE finished_at END``) — eine
+    Fortsetzung behält es also und läuft trotzdem.
+    """
+    import secrets
+    conn.execute(
+        "INSERT INTO jobs (id, slug, schedule_ref, kind, payload, schedule, "
+        "status, enqueued_at, started_at, finished_at, attempts, active, "
+        "pinned_host) VALUES (?, ?, ?, 'job', 'echo hi', 'now', 'running', "
+        "?, ?, ?, 1, 1, ?)",
+        (secrets.token_hex(4), slug, slug, eingereiht, eingereiht + 1.0,
+         ende_vorversuch, host))
+    conn.commit()
+
+
+def test_a_continued_run_beats_slots_that_never_ran(conn, monkeypatch):
+    """**Der Rot-Schritt zu `#209`.**
+
+    Der Live-Befund, mit seinen echten Werten: vier `burndown-app`-Zeilen ohne
+    `finished_at`, die nie ausgeführt wurden, und **eine**, die tatsächlich
+    läuft — mit dem `finished_at` ihres Vorversuchs.
+
+    ```
+    slug                     status     finished_at     enqueued_at
+    burndown-app-8b70efd6    pending    — (NULL)        08-10 17:03   ← wurde gezeigt
+    burndown-app-6ce005c5    pending    — (NULL)        08-10 07:52
+    burndown-app-cd150bc8    pending    — (NULL)        08-09 18:02
+    burndown-app-470b4d80    pending    — (NULL)        08-09 17:17
+    burndown-app-d9981780    running    08-14 21:24:10  08-14 21:24   ← die laufende App
+    ```
+
+    **Heute gewinnt die jüngste der vier**, weil `(finished_at IS NULL) DESC`
+    ganz vorne steht und alle vier dort eine `1` liefern. Die Kachel sagt
+    `pending`, während die App läuft und ihren Port bedient.
+    """
+    monkeypatch.setattr(socket, "gethostname", lambda: "Mac.fritz.box")
+    config.record_hostname()
+    for slug, eingereiht in (("burndown-app-470b4d80", 100.0),
+                             ("burndown-app-cd150bc8", 110.0),
+                             ("burndown-app-6ce005c5", 120.0),
+                             ("burndown-app-8b70efd6", 130.0)):
+        _nie_ausgefuehrt(conn, slug=slug, host="Mac.fritz.box", eingereiht=eingereiht)
+    _fortgesetzt_und_laufend(conn, slug="burndown-app-d9981780",
+                             host="Mac.fritz.box", ende_vorversuch=90.0,
+                             eingereiht=200.0)
+
+    assert _detail_sagt("burndown-app") == "running"
+
+
+def test_without_a_live_run_the_last_finished_one_still_wins(conn, monkeypatch):
+    """**Die Gegenprobe, und sie bewacht `#140`.**
+
+    Ohne laufende Zeile muss weiterhin der zuletzt *beendete* Lauf gewinnen —
+    nicht die jüngste nie ausgeführte Altzeile. Ein Fix, der nur „lebendes
+    zuerst" einbaut und den Rest der Ordnung fallen lässt, wäre beim Test
+    darüber grün und ließe `#140` zurückfallen.
+    """
+    monkeypatch.setattr(socket, "gethostname", lambda: "Mac.fritz.box")
+    config.record_hostname()
+    _nie_ausgefuehrt(conn, slug="burndown-app-8b70efd6",
+                     host="Mac.fritz.box", eingereiht=130.0)
+    _lauf(conn, slug="burndown-app-d9981780", host="Mac.fritz.box",
+          status="complete", ende=90.0)
+
+    assert _detail_sagt("burndown-app") == "complete"

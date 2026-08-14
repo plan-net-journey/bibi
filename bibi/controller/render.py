@@ -954,7 +954,24 @@ table.jobs tr.band .gkopf { margin: 0; }
             padding: .12rem .35rem; }
 
 /* Die Lauf-Liste (FE-Spezifikation §5.3). */
-.runs { width: 100%; border-collapse: collapse; font-size: .85rem; }
+/* **`table-layout: fixed` ist der Fix zu `#207`, und er sitzt bewusst hier an
+   der Tabelle statt an der Ausklappzeile.** Ein aufgeklappter Output mit langen
+   Zeilen dehnte bis `v0.8.18` die ganze Seite: die `<td colspan="8">` traegt
+   ein `<pre>`, und bei `auto` treibt dessen bevorzugte Breite die Spalten. Der
+   Header endete dann bei ~710 px und die Tabelle bei ~1120 (Befund m.rau,
+   2026-08-14).
+
+   **Der Preis ist eine gleichmaessige Spaltenverteilung** -- ohne gesetzte
+   Breiten teilt `fixed` den Platz zu gleichen Teilen, `EXIT` bekommt so viel
+   wie `TIME`. Das ist eine sichtbare Aenderung an *jeder* Runs-Tabelle und
+   keine Nebenwirkung, die sich verschweigen liesse.
+
+   Die Alternative waere `.runs:has(tr.out:not([hidden]))` gewesen -- fixed nur
+   dann, wenn ein Output offen ist. Verworfen, weil die Spalten dann bei jedem
+   Klick auf `show` springen: ein Layout, das sich unter der Hand bewegt, ist
+   schlechter als eins, das durchgehend anders aussieht als vorher. */
+.runs { width: 100%; border-collapse: collapse; font-size: .85rem;
+        table-layout: fixed; }
 .runs th { text-align: left; font-weight: 600; font-size: .72rem;
            letter-spacing: .03em; color: var(--faint); text-transform: uppercase;
            padding: .3rem .5rem .3rem 0; border-bottom: 1px solid var(--line); }
@@ -988,6 +1005,17 @@ table.jobs tr.band .gkopf { margin: 0; }
 
 /* Ausgeklappter Output: feste Hoehe, eigener Scrollbereich. */
 .out { padding: 0 !important; }
+/* **Warum `overflow: auto` hier bis `v0.8.18` nie greifen konnte** (#207) --
+   die Antwort steht oben an `.runs` und nicht hier. In einer
+   `table-layout: auto`-Tabelle bestimmt der **Inhalt** die Spaltenbreite: die
+   Zelle nimmt die bevorzugte Breite ihres Kindes an, das Kind bekommt genau
+   diese zugeteilt, und dann gibt es nichts mehr, worueber es ueberlaufen
+   koennte. Die Regel unten war also nie falsch, nur wirkungslos.
+
+   Gemessen an einem Lauf mit 400-Zeichen-Zeile: `table.runs` 3283 px in einem
+   1280-px-Fenster, die ganze Seite 3411 px breit, `scrollWidth == clientWidth`
+   an der Box. Mit `table-layout: fixed` oben: 1024 px, Seite 1280 px, und der
+   Kasten scrollt (3246 gegen 986). */
 /* **`overflow-wrap: anywhere` ist mit `#186` gefallen**, und es war die
    schaerfste der drei Stellen: es brach sogar *mitten im Wort*: ein Pfad oder
    ein Commit-Hash wurde an beliebiger Stelle zerschnitten. Der Bereich traegt

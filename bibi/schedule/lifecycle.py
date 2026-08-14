@@ -117,6 +117,16 @@ _TRANSITIONS: dict[tuple[Status, Event], Status] = {
     (Status.FAILED, Event.EXHAUST): Status.ERROR,
     (Status.DEFERRED, Event.RESUME): Status.STARTING,
     (Status.DEFERRED, Event.EXPIRE): Status.INACTIVE,
+    # #210: derselbe Ausgang für einen Slot, den der Dispatcher per Konstruktion
+    # nie holt (`attempts=0` aus der Zeit vor #168). **Die Nuance gehört
+    # benannt:** bei DEFERRED heißt EXPIRE „die Frist ist abgelaufen", hier
+    # „diese Zeile wird nie dran sein". Verschiedene Anlässe, dieselbe Aussage —
+    # INACTIVE bedeutet an beiden Stellen *daraus wird nichts mehr*, und dafür
+    # einen zweiten Event einzuführen hieße, dieselbe Kante zweimal zu führen.
+    #
+    # Ohne diese Kante schrieb `report_status()` nicht und meldete `"invalid"` —
+    # der Sweeper zählte den Erfolg trotzdem, weil er den Rückgabewert verwarf.
+    (Status.PENDING, Event.EXPIRE): Status.INACTIVE,
     (Status.AWAITING, Event.INPUT): Status.RUNNING,
     (Status.AWAITING, Event.TIMEOUT): Status.ZOMBIE,
     (Status.AWAITING, Event.KILL): Status.KILLED,
