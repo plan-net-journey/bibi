@@ -331,16 +331,20 @@ def test_ein_lauf_im_slot_bietet_seine_attribute_an():
     `#164` auch verlässlich genullt. Der Weg dorthin ist derselbe wie beim
     Output: über `slot/{quelle}/{job_id}`, weil dieselbe Job-ID auf beiden
     Seiten einen anderen Job meint.
+
+    **`src` trägt ``C``, nicht ``local``** (#193, `v0.8.14`). Hier stand der
+    erfundene Wert, und der gerenderte Link war deshalb im Betrieb ein 404 —
+    der Test hat die Wirkung richtig gemessen und die Eingabe erfunden.
     """
     zeile = render._run_zeile(
-        {"id": None, "job_id": "j7", "src": "local", "in_slot": True,
+        {"id": None, "job_id": "j7", "src": "C", "in_slot": True,
          "status": "running", "sort_at": NOW - 60},
         basis="/-/jobs/abc123")
 
     assert "attrs" in zeile, (
         "ein Lauf im Slot bietet seine Attribute nicht an — der einzige Lauf "
         "ohne diesen Weg ist ausgerechnet der laufende (#182)")
-    assert "/slot/local/j7/attrs" in zeile, (
+    assert "/slot/client/j7/attrs" in zeile, (
         "der Weg führt über die Journal-ID, die ein Slot-Lauf nicht hat — "
         "er muss über slot/{quelle}/{job_id} gehen wie beim Output (#182)")
 
@@ -400,7 +404,9 @@ def test_die_attributseite_eines_laufenden_laufs_zeigt_seine_felder(
         conn.close()
 
     with TestClient(app) as c:
-        r = c.get(f"/-/jobs/{job_uid('laeuft')}/slot/local/j7/attrs")
+        # `client`, nicht `local` (#193, `v0.8.14`): die Route hieß hier als
+        # einzige Stelle im System so, und der gerenderte Link traf sie nie.
+        r = c.get(f"/-/jobs/{job_uid('laeuft')}/slot/client/j7/attrs")
 
     assert r.status_code == 200, r.text[:300]
     assert "exponential" in r.text, (
@@ -414,8 +420,19 @@ def test_die_attributseite_eines_laufenden_laufs_zeigt_seine_felder(
 
 
 def _kachel(**kw):
+    """**Die Schlüssel sind die einer echten Slot-Zeile** (#194, `v0.8.14`).
+
+    Hier stand ``"run_id": "EngineCI:4"`` — ein Feld, das keine Zeile dieses
+    Systems trägt. Der Test war grün, die Kachel im Betrieb leer: `run_id` ist
+    aus ``slug``/``id``/``fire`` **berechenbar** und steht in keiner Spalte.
+    Genau diese Erfindung hat `#194` durchgelassen.
+
+    Was hier steht, muss deshalb auch in einer echten Zeile stehen — der
+    Wächter in `test_wovon_zwei_seiten_reden.py` prüft das von der anderen
+    Seite her, an den zwei Quellen, die eine Kachel wirklich speisen.
+    """
     from bibi.controller.jobs_view import Tile
-    slot = {"id": "j1", "run_id": "EngineCI:4", "worker": "w1",
+    slot = {"id": "j1", "slug": "EngineCI", "fire": 4, "worker": "w1",
             "exec_mode": "host", "schedule_ref": "case/x/EngineCI.md",
             "attempt": 1, "attempts": 3, "reason": None, "exit_code": None,
             "next_fire_at": None, "started_at": NOW - 30, "finished_at": None,

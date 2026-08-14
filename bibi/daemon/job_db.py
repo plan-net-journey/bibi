@@ -1031,6 +1031,17 @@ def schedule_view(row: sqlite3.Row, last_run: dict | None = None, *,
         # `job_full_view()` gab sie längst aus — nur die schlankere Sicht, die
         # der Jobs-Screen liest, führte sie nicht.
         "wall_time": row["wall_time"],
+        # **Derselbe Fall, fünfundvierzig Tickets später** (#194). Der Absatz
+        # darüber beschreibt `wall_time`; für den Versuchszähler galt er
+        # unverändert weiter. Die Job Card zeigt `try n/m` aus ihrem
+        # Fehlschlag-Set, und die Scheduler-Kachel liest genau diese Sicht —
+        # sie zeigte darum drei von vier Angaben, während die Client-Kachel
+        # (die rohe Zeile) vier zeigte.
+        #
+        # **Beide Felder, nicht nur `attempts`:** `n/m` braucht den laufenden
+        # Zähler *und* die Obergrenze. Eines allein nachzutragen hätte den
+        # Befund verschoben statt ihn zu schließen.
+        "attempt": row["attempt"], "attempts": row["attempts"],
         # One-shot (at:) hat kein wiederkehrendes schedule — Basis fürs Archiv (§4.4).
         "oneshot": row["schedule"] is None,
         # kind ist seit PLAN-10 (Unified Job Model) immer "job" — payload/app_port

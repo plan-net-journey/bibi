@@ -916,7 +916,11 @@ def test_the_running_row_points_at_the_slot_not_at_a_journal_id(client):
     c, _ = _laufender_slot(client)
     text = c.get(f"/-/jobs/{job_uid('EngineCI')}").text
     zeile = text[text.index('class="run run-in-slot"'):][:700]
-    assert 'data-slot="' in zeile and 'data-src="C"' in zeile
+    # `data-ziel="client"` statt `data-src="C"` (#193, `v0.8.14`): der Server
+    # legt das **fertige** Ziel in die Zeile, statt das Kürzel weiterzureichen
+    # und den Browser übersetzen zu lassen. Genau diese zweite Übersetzung hat
+    # den serverseitig gebauten attrs-Link nicht erreicht.
+    assert 'data-slot="' in zeile and 'data-ziel="client"' in zeile
     assert 'data-jid=""' not in zeile
 
 

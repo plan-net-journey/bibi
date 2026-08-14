@@ -38,6 +38,7 @@ from bibi.daemon import activity, openapi, roles as roles_mod
 
 from . import render
 from .client import ControllerClient
+from .jobs_view import SLOT_ZIELE
 
 log = logging.getLogger("bibi.controller")
 
@@ -1957,8 +1958,17 @@ def add_controller_routes(
         ``ziel`` sagt, **wo** der Slot liegt: dieselbe Job-ID meint auf beiden
         Seiten einen anderen Job, weil beide ihre eigene DB führen
         (Zustandsmodell §1). Dieselbe Unterscheidung wie bei den drei Verben.
+
+        **Diese Route hat jedes Ziel außer ``scheduler`` als „lokal" gelesen,
+        und das war kein Schutz, sondern eine Verzögerung** (#193). Sie war
+        gegen den Namensfehler immun und zugleich blind für ihn — während die
+        Attribut-Route eine Zeile weiter an genau diesem Fehler starb. Jetzt
+        prüfen beide gegen dieselbe Tabelle, und ein unbekanntes Ziel ist hier
+        ein 404 statt einer stillen Umdeutung.
         """
         if _job_by_uid(job_uid) is None:
+            return PlainTextResponse("", status_code=404)
+        if ziel not in SLOT_ZIELE:
             return PlainTextResponse("", status_code=404)
         if ziel == "scheduler":
             try:
@@ -2275,6 +2285,13 @@ def add_controller_routes(
         liefert ``{}`` und damit ein 404 — nicht die lokale Zeile, die zufällig
         dieselbe ID trägt.
 
+        **Die Client-Seite heißt hier ``client`` und hieß bis `v0.8.14`
+        ``local``** (#193). Sie war damit der einzige Ort im System, der sie so
+        nannte: die Zeile trug ``C``, das Skript und die Kachel sagten
+        ``client``. Der `attrs`-Link ist an diesem dritten Namen gestorben.
+        Maßgeblich ist jetzt ``jobs_view.SLOT_ZIELE``, und zwar für beide
+        Slot-Routen.
+
         ``exec_runtime`` fehlt hier bewusst: sie steht erst fest, wenn der Lauf
         fertig ist. Ein Feld, das während des Laufens einen Wert behauptet, den
         es noch nicht gibt, wäre schlechter als eines, das fehlt.
@@ -2284,7 +2301,7 @@ def add_controller_routes(
                 zeile = _host_client().job_entry(job_id) or {}
             except Exception:  # noqa: BLE001 — defensiv (§2.7)
                 return {}
-        elif ziel == "local":
+        elif ziel == "client":
             from bibi.daemon import job_db
             conn = job_db.connect()
             try:
