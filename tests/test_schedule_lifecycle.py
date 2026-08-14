@@ -37,6 +37,12 @@ EXPECTED_TRANSITIONS = [
     (Status.FAILED, Event.EXHAUST, Status.ERROR),
     (Status.DEFERRED, Event.RESUME, Status.STARTING),
     (Status.DEFERRED, Event.EXPIRE, Status.INACTIVE),
+    # #210: ein Slot, den der Dispatcher per Konstruktion nie holt (`attempts=0`
+    # aus der Zeit vor #168), wird vom Sweep stillgelegt. Derselbe Ausgang wie
+    # bei DEFERRED, anderer Anlass — dort ist eine Frist abgelaufen, hier wird
+    # die Zeile nie dran sein. INACTIVE heisst an beiden Stellen *daraus wird
+    # nichts mehr*; ein zweiter Event dafuer waere dieselbe Kante zweimal.
+    (Status.PENDING, Event.EXPIRE, Status.INACTIVE),
     (Status.AWAITING, Event.INPUT, Status.RUNNING),
     (Status.AWAITING, Event.TIMEOUT, Status.ZOMBIE),
     (Status.AWAITING, Event.KILL, Status.KILLED),
@@ -189,5 +195,7 @@ def test_targets_of_running():
 
 
 def test_targets_of_pending_and_terminal():
-    assert lc.targets(Status.PENDING) == {Status.STARTING, Status.KILLED}
+    # `INACTIVE` seit #210: der Sweep legt einen nie dispatchbaren Slot still.
+    assert lc.targets(Status.PENDING) == {Status.STARTING, Status.KILLED,
+                                          Status.INACTIVE}
     assert lc.targets(Status.COMPLETE) == {Status.PENDING, Status.KILLED}

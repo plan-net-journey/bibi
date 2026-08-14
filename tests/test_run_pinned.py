@@ -556,3 +556,101 @@ def test_der_unreservierbare_alt_slot_bleibt_nicht_ewig_liegen(gitrepo, monkeypa
         conn.close()
     assert zeile is None or zeile["status"] != "pending", (
         "die unreservierbare Zeile steht weiterhin als wartend in der Tabelle")
+
+
+# ── #210: dieselbe Zeile, aber ohne dass jemand startet ─────────────────────
+#
+# **Die Stilllegung aus `#199` haengt am Start.** Sie sitzt in
+# `_wartenden_slot_fortsetzen()`, wird also nur durchlaufen, wenn jemand den Job
+# startet — und wegen `LIMIT 1` in `_pinned_row()` je Start genau einmal. Ein
+# Job, den niemand mehr startet, behaelt seine toten Slots fuer immer.
+#
+# **Gemessen am 2026-08-15 auf dem Mac:** acht `pending`-Zeilen mit
+# `attempts=0`, die aelteste vom 31. Juli. Drei davon sind die
+# `burndown-app`-Zeilen, die in `#209` die Kachel verzogen haben — dort ist die
+# **Anzeige** behoben, hier der **Bestand**.
+#
+# **Warum der Test die Zeile setzt statt sie herstellen zu lassen:** den
+# Erzeugungsweg gibt es nicht mehr. Diese Zeilen stammen aus der Zeit vor
+# `#168`, als `attempts=0` noch *ein Lauf ohne Retry* hiess. Die Probe gegen die
+# echte Quelle ist deshalb der gemessene Bestand und kein Ablauf — genau die
+# Unterscheidung, die `Iterationen.md` mit *„ein Fixture ist eine Behauptung
+# ueber die Wirklichkeit"* meint.
+
+
+def _slot_status(root: Path, jid: str) -> tuple[str, str | None]:
+    conn = job_db.connect(root / "data" / "jobs.sqlite")
+    try:
+        r = conn.execute("SELECT status, reason FROM jobs WHERE id=?", (jid,)).fetchone()
+        return r["status"], r["reason"]
+    finally:
+        conn.close()
+
+
+def test_sweep_raeumt_einen_toten_slot_ohne_dass_jemand_startet(gitrepo):
+    """**Der Rot-Schritt zu #210.**
+
+    Heute ueberlebt die Zeile jeden Sweep: `sweep()` kennt nur `failed` ohne
+    `next_fire_at` und abgelaufene `deferred`. Eine `pending`-Zeile, die
+    `ist_dispatchbar()` nicht besteht, kommt in keinem der beiden Zweige vor.
+    """
+    _seed(gitrepo, "toterslot/toterslot.md",
+          '---\nschedule: "never"\njob: "echo hi"\n---\n# toterslot\n')
+    jid = _wartender_alt_slot(gitrepo, "toterslot", attempts=0)
+
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    try:
+        job_db.sweep(conn)
+    finally:
+        conn.close()
+
+    status, grund = _slot_status(gitrepo, jid)
+    assert status == "inactive", f"der tote Slot steht auf {status!r}"
+    assert grund and "dispatchbar" in grund, f"ohne Grund im Klartext: {grund!r}"
+
+
+def test_sweep_laesst_einen_wartenden_slot_in_ruhe(gitrepo):
+    """**Die Gegenprobe, und sie ist die wichtigere von beiden.**
+
+    Ein Sweeper, der wartende Slots abraeumt, waere schlimmer als der Bestand,
+    den er behebt: er nimmt einem Job seinen naechsten Versuch weg. Eine
+    `pending`-Zeile mit Budget muss den Sweep unveraendert ueberleben.
+    """
+    _seed(gitrepo, "warteslot/warteslot.md",
+          '---\nschedule: "never"\njob: "echo hi"\nattempts: 3\n---\n# warteslot\n')
+    jid = _wartender_alt_slot(gitrepo, "warteslot", attempts=3)
+
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    try:
+        job_db.sweep(conn)
+    finally:
+        conn.close()
+
+    assert _slot_status(gitrepo, jid)[0] == "pending"
+
+
+def test_sweep_ruehrt_einen_abgeschalteten_job_nicht_an(gitrepo):
+    """**Die Grenze des Zuschnitts, als Test statt als Absichtserklaerung.**
+
+    `ist_dispatchbar()` prueft drei Bedingungen, und sie sind verschieden
+    dauerhaft: `attempts=0` steht in der MD, `active=0` und `conflict_refs`
+    nimmt ein Rescan zurueck. Der Sweeper nimmt deshalb **nur** den
+    `attempts`-Fall — eine stillgelegte Zeile kommt nicht von selbst zurueck,
+    ein abgeschalteter Job dagegen schon.
+
+    Ohne diese Pruefung waere ein Fix gruen, der `ist_dispatchbar()` als Ganzes
+    uebernimmt — und der raeumte beim naechsten Sweep jede Zeile eines
+    voruebergehend abgeschalteten Jobs ab.
+    """
+    _seed(gitrepo, "auszeit/auszeit.md",
+          '---\nschedule: "never"\njob: "echo hi"\nattempts: 3\n---\n# auszeit\n')
+    jid = _wartender_alt_slot(gitrepo, "auszeit", attempts=3)
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    try:
+        conn.execute("UPDATE jobs SET active=0 WHERE id=?", (jid,))
+        conn.commit()
+        job_db.sweep(conn)
+    finally:
+        conn.close()
+
+    assert _slot_status(gitrepo, jid)[0] == "pending"

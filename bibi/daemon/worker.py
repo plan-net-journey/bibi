@@ -940,6 +940,21 @@ def local_schedule_exec_mode(slug: str, *, repo_root: Path | None = None) -> str
 #: nur die Datenquelle hier hinkte hinterher).
 _PINNED_LIVE_STATUSES = ("running", "awaiting", "deferred", "failed")
 
+#: **Welche Zeile die aktuellste ist** (#209) — die Sortiermenge von
+#: ``_pinned_row()``, und sie ist bewusst eine eigene.
+#:
+#: Sie ist ``_PINNED_LIVE_STATUSES`` plus ``starting``. Der Unterschied hat
+#: einen Grund: ``_PINNED_LIVE_STATUSES`` beantwortet „welche Zeilen darf
+#: ``_pinned_live_row()`` überhaupt liefern", diese hier „welche Zeile ist die
+#: jüngste Auskunft über diesen Job". Ein Lauf in ``starting`` ist unbestreitbar
+#: aktueller als ein Slot, der nie ausgeführt wurde — für die Frage, was
+#: *live* ist, war er es historisch nicht.
+#:
+#: **Nicht drin ist ``pending``**, und das ist der Kern von #209: ein
+#: eingereihter Slot, den niemand geholt hat, ist keine Auskunft über einen
+#: Lauf. Er hat kein ``finished_at``, weil er nie lief — nicht, weil er läuft.
+_PINNED_AKTUELLE_STATUSES = (*_PINNED_LIVE_STATUSES, "starting")
+
 
 def pin_identity() -> str:
     """Unter welchem Namen dieser Knoten seine ``/run``-Läufe pinnt (#88).
@@ -1054,15 +1069,30 @@ def _pinned_row(slug: str, *, db_path: Path | None = None, host: str | None = No
         # Historie und zeigte den langen, das Job-Detail las diese Zeile und
         # zeigte den kurzen — zwei Screens, ein Job, zwei Zustände.
         #
-        # Die Reihenfolge in Worten: erst ein Lauf, der noch läuft (er hat kein
-        # `finished_at` und ist per Definition der aktuellste), dann der zuletzt
-        # beendete, und `enqueued_at` nur noch als Gleichstandsregel.
+        # **Woran Aktualität gemessen wird, ist seit #209 der Zustand und nicht
+        # `finished_at`.** Bis `v0.8.18` stand hier `(finished_at IS NULL) DESC`
+        # mit der Begründung, ein Lauf ohne Ende laufe per Definition noch.
+        # Beide Hälften dieser Annahme sind falsch:
         #
-        # Für `_pinned_live_row()` ändert das nichts: dort sind alle Kandidaten
-        # nicht-terminal, tragen also kein `finished_at`, und es bleibt bei der
-        # Einreihung.
-        sql += (" ORDER BY (finished_at IS NULL) DESC, finished_at DESC, "
+        # * Ein Slot, den der Dispatcher nie geholt hat, hat auch kein
+        #   `finished_at` — er läuft nicht, er lief nie. Am 2026-08-15 lagen
+        #   acht solche Zeilen auf dem Mac, die älteste 15 Tage alt.
+        # * Ein **fortgesetzter** Lauf trägt das `finished_at` seines
+        #   Vorversuchs und läuft trotzdem: `reserve_next()` nullt das Feld nur
+        #   beim Übergang aus `complete`.
+        #
+        # Beides zusammen ergab den Befund aus #209 — die Kachel zeigte den
+        # ältesten nie ausgeführten Slot, während die App lief.
+        #
+        # Die Reihenfolge in Worten: erst ein Lauf, der noch nicht abgeschlossen
+        # ist, dann der zuletzt beendete, und `enqueued_at` nur noch als
+        # Gleichstandsregel. `finished_at DESC` sortiert NULL ans Ende — eine
+        # nie ausgeführte Zeile verliert damit auch gegen einen `complete`-Lauf,
+        # und genau das tat sie vorher nicht.
+        aktuell = ",".join("?" * len(_PINNED_AKTUELLE_STATUSES))
+        sql += (f" ORDER BY (status IN ({aktuell})) DESC, finished_at DESC, "
                 "enqueued_at DESC LIMIT 1")
+        params.extend(_PINNED_AKTUELLE_STATUSES)
         return conn.execute(sql, params).fetchone()
     finally:
         conn.close()

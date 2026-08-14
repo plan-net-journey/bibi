@@ -1850,11 +1850,17 @@ def sweep(conn: sqlite3.Connection, now: float | None = None) -> dict:
     gültige Sweep-Fall."""
     now = time.time() if now is None else now
     errored = inactivated = 0
+    # **Gezählt wird, was geschrieben wurde** (#210). Bis `v0.8.18` erhöhten
+    # alle Zweige ihren Zähler unbesehen — `report_status()` gibt aber
+    # `"invalid"` zurück, wenn der Lifecycle die Kante nicht kennt, und
+    # `"not_found"` bei einer verschwundenen Zeile. Der Sweep meldete dann einen
+    # Übergang, den es nicht gab. Aufgefallen beim Bau von #210: `inactivated: 1`
+    # bei einer Zeile, die unverändert auf `pending` stand.
     for r in conn.execute(
         "SELECT id FROM jobs WHERE status='failed' AND next_fire_at IS NULL"
     ).fetchall():
-        report_status(conn, r["id"], status="error", now=now)
-        errored += 1
+        if report_status(conn, r["id"], status="error", now=now) == "ok":
+            errored += 1
     # Die Frist gehört dem Lauf, nicht dem Job (#129): gemessen wird gegen den
     # `defer_max`, den dieser Lauf bei START mitbekommen hat. Ein Rescan, der
     # die MD verkürzt, darf einen bereits wartenden Zyklus nicht rückwirkend
@@ -1869,8 +1875,31 @@ def sweep(conn: sqlite3.Connection, now: float | None = None) -> dict:
         "AND (? - deferred_at) >= CASE WHEN run_snapshot IS NULL THEN defer_max "
         "ELSE json_extract(run_snapshot, '$.defer_max') END", (now,)
     ).fetchall():
-        report_status(conn, r["id"], status="inactive", reason="deferred_expired", now=now)
-        inactivated += 1
+        if report_status(conn, r["id"], status="inactive",
+                         reason="deferred_expired", now=now) == "ok":
+            inactivated += 1
+    # **Ein Slot, den der Dispatcher per Konstruktion nie holt** (#210). Die
+    # Stilllegung aus #199 sitzt in `_wartenden_slot_fortsetzen()` und haengt
+    # damit am **Start**: sie greift nur, wenn jemand den Job startet, und wegen
+    # `LIMIT 1` je Start genau einmal. Ein Job, den niemand mehr startet, behaelt
+    # seine toten Zeilen fuer immer — am 2026-08-15 acht Stueck auf dem Mac, die
+    # aelteste 15 Tage alt.
+    #
+    # **Geprueft wird nur `attempts`, nicht `ist_dispatchbar()` als Ganzes**, und
+    # der Unterschied ist der Punkt: der Dispatcher fragt *darf diese Zeile
+    # jetzt laufen*, der Sweep fragt *wird sie je laufen koennen*. Von den drei
+    # Bedingungen ist nur `attempts` dauerhaft — `active` und `conflict_refs`
+    # nimmt ein Rescan zurueck, eine stillgelegte Zeile dagegen kommt nicht von
+    # selbst wieder. Wer hier `ist_dispatchbar()` einsetzt, raeumt beim naechsten
+    # Sweep jede Zeile eines voruebergehend abgeschalteten Jobs ab.
+    for r in conn.execute(
+        "SELECT id FROM jobs WHERE status='pending' "
+        "AND (attempts IS NULL OR attempts = 0)"
+    ).fetchall():
+        if report_status(conn, r["id"], status="inactive",
+                         reason="nicht dispatchbar — attempts=0 (#210)",
+                         now=now) == "ok":
+            inactivated += 1
     return {"errored": errored, "inactivated": inactivated}
 
 
