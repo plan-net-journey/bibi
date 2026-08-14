@@ -1230,6 +1230,19 @@ def reservation_view(row: sqlite3.Row) -> dict:
         # fire (Pro-Lauf-Zähler, §5.2): der Worker bildet daraus run_id=slug:fire
         # → per-Run-Output-Pfad (kein Akkumulieren über Läufe).
         "fire": row["fire"],
+        # ── Der erste Start des Laufs (m.rau/bibi#189) ──────────────────────
+        # `wall_time` begrenzt seit dem 2026-08-14 den **Job**, nicht den
+        # Versuch (Entscheidung m.rau: brutto). Der Wrapper kann das nur
+        # messen, wenn er den ersten Start kennt — er lebt je Trial und hätte
+        # sonst nur seinen eigenen.
+        #
+        # **Aus `row`, nicht aus `cfg()`, und das ist kein Versehen.**
+        # `started_at` ist keine Konfiguration, sondern eine Tatsache über die
+        # Zeile — dieselbe Klasse wie `attempt` und `fire` darüber. Aus dem
+        # eingefrorenen Snapshot gelesen trüge es den Wert vom Beginn des Laufs
+        # und widerspräche der Zeile genau dort, wo `reserve_next()` ihn
+        # ausnahmsweise doch neu setzt (s. das COALESCE im Setup-Fehler-Pfad).
+        "started_at": row["started_at"],
         # Ausführungs-/Retry-Parameter, damit ein Remote-Worker (ohne lokale DB)
         # überwachen + Backoff rechnen kann (§3.6).
         "attempt": row["attempt"], "attempts": cfg("attempts"),
@@ -1251,6 +1264,63 @@ def reservation_view(row: sqlite3.Row) -> dict:
         "schedule_ref": cfg("schedule_ref"),
         "env": {},
     }
+
+
+def ist_dispatchbar(row) -> bool:
+    """Darf ``reserve_next()`` diese Zeile überhaupt auswählen (m.rau/bibi#199)?
+
+    **Die Bedingungen des Dispatchers, unabhängig vom Status und vom Termin.**
+    Sie stehen dort als SQL im ``WHERE`` und hier als Prüfung an einer Zeile —
+    dieselbe Frage, zwei Formen, weil die eine auswählt und die andere über
+    eine schon gefundene Zeile urteilt.
+
+    **Der Anlass ist, dass die beiden auseinandergelaufen sind.** ``#191`` ließ
+    ``run_pinned()`` einen wartenden Slot fortsetzen, ``#168`` hatte davor
+    ``attempts > 0`` eingeführt — und das Fortsetzen wusste davon nichts. Eine
+    Zeile aus der Zeit davor wurde aufgegriffen, verworfen, und der Job war
+    dauerhaft blockiert. **Ein Aufrufer, der eine Zeile ausführen lassen will,
+    fragt deshalb hier, statt die drei Bedingungen abzuschreiben.**
+
+    Bewusst **ohne** Status und ``next_fire_at``: die sagen, *wann* eine Zeile
+    dran ist, nicht *ob* sie überhaupt darf. Wer beides vermischt, bekommt eine
+    Funktion, deren Antwort von der Uhrzeit abhängt.
+    """
+    def feld(name, vorgabe=None):
+        try:
+            return row[name]
+        except (KeyError, IndexError, TypeError):
+            return vorgabe
+
+    if not feld("active", 1):
+        return False
+    if feld("conflict_refs") is not None:
+        return False
+    return (feld("attempts") or 0) > 0
+
+
+def budget_erschoepft(reservation: dict, now: float | None = None) -> bool:
+    """Hat dieser Lauf seine ``wall_time`` schon aufgebraucht (m.rau/bibi#189)?
+
+    **Der Fall, für den es diese Funktion gibt, ist der Regelfall und nicht der
+    Rand.** Ein Job mit ``wall_time: 3600``, der um 10:00 startet, um 10:05
+    scheitert und zwei Stunden Backoff hat, begänne seinen zweiten Versuch mit
+    2h05 Brutto-Zeit. Der ``_wall_monitor()`` des Wrappers würde ihn binnen einer
+    Sekunde killen — nach fünf Minuten tatsächlicher Arbeit.
+
+    **Er wird deshalb gar nicht erst gestartet.** Die Aussage ist dieselbe — *er
+    wird ``killed``* —, nur ohne einen Prozessstart, der nichts tun kann. Ein
+    Lauf, der nur existiert, um eine Sekunde später beendet zu werden, erzeugt
+    einen Journal-Eintrag, einen Output und eine Zeile in der Tabelle, die alle
+    dasselbe behaupten: dass hier gearbeitet wurde.
+
+    ``wall_time is None`` ist der Normalfall und heißt *keine Grenze* — ohne
+    diesen Zweig stürbe jeder Job ohne Limit an seiner eigenen Vorgabe.
+    """
+    wall = reservation.get("wall_time")
+    started = reservation.get("started_at")
+    if not wall or started is None:
+        return False
+    return (time.time() if now is None else now) - started > wall
 
 
 def reserve_next(

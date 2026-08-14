@@ -231,6 +231,31 @@ def _terminate_proc(proc: subprocess.Popen, env: dict[str, str] | None = None) -
             pass
 
 
+def _wall_start(env: dict[str, str]) -> float:
+    """Wogegen ``wall_time`` misst — der Start des **Jobs**, nicht des Wrappers.
+
+    Entscheidung m.rau, 2026-08-14 (m.rau/bibi#189): ``wall_time`` ist brutto.
+    Ein Wrapper lebt je Trial; ohne diese Auskunft von außen kennt er nur seinen
+    eigenen Start und begrenzte damit den **Versuch**. Ein Job mit
+    ``attempts: 3`` durfte so dreimal ``wall_time`` verbrauchen.
+
+    **Fehlt die Variable, bleibt es beim eigenen Start.** Das ist kein
+    Bestandsschutz, sondern die Bedingung dafür, dass ein direkt gestarteter
+    Wrapper — ohne Scheduler-Zeile hinter sich — überhaupt eine Grenze hat.
+
+    Unlesbar wird wie *nicht gesetzt* behandelt. Ein Wrapper darf an einer
+    kaputten Umgebungsvariable nicht sterben; er verliert dann die Brutto-Sicht
+    und nicht seine Grenze.
+    """
+    roh = env.get("BIBI_JOB_STARTED_AT")
+    if roh:
+        try:
+            return float(roh)
+        except (TypeError, ValueError):
+            pass
+    return time.time()
+
+
 def _wall_monitor(proc: subprocess.Popen, wall_time: int, started: float,
                   outcome: list[str], out_path: Path, lock: threading.Lock,
                   env: dict[str, str] | None = None) -> None:
@@ -824,7 +849,10 @@ def run_app(env: dict[str, str]) -> int:
             daemon=True, name="silence-monitor"))
     if wall_str:
         monitors.append(threading.Thread(
-            target=_wall_monitor, args=(proc, int(wall_str), started, outcome, out_path, lock, env),
+            target=_wall_monitor,
+            # `_wall_start(env)` statt `started` (m.rau/bibi#189): gemessen wird
+            # gegen den ersten Start des Jobs, nicht gegen den dieses Wrappers.
+            args=(proc, int(wall_str), _wall_start(env), outcome, out_path, lock, env),
             daemon=True, name="wall-monitor"))
 
     pump_threads = [
@@ -905,7 +933,10 @@ def run_job(env: dict[str, str]) -> int:
     monitors = _ping_monitors(env, proc, last_activity_ts)
     if wall_str:
         monitors.append(threading.Thread(
-            target=_wall_monitor, args=(proc, int(wall_str), started, outcome, out_path, lock, env),
+            target=_wall_monitor,
+            # `_wall_start(env)` statt `started` (m.rau/bibi#189): gemessen wird
+            # gegen den ersten Start des Jobs, nicht gegen den dieses Wrappers.
+            args=(proc, int(wall_str), _wall_start(env), outcome, out_path, lock, env),
             daemon=True, name="wall-monitor"))
     if silence_str:
         monitors.append(threading.Thread(
