@@ -27,6 +27,7 @@ from . import (
     statusline_cmd,
     sync_cmd,
     test_cmd,
+    upgrade_cmd,
 )
 
 
@@ -53,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     job_cmd.register_rescan(sub)
     soul_cmd.register(sub)
     bootstrap_cmd.register(sub)
+    upgrade_cmd.register(sub)
 
     args = parser.parse_args(argv)
     if not getattr(args, "cmd", None):
