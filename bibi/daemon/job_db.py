@@ -905,9 +905,35 @@ def _lauf_attribute_roh(row: sqlite3.Row) -> str | None:
 
 
 def job_full_view(row: sqlite3.Row) -> dict:
-    """Alle DB-Felder eines Jobs — für die Attribute-Ansicht (§10.x)."""
+    """Alle DB-Felder eines Jobs — für die Attribute-Ansicht (§10.x).
+
+    **Ohne ``run_snapshot``, und das ist kein Detail, sondern der ganze Fix zu
+    `#197`.** Diese Sicht hat zwei Verbraucher, und der zweite ist leicht zu
+    übersehen: sie geht nicht nur in eine Ansicht, sie wird **gespeichert** —
+    ``reserve_next()`` schreibt sie nach ``jobs.run_snapshot``, ``archive_run()``
+    nach ``journal.snapshot``.
+
+    Trug sie das Feld, enthielt jeder Snapshot seinen eigenen Vorgänger. Durch
+    das JSON-Escaping wuchs er dabei um **mehr** als das Doppelte — exponentiell
+    in der Zahl der Läufe, nicht in der Datenmenge des Jobs. Auf `sarasate` hat
+    das in vier Stunden 2,5 GB erzeugt und den Daemon zweimal in den OOM-Kill
+    getrieben (14,85 GB RSS).
+
+    **``job_view()`` behält das Feld, und das ist richtig so** (#182): dort geht
+    es über die API hinaus, damit die Attributseite eines laufenden Laufs nicht
+    nur auf dem Knoten zu haben ist, auf dem er läuft. Die Trennung ist der Fix
+    — was hinausgeht, trägt es; was gespeichert wird, trägt es nicht.
+
+    **Die Fehlerform ist die der ganzen `v0.8.14`-Runde, eine Ebene höher:**
+    zwei Verbraucher teilen sich eine Sicht, die Änderung wurde für den einen
+    geschrieben, und die Stellen liegen fünfhundert Zeilen auseinander. Der
+    Kommentar an `job_view()` begründete das Feld sauber — und nannte genau
+    eine der beiden Verwendungen.
+    """
+    ohne_sich_selbst = {k: v for k, v in job_view(row).items()
+                        if k != "run_snapshot"}
     return {
-        **job_view(row),
+        **ohne_sich_selbst,
         "model": row["model"],
         "soul": row["soul"],
         "session": row["session"],
@@ -2264,6 +2290,38 @@ def delete_journal(conn: sqlite3.Connection, journal_id: int) -> bool:
     MD-CRUD). Rückgabe: True, wenn eine Zeile entfernt wurde."""
     cur = conn.execute("DELETE FROM journal WHERE id=?", (journal_id,))
     return cur.rowcount > 0
+
+
+#: Wie lange ein Lauf im Journal steht (Entscheidung m.rau, 2026-08-14).
+#:
+#: **Es gab bis `v0.8.15` gar keine Frist**, und das ist der Befund unter dem
+#: Befund von `#197`. Die Rekursion erklärt, warum die Datenbank in vier
+#: Stunden auf 2,5 GB wuchs — sie erklärt nicht, warum es kein Dach gab. Eine
+#: Ablage ohne Frist wächst mit der Laufzeit des Systems; dass es bisher nicht
+#: auffiel, lag allein daran, dass die Snapshots klein waren.
+JOURNAL_MAX_AGE_DAYS = 90
+
+
+def prune_journal(conn: sqlite3.Connection, *,
+                  max_age_days: int = JOURNAL_MAX_AGE_DAYS,
+                  now: float | None = None) -> int:
+    """Journal-Zeilen jenseits der Frist entfernen. Rückgabe: wie viele.
+
+    **Der Schnitt liegt am ``archived_at``** und nicht am ``finished_at``: ein
+    Lauf zählt ab dem Moment, in dem er ins Journal kam. ``finished_at`` darf
+    ``NULL`` sein (ein abgebrochener Lauf hat keins), ``archived_at`` nie —
+    die Spalte ist ``NOT NULL``, und damit kann keine Zeile durch die Frist
+    fallen, weil ihr Datum fehlt.
+
+    ``max_age_days <= 0`` schaltet die Frist ab und löscht **nichts**. Das ist
+    die vorsichtige Lesart: eine 0 in einer Konfiguration heißt eher „nicht
+    gesetzt" als „alles wegwerfen", und der teurere Irrtum wäre der zweite.
+    """
+    if max_age_days <= 0:
+        return 0
+    grenze = (time.time() if now is None else now) - max_age_days * 86400
+    cur = conn.execute("DELETE FROM journal WHERE archived_at < ?", (grenze,))
+    return cur.rowcount
 
 
 def list_journal(

@@ -50,6 +50,7 @@ class Sweeper:
                  autorun: bool = True, registry=None,
                  local_worker_name: str | None = None,
                  pid_check_interval: float = 45.0,
+                 prune_interval: float = 3600.0,
                  session_scoped: bool = False,
                  on_last_session_gone=None) -> None:
         self.db_path = db_path
@@ -71,6 +72,14 @@ class Sweeper:
         # Unix-Timestamp ohnehin immer erfüllt: das Intervall hätte gar nicht
         # gegriffen.
         self._last_pid_check = time.time()
+        # **Die Journal-Frist, einmal pro Stunde** (#197, Entscheidung m.rau
+        # 2026-08-14: 90 Tage). Dieselbe Erwägung wie eine Zeile höher, nur
+        # deutlicher: die Frist ist 90 Tage lang, ob eine Zeile eine Stunde zu
+        # spät verschwindet, sieht niemand. Ein `DELETE` im 2-Sekunden-Takt auf
+        # dieselbe Tabelle, deren Größe hier das Problem war, wäre die falsche
+        # Antwort auf ein Größenproblem.
+        self.prune_interval = prune_interval
+        self._last_prune = time.time()
         self.autorun = autorun
         self.registry = registry  # WorkerRegistry für no_process-Reconcile (§3.6)
         # Name des co-located Workers (falls aktiv) — nie als "stale" reconcilen,
@@ -145,6 +154,19 @@ class Sweeper:
                 if self.registry is not None:
                     out["banned"] = job_db.reconcile_blocked_nodes(
                         conn, self.registry.list(now=now))
+            # **Die Journal-Frist** (#197): Zeilen jenseits von
+            # `JOURNAL_MAX_AGE_DAYS` verschwinden. Steht bewusst **nach** dem
+            # Reap und vor dessen Log-Zeile — Aufräumen ist keine
+            # Terminalisierung und gehört nicht in dieselbe Meldung, aber es
+            # gehört in denselben periodischen Rahmen: ein Housekeeping, das
+            # einen eigenen Loop bräuchte, wird nicht gebaut.
+            if now - self._last_prune >= self.prune_interval:
+                self._last_prune = now
+                entfernt = job_db.prune_journal(conn, now=now)
+                if entfernt:
+                    activity.emit(log, logging.INFO, "sweeper.prune",
+                                  role="scheduler", journal=entfernt,
+                                  max_age_days=job_db.JOURNAL_MAX_AGE_DAYS)
             if any(out.values()):  # nur wenn wirklich etwas terminalisiert wurde
                 activity.emit(log, logging.INFO, "sweeper.reap", role="scheduler", **out)
             # Sitzungs-Zählung (m.rau/bibi#46) NACH dem Reap-Log: sie ist keine
