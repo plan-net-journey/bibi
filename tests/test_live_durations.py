@@ -94,9 +94,22 @@ def test_a_p90_never_ticks():
 
 
 def test_the_heartbeat_age_carries_its_anchor():
-    # `_ago()` hat immer einen Anker — es *ist* eine Distanz zu jetzt.
+    """`_ago()` hat immer einen Anker — **seit #184 den des Zeitpunkts.**
+
+    Hier stand `data-dur="ago"`, und die Begruendung war: *„es ist eine
+    Distanz zu jetzt"*. Beide Anker ticken; nur `data-tp` folgt dem
+    abs./rel.-Umschalter. Solange `_ago()` den Dauer-Anker trug, stand
+    `Last heartbeat` fest auf relativ, waehrend `Connected since` zwei Spalten
+    weiter fest auf absolut stand.
+
+    **Die alte Zusage ist nicht gebrochen, sondern abgeloest** (m.rau,
+    2026-08-13): *„Ebenso die Spalte Heartbeat. Diese ist immer relativ. Beide
+    sollen ebenfalls umgeschaltet werden."* Was bleibt, ist der Anker; was
+    faellt, ist die Festlegung auf eine der beiden Darstellungen.
+    """
     html = render._ago(1000.0, 1042.0)
-    assert 'data-dur="ago"' in html and 'data-at="1000.0"' in html
+    assert 'data-tp="1000.0"' in html, html
+    assert 'data-abs="' in html, html
 
 
 def test_the_next_run_countdown_carries_its_anchor():
@@ -119,7 +132,9 @@ def test_the_nodes_table_heartbeat_column_ticks():
         [{"worker": "sarasate", "host": "sarasate", "port": 8781,
           "role": "controller", "stale": False, "connected_at": 0,
           "last_heartbeat": 990}], now=1000)
-    assert 'data-dur="ago"' in html
+    # Seit #184 der Zeitpunkt-Anker: er tickt genauso und folgt zusaetzlich
+    # dem Umschalter (s. `test_the_heartbeat_age_carries_its_anchor`).
+    assert 'data-tp="990"' in html, html
 
 
 def test_the_ticker_is_shipped_with_the_page():

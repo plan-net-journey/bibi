@@ -172,6 +172,14 @@ class ControllerClient:
         # Live-Output eines laufenden Jobs (getypte Events) — /-/job/{id}/output.
         return self._get(f"/-/job/{job_id}/output") or {}
 
+    def job_entry(self, job_id: str) -> dict:
+        # Die Job-Zeile selbst — /-/job/{id}. Fuer die Attributseite eines
+        # Laufs, der noch **im Slot** steht (#182): sein Snapshot liegt in
+        # `run_snapshot`, und das Journal bekommt seinen erst beim Archivieren.
+        # Gegenstueck zu `journal_entry()` fuer die andere Haelfte derselben
+        # Seite.
+        return self._get(f"/-/job/{job_id}") or {}
+
     def job_action(self, job_id: str, verb: str) -> dict:
         # verb ∈ {start, reset, kill} — wirkt auf den Live-Job (§5.6).
         return self._request("POST", f"/-/job/{job_id}/{verb}") or {}

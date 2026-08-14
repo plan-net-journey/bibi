@@ -141,15 +141,31 @@ def test_an_archived_run_offers_a_way_to_its_attributes():
     assert f'/-/jobs/{job_uid("EngineCI")}/runs/7/attrs' in zeile
 
 
-def test_a_run_still_in_the_slot_offers_none():
-    """**Kein toter Knopf.** Ein Lauf im Slot hat keine Journal-Zeile und damit
-    keinen Snapshot — die Ansicht gäbe es erst ab der Archivierung. Das ist
-    eine Lücke der Ablage, nicht der Anzeige, und sie ist als eigenes Ticket
-    festgehalten statt hier stillschweigend überbrückt."""
+def test_a_run_still_in_the_slot_offers_its_own_way():
+    """**Das Ticket ist eingelöst, und der Test dreht sich mit** (#182).
+
+    Hier stand die Gegenrichtung: *„Kein toter Knopf. Ein Lauf im Slot hat
+    keine Journal-Zeile und damit keinen Snapshot — die Ansicht gäbe es erst ab
+    der Archivierung. Das ist eine Lücke der Ablage, nicht der Anzeige, und sie
+    ist als eigenes Ticket festgehalten."* Dieses Ticket ist `#182`.
+
+    **Die Diagnose war zur Hälfte falsch, und die falsche Hälfte hat die Lücke
+    ein halbes Release länger offengehalten.** Richtig war: keine Journal-Zeile.
+    Falsch war der Schluss *„und damit keinen Snapshot"* — er stand in
+    `jobs.run_snapshot`, seit `#129` und seit `#164` verlässlich genullt. Die
+    Ansicht las nur eine der beiden Quellen, und der Kommentar hat das als
+    Eigenschaft der Ablage beschrieben statt als Eigenschaft des Lesers.
+
+    Der Weg unterscheidet sich weiterhin, und das bleibt richtig: über
+    `slot/<quelle>/<job_id>`, weil dieselbe Job-ID auf beiden Seiten einen
+    anderen Job meint.
+    """
     zeile = render._run_zeile({"job_id": "abc", "run_id": "EngineCI:4",
-                               "src": "C", "in_slot": True, "status": "running"},
+                               "src": "local", "in_slot": True, "status": "running"},
                               basis=f"/-/jobs/{job_uid('EngineCI')}")
-    assert "/attrs" not in zeile
+    assert "/slot/local/abc/attrs" in zeile, zeile
+    assert "/runs/" not in zeile, (
+        "der Slot-Lauf wird über eine Journal-ID adressiert, die er nicht hat")
 
 
 # ── Die Route ──────────────────────────────────────────────────────────────

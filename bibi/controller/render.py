@@ -9,6 +9,7 @@ import html
 import json
 import re
 import time
+from functools import partial as _partial
 
 from bibi.controller.jobs_view import Segment, erreichbarer_host, status_gruppe
 from bibi.schedule import models
@@ -384,6 +385,27 @@ td.cellflash { animation: bibi-cellflash 3.15s ease-out 1; }
                box-shadow: inset 0 0 0 1px var(--yellowline); }
 .chip-orange { background: var(--orangesoft); color: var(--orange);
                box-shadow: inset 0 0 0 1px var(--orangeline); }
+/* Ein Chip, der einem Text in derselben Zeile folgt (#185). Der Abstand steht
+   hier und nicht als Leerzeichen im Markup: ein Leerzeichen ueberlebt keinen
+   Umbau der Zeile, eine Regel schon.
+   Nach der **Form** benannt und nicht nach dem Anlass: der naechste Chip in
+   derselben Lage traegt dieselbe Regel, waehrend ein `.chip-maint` eine
+   zweite mit gleichem Inhalt bekaeme. */
+.chip-inline { margin-left: .5ch; }
+/* Die Bauteile der Job Card (#181). **Verdichtungsformen, keine Belegung** —
+   die Card hat mehrere benannte Sets, und welches gilt, haengt daran, was man
+   gerade tut.
+   `.kt` ist die Grundform: ein Feld der Card, mit oder ohne Beschriftung.
+   `.kt-l` dimmt die Beschriftung, damit der Wert traegt und nicht das Wort
+   davor. `.kt-fein` ist die kleine, beschriftungslose Form — sie loest den
+   Einwand gegen `run_id` auf: klein und ohne Wort davor kostet ein Wert keine
+   Zeile mehr, sondern einen Rand. */
+.tile-set { display: flex; flex-wrap: wrap; gap: .15rem .7rem;
+            margin-top: .3rem; font-size: .78rem; align-items: baseline; }
+.kt { white-space: nowrap; }
+.kt-l { color: var(--faint); font-size: .72rem; letter-spacing: .03em; }
+.kt-fein { color: var(--faint); font-size: .7rem;
+           font-family: ui-monospace, monospace; }
 
 /* Der Fortschrittsbalken (#67 Schritt 3). Keine `transition` auf die Breite:
    er wird im Sekundentakt neu gesetzt, und eine Uebergangsanimation darauf
@@ -624,6 +646,15 @@ table.jobs th:nth-child(6), table.jobs th:nth-child(7) { min-width: 6.5rem; }
 #rescan.quittung-ok .ico-idle, #rescan.quittung-bad .ico-idle { display: none; }
 #rescan.quittung-ok .ico-ok { display: inline-block; }
 #rescan.quittung-bad .ico-bad { display: inline-block; }
+/* Der Zeitumschalter zeigt seinen **aktuellen** Modus (#184), nicht den, den
+   ein Klick herstellt. Zwei Zeichen an einem Platz, dieselbe Bauart wie beim
+   Rescan-Knopf darueber -- das CSS entscheidet, welches sichtbar ist, und die
+   Wahrheit steht an einer Stelle: `data-tfmt` an der Wurzel.
+   Vorher trug der Knopf ein Zeichen und eine `.on`-Klasse, und was die Klasse
+   bedeutete, stand nur im `title`. */
+#tfmt .ico-rel { display: none; }
+[data-tfmt="rel"] #tfmt .ico-abs { display: none; }
+[data-tfmt="rel"] #tfmt .ico-rel { display: inline-block; }
 .conn-dot { line-height: 1; padding: 0 .1rem; cursor: default; }
 .conn-dot.ok { color: var(--green); }
 .conn-dot.warn { color: var(--amber); }
@@ -988,13 +1019,46 @@ def _ago_text(d: int) -> str:
     return f"{d // 86400} d ago"
 
 
+def _zeitanker(ts: float, text: str) -> "_Roh":
+    """Die Huelle, an der der Zeitumschalter greift (#139, verallgemeinert #184).
+
+    **Ein Zeitpunkt, zwei Darstellungen, eine Quelle.** ``data-tp`` traegt den
+    Epoch-Wert, ``data-abs`` die absolute Form; der Ticker in ``_DURATION_JS``
+    waehlt zwischen beiden. Der Server bleibt damit die einzige Stelle, die
+    entscheidet, wann eine Uhrzeit ihr Datum dazubekommt — der Browser braucht
+    keine zweite Datumsregel.
+
+    **Der Inhalt ist die absolute Form, weil absolut der Vorgabewert ist**
+    (#30). Waere es umgekehrt, schriebe der erste Tick jede Zelle um, und genau
+    dieses Umschreiben war #160.
+
+    **Warum die drei Zeitpunkt-Funktionen sie teilen und nicht je eine eigene
+    haben:** ``_ago()`` und ``_abs_datetime()` sind vor #184 an dieser Huelle
+    vorbeigegangen und trugen deshalb den Umschalter nicht mit. Eine geteilte
+    Huelle kann nicht an zwei Stellen wirken und an vier nicht.
+    """
+    return _Roh(f'<span data-tp="{ts}" data-abs="{text}">{text}</span>')
+
+
 def _ago(ts: float | None, now: float) -> str:
     """Vergangenheits-Distanz. **Traegt immer einen Anker**, weil sie per
     Definition eine Distanz zu *jetzt* ist — sie steht keine Sekunde still,
-    ausser der Browser laesst sie."""
+    ausser der Browser laesst sie.
+
+    **Seit #184 ist es der Zeitpunkt-Anker und nicht mehr der Dauer-Anker.**
+    Beide ticken; nur der erste folgt dem abs./rel.-Umschalter. `Last
+    heartbeat` stand deshalb fest auf relativ, waehrend `Connected since` zwei
+    Spalten weiter fest auf absolut stand — **zwei Zellen, zwei Richtungen,
+    derselbe fehlende Anker.**
+
+    Was die Funktion *nicht* ist: eine Dauer. ``_human_duration()`` und
+    ``_dauer_span()`` bleiben unberuehrt — eine abgelaufene Laufzeit ist ein
+    Ergebnis und kein Zeitpunkt, und sie hat nichts, wozwischen sie umschalten
+    koennte.
+    """
     if ts is None:
         return "—"
-    return _dauer_span(_ago_text(max(0, int(now - ts))), "ago", ts)
+    return _zeitanker(ts, _abs_datetime_text(ts, now))
 
 
 def _human_duration(seconds: float | None, *, seit: float | None = None) -> str:
@@ -1071,9 +1135,26 @@ def _abs_time(ts: float | None) -> str:
 def _abs_datetime(ts: float | None, now: float) -> str:
     """Wie ``_abs_time``, aber mit Datum (TT.MM.) für alles außer heute — die
     Journal-Historie zeigt über Infinite Scroll oft tage-/wochenalte Läufe,
-    "17:02" allein ist dann nicht mehr zuordenbar (User-Feedback)."""
+    "17:02" allein ist dann nicht mehr zuordenbar (User-Feedback).
+
+    **Seit #184 in derselben Hülle wie jeder andere Zeitpunkt.** Vorher konnte
+    diese Funktion nur absolut und setzte keinen Anker — `Connected since`
+    stand deshalb fest auf absolut, während daneben ein Umschalter sass, der
+    *„jede Zeitangabe im FE"* zusagt.
+    """
     if ts is None:
         return "—"
+    return _zeitanker(ts, _abs_datetime_text(ts, now))
+
+
+def _abs_datetime_text(ts: float, now: float) -> str:
+    """Nur die Regel, ohne Huelle (s. ``_ago_text``).
+
+    Getrennt, weil ``_ago()`` seit #184 dieselbe absolute Form braucht: der
+    Inhalt der Huelle ist absolut, auch wenn der Aufrufer von einer Distanz
+    spricht. Zwei Datumsregeln nebeneinander waeren die Stelle, an der die
+    Nodes-Tabelle eines Tages ein anderes Format traegt als der Rest.
+    """
     import datetime
     dt = datetime.datetime.fromtimestamp(ts)
     if dt.date() == datetime.datetime.fromtimestamp(now).date():
@@ -1081,7 +1162,35 @@ def _abs_datetime(ts: float | None, now: float) -> str:
     return dt.strftime("%d.%m. %H:%M")
 
 
+class _Roh(str):
+    """Eine Zeichenkette, die **schon Markup ist** und nicht escaped gehört.
+
+    **Der Anlass ist #183, und der Fehler ist eine Naht zwischen zwei
+    korrekten Funktionen.** ``_uhrzeit()`` liefert seit #139 kein Datum mehr,
+    sondern ein fertiges Fragment mit ``data-tp``-Anker; ``_attr_zeile()``
+    escaped ihren Wert, weil sie einen rohen erwartet. Auf der Attributseite
+    stand deshalb die Zeichenkette ``<span data-tp=…>`` als Text — und weil der
+    Umschalter am Element hängt, war er dort zugleich tot.
+
+    **Warum ein Typ und kein Flag am Aufrufer:** ein ``markup=True`` schützt
+    die eine Stelle, an der jemand daran denkt. Das ist genau die Bauart, die
+    #192 durchgelassen hat — eine Konstruktion verhindert einen Fehler nur auf
+    dem Weg, den sie kennt. Ein Typ kennt alle Wege: wer ``_Roh`` zurückgibt,
+    ist überall richtig behandelt, auch in einer Funktion, die es morgen erst
+    gibt.
+
+    **Die Grenze ist scharf und gehört benannt:** ``_Roh`` darf ausschließlich
+    aus Markup entstehen, das dieses Modul selbst gebaut hat. Auf einen Wert
+    aus der Datenbank oder aus einer Anfrage angewandt, ist es genau das Loch,
+    gegen das ``_e()`` gebaut ist.
+    """
+
+    __slots__ = ()
+
+
 def _e(v) -> str:
+    if isinstance(v, _Roh):
+        return str(v)
     return html.escape("" if v is None else str(v))
 
 
@@ -1724,7 +1833,13 @@ def _uhrzeit(ts: float | None, now: float) -> str:
     # `test_every_markup_class_has_a_css_rule` hat den ersten Entwurf dieser
     # Zeile sofort gefangen. Der Ticker greift ueber `[data-tp]`; ein Name
     # allein fuer die Lesbarkeit waere ein Versprechen ohne Deckung.
-    return f'<span data-tp="{ts}" data-abs="{text}">{text}</span>'
+    #
+    # **`_Roh`, seit #183**: der Rueckgabewert ist Markup und kein Text. Wer
+    # ihn durch `_e()` schickt, bekommt ihn jetzt unversehrt zurueck statt als
+    # escapte Zeichenkette — der Fall, in dem die Attributseite ihren
+    # Zeitumschalter verlor. Der nackte Strich oben bleibt bewusst ein
+    # gewoehnlicher `str`: `_sched()` prueft ihn auf Gleichheit mit `—`.
+    return _Roh(f'<span data-tp="{ts}" data-abs="{text}">{text}</span>')
 
 
 def _hdr_row(label: str, wert: str, *, klasse: str = "",
@@ -1906,8 +2021,17 @@ def status_header(
     # Rot fuer „jetzt handeln" reserviert. Maintenance ist eine bewusst
     # eingeschaltete Betriebsart und kein Fehler -- dieselbe Unterscheidung,
     # die eine Zeile hoeher `auto-sync off` niemals rot faerbt.
+    # **Ohne Komma seit #185.** Der Vorschlag oben stand als *Text*, und als
+    # Text war das Komma richtig. Sobald der Chip eine eigene Flaeche hat,
+    # trennt die Kachelform schon -- das Komma trennt ein zweites Mal.
+    #
+    # Der Abstand kommt aus `.chip-inline` und nicht aus einem Leerzeichen im
+    # Markup: ein Leerzeichen steht beim naechsten Umbau woanders. Die Klasse
+    # heisst nach ihrer **Form** und nicht nach ihrem Anlass, damit der
+    # naechste Chip in derselben Lage dieselbe Regel traegt.
     if (sched or {}).get("maintenance"):
-        uptime += (', <span class="chip chip-orange">maintenance mode</span>')
+        uptime += ('<span class="chip chip-orange chip-inline">'
+                   "maintenance mode</span>")
 
     dim = " dimmed" if stale else ""
     scheduler_block = (
@@ -2061,8 +2185,11 @@ _DURATION_JS = """
       if (!isFinite(at)) return;
       const art = el.getAttribute('data-dur');
       let text;
+      // **Kein `ago`-Zweig mehr** (#184): seit `_ago()` den Zeitpunkt-Anker
+      // traegt, erzeugt kein Renderer mehr ein `data-dur="ago"`. Die
+      // Funktion `ago()` selbst lebt weiter -- die Schleife darueber braucht
+      // sie fuer jeden `data-tp` in relativer Anzeige.
       if (art === 'since') text = dauer(jetzt - at);
-      else if (art === 'ago') text = ago(Math.max(0, Math.trunc(jetzt - at)));
       else if (art === 'until') text = until(Math.trunc(at - jetzt));
       else return;
       // Nur schreiben, wenn sich etwas aendert: ein unveraendertes
@@ -2473,8 +2600,19 @@ def feed_status_fragment(
     # Fehlerklasse**, und das ist der Teil des Umbaus, den man an der
     # Oberfläche nicht sieht: ein Zustand, der über eine URL durchgereicht
     # werden muss, ist einer, den man vergessen kann.
+    # **`data-conn` traegt den Rueckweg des Verbindungspunkts** (#187). Der
+    # Punkt sitzt im Nav-Kopf, also ausserhalb jeder Bus-Region: seine rote
+    # Stellung wurde serverseitig vergeben und von nichts wieder genommen.
+    # Heartbeat und Scheduler-Karte heilten sich, weil sie hier drin haengen —
+    # **also bekommt er seinen Rueckweg dort, wo die Wahrheit ohnehin ankommt.**
+    #
+    # Derselbe Zustand wie im Kopf, aus derselben Funktion: zwei Stellen, die
+    # ihn getrennt berechnen, waeren zwei Meinungen darueber, wann eine
+    # Verbindung steht.
+    conn_cls, _ = verbindungszustand(status, scheduler=scheduler)
     attrs = ('id="feedstatus" data-bus="feedstatus" '
              'data-bus-refetch="/-/ui/feed/status" '
+             f'data-conn="{conn_cls}" '
              'hx-get="/-/ui/feed/status" '
              'hx-trigger="bibiMaintChanged from:body" hx-swap="outerHTML"')
     return f'<div {attrs}>{body}</div>'
@@ -2847,6 +2985,14 @@ _ICON_PFADE: dict[str, str] = {
     # diese Unterscheidung war der Befund hinter `◷` gegen `◐`.
     "tfmt": ('<circle cx="12" cy="12" r="10"/>'
              '<path d="M12 6v6l4 2"/>'),
+    # lucide `history` — dieselbe Uhr mit Rueckpfeil, das uebliche Zeichen fuer
+    # „vor X Zeit". **Zwei Zeichen statt einer Klasse** (#184): ein
+    # hervorgehobener Knopf laesst offen, ob er den aktuellen Zustand zeigt
+    # oder den, den ein Klick herstellt. Ein Zifferblatt gegen eine
+    # Rueckwaertsuhr laesst das nicht offen.
+    "tfmt-rel": ('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>'
+                 '<path d="M3 3v5h5"/>'
+                 '<path d="M12 7v5l4 2"/>'),
     # lucide `check` / `x` — die Quittung des Rescan-Knopfes. Sie sind Teil
     # desselben Satzes und nicht `✓`/`✕` aus der Systemschrift: sonst waere
     # eine Sekunde nach jedem Rescan genau der Befund wieder da, gegen den
@@ -2894,6 +3040,82 @@ def _icon(name: str, *, zusatz: str = "") -> str:
             f'aria-hidden="true">{inhalt}</svg>')
 
 
+def hat_gegenueber(status: dict | None) -> bool:
+    """**Habe ich einen Scheduler** — konfiguriert, oder als der ich laufe.
+
+    Die Frage entscheidet zweierlei: ob der Punkt rot ist, weil nie eine
+    Verbindung bestand, und ob er ein Schalter ist (#69). Sie stand bis #187
+    als Nebenprodukt der Farbberechnung da (``ohne_gegenueber``) und war damit
+    nur zu haben, wenn man ohnehin eine Farbe wollte.
+
+    **Ein Knoten ohne Gegenüber behält die Sperre, und dort ist sie richtig** —
+    ein Klick darf keine Anfrage auslösen, die niemand beantworten kann.
+    """
+    roles = (status or {}).get("roles") or []
+    if "scheduler" in roles:
+        return True
+    return (status or {}).get("connect") is not None
+
+
+def verbindungszustand(status: dict | None, *,
+                       scheduler: dict | None = None) -> tuple[str, str]:
+    """``(klasse, titel)`` des Verbindungspunkts — **eine Quelle** (#187).
+
+    Die Berechnung stand bis dahin in ``_ops_handles()`` und damit an genau
+    einer Stelle: dem Nav-Kopf, der außerhalb jeder Bus-Region liegt. Rot wurde
+    beim Rendern vergeben und **von nichts wieder zurückgenommen** — Heartbeat
+    und Scheduler-Karte heilten sich über den Bus, der Punkt blieb bis zum
+    Reload rot.
+
+    Damit die erneuerbare Region ihn nachziehen kann, muss sie dieselbe Antwort
+    bekommen wie der Kopf. **Zwei Stellen, die denselben Zustand berechnen,
+    laufen auseinander** — dann wäre der Rückweg aus Rot eine zweite Meinung
+    darüber, wann eine Verbindung steht.
+
+    Drei Fälle, nicht zwei (#70). Der Punkt kannte bis ``v0.7.5`` nur
+    „verbunden" und „ausdrücklich getrennt", geschrieben als *nur ein
+    ausdrückliches ``False`` heißt getrennt*::
+
+        ((status or {}).get("connect") or {}).get("ok") is not False
+
+    Der dritte Fall fiel damit auf die **grüne** Seite: ein Knoten ohne
+    Scheduler-URL hat gar kein ``connect``-Dict (``app.py`` setzt es nur ``if
+    heartbeat is not None``), ``{}.get("ok")`` ist ``None``, und ``None is not
+    False`` ist ``True``. Befund m.rau, 2026-08-07: *„wie kann bei
+    *disconnected* das Signal im Tab rechts **grün** sein?"*
+    """
+    roles = (status or {}).get("roles") or []
+    ist_host = "scheduler" in roles
+    quelle = scheduler if scheduler is not None else (status if ist_host else None)
+    maint = bool((quelle or {}).get("maintenance"))
+
+    conn = (status or {}).get("connect")
+    if ist_host:
+        # Der Host ist mit sich selbst verbunden — dort gibt es keinen
+        # Heartbeat, und ein roter Punkt waere schlicht falsch. Ihm fehlt
+        # ``connect`` aus demselben Grund wie dem Client ohne Scheduler,
+        # deshalb steht diese Abfrage *vor* der auf ``None``.
+        verbunden = True
+    elif conn is None:
+        verbunden = False
+    else:
+        verbunden = conn.get("ok") is not False
+
+    if not hat_gegenueber(status):
+        # „disconnected" waere hier irrefuehrend: es gab nie eine Verbindung,
+        # die abreissen konnte. Wer das liest, sucht den Fehler sonst beim
+        # Scheduler statt in der eigenen Konfiguration.
+        return "bad", "no scheduler configured — nothing to connect to"
+    if not verbunden:
+        # **Getrennt schlaegt Maintenance**, und das bleibt so: wer nicht
+        # verbunden ist, weiss ueber den Modus des Hosts nichts Aktuelles. Die
+        # Regel war nie falsch — ihr fehlte der Ausgang.
+        return "bad", "disconnected"
+    if maint:
+        return "warn", "maintenance active — nothing is dispatched"
+    return "ok", "connected"
+
+
 def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -> str:
     """Die drei Ops-Handles der App-Bar: ``⟳`` Rescan, ``◐`` Maintenance,
     ``●`` Verbindung.
@@ -2925,46 +3147,7 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
     # ueber HTTP befragt.
     quelle = scheduler if scheduler is not None else (status if ist_host else None)
     maint = bool((quelle or {}).get("maintenance"))
-
-    # Verbunden? Drei Faelle, nicht zwei (#70). Der Punkt kannte bis v0.7.5 nur
-    # "verbunden" und "ausdruecklich getrennt" — geschrieben als „nur ein
-    # ausdrueckliches ``False`` heisst getrennt":
-    #
-    #     ((status or {}).get("connect") or {}).get("ok") is not False
-    #
-    # Der dritte Fall fiel damit auf die *gruene* Seite: ein Knoten ohne
-    # Scheduler-URL hat gar kein ``connect``-Dict (``app.py`` setzt es nur
-    # ``if heartbeat is not None``), ``{}.get("ok")`` ist ``None``, und
-    # ``None is not False`` ist ``True``. Befund m.rau, 2026-08-07: „wie kann
-    # bei *disconnected* das Signal im Tab rechts **gruen** sein?"
-    #
-    # ``_host_card()`` unterscheidet dieselben drei Faelle laengst ueber
-    # ``conn is None`` — hier fehlte nur der Gleichklang.
-    conn = (status or {}).get("connect")
-    if ist_host:
-        # Der Host ist mit sich selbst verbunden — dort gibt es keinen
-        # Heartbeat, und ein roter Punkt waere schlicht falsch. Ihm fehlt
-        # ``connect`` aus demselben Grund wie dem Client ohne Scheduler,
-        # deshalb steht diese Abfrage *vor* der auf ``None``.
-        verbunden, ohne_gegenueber = True, False
-    elif conn is None:
-        verbunden, ohne_gegenueber = False, True
-    else:
-        verbunden, ohne_gegenueber = conn.get("ok") is not False, False
-
-    if ohne_gegenueber:
-        # „disconnected" waere hier irrefuehrend: es gab nie eine Verbindung,
-        # die abreissen konnte. Wer das liest, sucht den Fehler sonst beim
-        # Scheduler statt in der eigenen Konfiguration.
-        dot_cls, dot_titel = "bad", "no scheduler configured — nothing to connect to"
-    elif not verbunden:
-        # Getrennt schlaegt Maintenance: wer nicht verbunden ist, weiss ueber
-        # den Modus des Hosts ohnehin nichts Aktuelles.
-        dot_cls, dot_titel = "bad", "disconnected"
-    elif maint:
-        dot_cls, dot_titel = "warn", "maintenance active — nothing is dispatched"
-    else:
-        dot_cls, dot_titel = "ok", "connected"
+    dot_cls, dot_titel = verbindungszustand(status, scheduler=scheduler)
 
     # Wer den Schalter erreicht (#69). Die Bedingung fragte bis v0.7.5 „bin ich
     # der Scheduler" — und sperrte damit genau die Knoten, die eine Oberflaeche
@@ -2976,9 +3159,9 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
     #
     # Die richtige Frage ist die, die ``_ops_ziel()`` im Controller laengst
     # beantwortet: **habe ich einen Scheduler** — konfiguriert, oder als der ich
-    # selbst laufe. Genau die Frage steht schon oben, nur unter anderem Namen:
-    # ``ohne_gegenueber``. Ein Knoten ohne Scheduler behaelt die Sperre, und
-    # dort ist sie richtig — es gibt nichts zu schalten.
+    # selbst laufe. Sie steht seit #187 als ``hat_gegenueber()`` da statt als
+    # Nebenprodukt der Farbberechnung. Ein Knoten ohne Scheduler behaelt die
+    # Sperre, und dort ist sie richtig — es gibt nichts zu schalten.
     #
     # Der Bootstrap-Fall bleibt damit heil: ``init --profile scheduler
     # --with-ui`` haengt einem Scheduler doch einen ``controller`` an, und
@@ -2996,7 +3179,7 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
     # Ohne Gegenueber bleibt der Punkt rot und ist kein Schalter, weil es
     # nichts zu schalten gibt: ein Klick darf keine Anfrage ausloesen, die
     # niemand beantworten kann.
-    if ohne_gegenueber:
+    if not hat_gegenueber(status):
         dot_extra = " disabled"
     else:
         dot_extra = ""
@@ -3030,7 +3213,8 @@ def _ops_handles(status: dict | None = None, *, scheduler: dict | None = None) -
         # suchte die Zeit dahinter.
         '<button id="tfmt" class="toggle" '
         'title="timestamps: absolute — click for relative">'
-        f'{_icon("tfmt")}</button>'
+        f'{_icon("tfmt", zusatz="ico-abs")}'
+        f'{_icon("tfmt-rel", zusatz="ico-rel")}</button>'
         f'<button id="conn-dot" class="conn-dot {dot_cls}"{dot_extra} '
         f'title="{dot_titel}">{_icon("conn")}</button>'
         "</nav>"
@@ -3051,7 +3235,10 @@ _OPS_HANDLES_JS = """
   if (tfmt) {
     const zeige = () => {
       const rel = document.documentElement.dataset.tfmt === 'rel';
-      tfmt.classList.toggle('on', rel);
+      // **Keine `.on`-Klasse mehr** (#184). Sie war eine zweite Wahrheit ueber
+      // denselben Zustand, und das CSS liest ihn jetzt direkt an
+      // `[data-tfmt]`. Der `title` bleibt: er sagt, was ein Klick *tut* --
+      // was gerade *gilt*, sagt das Zeichen.
       tfmt.title = rel ? 'timestamps: relative — click for absolute'
                        : 'timestamps: absolute — click for relative';
     };
@@ -3132,6 +3319,32 @@ _OPS_HANDLES_JS = """
     // sie das Wort `maintenance mode`, also haengt jetzt mehr daran als vorher.
     document.body.dispatchEvent(new Event('bibiMaintChanged'));
   }
+  // **Der Rueckweg aus Rot** (#187). Bis hierher vergab ausschliesslich der
+  // Server die rote Stellung, und im Browser gab es keine Stelle, die sie
+  // wieder entfernt -- `setMaint()` steigt sogar ausdruecklich aus, wenn sie
+  // gesetzt ist. Die Regel dahinter ist richtig (getrennt schlaegt
+  // Maintenance); ihr fehlte der Ausgang, und der lautete: Reload.
+  //
+  // Das `#feedstatus`-Bundle wird ueber den Bus erneuert und traegt den
+  // Zustand jetzt als `data-conn`. **Derselbe Zeitpunkt, an dem seit #160
+  // auch der Zeit-Ticker nachzieht** -- ein Fragment, das gerade eingetauscht
+  // wurde, ist die einzige Stelle, an der frische Wahrheit ohne eigenen
+  // Netzverkehr zu haben ist.
+  function ziehePunktNach(wurzel){
+    const bundle = (wurzel && wurzel.id === 'feedstatus')
+      ? wurzel
+      : document.getElementById('feedstatus');
+    if (!dot || !bundle) return;
+    const stand = bundle.getAttribute('data-conn');
+    if (!stand) return;
+    dot.classList.toggle('bad', stand === 'bad');
+    dot.classList.toggle('warn', stand === 'warn');
+    dot.classList.toggle('ok', stand === 'ok');
+  }
+  document.body.addEventListener('htmx:afterSettle', (e) => {
+    ziehePunktNach(e && e.target);
+  });
+
   if (dot && !dot.disabled) dot.addEventListener('click', async () => {
     const on = dot.classList.contains('warn');
     let next = on;
@@ -5064,8 +5277,19 @@ _FILTER_OBEN = (("TYPE", ("job", "claude", "app")),
 #: `24h` behält seinen Schlüssel, obwohl die Spalte seit #135 `RELIABILITY`
 #: heißt: er steht in URLs, die jemand geteilt oder gespeichert haben kann, und
 #: er benennt die Rechnung (24 Stunden), nicht die Überschrift.
+#: `runtime`, `client_status` und `client_last` kamen mit #179 dazu und standen
+#: bis #192 **nicht** hier: die drei Köpfe wurden einzeln mit `_sort_kopf()`
+#: gesetzt, also an der Ableitung vorbei. Die Route verwarf ihren Parameter,
+#: und drei Spalten waren klickbar, ohne zu sortieren.
+#:
+#: **Der Wächter dagegen kommt vom Markup her**
+#: (`test_kein_kopf_im_markup_steht_ausserhalb_der_whitelist`) und nicht von
+#: dieser Liste — eine Schleife über sie sieht genau die Spalte nicht, die in
+#: ihr fehlt. Das war der Fehler des Vorgängers, und er hat #192 durchgelassen.
 _SORTIERBAR = (("slug", "SLUG"), ("type", "TYPE"), ("status", "STATUS"),
-               ("last", "LAST"), ("next", "NEXT"), ("24h", "RELIABILITY"))
+               ("last", "LAST"), ("next", "NEXT"), ("24h", "RELIABILITY"),
+               ("runtime", "RUNTIME"), ("client_status", "STATUS"),
+               ("client_last", "LAST/RUN"))
 
 #: Zellen je Zeile des Jobs-Screens — der Bezug jedes `colspan`, das quer über
 #: die Tabelle geht (Bandkopf, leeres Band).
@@ -5923,6 +6147,182 @@ _SLOT_JS = """
 """
 
 
+# ── Die Bauteile der Job Card (#181) ────────────────────────────────────────
+#
+# **Nicht eine Belegung, sondern Verdichtungsformen plus benannte Sets.** Der
+# tragende Satz stammt von m.rau (2026-08-13): *„Es wird immer *Sets* von
+# Attributen geben, die eine fachliche Auswahl darstellen."* Er sagt, dass die
+# Card keine richtige Belegung hat, sondern mehrere benannte — und welche gilt,
+# haengt daran, was man gerade tut.
+#
+# **Der erste Schnitt dafuer war meiner und war falsch.** Er sortierte nach
+# *aendert sich das Feld waehrend eines Laufs?* — eine Aussage ueber den
+# Renderer, nicht ueber den Leser. m.raus Schnitt fragt nach *fachlich relevant
+# gegen nachrangig* und laesst von vierzehn Feldern genau eines uebrig, das
+# nicht in die Card gehoert: die Netto-Laufzeit. **Ein Feld, das sich nie
+# aendert, ist deshalb nicht weniger wert; es ist nur billiger zu zeigen.**
+
+
+def _kt_paar(label: str, wert: str) -> str:
+    """Ein Wert mit Beschriftung — die Grundform, wenn der Wert allein nicht
+    sagt, wovon er spricht (`worker w1`)."""
+    return f'<span class="kt"><span class="kt-l">{_e(label)}</span> {wert}</span>'
+
+
+def _kt_wert(wert: str) -> str:
+    """Ein Wert ohne Beschriftung — fuer alles, was sich selbst benennt: ein
+    Zustandswort, ein Cron-Ausdruck, ein Dateiname."""
+    return f'<span class="kt">{wert}</span>'
+
+
+def _kt_chip(wert: str) -> str:
+    """Ein Chip — aus demselben Vokabular wie die Status-Chips (#33). Fuer
+    Werte, die eine **Betriebsart** benennen und keine Groesse."""
+    return f'<span class="chip chip-inline">{wert}</span>'
+
+
+def _kt_fein(wert: str) -> str:
+    """Klein, gedimmt, ohne Beschriftung — die Form, die m.raus Einwand gegen
+    ``run_id`` aufloest.
+
+    Ich hatte argumentiert, der Schluessel koste eine ganze Zeile fuer einen
+    Wert, den man kopiert statt liest. **Das stimmt nur, solange jedes Feld
+    dieselbe Groesse hat** (*„ja. deshalb ganz klein. deshalb auch layout
+    !?!?!"*). Sobald ein Wert klein und ohne Beschriftung dastehen darf, kostet
+    er keine Zeile mehr, sondern einen Rand — und die Frage *„passt das noch"*
+    ist keine Auswahlfrage mehr, sondern eine Gestaltungsfrage.
+    """
+    return f'<span class="kt kt-fein">{wert}</span>'
+
+
+def _kv_attempts(slot: dict, now: float) -> str | None:  # noqa: ARG001
+    """``n/m`` und nicht ``n``: eine nackte ``3`` laesst offen, ob das der
+    dritte von drei Versuchen ist oder der dritte von zehn — und der
+    Unterschied entscheidet, ob man noch wartet oder schon nachsieht."""
+    n, m = slot.get("attempt"), slot.get("attempts")
+    if n is None or not m:
+        return None
+    return _kt_paar("try", f"{int(n)}/{int(m)}")
+
+
+def _kv_ref(slot: dict, now: float) -> str | None:  # noqa: ARG001
+    """Der Name der MD, ohne Pfad und Endung (Vorgabe m.rau).
+
+    Der volle Pfad kostet die halbe Kachelbreite fuer zwei Angaben, die man
+    schon kennt: dass es im Vault liegt und dass es Markdown ist. **Was man
+    sucht, ist der Name** — und er ist die einzige Angabe, mit der man die
+    Datei wiederfindet.
+    """
+    roh = slot.get("schedule_ref")
+    if not roh:
+        return None
+    from pathlib import PurePosixPath
+    return _kt_wert(_e(PurePosixPath(str(roh)).stem))
+
+
+def _kv_zeit(feld: str, slot: dict, now: float) -> str | None:
+    """Ein Zeitpunkt aus dem Slot, beschriftet mit seinem Feldnamen ohne
+    ``_at`` — ``started 14:03``."""
+    ts = slot.get(feld)
+    if ts is None:
+        return None
+    return _kt_paar(feld.removesuffix("_at"), _uhrzeit(ts, now))
+
+
+def _kv_schlicht(feld: str, slot: dict, now: float, *,  # noqa: ARG001
+                 form=None, label: str | None = None) -> str | None:
+    """Ein Feld, das ohne Umrechnung dasteht.
+
+    ``label`` und ``form`` schliessen einander aus: eine Beschriftung **ist**
+    schon die Wahl der Form (``_kt_paar``). Beides zugleich anzunehmen war der
+    erste Entwurf, und er rief eine Ein-Argument-Form mit zweien auf.
+
+    **Als Funktion mit gebundenen Argumenten statt als Closure** (#181): die
+    Vorgaenger gaben eine innere Funktion zurueck, und die heisst im AST
+    schlicht ``_f``. `test_every_renderer_can_be_reached_from_a_screen` meldete
+    sie als unerreichbar — zu Recht, denn unter diesem Namen ist sie es. Eine
+    Bauform, die einen Waechter zwingt, eine Ausnahme zu tragen, ist die
+    schlechtere von zweien, die dasselbe leisten.
+    """
+    wert = slot.get(feld)
+    if wert in (None, ""):
+        return None
+    if label:
+        return _kt_paar(label, _e(wert))
+    return (form or _kt_wert)(_e(wert))
+
+
+def _kv_next(slot: dict, now: float) -> str | None:  # noqa: ARG001
+    ts = slot.get("next_fire_at")
+    return None if ts is None else _kt_paar("next", _abs_time(ts))
+
+
+#: **Der Vorrat**: jedes Feld, das die Card zeigen *kann*, mit der Form, in der
+#: es das tut. Dreizehn — die vierzehnte, die Netto-Laufzeit, steht bewusst
+#: nicht hier (s. Kopfkommentar).
+#:
+#: **Jede Angabe nur, wenn es sie gibt.** Jeder Eintrag liefert ``None`` statt
+#: eines Strichs: ein leeres ``commit —`` saehe aus wie ein Fehler, wo nur
+#: nichts zu sagen ist. Bei dreizehn moeglichen Feldern wiegt das schwerer als
+#: bei dreien — eine Kachel voller Striche ist keine dichte Information,
+#: sondern Laerm.
+KACHEL_VORRAT: dict = {
+    "status": _partial(_kv_schlicht, "status"),
+    "attempts": _kv_attempts,
+    "reason": _partial(_kv_schlicht, "reason"),
+    "exit_code": _partial(_kv_schlicht, "exit_code", label="exit"),
+    "next": _kv_next,
+    "run_id": _partial(_kv_schlicht, "run_id", form=_kt_fein),
+    "worker": _partial(_kv_schlicht, "worker", label="worker"),
+    "kind": _partial(_kv_schlicht, "kind"),
+    "schedule": _partial(_kv_schlicht, "schedule"),
+    "exec_mode": _partial(_kv_schlicht, "exec_mode", form=_kt_chip),
+    "schedule_ref": _kv_ref,
+    "started_at": _partial(_kv_zeit, "started_at"),
+    "finished_at": _partial(_kv_zeit, "finished_at"),
+}
+
+#: **Die benannten Sets** — zwei fachliche Auswahlen aus demselben Vorrat, und
+#: **keine ist Teilmenge der anderen**. Waere eine enthalten, haette man keine
+#: zwei Auswahlen, sondern eine lange und eine kurze.
+#:
+#: *„Wer einen Fehlschlag verfolgt, will `reason`, `exit_code`, `attempts n/m`,
+#: `next`. Wer einen Lauf zuordnet, will `run_id`, `worker`, `exec_mode`,
+#: `schedule_ref`."*
+#:
+#: **Welches Set eine Kachel traegt, ist heute verdrahtet und soll es nicht
+#: bleiben.** Ob die Auswahl umschaltbar wird, entscheidet der Varianten-Case
+#: — diese Runde baut nur die Voraussetzung dafuer, dass ein zweites Set kein
+#: Umbau ist.
+KACHEL_SETS: dict[str, tuple[str, ...]] = {
+    "fehlschlag": ("reason", "exit_code", "attempts", "next"),
+    "zuordnung": ("run_id", "worker", "exec_mode", "schedule_ref"),
+}
+
+
+def kachel_set(kachel, felder, *, now: float) -> str:
+    """Ein Set aus dem Vorrat, gerendert.
+
+    ``felder`` ist eine freie Auswahl und kein Name: genau daran haengt die
+    Zusage *„ein zweites Set ist kein Umbau"*. Wer eine dritte Auswahl braucht,
+    reicht sie hier hinein — er faellt keine Entscheidung im Renderer.
+
+    Unbekannte Feldnamen werden uebergangen statt zu werfen: ein Set ist
+    Konfiguration, und eine Kachel, die wegen eines Tippfehlers gar nichts mehr
+    zeigt, ist schlechter als eine, die ein Feld weniger zeigt.
+    """
+    slot = getattr(kachel, "slot", None) or {}
+    teile = []
+    for feld in felder:
+        hol = KACHEL_VORRAT.get(feld)
+        if hol is None:
+            continue
+        wert = hol(slot, now)
+        if wert:
+            teile.append(wert)
+    return "".join(teile)
+
+
 def _slot_kachel(kachel, *, now: float) -> str:
     """Eine Slot-Kachel: Zustand und die drei Verben, sonst nichts (FE §5.1.1).
 
@@ -6049,12 +6449,36 @@ def _slot_kachel(kachel, *, now: float) -> str:
                 (beendet if terminal and beendet is not None else now) - begonnen,
                 seit=None if terminal else begonnen))
         zustand = " &middot; ".join(teile)
+    # **Das Set unter dem Zustand** (#181). Der Zustand oben beantwortet *was
+    # ist gerade*, das Set darunter *woran erkenne ich diesen Lauf* bzw. *woran
+    # ist er gescheitert*.
+    #
+    # **Welches Set gilt, ist verdrahtet und soll es nicht bleiben.** Die
+    # Vermutung dahinter: wer einen Fehlschlag vor sich hat, verfolgt einen
+    # Fehlschlag; wer einen laufenden Lauf vor sich hat, ordnet ihn zu. Das ist
+    # eine Aussage ueber den Leser, abgeleitet aus dem Zustand — pruefbar an
+    # den Varianten und nicht hier zu entscheiden (Vorgabe m.rau: *„Ob die
+    # Auswahl spaeter umschaltbar wird oder fest verdrahtet bleibt,
+    # entscheidest Du an den Varianten und nicht vorher"*).
+    name = "fehlschlag" if (kachel.status or "") in _FEHLSCHLAG_STATUSES \
+        else "zuordnung"
+    satz = kachel_set(kachel, KACHEL_SETS[name], now=now)
     return (
         f'<div class="tile"><div class="tile-head">{titel}{app}</div>'
         f'<div class="tile-state">{zustand}</div>'
-        f'{_slot_leiste(kachel.aktionen, job_id=kachel.slot.get("id"), ziel=ziel, rebuild=_ist_container(kachel.slot))}'
+        + (f'<div class="tile-set" data-set="{name}">{satz}</div>' if satz else "")
+        + f'{_slot_leiste(kachel.aktionen, job_id=kachel.slot.get("id"), ziel=ziel, rebuild=_ist_container(kachel.slot))}'
         "</div>"
     )
+
+
+#: Die Zustaende, in denen die Kachel das Fehlschlag-Set traegt (#181).
+#:
+#: `deferred` steht mit hier, obwohl es kein Fehlschlag *ist*: es ist die
+#: Wartephase zwischen zwei Versuchen, und genau dort will man `attempts n/m`
+#: und `next` sehen. Wer bis zum Terminalzustand wartet, bekommt die Auskunft
+#: erst, wenn sie niemandem mehr nuetzt.
+_FEHLSCHLAG_STATUSES = frozenset({"failed", "error", "deferred"})
 
 
 def _ist_container(slot: dict) -> bool:
@@ -6282,11 +6706,20 @@ def _run_zeile(r: dict, *, basis: str = "") -> str:
     """Eine Zeile der Lauf-Liste plus ihr (zugeklappter) Ausklappbereich.
 
     ``basis`` ist ``/-/jobs/<job_uid>`` und trägt den Weg zu den Attributen
-    dieses Laufs (#40). Er steht **nur an archivierten Läufen**: ein Lauf im
-    Slot hat keine Journal-Zeile und damit keinen Snapshot — ein Link dorthin
-    wäre ein toter Knopf. Dass die Ansicht erst ab der Archivierung existiert,
-    ist eine Lücke der Ablage und nicht der Anzeige; sie ist als eigenes
-    Ticket festgehalten statt hier stillschweigend überbrückt.
+    dieses Laufs (#40).
+
+    **Seit #182 steht er an jedem Lauf, und der Weg unterscheidet sich.** Ein
+    archivierter Lauf hat eine Journal-ID (``runs/<jid>/attrs``); einer im Slot
+    hat keine und geht über ``slot/<quelle>/<job_id>/attrs`` — dieselbe
+    Unterscheidung, die der Output eine Zeile weiter unten schon trifft, und
+    aus demselben Grund: dieselbe Job-ID meint auf beiden Seiten einen anderen
+    Job, weil beide ihre eigene DB führen.
+
+    Hier stand bis dahin, ein Link am Slot-Lauf wäre *„ein toter Knopf"*, weil
+    dessen Snapshot fehle. **Er fehlte nie** — er stand in ``jobs.run_snapshot``
+    statt im Journal, und die Ansicht las nur eine der beiden Quellen. Der
+    Docstring hat die Lücke richtig benannt und die falsche Ursache
+    dazugeschrieben.
     """
     st = r.get("status") or ""
     rs = r.get("reason")
@@ -6305,8 +6738,14 @@ def _run_zeile(r: dict, *, basis: str = "") -> str:
                  f'data-src="{_e(r.get("src"))}"')
     else:
         holen = f'data-jid="{_e(r.get("id"))}"'
+    # Der Weg zu den Attributen folgt derselben Gabelung wie der zum Output
+    # (#182): eine Journal-ID gibt es nur fuer archivierte Laeufe, ein Lauf im
+    # Slot wird ueber seine Job-ID **und ihre Quelle** adressiert.
     attrs = ""
-    if basis and not im_slot and r.get("id") is not None:
+    if basis and im_slot and r.get("job_id") is not None:
+        attrs = (f' <a class="cta" href="{basis}/slot/{_e(r.get("src"))}'
+                 f'/{_e(r.get("job_id"))}/attrs">attrs</a>')
+    elif basis and not im_slot and r.get("id") is not None:
         attrs = (f' <a class="cta" href="{basis}/runs/{_e(r.get("id"))}/attrs">'
                  "attrs</a>")
     return (

@@ -287,13 +287,19 @@ def test_run_rows_duration_dash_when_missing():
 def test_abs_datetime_omits_date_for_today():
     now = datetime(2026, 7, 3, 12, 0, 0).timestamp()
     ts = datetime(2026, 7, 3, 8, 30, 0).timestamp()
-    assert render._abs_datetime(ts, now) == "08:30"
+    # **Die Regel, nicht die Huelle** (#184). `_abs_datetime()` liefert seit
+    # dem Zeitanker ein `<span>`; die Datumsregel selbst steht in
+    # `_abs_datetime_text()` und wird hier geprueft. Ein Vergleich gegen das
+    # Markup pruefte die Huelle mit und braeche bei jedem Anker-Umbau.
+    assert render._abs_datetime_text(ts, now) == "08:30"
+    assert 'data-abs="08:30"' in render._abs_datetime(ts, now)
 
 
 def test_abs_datetime_shows_date_for_other_days():
     now = datetime(2026, 7, 3, 12, 0, 0).timestamp()
     ts = datetime(2026, 6, 28, 20, 56, 0).timestamp()
-    assert render._abs_datetime(ts, now) == "28.06. 20:56"
+    assert render._abs_datetime_text(ts, now) == "28.06. 20:56"
+    assert 'data-abs="28.06. 20:56"' in render._abs_datetime(ts, now)
 
 
 def test_run_rows_show_date_for_runs_from_other_days():
@@ -642,7 +648,16 @@ def test_detail_shows_live_panel_for_last_terminal_run():
     assert "last run" in html
     # Seit #122 traegt die Dauer eine Huelle mit ihrem Anker — der Text
     # steht darin, zusammenhaengend ist er nicht mehr.
-    assert "finished " in html and ">3s ago<" in html
+    #
+    # **Seit #184 steht darin die absolute Form**, nicht mehr `3s ago`. Der
+    # Inhalt der Huelle folgt dem Vorgabemodus, und der ist absolut (#30);
+    # `3s ago` schreibt der Ticker hinein, sobald jemand auf relativ
+    # umschaltet. Der Anker ist die Zusage, nicht der Wortlaut — er traegt
+    # beide Formen, und deshalb wird er hier geprueft und nicht der Text.
+    assert "finished " in html
+    assert 'data-tp="2.0"' in html, (
+        "die Zeitangabe traegt keinen Anker — sie folgt dem Umschalter nicht "
+        "(#184)")
 
 
 def test_detail_live_region_is_bus_only():
