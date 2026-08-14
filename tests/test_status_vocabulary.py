@@ -104,7 +104,7 @@ def test_every_row_carries_two_marker_slots(zustand: str):
     links rutschte. Eine Tabelle, deren Spalten je nach Zustand woanders
     anfangen, ist beim Überfliegen genau so viel wert wie keine.
     """
-    html = render._aktivitaets_marker({"row_status": zustand}, {})
+    html = render._aktivitaets_marker({"row_status": zustand})
     marker = re.findall(r'<i class="mk[^"]*"', html)
     assert len(marker) == 2, f"{zustand}: {html!r}"
 
@@ -113,7 +113,7 @@ def test_every_row_carries_two_marker_slots(zustand: str):
 def test_colour_and_motion_follow_the_table(zustand: str):
     """**Der zweite Rot-Schritt**: alle elf Zustände gegen die Tabelle."""
     links, rechts, _chip = TABELLE[zustand]
-    html = render._aktivitaets_marker({"row_status": zustand}, {})
+    html = render._aktivitaets_marker({"row_status": zustand})
     gefunden = re.findall(r'<i class="mk ([^"]*)"', html)
     assert len(gefunden) == 2, html
     for platz, (farbe, bewegung), klassen in (

@@ -396,6 +396,7 @@ def _run_wrapper(
     schedule_ref: str | None = None,
     soul: str | None = None, session: str | None = None,
     wall_time: int | None = None, silence_timeout: int | None = None,
+    job_started_at: float | None = None,   # erster Start des Laufs (#189)
     app_port: int | None = None, app_prefix: str | None = None,
     exec_mode: str | None = None, image: str | None = None,
     docker_args: list[str] | None = None,
@@ -553,6 +554,13 @@ def _run_wrapper(
         env["BIBI_EPHEMERAL"] = "1"
     if wall_time is not None:
         env["BIBI_WALL_TIME"] = str(wall_time)
+    # Der erste Start des Laufs (m.rau/bibi#189). Ohne ihn misst der Wrapper
+    # gegen seinen eigenen Start und begrenzt damit den **Versuch** statt den
+    # Job — bei `attempts: 3` also dreimal `wall_time`. Nur mitgeben, wenn es
+    # auch eine Grenze gibt: eine Variable ohne Verbraucher ist eine Zusage,
+    # die niemand einlöst.
+    if wall_time is not None and job_started_at is not None:
+        env["BIBI_JOB_STARTED_AT"] = str(job_started_at)
     if silence_timeout is not None:
         env["BIBI_SILENCE_TIMEOUT"] = str(silence_timeout)
     if worker_name:
@@ -732,6 +740,47 @@ def execute_reservation(
     attempt = 0 if attempt is None else attempt
     attempts = reservation.get("attempts")
     attempts = 1 if attempts is None else attempts
+
+    # ── Ein erschöpftes Brutto-Budget verhindert den Start (m.rau/bibi#189) ──
+    #
+    # Seit dem 2026-08-14 begrenzt `wall_time` den **Job** und nicht den
+    # Versuch. Damit entsteht ein Fall, den es unter der Trial-Lesart nicht
+    # gab: ein Job mit `wall_time: 3600`, der um 10:00 startet, um 10:05
+    # scheitert und zwei Stunden Backoff hat, käme mit 2h05 Brutto-Zeit zu
+    # seinem zweiten Versuch — und der `_wall_monitor()` des Wrappers killte
+    # ihn binnen einer Sekunde, nach fünf Minuten tatsächlicher Arbeit.
+    #
+    # **Er wird deshalb gar nicht erst gestartet.** Die Aussage ist dieselbe —
+    # der Job wird `killed` —, nur ohne einen Prozessstart, der nichts tun
+    # kann. Ein Lauf, der nur existiert, um eine Sekunde später beendet zu
+    # werden, erzeugt einen Journal-Eintrag, einen Output und eine Zeile in der
+    # Tabelle, die alle dasselbe behaupten: dass hier gearbeitet wurde.
+    #
+    # Die Prüfung steht **vor** dem Setup, also vor Worktree und Wrapper: was
+    # nicht laufen darf, soll auch nichts anlegen, das jemand später aufräumt.
+    if job_db.budget_erschoepft(reservation):
+        wall = reservation.get("wall_time")
+        verbraucht = time.time() - reservation["started_at"]
+        output_ref = None
+        try:
+            out_path = _output_path(repo_root, run_id)
+            output.append(
+                out_path, "phase",
+                f"wall_time: Zeitlimit ({wall}s) bereits vor dem Start "
+                f"überschritten ({verbraucht:.0f}s seit dem ersten Versuch) — "
+                "dieser Versuch läuft nicht an")
+            output_ref = out_path.relative_to(repo_root).as_posix()
+        except Exception:  # noqa: BLE001 — darf das Melden nicht verhindern
+            output_ref = None
+        activity.emit(log, logging.WARNING, "worker.wall_time_exhausted",
+                      "Brutto-Budget vor dem Start erschöpft", role="worker",
+                      slug=reservation.get("slug"), run_id=jid,
+                      outcome="wall_time")
+        status = "killed" if client.report(
+            jid, status="killed", reason="wall_time", exit_code=-1,
+            output_ref=output_ref, worker=worker_name, host=host) == "ok" else None
+        return {"id": jid, "exit_code": -1, "commit": None,
+                "status": status, "outcome": "wall_time"}
     # Lokaler DB-Pfad (LocalScheduler): Wrapper kann direkt schreiben statt HTTP.
     # client.db_path kann None sein (kein expliziter Pfad) → Default auflösen.
     # App-Jobs nutzen immer HTTP, damit wrapper_url beim Relay registriert wird.
@@ -756,6 +805,7 @@ def execute_reservation(
             schedule_ref=reservation.get("schedule_ref"),
             soul=reservation.get("soul"), session=reservation.get("session"),
             wall_time=reservation.get("wall_time"),
+            job_started_at=reservation.get("started_at"),
             silence_timeout=silence_timeout,
             app_port=reservation.get("app_port"),
             app_prefix=reservation.get("app_prefix"),
@@ -1145,6 +1195,22 @@ def resume_pinned_waiting(slug: str, *, db_path: Path | None = None,
 
     ``attempt`` bleibt unangetastet: das ist der ganze Punkt.
 
+    **Fortgesetzt wird nur, was ``reserve_next()`` auch holen kann**
+    (m.rau/bibi#199). Diese Funktion und der Dispatcher entscheiden über
+    dieselbe Frage — *darf diese Zeile laufen* —, und bis zum 2026-08-14 wusste
+    nur einer von beiden von ``attempts > 0``. Eine Zeile aus der Zeit vor
+    ``#168`` trägt ``attempts=0`` in dessen alter Bedeutung (*ein Lauf, kein
+    Retry*); sie wurde hier aufgegriffen, vom Dispatcher verworfen, und
+    ``run_pinned()`` brach ab. **Der Job war damit dauerhaft blockiert** — nicht
+    ein Start scheiterte, sondern jeder, immer an derselben Zeile. Sieben Jobs
+    auf dem Mac, der älteste Slot vom 05.08.
+
+    **Ein solcher Slot wird stillgelegt statt übergangen.** Ihn nur zu
+    ignorieren behöbe die Blockade und ließe ihn als ``pending`` in der Tabelle
+    stehen — also als ausstehende Arbeit, die niemand je aufnimmt. Er ist kein
+    wartender Slot, sondern einer, den der Dispatcher per Konstruktion nie
+    holt; ``inactive`` sagt genau das.
+
     Rückgabe: die fortgesetzte Zeile, oder ``None``.
     """
     row = _pinned_row(slug, db_path=db_path, host=host,
@@ -1152,6 +1218,20 @@ def resume_pinned_waiting(slug: str, *, db_path: Path | None = None,
     if row is None:
         return None
     jetzt = time.time() if now is None else now
+    if not job_db.ist_dispatchbar(row):
+        conn = job_db.connect(job_db.db_path(db_path))
+        try:
+            conn.execute(
+                "UPDATE jobs SET status='inactive', reason=?, updated_at=? "
+                "WHERE id=?",
+                ("nicht dispatchbar — attempts=0 (m.rau/bibi#199)", jetzt, row["id"]))
+            conn.commit()
+        finally:
+            conn.close()
+        activity.emit(log, logging.WARNING, "worker.slot_stillgelegt",
+                      "wartender Slot ist nicht dispatchbar — stillgelegt",
+                      role="worker", slug=slug, run_id=row["id"])
+        return None
     conn = job_db.connect(job_db.db_path(db_path))
     try:
         # Direkt und nicht über `report_status(pending)`: der Weg archiviert
@@ -1483,8 +1563,29 @@ def run_pinned(
         reservation = job_db.reserve_next(conn, host=host, pinned_only=True, now=now)
     finally:
         conn.close()
-    if reservation is None:  # unter BEGIN IMMEDIATE eigentlich unerreichbar
-        raise RuntimeError(f"gepinnter Job {unique_slug!r} konnte nicht reserviert werden")
+    if reservation is None:
+        # **Hier stand „unter BEGIN IMMEDIATE eigentlich unerreichbar", und der
+        # Fall trat tagelang bei jedem Klick ein** (m.rau/bibi#199). Die
+        # Transaktion war nie das Problem: die Zeile erfüllte die
+        # Auswahlbedingung nicht, und die Meldung nannte nur das Symptom.
+        # Wer sie las, suchte bei Locks — die Ursache lag bei `attempts`.
+        grund = ""
+        try:
+            conn = job_db.connect(db_path)
+            try:
+                zeile = conn.execute(
+                    "SELECT active, conflict_refs, attempts FROM jobs WHERE slug=?",
+                    (unique_slug,)).fetchone()
+            finally:
+                conn.close()
+            if zeile is not None and not job_db.ist_dispatchbar(zeile):
+                grund = (f" — nicht dispatchbar: active={zeile['active']}, "
+                         f"attempts={zeile['attempts']}, "
+                         f"conflict_refs={zeile['conflict_refs']!r}")
+        except Exception:  # noqa: BLE001 — die Diagnose darf die Meldung nicht ersetzen
+            grund = ""
+        raise RuntimeError(
+            f"gepinnter Job {unique_slug!r} konnte nicht reserviert werden{grund}")
 
     from bibi.daemon.scheduler_client import LocalScheduler
     execute_reservation(

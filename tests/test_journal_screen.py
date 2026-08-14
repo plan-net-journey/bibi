@@ -222,9 +222,11 @@ def test_the_journal_page_carries_the_bus_client():
 #: Seit #135 in der Ordnung Job → Scheduler → Client, und **je Screen
 #: verschieden lang**: das Journal führt kein `NEXT` mehr, weil es dort nichts
 #: zu sagen hätte. Bis dahin stand die Spalte auch dort und trug einen Strich.
+#: **Seit #188 zehn** — `client_akt` traegt die zwei Quadrate des lokal
+#: gestarteten Laufs, seit die am Zeilenanfang immer den Scheduler zeigen.
 _JOBS_SPALTEN = ("slug", "type", "runtime", "24h",
                  "scheduler", "last", "next",
-                 "client", "client_last")
+                 "client_akt", "client", "client_last")
 _JOURNAL_SPALTEN = tuple(s for s in _JOBS_SPALTEN if s != "next")
 
 

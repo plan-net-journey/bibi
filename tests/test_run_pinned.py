@@ -447,3 +447,112 @@ def test_run_pinned_default_is_not_in_place(gitrepo, monkeypatch):
     run_pinned(cmd="echo hi", repo_root=gitrepo, host="mac")
     assert captured["in_place"] is False
     assert captured["ephemeral"] is True
+
+
+# ── #199: ein wartender Alt-Slot blockiert den Job dauerhaft ────────────────
+#
+# **Befund m.rau, 2026-08-14:** *„aktuell gehen Client Jobs gar nicht zu
+# starten. Es kommt sofort ein Fehler!"*
+#
+# **Zwei Aenderungen derselben Klammer greifen ineinander.** `#191` laesst
+# `run_pinned()` einen wartenden Slot **fortsetzen**, statt eine zweite Zeile
+# danebenzulegen — richtig so, und der Grund steht im Docstring von
+# `resume_pinned_waiting()`. `#168` hat davor die Bedeutung von `attempts`
+# umgestellt: `reserve_next()` filtert seither `attempts > 0`, weil `0` jetzt
+# *kein Lauf* heisst.
+#
+# Trifft das Fortsetzen auf eine Zeile aus der Zeit **vor** `#168`, traegt sie
+# `attempts=0` in der alten Bedeutung (*ein Lauf, kein Retry*) — und wird
+# genommen und sofort wieder verworfen. **Der Job ist damit dauerhaft
+# blockiert:** nicht ein Start scheitert, sondern jeder, immer an derselben
+# Zeile. Auf dem Mac waren es sieben Jobs, der aelteste Slot vom 05.08.
+#
+# **Die Fehlerform ist die dieser Klammer:** zwei Stellen entscheiden ueber
+# dieselbe Frage — *darf diese Zeile laufen* —, und nur eine von beiden weiss
+# von der neuen Regel.
+
+
+def _wartender_alt_slot(root: Path, slug: str, *, attempts: int) -> str:
+    """Eine gepinnte ``pending``-Zeile, wie sie ein frueherer Lauf hinterliess."""
+    import secrets
+
+    from bibi.daemon.worker import pin_identity
+    jid = secrets.token_hex(4)
+    conn = job_db.connect(root / "data" / "jobs.sqlite")
+    try:
+        conn.execute(
+            "INSERT INTO jobs (id, slug, job_uid, schedule_ref, kind, payload, "
+            "status, enqueued_at, next_fire_at, attempts, pinned_host, active) "
+            "VALUES (?,?,?,?,'job','echo hi','pending',1.0,1.0,?,?,1)",
+            (jid, f"{slug}-deadbeef", slug, f"{slug}/{slug}.md", attempts,
+             pin_identity()))
+        conn.commit()
+    finally:
+        conn.close()
+    return jid
+
+
+def test_ein_alt_slot_mit_attempts_null_blockiert_den_start_nicht(gitrepo, monkeypatch):
+    """**Der Rot-Schritt zu #199.**
+
+    Heute wirft der Aufruf ``RuntimeError: gepinnter Job 'x-deadbeef' konnte
+    nicht reserviert werden`` — ``resume_pinned_waiting()`` greift die Zeile
+    auf, ``reserve_next()`` verwirft sie, und niemand legt eine an, die laufen
+    koennte.
+    """
+    import bibi.daemon.worker as W
+    _seed(gitrepo, "altslot/altslot.md",
+          '---\nschedule: "never"\njob: "echo hi"\n---\n# altslot\n')
+    _wartender_alt_slot(gitrepo, "altslot", attempts=0)
+    captured: dict = {}
+    monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, captured))
+
+    res = run_pinned(slug="altslot", repo_root=gitrepo, host="mac",
+                     use_schedule_retry=True)
+
+    # Der Lauf kommt zustande — und zwar auf einer **neuen** Zeile, nicht auf
+    # der blockierten: der Slug traegt ein frisches Token statt `-deadbeef`.
+    assert res["slug"] != "altslot-deadbeef"
+    assert captured["attempts"] >= 1, "der Lauf haette kein Versuchsbudget"
+
+
+def test_ein_wartender_slot_wird_weiterhin_fortgesetzt(gitrepo, monkeypatch):
+    """**Die Gegenprobe, und sie schuetzt die Zusage von `#191`.**
+
+    Der billige Fix waere, das Fortsetzen ganz aufzugeben — dann liefe der
+    Fehler oben weg und `#191` mit ihm: *„ein lokaler Job erreicht ``error``
+    nie, solange ein Mensch ihn per START wiederholt"*. Ein wartender Slot mit
+    brauchbarem Budget muss weiterhin **dieselbe** Zeile fortsetzen.
+    """
+    import bibi.daemon.worker as W
+    _seed(gitrepo, "weiterslot/weiterslot.md",
+          '---\nschedule: "never"\njob: "echo hi"\nattempts: 3\n---\n# weiterslot\n')
+    jid = _wartender_alt_slot(gitrepo, "weiterslot", attempts=3)
+    monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, {}))
+
+    res = run_pinned(slug="weiterslot", repo_root=gitrepo, host="mac",
+                     use_schedule_retry=True)
+
+    assert res["id"] == jid, "der wartende Slot wurde verdoppelt statt fortgesetzt"
+
+
+def test_der_unreservierbare_alt_slot_bleibt_nicht_ewig_liegen(gitrepo, monkeypatch):
+    """Ein Slot, den niemand holen kann, ist kein wartender Slot — er ist
+    Schrott, und solange er in der Tabelle steht, sieht ein Mensch ihn als
+    ausstehende Arbeit. Sieben davon lagen auf dem Mac."""
+    import bibi.daemon.worker as W
+    _seed(gitrepo, "schrott/schrott.md",
+          '---\nschedule: "never"\njob: "echo hi"\n---\n# schrott\n')
+    alt = _wartender_alt_slot(gitrepo, "schrott", attempts=0)
+    monkeypatch.setattr(W, "_run_wrapper", _capturing_run_wrapper(gitrepo, {}))
+
+    run_pinned(slug="schrott", repo_root=gitrepo, host="mac",
+               use_schedule_retry=True)
+
+    conn = job_db.connect(gitrepo / "data" / "jobs.sqlite")
+    try:
+        zeile = conn.execute("SELECT status FROM jobs WHERE id=?", (alt,)).fetchone()
+    finally:
+        conn.close()
+    assert zeile is None or zeile["status"] != "pending", (
+        "die unreservierbare Zeile steht weiterhin als wartend in der Tabelle")

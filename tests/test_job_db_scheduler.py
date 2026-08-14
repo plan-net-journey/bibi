@@ -136,7 +136,13 @@ def test_reservation_view_shape(conn):
     r = job_db.reserve_next(conn)
     assert set(r) == {
         "id", "slug", "kind", "payload", "model", "soul", "session",
-        "fire", "attempt", "attempts", "backoff", "wall_time", "silence_timeout",
+        # `started_at` seit dem 2026-08-14 (m.rau/bibi#189): `wall_time` misst
+        # brutto und braucht dafür den ersten Start des Laufs. Der Test steht
+        # bewusst auf Gleichheit statt auf Teilmenge — was an den Worker geht,
+        # ist eine Zusage, und ein stillschweigend dazugekommenes Feld wäre
+        # eine, die niemand beschlossen hat.
+        "fire", "started_at",
+        "attempt", "attempts", "backoff", "wall_time", "silence_timeout",
         "app_port", "app_prefix", "exec_mode", "image", "docker_args",
         "defer_time", "error_time", "schedule_ref", "env",
     }

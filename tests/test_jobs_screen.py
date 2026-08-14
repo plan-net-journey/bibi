@@ -860,8 +860,12 @@ def _kopfzeilen(html: str) -> tuple[list[str], list[str]]:
 #: die dem Journal fehlt — dort gibt es keine Zukunft mehr (#130).
 # Die Beschriftungen seit #153. `LAST/RUN` und `NEXT/RUN` sagen, was #136 in
 # diese Zellen gelegt hat: solange ein Lauf laeuft, steht dort seine Zeit.
+# **Der leere Eintrag ist die Aktivitaets-Spalte des lokalen Laufs** (#188).
+# Sie traegt zwei Quadrate und keine Beschriftung -- ausgeschrieben statt
+# weggefiltert, weil eine Spalte, die es gibt und die kein Test nennt, beim
+# naechsten Umbau lautlos verschwindet.
 _JOBS_SPALTEN = ["SLUG", "TYPE", "RUNTIME", "REL.",
-                 "STATUS", "LAST/RUN", "NEXT/RUN", "STATUS", "LAST/RUN"]
+                 "STATUS", "LAST/RUN", "NEXT/RUN", "", "STATUS", "LAST/RUN"]
 
 
 def test_the_columns_read_job_then_scheduler_then_client():
@@ -1109,7 +1113,8 @@ def test_next_stays_with_the_scheduler_who_alone_knows_it():
     """
     _, spalten = _kopfzeilen(render.jobs_screen(_zeilen(local=[_md("a")]), now=NOW))
     assert spalten[4:7] == ["STATUS", "LAST/RUN", "NEXT/RUN"], "der Scheduler-Block"
-    assert spalten[7:] == ["STATUS", "LAST/RUN"], "der Client-Block"
+    # Der leere Eintrag an Position 7 ist die Aktivitaets-Spalte aus #188.
+    assert spalten[7:] == ["", "STATUS", "LAST/RUN"], "der Client-Block"
 
 
 # ── Der Faltzustand überlebt einen Bus-Refetch (#44) ───────────────────────
@@ -1742,9 +1747,14 @@ def test_a_terminal_job_with_a_stale_date_is_not_touched():
 #: Helfer hat den Umbau beim ersten Lauf gefangen und dabei genau das getan,
 #: wofür seine Zusicherung da ist: er ist nicht still falsch geworden, sondern
 #: hat gesagt, dass er nachziehen muss. `client_last` ist neu.
+#: **Seit #188 zehn**: der lokal gestartete Lauf hat im CLIENT-Block eine
+#: eigene Spalte mit zwei Quadraten bekommen (`client_akt`), weil die Quadrate
+#: am Zeilenanfang seither immer den Scheduler zeigen. Auch dieser Umbau ist
+#: dem Helfer nicht entgangen — er hat neun gezaehlt, zehn gefunden und es
+#: gesagt.
 _SPALTEN = ("slug", "type", "runtime", "24h",
             "scheduler", "last", "next",
-            "client", "client_last")
+            "client_akt", "client", "client_last")
 
 
 def _zelle_text(zeile: str, spalte: str) -> str:
