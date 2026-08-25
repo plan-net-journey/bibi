@@ -58,6 +58,34 @@ _ANSAGE = (
     "Sie gilt auch für Subagenten, die du startest.\n\n{text}"
 )
 
+#: Der Basis-Rahmen: eine feste, nicht wählbare Datei statt einer Persona.
+#: Bricht absichtlich das ``NN.Name.SOUL.md``-Muster (kein Nummernpräfix) —
+#: ``_SOUL_FILE_RE`` matcht sie nie, ``bibi-ctrl soul <name>`` kann sie also
+#: nicht anwählen. Gilt zusätzlich zu einer Persona, nicht statt ihr, und
+#: auch dann, wenn gar keine Soul aktiv ist — Souls bleiben team-eigener
+#: Content, auch dieser Text lebt als Datei im Team-Repo, nicht im Engine-Code.
+_BASE_FILENAME = "_BASE.SOUL.md"
+
+_BASE_ANSAGE = (
+    "Diese Kommunikationsregeln gelten für jede Sitzung dieses Team-Repos, "
+    "unabhängig von der aktiven Persona (`.claude/souls/_BASE.SOUL.md`). Sie "
+    "gelten auch für Subagenten, die du startest.\n\n{text}"
+)
+
+
+def _load_base() -> str | None:
+    """Inhalt von ``.claude/souls/_BASE.SOUL.md`` — oder ``None``, wenn die
+    Datei fehlt oder nur Leerraum enthält (dieselbe Regel wie bei einer
+    leeren Persona-Datei)."""
+    pfad = souls_dir() / _BASE_FILENAME
+    if not pfad.is_file():
+        return None
+    try:
+        text = pfad.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return text if text.strip() else None
+
 
 def run_hook(_: argparse.Namespace) -> int:
     """Die aktive Persona in den Kontext injizieren (#75 Teil B).
@@ -97,22 +125,29 @@ def run_hook(_: argparse.Namespace) -> int:
     except (ValueError, OSError):
         pass
 
+    teile: list[str] = []
+
+    basis = _load_base()
+    if basis:
+        teile.append(_BASE_ANSAGE.format(text=basis))
+
     name = state.get_soul()
-    if not name:
-        return 0
-    pfad = soul_path(name)
-    if pfad is None:
-        return 0
-    try:
-        text = pfad.read_text(encoding="utf-8")
-    except OSError:
-        return 0
-    if not text.strip():
+    if name:
+        pfad = soul_path(name)
+        if pfad is not None:
+            try:
+                text = pfad.read_text(encoding="utf-8")
+            except OSError:
+                text = None
+            if text and text.strip():
+                teile.append(_ANSAGE.format(name=name, text=text))
+
+    if not teile:
         return 0
 
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": ereignis,
-        "additionalContext": _ANSAGE.format(name=name, text=text),
+        "additionalContext": "\n\n".join(teile),
     }}, ensure_ascii=False))
     return 0
 

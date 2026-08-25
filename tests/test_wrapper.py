@@ -195,6 +195,45 @@ def test_claude_argv_soul_multiple_candidates_deterministic_first_sorted(tmp_pat
     assert argv[i + 1] == "erste"
 
 
+# ── _BASE.SOUL.md — gilt unabhängig von BIBI_JOB_SOUL ───────────────────────
+#
+# Derselbe Basis-Rahmen wie im soul_cmd-Hook (test_soul_hook.py), hier für den
+# Batch-Job-Pfad: `_claude_argv()` baut `--append-system-prompt` bereits aus
+# der job-spezifischen Soul; die Basis muss zusätzlich greifen, auch wenn kein
+# `soul:`-Frontmatter im Job gesetzt ist.
+
+
+def test_claude_argv_appends_base_prompt_without_soul(tmp_path: Path):
+    souls = tmp_path / ".claude" / "souls"
+    souls.mkdir(parents=True)
+    (souls / "_BASE.SOUL.md").write_text("Sei präzise.", encoding="utf-8")
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_WORKTREE": str(tmp_path)})
+    i = argv.index("--append-system-prompt")
+    assert argv[i + 1] == "Sei präzise."
+
+
+def test_claude_argv_combines_base_and_soul_prompts(tmp_path: Path):
+    souls = tmp_path / ".claude" / "souls"
+    souls.mkdir(parents=True)
+    (souls / "_BASE.SOUL.md").write_text("Sei präzise.", encoding="utf-8")
+    (souls / "12.Data.SOUL.md").write_text("Du bist Data.", encoding="utf-8")
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_JOB_SOUL": "data", "BIBI_WORKTREE": str(tmp_path)})
+    i = argv.index("--append-system-prompt")
+    combined = argv[i + 1]
+    assert combined.index("Sei präzise.") < combined.index("Du bist Data.")
+
+
+def test_claude_argv_empty_base_file_no_flag(tmp_path: Path):
+    souls = tmp_path / ".claude" / "souls"
+    souls.mkdir(parents=True)
+    (souls / "_BASE.SOUL.md").write_text("   \n", encoding="utf-8")
+    argv = wrapper.REGISTRY["claude"].build_command(
+        {"BIBI_JOB_PROMPT": "hi", "BIBI_WORKTREE": str(tmp_path)})
+    assert "--append-system-prompt" not in argv
+
+
 def test_run_job_claude_via_stub(tmp_path: Path):
     # claude-Pfad end-to-end ohne echtes claude — Stub-Binary echot.
     fake = tmp_path / "fakeclaude"

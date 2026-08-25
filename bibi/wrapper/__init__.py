@@ -146,6 +146,24 @@ def _resolve_soul_prompt(env: dict[str, str]) -> str | None:
     return None
 
 
+def _resolve_base_prompt(env: dict[str, str]) -> str | None:
+    """Inhalt von ``.claude/souls/_BASE.SOUL.md`` im Job-Worktree — gilt
+    unabhängig von ``BIBI_JOB_SOUL`` (analog ``soul_cmd._load_base`` im
+    interaktiven Hook, hier für den Batch-Job-Pfad). Best-effort: kein
+    Worktree/keine Datei/nur Leerraum ⇒ None, kein Fehler."""
+    worktree = env.get("BIBI_WORKTREE")
+    if not worktree:
+        return None
+    pfad = Path(worktree) / ".claude" / "souls" / "_BASE.SOUL.md"
+    if not pfad.is_file():
+        return None
+    try:
+        text = pfad.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return text if text.strip() else None
+
+
 def _claude_argv(env: dict[str, str]) -> list[str]:
     container = (env.get("BIBI_EXEC_MODE") or "").strip().lower() == "container"
     # Host: BIBI_CLAUDE_BIN überschreibt das Binary (Tests/Stubs, abs. Pfad bei
@@ -165,9 +183,9 @@ def _claude_argv(env: dict[str, str]) -> list[str]:
     # nötig. Die komplette assistant-Nachricht kommt weiterhin zusätzlich — der
     # Formatter unterdrückt die dann redundante Text-Wiederholung selbst.
     argv += ["--output-format", "stream-json", "--verbose", "--include-partial-messages"]
-    soul_prompt = _resolve_soul_prompt(env)
-    if soul_prompt:
-        argv += ["--append-system-prompt", soul_prompt]
+    prompt_teile = [t for t in (_resolve_base_prompt(env), _resolve_soul_prompt(env)) if t]
+    if prompt_teile:
+        argv += ["--append-system-prompt", "\n\n".join(prompt_teile)]
     # IMMER setzen, nicht nur im Container: headless (``claude -p``) sitzt per
     # Definition niemand davor, der eine Freigabe erteilen könnte. Ohne Modus
     # beantwortet die CLI jede Rückfrage selbst mit ``user-rejected`` — der Job

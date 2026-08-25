@@ -129,3 +129,46 @@ def test_showing_the_soul_still_works(team_repo: Path, capsys, monkeypatch):
     assert capsys.readouterr().out.strip() == "Data"
     assert main(["soul"]) == 0
     assert capsys.readouterr().out.strip() == "Data"
+
+
+# ── _BASE.SOUL.md — gilt unabhängig von der aktiven Persona ────────────────
+#
+# Anlass: ein Kommunikationsrahmen (Anti-Sykophantie, keine Floskeln) soll
+# jede Sitzung härten, nicht nur die, die zufällig eine Soul gesetzt hat.
+# Souls bleiben team-eigener Content — auch dieser Basis-Text lebt als Datei
+# im Team-Repo, nicht hartcodiert im Engine-Paket. `_BASE.SOUL.md` bricht
+# absichtlich das `NN.Name.SOUL.md`-Muster (kein Nummernpräfix), damit
+# `_SOUL_FILE_RE` sie nie als wählbare Persona listet.
+
+BASE_TEXT = "# Basis\n\nKeine Floskeln, keine unbelegte Zustimmung.\n"
+
+
+def test_a_base_file_alone_is_injected_even_without_a_soul(team_repo: Path, capsys,
+                                                             monkeypatch):
+    """Die Basis gilt, obwohl gar keine Persona aktiv ist — der bisherige
+    neutrale Pfad (»keine Soul, keine Meldung«) bleibt nur bestehen, solange
+    auch keine Basis-Datei da ist."""
+    _write_soul(team_repo, "_BASE.SOUL.md", BASE_TEXT)
+    assert _hook(monkeypatch) == 0
+    aus = json.loads(capsys.readouterr().out)
+    assert "Keine Floskeln" in aus["hookSpecificOutput"]["additionalContext"]
+
+
+def test_a_base_file_and_a_soul_are_both_injected(team_repo: Path, capsys, monkeypatch):
+    """Beide Texte landen im selben `additionalContext` — die Basis gilt
+    zusätzlich zur Persona, nicht statt ihr."""
+    _write_soul(team_repo, "_BASE.SOUL.md", BASE_TEXT)
+    _write_soul(team_repo, "12.Data.SOUL.md")
+    state.set_soul("Data")
+    assert _hook(monkeypatch) == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "Keine Floskeln" in ctx
+    assert "Du bist Data." in ctx
+
+
+def test_an_empty_base_file_stays_silent(team_repo: Path, capsys, monkeypatch):
+    """Dieselbe Regel wie bei einer leeren Persona-Datei: leer zählt als
+    nicht vorhanden."""
+    _write_soul(team_repo, "_BASE.SOUL.md", "   \n")
+    assert _hook(monkeypatch) == 0
+    assert capsys.readouterr().out.strip() == ""

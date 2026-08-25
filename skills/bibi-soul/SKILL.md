@@ -37,9 +37,26 @@ knowing:
 - **Subagents carry it too**, structurally via `SubagentStart` rather than by
   being asked to pass it along.
 
-With no soul set the hook prints nothing and exits 0 — the neutral path, not
-an error. Same for a soul whose file has been deleted: the hook runs *before*
-the first prompt, and failing there fails where nobody could have acted yet.
+With no soul set the hook prints nothing (unless a base fragment applies, see
+below) and exits 0 — the neutral path, not an error. Same for a soul whose
+file has been deleted: the hook runs *before* the first prompt, and failing
+there fails where nobody could have acted yet.
+
+## `_BASE.SOUL.md` — a fragment that applies regardless of persona
+
+`.claude/souls/_BASE.SOUL.md` is not a persona: its leading underscore breaks
+the `NN.<Name>.SOUL.md` pattern on purpose, so it never shows up as something
+`bibi-ctrl soul <name>` can select. If it exists, the hook prepends its
+content to whatever `additionalContext` it emits — with a soul active, both
+apply together; with none active, the base fragment alone is enough to make
+the hook speak where it would otherwise stay silent. Same rule as personas:
+empty or whitespace-only counts as absent. Same file convention on the batch
+side — `wrapper._claude_argv()` looks for it in the job's worktree and folds
+it into `--append-system-prompt` alongside any `soul:`-selected persona.
+
+Use this for house rules that should hold no matter which persona (or none)
+is active — a team-wide communication baseline, say — while keeping the
+per-persona files free of duplicating it.
 
 ## Effect
 
